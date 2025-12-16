@@ -3,8 +3,8 @@ package store
 import (
 	"context"
 
-	"github.com/onexstack/onexstack/pkg/store/where"
 	"zk8s.com/rca-api/internal/apiserver/model"
+	"zk8s.com/rca-api/pkg/store/where"
 )
 
 type IncidentStore interface {
@@ -55,17 +55,30 @@ func (i *incidentStore) Get(ctx context.Context, opts *where.Options) (*model.In
 
 func (i *incidentStore) List(ctx context.Context, opts *where.Options) (int64, []*model.IncidentM, error) {
 	db := i.s.DB(ctx)
+
+	// base：只应用 filters/clauses（不应用 offset/limit）
+	base := db
 	if opts != nil {
-		db = opts.Where(db)
+		// 复用 opts.Where 的逻辑，但不要 Offset/Limit
+		base = base.Where(opts.Filters).Clauses(opts.Clauses...)
+		for _, q := range opts.Queries {
+			conds := base.Statement.BuildCondition(q.Query, q.Args...)
+			base = base.Clauses(conds...)
+		}
 	}
 
 	var total int64
-	if err := db.Model(&model.IncidentM{}).Count(&total).Error; err != nil {
+	if err := base.Model(&model.IncidentM{}).Count(&total).Error; err != nil {
 		return 0, nil, err
 	}
 
+	// list：带分页 + 建议加稳定排序
+	listDB := base
+	if opts != nil {
+		listDB = listDB.Offset(opts.Offset).Limit(opts.Limit)
+	}
 	var list []*model.IncidentM
-	if err := db.Find(&list).Error; err != nil {
+	if err := listDB.Order("id DESC").Find(&list).Error; err != nil {
 		return 0, nil, err
 	}
 	return total, list, nil

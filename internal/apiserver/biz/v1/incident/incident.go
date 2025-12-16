@@ -7,12 +7,13 @@ import (
 	"strings"
 
 	"github.com/jinzhu/copier"
-	"github.com/onexstack/onexstack/pkg/store/where"
+	"gorm.io/gorm/clause"
 	"zk8s.com/rca-api/internal/apiserver/model"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
 	apiv1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"zk8s.com/rca-api/pkg/store/where"
 )
 
 // IncidentBiz 定义 incident 相关业务能力（先最小：Create）
@@ -23,7 +24,7 @@ type IncidentBiz interface {
 	//Update(ctx context.Context, rq *apiv1.UpdateIncidentRequest) (*apiv1.UpdateIncidentResponse, error)
 	//Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error)
 	Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error)
-	//List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error)
+	List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error)
 
 	IncidentExpansion
 }
@@ -93,11 +94,48 @@ func (b *incidentBiz) Create(ctx context.Context, rq *apiv1.CreateIncidentReques
 }
 
 func (b *incidentBiz) Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error) {
-	whr := where.NewWhere().F("incident_id", rq.IncidentID)
+	whr := where.T(ctx).F("incident_id", rq.IncidentID)
 	incidentM, err := b.store.Incident().Get(ctx, whr)
 	if err != nil {
 		return nil, err
 	}
 
 	return &apiv1.GetIncidentResponse{Incident: conversion.IncidentMToIncidentV1(incidentM)}, nil
+}
+
+func (b *incidentBiz) List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error) {
+	// 1) 兜底分页参数
+	whr := where.T(ctx).P(int(rq.GetOffset()), int(rq.GetLimit()))
+
+	// 2) 组 where
+	if rq.Service != nil && *rq.Service != "" {
+		whr = whr.F("service", *rq.Service)
+	}
+	if rq.Namespace != nil && *rq.Namespace != "" {
+		whr = whr.F("namespace", *rq.Namespace)
+	}
+	if rq.Status != nil && *rq.Status != "" {
+		whr = whr.F("status", *rq.Status)
+	}
+	if rq.Severity != nil && *rq.Severity != "" {
+		whr = whr.F("severity", *rq.Severity)
+	}
+	// created_at 范围
+	if rq.CreatedAtStart != nil {
+		whr = whr.C(clause.Expr{SQL: "created_at >= ?", Vars: []any{rq.CreatedAtStart.AsTime()}})
+	}
+	if rq.CreatedAtEnd != nil {
+		whr = whr.C(clause.Expr{SQL: "created_at <= ?", Vars: []any{rq.CreatedAtEnd.AsTime()}})
+	}
+	// 3) 查 total + list
+	count, incidentList, err := b.store.Incident().List(ctx, whr)
+	if err != nil {
+		return nil, err
+	}
+	incidents := make([]*apiv1.Incident, 0, len(incidentList))
+	for _, incident := range incidentList {
+		incidents = append(incidents, conversion.IncidentMToIncidentV1(incident))
+	}
+
+	return &apiv1.ListIncidentResponse{TotalCount: count, Incidents: incidents}, nil
 }

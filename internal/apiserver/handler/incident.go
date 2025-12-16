@@ -57,11 +57,10 @@ func (h *Handler) GetIncident(c *gin.Context) {
 	core.HandleUriRequest(c, h.biz.IncidentV1().Get, h.val.ValidateGetIncidentRequest)
 }
 
-//
-//// ListIncident retrieves a list of incidents based on query parameters.
-//func (h *Handler) ListIncident(c *gin.Context) {
-//	core.HandleQueryRequest(c, h.biz.IncidentV1().List, h.val.ValidateListIncidentRequest)
-//}
+// ListIncident retrieves a list of incidents based on query parameters.
+func (h *Handler) ListIncident(c *gin.Context) {
+	core.HandleQueryRequest(c, h.biz.IncidentV1().List, h.val.ValidateListIncidentRequest)
+}
 
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
@@ -71,6 +70,6 @@ func init() {
 		//rg.DELETE(":incidentID", handler.DeleteIncident)
 		//rg.DELETE("", handler.DeleteIncidents)
 		rg.GET(":incidentID", handler.GetIncident)
-		//rg.GET("", handler.ListIncident)
+		rg.GET("", handler.ListIncident)
 	})
 }

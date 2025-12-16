@@ -38,7 +38,7 @@ func (v *Validator) ValidateGetIncidentRequest(ctx context.Context, rq *v1.GetIn
 	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
 }
 
-//// ValidateListIncidentRequest validates the fields of a ListIncidentRequest, focusing on selected fields ("Offset" and "Limit").
-//func (v *Validator) ValidateListIncidentRequest(ctx context.Context, rq *v1.ListIncidentRequest) error {
-//	return genericvalidation.ValidateSelectedFields(rq, v.ValidateIncidentRules(), "Offset", "Limit")
-//}
+// ValidateListIncidentRequest validates the fields of a ListIncidentRequest, focusing on selected fields ("Offset" and "Limit").
+func (v *Validator) ValidateListIncidentRequest(ctx context.Context, rq *v1.ListIncidentRequest) error {
+	return genericvalidation.ValidateSelectedFields(rq, v.ValidateIncidentRules(), "Offset", "Limit")
+}
