@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"zk8s.com/rca-api/internal/pkg/rid"
+	"zk8s.com/onexstack/miniblog/internal/pkg/rid"
 )
 
 // Mock Salt function used for testing
@@ -15,53 +15,57 @@ func Salt() string {
 }
 
 func TestResourceID_String(t *testing.T) {
-	// Test converting UserID to a string
-	rid := rid.UserID
-	assert.Equal(t, "user", rid.String(), "UserID.String() should return 'user'")
+	// 测试 UserID 转换为字符串
+	userID := rid.UserID
+	assert.Equal(t, "user", userID.String(), "UserID.String() should return 'user'")
+
+	// 测试 PostID 转换为字符串
+	postID := rid.PostID
+	assert.Equal(t, "post", postID.String(), "PostID.String() should return 'post'")
 }
 
 func TestResourceID_New(t *testing.T) {
-	// Test if the generated ID has the correct prefix
-	rid := rid.UserID
-	uniqueID := rid.New(1)
+	// 测试生成的ID是否带有正确前缀
+	userID := rid.UserID
+	uniqueID := userID.New(1)
 
 	assert.True(t, len(uniqueID) > 0, "Generated ID should not be empty")
 	assert.Contains(t, uniqueID, "user-", "Generated ID should start with 'user-' prefix")
 
-	// Generate another unique identifier to ensure uniqueness
-	anotherID := rid.New(2)
+	// 生成另外一个唯一标识符，确保生成的值不同（唯一性）
+	anotherID := userID.New(2)
 	assert.NotEqual(t, uniqueID, anotherID, "Generated IDs should be unique")
 }
 
 func BenchmarkResourceID_New(b *testing.B) {
-	// Performance benchmark
+	// 性能测试
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		rid := rid.UserID
-		_ = rid.New(uint64(i))
+		userID := rid.UserID
+		_ = userID.New(uint64(i))
 	}
 }
 
 func FuzzResourceID_New(f *testing.F) {
-	// Add preset test data
-	f.Add(uint64(1))      // Add a seed value `counter` as 1
-	f.Add(uint64(123456)) // Add a larger seed value
+	// 添加预置测试数据
+	f.Add(uint64(1))      // 添加一个种子值counter为1
+	f.Add(uint64(123456)) // 添加一个较大的种子值
 
 	f.Fuzz(func(t *testing.T, counter uint64) {
-		// Test the New method for UserID
+		// 测试UserID的New方法
 		result := rid.UserID.New(counter)
 
-		// Assert that the result is not empty
+		// 断言结果不为空
 		assert.NotEmpty(t, result, "The generated unique identifier should not be empty")
 
-		// Assert that the result contains the correct resource identifier prefix
+		// 断言结果必须包含资源标识符前缀
 		assert.Contains(t, result, rid.UserID.String()+"-", "The generated unique identifier should contain the correct prefix")
 
-		// Assert that the prefix does not overlap with the uniqueStr part
+		// 断言前缀不会与uniqueStr部分重叠
 		splitParts := strings.SplitN(result, "-", 2)
 		assert.Equal(t, rid.UserID.String(), splitParts[0], "The prefix part of the result should correctly match the UserID")
 
-		// Assert that the generated ID has a fixed length (based on NewCode configuration)
+		// 断言生成的ID具有固定长度（基于NewCode的配置）
 		if len(splitParts) == 2 {
 			assert.Equal(t, 6, len(splitParts[1]), "The unique identifier part should have a length of 6")
 		} else {

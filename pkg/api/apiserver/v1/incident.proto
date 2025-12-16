@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package apiserver.v1;
+
+option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+
+message CreateIncidentRequest {
+  string tenantID = 1;
+  string cluster = 2;
+  string environment = 3;
+
+  string namespace = 4;
+  string workloadKind = 5;
+  string workloadName = 6;
+
+  string service = 7;
+  string severity = 8;
+
+  // 可选：告警/证据/关联信息（你表里预留了这些）
+  optional string source = 9;
+  optional string alertName = 10;
+  optional string fingerprint = 11;
+  optional string ruleID = 12;
+  optional string labelsJSON = 13;
+  optional string annotationsJSON = 14;
+  optional string traceID = 15;
+  optional string logTraceKey = 16;
+  optional string changeID = 17;
+}
+
+message CreateIncidentResponse {
+  string incidentID = 1;
+}

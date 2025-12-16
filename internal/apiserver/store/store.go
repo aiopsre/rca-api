@@ -27,6 +27,7 @@ type IStore interface {
 	// TX executes the given function within a database transaction.
 	TX(ctx context.Context, fn func(ctx context.Context) error) error
 	Fake() FakeStore
+	Incident() IncidentStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -85,4 +86,8 @@ func (s *store) TX(ctx context.Context, fn func(ctx context.Context) error) erro
 // Fake returns an instance that implements the FakeStore interface.
 func (s *store) Fake() FakeStore {
 	return newFakeStore(s)
+}
+
+func (s *store) Incident() IncidentStore {
+	return newIncidentStore(s)
 }

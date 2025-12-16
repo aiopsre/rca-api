@@ -9,7 +9,6 @@ import (
 	"github.com/onexstack/onexstack/pkg/server"
 	"github.com/onexstack/onexstack/pkg/store/registry"
 	"gorm.io/gorm"
-
 	"zk8s.com/rca-api/internal/apiserver/handler"
 	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
 )

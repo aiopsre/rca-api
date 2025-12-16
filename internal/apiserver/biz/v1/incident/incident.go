@@ -1,0 +1,88 @@
+package incident
+
+//go:generate mockgen -destination mock_incident.go -package incident zk8s.com/rca-api/internal/apiserver/biz/v1/incident IncidentBiz
+
+import (
+	"context"
+	"strings"
+
+	"github.com/jinzhu/copier"
+
+	"zk8s.com/rca-api/internal/apiserver/model"
+	"zk8s.com/rca-api/internal/apiserver/store"
+	"zk8s.com/rca-api/internal/pkg/contextx"
+	apiv1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+)
+
+// IncidentBiz 定义 incident 相关业务能力（先最小：Create）
+//
+// 参考 miniblog 的 PostBiz：入参是 proto request，返回 proto response。:contentReference[oaicite:4]{index=4}
+type IncidentBiz interface {
+	Create(ctx context.Context, rq *apiv1.CreateIncidentRequest) (*apiv1.CreateIncidentResponse, error)
+
+	IncidentExpansion
+}
+
+// IncidentExpansion 预留扩展方法（对齐 miniblog 的写法）。:contentReference[oaicite:5]{index=5}
+type IncidentExpansion interface{}
+
+// incidentBiz 是 IncidentBiz 的实现
+type incidentBiz struct {
+	store store.IStore
+}
+
+var _ IncidentBiz = (*incidentBiz)(nil)
+
+// New 创建 incidentBiz 实例（对齐 miniblog New(store) 风格）。:contentReference[oaicite:6]{index=6}
+func New(store store.IStore) *incidentBiz {
+	return &incidentBiz{store: store}
+}
+
+// Create 创建事件单：把 CreateIncidentRequest 映射到 model.IncidentM，然后落库。
+// IncidentID 由 model.AfterCreate hook 自动生成（incident-xxxxxx）。:contentReference[oaicite:7]{index=7}
+func (b *incidentBiz) Create(ctx context.Context, rq *apiv1.CreateIncidentRequest) (*apiv1.CreateIncidentResponse, error) {
+	var m model.IncidentM
+
+	// 1) 复制字段（要求 proto 字段名能映射到 struct 字段名：Service/Namespace/WorkloadKind/WorkloadName/Severity...）
+	_ = copier.Copy(&m, rq) // 和 miniblog 一样：req -> model :contentReference[oaicite:8]{index=8}
+
+	// 2) 填充默认值（避免 DB not null/default 依赖过强）
+	if strings.TrimSpace(m.TenantID) == "" {
+		m.TenantID = "default"
+	}
+	if strings.TrimSpace(m.Cluster) == "" {
+		m.Cluster = "default"
+	}
+	if strings.TrimSpace(m.Environment) == "" {
+		m.Environment = "prod"
+	}
+	if strings.TrimSpace(m.Source) == "" {
+		m.Source = "api"
+	}
+	if strings.TrimSpace(m.Status) == "" {
+		m.Status = "open"
+	}
+	if strings.TrimSpace(m.RCAStatus) == "" {
+		m.RCAStatus = "pending"
+	}
+	if strings.TrimSpace(m.ActionStatus) == "" {
+		m.ActionStatus = "none"
+	}
+
+	// 3) 审计字段：优先 username，其次 userID（你的 contextx 同时支持二者）
+	if u := strings.TrimSpace(contextx.Username(ctx)); u != "" {
+		m.CreatedBy = &u
+	} else if uid := strings.TrimSpace(contextx.UserID(ctx)); uid != "" {
+		m.CreatedBy = &uid
+	}
+
+	// 4) 落库
+	if err := b.store.Incident().Create(ctx, &m); err != nil { // store 已经提供 Incident().Create :contentReference[oaicite:9]{index=9}
+		return nil, err
+	}
+
+	// 5) 返回事件单 ID（AfterCreate hook 会生成并回写，所以这里拿得到）:contentReference[oaicite:10]{index=10}
+	return &apiv1.CreateIncidentResponse{
+		IncidentID: m.IncidentID,
+	}, nil
+}
