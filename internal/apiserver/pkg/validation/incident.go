@@ -18,16 +18,16 @@ func (v *Validator) ValidateCreateIncidentRequest(ctx context.Context, rq *v1.Cr
 	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
 }
 
-//// ValidateUpdateIncidentRequest validates the fields of an UpdateIncidentRequest.
-//func (v *Validator) ValidateUpdateIncidentRequest(ctx context.Context, rq *v1.UpdateIncidentRequest) error {
-//	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
-//}
-//
-//// ValidateDeleteIncidentRequest validates the fields of a DeleteIncidentRequest.
-//func (v *Validator) ValidateDeleteIncidentRequest(ctx context.Context, rq *v1.DeleteIncidentRequest) error {
-//	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
-//}
-//
+// ValidateUpdateIncidentRequest validates the fields of an UpdateIncidentRequest.
+func (v *Validator) ValidateUpdateIncidentRequest(ctx context.Context, rq *v1.UpdateIncidentRequest) error {
+	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
+}
+
+// ValidateDeleteIncidentRequest validates the fields of a DeleteIncidentRequest.
+func (v *Validator) ValidateDeleteIncidentRequest(ctx context.Context, rq *v1.DeleteIncidentRequest) error {
+	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
+}
+
 //// ValidateDeleteIncidentsRequest validates the fields of a DeleteIncidentsRequest.
 //func (v *Validator) ValidateDeleteIncidentsRequest(ctx context.Context, rq *v1.DeleteIncidentsRequest) error {
 //	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())

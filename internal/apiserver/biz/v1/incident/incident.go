@@ -21,8 +21,8 @@ import (
 // 参考 miniblog 的 PostBiz：入参是 proto request，返回 proto response。:contentReference[oaicite:4]{index=4}
 type IncidentBiz interface {
 	Create(ctx context.Context, rq *apiv1.CreateIncidentRequest) (*apiv1.CreateIncidentResponse, error)
-	//Update(ctx context.Context, rq *apiv1.UpdateIncidentRequest) (*apiv1.UpdateIncidentResponse, error)
-	//Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error)
+	Update(ctx context.Context, rq *apiv1.UpdateIncidentRequest) (*apiv1.UpdateIncidentResponse, error)
+	Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error)
 	Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error)
 	List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error)
 
@@ -94,7 +94,7 @@ func (b *incidentBiz) Create(ctx context.Context, rq *apiv1.CreateIncidentReques
 }
 
 func (b *incidentBiz) Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error) {
-	whr := where.T(ctx).F("incident_id", rq.IncidentID)
+	whr := where.T(ctx).F("incident_id", rq.GetIncidentID())
 	incidentM, err := b.store.Incident().Get(ctx, whr)
 	if err != nil {
 		return nil, err
@@ -138,4 +138,33 @@ func (b *incidentBiz) List(ctx context.Context, rq *apiv1.ListIncidentRequest) (
 	}
 
 	return &apiv1.ListIncidentResponse{TotalCount: count, Incidents: incidents}, nil
+}
+
+func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentRequest) (*apiv1.UpdateIncidentResponse, error) {
+	whr := where.T(ctx).F("incident_id", rq.GetIncidentID())
+	incidentM, err := b.store.Incident().Get(ctx, whr)
+	if err != nil {
+		return nil, err
+	}
+	if rq.Status != nil {
+		incidentM.Status = rq.GetStatus()
+	}
+	if rq.Severity != nil {
+		incidentM.Severity = rq.GetSeverity()
+	}
+
+	if err := b.store.Incident().Update(ctx, incidentM); err != nil {
+		return nil, err
+	}
+
+	return &apiv1.UpdateIncidentResponse{}, nil
+}
+
+func (b *incidentBiz) Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error) {
+	whr := where.T(ctx).F("incident_id", rq.GetIncidentIDs())
+	if err := b.store.Incident().Delete(ctx, whr); err != nil {
+		return nil, err
+	}
+
+	return &apiv1.DeleteIncidentResponse{}, nil
 }
