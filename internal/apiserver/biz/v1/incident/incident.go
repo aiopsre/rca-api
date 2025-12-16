@@ -7,8 +7,9 @@ import (
 	"strings"
 
 	"github.com/jinzhu/copier"
-
+	"github.com/onexstack/onexstack/pkg/store/where"
 	"zk8s.com/rca-api/internal/apiserver/model"
+	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
 	apiv1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
@@ -19,6 +20,10 @@ import (
 // 参考 miniblog 的 PostBiz：入参是 proto request，返回 proto response。:contentReference[oaicite:4]{index=4}
 type IncidentBiz interface {
 	Create(ctx context.Context, rq *apiv1.CreateIncidentRequest) (*apiv1.CreateIncidentResponse, error)
+	//Update(ctx context.Context, rq *apiv1.UpdateIncidentRequest) (*apiv1.UpdateIncidentResponse, error)
+	//Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error)
+	Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error)
+	//List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error)
 
 	IncidentExpansion
 }
@@ -85,4 +90,14 @@ func (b *incidentBiz) Create(ctx context.Context, rq *apiv1.CreateIncidentReques
 	return &apiv1.CreateIncidentResponse{
 		IncidentID: m.IncidentID,
 	}, nil
+}
+
+func (b *incidentBiz) Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error) {
+	whr := where.NewWhere().F("incident_id", rq.IncidentID)
+	incidentM, err := b.store.Incident().Get(ctx, whr)
+	if err != nil {
+		return nil, err
+	}
+
+	return &apiv1.GetIncidentResponse{Incident: conversion.IncidentMToIncidentV1(incidentM)}, nil
 }

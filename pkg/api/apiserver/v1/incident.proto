@@ -1,33 +1,187 @@
+// Incident API 定义：事件单的请求和响应消息
 syntax = "proto3";
 
 package apiserver.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
 
-message CreateIncidentRequest {
-  string tenantID = 1;
-  string cluster = 2;
-  string environment = 3;
+// Incident 表示事件单（告警聚合后的事件元数据 + 诊断/处置闭环索引）
+message Incident {
+  // incidentID 表示事件单业务 ID（如 incident-xxxxxx）
+  string incidentID = 1;
 
-  string namespace = 4;
-  string workloadKind = 5;
-  string workloadName = 6;
+  // tenantID 表示租户/业务线标识
+  string tenantID = 2;
+  // cluster 表示集群标识（如 prod-cn1 / staging）
+  string cluster = 3;
+  // environment 表示环境（prod/staging/dev）
+  string environment = 4;
 
-  string service = 7;
-  string severity = 8;
+  // namespace 表示 K8s 命名空间
+  string namespace = 5;
+  // workloadKind 表示工作负载类型（Deployment/StatefulSet/...）
+  string workloadKind = 6;
+  // workloadName 表示工作负载名称
+  string workloadName = 7;
 
-  // 可选：告警/证据/关联信息（你表里预留了这些）
-  optional string source = 9;
-  optional string alertName = 10;
-  optional string fingerprint = 11;
-  optional string ruleID = 12;
-  optional string labelsJSON = 13;
-  optional string annotationsJSON = 14;
+  // service 表示服务名（微服务维度）
+  string service = 8;
+
+  // severity 表示严重级别（P0/P1/P2 或 critical/warn/info）
+  string severity = 9;
+  // status 表示事件状态（open/ack/mitigating/closed/silenced 等）
+  string status = 10;
+
+  // source 表示事件来源（alertmanager/grafana/manual/api 等）
+  optional string source = 11;
+  // alertName 表示告警名称
+  optional string alertName = 12;
+  // fingerprint 表示告警聚合指纹（用于合并同类告警）
+  optional string fingerprint = 13;
+  // ruleID 表示告警规则 ID
+  optional string ruleID = 14;
+
+  // traceID 表示关联 TraceID
   optional string traceID = 15;
+  // logTraceKey 表示日志检索关键字/trace key
   optional string logTraceKey = 16;
+  // changeID 表示关联变更 ID（发布单/工单/流水线 run id）
   optional string changeID = 17;
+
+  // startAt 表示事件开始时间（首次触发/窗口开始）
+  optional google.protobuf.Timestamp startAt = 18;
+  // endAt 表示事件结束时间（恢复/关闭）
+  optional google.protobuf.Timestamp endAt = 19;
+
+  // createdAt 表示创建时间
+  google.protobuf.Timestamp createdAt = 20;
+  // updatedAt 表示更新时间
+  google.protobuf.Timestamp updatedAt = 21;
 }
 
+// CreateIncidentRequest 表示创建事件单请求
+message CreateIncidentRequest {
+  // tenantID 表示租户/业务线标识（可选，默认 default）
+  optional string tenantID = 1;
+  // cluster 表示集群标识（可选，默认 default）
+  optional string cluster = 2;
+  // environment 表示环境（可选，默认 prod）
+  optional string environment = 3;
+
+  // namespace 表示 K8s 命名空间
+  string namespace = 4;
+  // workloadKind 表示工作负载类型
+  string workloadKind = 5;
+  // workloadName 表示工作负载名称
+  string workloadName = 6;
+
+  // service 表示服务名
+  string service = 7;
+  // severity 表示严重级别
+  string severity = 8;
+
+  // source 表示事件来源（可选）
+  optional string source = 9;
+  // alertName 表示告警名称（可选）
+  optional string alertName = 10;
+  // fingerprint 表示告警聚合指纹（可选）
+  optional string fingerprint = 11;
+  // ruleID 表示告警规则 ID（可选）
+  optional string ruleID = 12;
+
+  // traceID 表示关联 TraceID（可选）
+  optional string traceID = 13;
+  // logTraceKey 表示日志检索 key（可选）
+  optional string logTraceKey = 14;
+  // changeID 表示关联变更 ID（可选）
+  optional string changeID = 15;
+
+  // startAt 表示事件开始时间（可选）
+  optional google.protobuf.Timestamp startAt = 16;
+}
+
+// CreateIncidentResponse 表示创建事件单响应
 message CreateIncidentResponse {
+  // incidentID 表示创建的事件单 ID
   string incidentID = 1;
+}
+
+// UpdateIncidentRequest 表示更新事件单请求
+message UpdateIncidentRequest {
+  // incidentID 表示要更新的事件单 ID，对应 {incidentID}
+  // @gotags: uri:"incidentID"
+  string incidentID = 1;
+
+  // severity 表示更新后的严重级别（可选）
+  optional string severity = 2;
+  // status 表示更新后的事件状态（可选）
+  optional string status = 3;
+
+  // startAt/endAt 可用于补齐窗口时间（可选）
+  optional google.protobuf.Timestamp startAt = 4;
+  optional google.protobuf.Timestamp endAt = 5;
+
+  // 可选：关联信息更新
+  optional string traceID = 6;
+  optional string logTraceKey = 7;
+  optional string changeID = 8;
+}
+
+// UpdateIncidentResponse 表示更新事件单响应
+message UpdateIncidentResponse {}
+
+// DeleteIncidentRequest 表示删除事件单请求
+message DeleteIncidentRequest {
+  // incidentIDs 表示要删除的事件单 ID 列表
+  repeated string incidentIDs = 1;
+}
+
+// DeleteIncidentResponse 表示删除事件单响应
+message DeleteIncidentResponse {}
+
+// GetIncidentRequest 表示获取事件单请求
+message GetIncidentRequest {
+  // incidentID 表示要获取的事件单 ID
+  // @gotags: uri:"incidentID"
+  string incidentID = 1;
+}
+
+// GetIncidentResponse 表示获取事件单响应
+message GetIncidentResponse {
+  // incident 表示返回的事件单信息
+  Incident incident = 1;
+}
+
+// ListIncidentRequest 表示获取事件单列表请求
+message ListIncidentRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // service 表示可选的服务过滤
+  optional string service = 3;
+  // namespace 表示可选的命名空间过滤
+  optional string namespace = 4;
+  // status 表示可选的状态过滤
+  optional string status = 5;
+  // severity 表示可选的级别过滤
+  optional string severity = 6;
+
+  // createdAtStart/createdAtEnd 表示可选的创建时间范围过滤
+  optional google.protobuf.Timestamp createdAtStart = 7;
+  optional google.protobuf.Timestamp createdAtEnd = 8;
+}
+
+// ListIncidentResponse 表示获取事件单列表响应
+message ListIncidentResponse {
+  // total_count 表示总事件单数
+  int64 total_count = 1;
+  // incidents 表示事件单列表
+  repeated Incident incidents = 2;
 }

@@ -32,12 +32,12 @@ func (v *Validator) ValidateCreateIncidentRequest(ctx context.Context, rq *v1.Cr
 //func (v *Validator) ValidateDeleteIncidentsRequest(ctx context.Context, rq *v1.DeleteIncidentsRequest) error {
 //	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
 //}
-//
-//// ValidateGetIncidentRequest validates the fields of a GetIncidentRequest.
-//func (v *Validator) ValidateGetIncidentRequest(ctx context.Context, rq *v1.GetIncidentRequest) error {
-//	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
-//}
-//
+
+// ValidateGetIncidentRequest validates the fields of a GetIncidentRequest.
+func (v *Validator) ValidateGetIncidentRequest(ctx context.Context, rq *v1.GetIncidentRequest) error {
+	return genericvalidation.ValidateAllFields(rq, v.ValidateIncidentRules())
+}
+
 //// ValidateListIncidentRequest validates the fields of a ListIncidentRequest, focusing on selected fields ("Offset" and "Limit").
 //func (v *Validator) ValidateListIncidentRequest(ctx context.Context, rq *v1.ListIncidentRequest) error {
 //	return genericvalidation.ValidateSelectedFields(rq, v.ValidateIncidentRules(), "Offset", "Limit")
