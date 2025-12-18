@@ -83,3 +83,53 @@ Checklist:
 - API endpoints
   - [ ] `POST /v1/incidents/{id}/ai:r
 
+---
+
+#### P0-3 实施细则（必须遵守）
+
+##### 1) Current/History 存储策略（P0 简化版）
+- history 必须落库（append-only，用于审计与回放）
+- current 可采用 DB 同表方案：
+  - 通过 `is_current` + `last_seen` 维护 current 视图
+  - current 查询必须支持过滤（severity/service/cluster/namespace/fingerprint 等）与分页
+- P1/P2 才考虑 Redis current cache（P0 不强制）
+
+##### 2) Merge Policy（必须确定性）
+- 以 `fingerprint` 为主键做去重/合并：
+  - 同 fingerprint 新事件到来：更新 current 的 `last_seen`，并写入一条 history 记录
+- incident 关联策略（必须选定一种并写入代码注释/文档）：
+  - A（推荐）：fingerprint 绑定“一个未关闭 incident”，若已 closed 则新建 incident
+  - 或 B：fingerprint + time_bucket（例如 24h）生成新的 incident
+- 并发/重试下必须保证确定性：使用唯一索引/事务避免重复创建
+
+##### 3) 幂等（附录G3）
+- `POST /v1/alert-events:ingest` 必须支持 `Idempotency-Key`（header/body）
+- 幂等命中时返回同一 event_id，并通过 `reused=true` 或 `details.existing_id` 明确标识
+
+##### 4) Timeline（best effort）
+- 如果存在 `incident_timeline` 表：
+  - 在 ingest、incident 创建/关联、ack、状态变化时写入 timeline 事件
+- 若表不存在，不阻塞主流程（仅日志提示）
+
+##### 5) RBAC 与 P0 mock auth
+- P0 允许使用 `X-Scopes` 注入 scopes（便于联调）
+- P1 计划切换为 JWT/网关注入 scopes（文档需保留说明）
+
+---
+
+#### P0-4 E2E 增补（优先级：高）
+
+E2E 最小目标：锁住“事件→证据→AI→回填”闭环，避免后续迭代引入回归。
+
+##### 必做用例（对应附录 L）
+- L1：K8s 5xx
+  - ingest -> incident -> evidence（metrics/logs）-> ai_job -> finalize/writeback -> GET incident 校验
+- L2：延迟无日志
+  - 触发 missing_evidence/低置信度输出，不允许无证据高置信度结论（附录 J2/J3）
+- L3：维护窗口/静默（P0 可 stub suppression 行为）
+- L4：回归
+  - ingest 幂等与风暴保护（高 QPS 下 current 不爆、history 不丢、外部依赖查询受限流保护）
+
+##### 贯穿字段（日志/审计）
+- request_id / incident_id / event_id / job_id / tool_call_id / datasource_id
+

@@ -28,7 +28,7 @@ func (h *Handler) QueryEvidenceLogs(c *gin.Context) {
 }
 
 func (h *Handler) QueryEvidenceAction(c *gin.Context) {
-	action := strings.TrimSpace(c.Param("action"))
+	action := strings.TrimPrefix(strings.TrimSpace(c.Param("action")), ":")
 	switch action {
 	case "queryMetrics":
 		h.QueryEvidenceMetrics(c)

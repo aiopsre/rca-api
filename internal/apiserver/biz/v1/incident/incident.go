@@ -5,10 +5,12 @@ package incident
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/jinzhu/copier"
 	"gorm.io/gorm/clause"
 	"zk8s.com/rca-api/internal/apiserver/model"
+	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
@@ -146,8 +148,22 @@ func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentReques
 	if err != nil {
 		return nil, err
 	}
+	oldStatus := strings.ToLower(strings.TrimSpace(incidentM.Status))
 	if rq.Status != nil {
-		incidentM.Status = rq.GetStatus()
+		newStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
+		if newStatus != "" {
+			incidentM.Status = newStatus
+			if isClosedIncidentStatus(newStatus) {
+				incidentM.ActiveFingerprintKey = nil
+				if incidentM.EndAt == nil {
+					endedAt := time.Now().UTC()
+					incidentM.EndAt = &endedAt
+				}
+			} else if incidentM.ActiveFingerprintKey == nil && incidentM.Fingerprint != nil && strings.TrimSpace(*incidentM.Fingerprint) != "" {
+				fp := strings.TrimSpace(*incidentM.Fingerprint)
+				incidentM.ActiveFingerprintKey = &fp
+			}
+		}
 	}
 	if rq.Severity != nil {
 		incidentM.Severity = rq.GetSeverity()
@@ -156,8 +172,23 @@ func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentReques
 	if err := b.store.Incident().Update(ctx, incidentM); err != nil {
 		return nil, err
 	}
+	if oldStatus != strings.ToLower(strings.TrimSpace(incidentM.Status)) {
+		audit.AppendIncidentTimelineIfExists(ctx, b.store.DB(ctx), incidentM.IncidentID, "incident_status_changed", incidentM.IncidentID, map[string]any{
+			"from_status": oldStatus,
+			"to_status":   incidentM.Status,
+		})
+	}
 
 	return &apiv1.UpdateIncidentResponse{}, nil
+}
+
+func isClosedIncidentStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "resolved", "closed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *incidentBiz) Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error) {

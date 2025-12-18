@@ -17,6 +17,8 @@ type Metrics struct {
 	RESTResourceGetCounter    metric.Int64Counter
 	EvidenceQueryCounter      metric.Int64Counter
 	EvidenceQueryLatency      metric.Float64Histogram
+	AlertEventIngestCounter   metric.Int64Counter
+	AlertEventIngestLatency   metric.Float64Histogram
 }
 
 var (
@@ -52,6 +54,16 @@ func Init(scope string) error {
 			metric.WithDescription("Latency in milliseconds for evidence queries"),
 		)
 
+		alertEventIngestCounter, _ := meter.Int64Counter(
+			"rca_api_apiserver_alert_event_ingest_total",
+			metric.WithDescription("Total number of alert ingest requests by merge_result/outcome"),
+		)
+
+		alertEventIngestLatency, _ := meter.Float64Histogram(
+			"rca_api_apiserver_alert_event_ingest_latency_ms",
+			metric.WithDescription("Latency in milliseconds for alert ingest requests"),
+		)
+
 		// Assign the global singleton.
 		M = &Metrics{
 			Meter:                     meter,
@@ -59,6 +71,8 @@ func Init(scope string) error {
 			RESTResourceGetCounter:    getCount,
 			EvidenceQueryCounter:      evidenceQueryCounter,
 			EvidenceQueryLatency:      evidenceQueryLatency,
+			AlertEventIngestCounter:   alertEventIngestCounter,
+			AlertEventIngestLatency:   alertEventIngestLatency,
 		}
 	})
 
@@ -88,4 +102,20 @@ func (m *Metrics) RecordEvidenceQuery(ctx context.Context, queryType string, dat
 	}
 	m.EvidenceQueryCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.EvidenceQueryLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordAlertEventIngest records ingest/merge metrics for alert events.
+func (m *Metrics) RecordAlertEventIngest(ctx context.Context, mergeResult string, outcome string, duration time.Duration) {
+	if mergeResult == "" {
+		mergeResult = "unknown"
+	}
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("merge_result", mergeResult),
+		attribute.String("outcome", outcome),
+	}
+	m.AlertEventIngestCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
+	m.AlertEventIngestLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
 }

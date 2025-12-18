@@ -3,6 +3,7 @@ package biz
 import (
 	"github.com/google/wire"
 	aijobv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/ai_job"
+	alerteventv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/alert_event"
 	datasourcev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/incident"
@@ -16,6 +17,7 @@ var ProviderSet = wire.NewSet(NewBiz, wire.Bind(new(IBiz), new(*biz)))
 // IBiz defines the access points for various business logic modules.
 type IBiz interface {
 	IncidentV1() incidentv1.IncidentBiz
+	AlertEventV1() alerteventv1.AlertEventBiz
 	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
@@ -36,6 +38,10 @@ func NewBiz(store store.IStore) *biz {
 
 func (b *biz) IncidentV1() incidentv1.IncidentBiz {
 	return incidentv1.New(b.store)
+}
+
+func (b *biz) AlertEventV1() alerteventv1.AlertEventBiz {
+	return alerteventv1.New(b.store)
 }
 
 func (b *biz) DatasourceV1() datasourcev1.DatasourceBiz {

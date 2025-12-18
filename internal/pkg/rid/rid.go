@@ -11,6 +11,8 @@ type ResourceID string
 const (
 	// IncidentID 定义用户资源标识符.
 	IncidentID ResourceID = "incident"
+	// AlertEventID defines alert event resource identifier.
+	AlertEventID ResourceID = "alert-event"
 	// DatasourceID defines datasource resource identifier.
 	DatasourceID ResourceID = "datasource"
 	// EvidenceID defines evidence resource identifier.

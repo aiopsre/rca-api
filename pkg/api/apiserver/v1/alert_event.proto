@@ -1,0 +1,160 @@
+// AlertEvent API messages for ingest/current/history/ack.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+
+// AlertEvent is one normalized alert event row (history/current in same table).
+message AlertEvent {
+  // eventID is the business event id, e.g. alert-event-xxxxxx.
+  string eventID = 1;
+  // incidentID is linked incident id (optional).
+  optional string incidentID = 2;
+  // fingerprint is the dedup/merge key.
+  string fingerprint = 3;
+  // dedupKey defaults to fingerprint in P0.
+  optional string dedupKey = 4;
+  // source is alertmanager|watchalert|custom.
+  string source = 5;
+  // status is firing|resolved|suppressed|invalid.
+  string status = 6;
+  // severity is normalized severity.
+  string severity = 7;
+  optional string alertName = 8;
+  optional string service = 9;
+  optional string cluster = 10;
+  optional string namespace = 11;
+  optional string workload = 12;
+  optional google.protobuf.Timestamp startsAt = 13;
+  optional google.protobuf.Timestamp endsAt = 14;
+  google.protobuf.Timestamp lastSeenAt = 15;
+  optional string labelsJSON = 16;
+  optional string annotationsJSON = 17;
+  optional string generatorURL = 18;
+  optional string rawEventJSON = 19;
+  bool isCurrent = 20;
+  optional google.protobuf.Timestamp ackedAt = 21;
+  optional string ackedBy = 22;
+  google.protobuf.Timestamp createdAt = 23;
+  google.protobuf.Timestamp updatedAt = 24;
+}
+
+// IngestAlertEventRequest ingests one normalized alert payload.
+message IngestAlertEventRequest {
+  // idempotencyKey supports retry-safe ingest.
+  optional string idempotencyKey = 1;
+  // fingerprint may be omitted and derived deterministically.
+  optional string fingerprint = 2;
+  // dedupKey defaults to fingerprint in P0.
+  optional string dedupKey = 3;
+  optional string source = 4;
+  // status is firing|resolved|suppressed.
+  string status = 5;
+  string severity = 6;
+  optional string alertName = 7;
+  optional string service = 8;
+  optional string cluster = 9;
+  optional string namespace = 10;
+  optional string workload = 11;
+  optional google.protobuf.Timestamp startsAt = 12;
+  optional google.protobuf.Timestamp endsAt = 13;
+  // lastSeenAt defaults to now when omitted.
+  optional google.protobuf.Timestamp lastSeenAt = 14;
+  optional string labelsJSON = 15;
+  optional string annotationsJSON = 16;
+  optional string generatorURL = 17;
+  optional string rawEventJSON = 18;
+}
+
+// IngestAlertEventResponse returns created/reused event result.
+message IngestAlertEventResponse {
+  string eventID = 1;
+  optional string incidentID = 2;
+  string fingerprint = 3;
+  string status = 4;
+  bool reused = 5;
+  // mergeResult explains how current view changed.
+  string mergeResult = 6;
+}
+
+// ListCurrentAlertEventsRequest lists current alert view.
+message ListCurrentAlertEventsRequest {
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // @gotags: form:"severity"
+  optional string severity = 3;
+  // @gotags: form:"service"
+  optional string service = 4;
+  // @gotags: form:"cluster"
+  optional string cluster = 5;
+  // @gotags: form:"namespace"
+  optional string namespace = 6;
+  // @gotags: form:"fingerprint"
+  optional string fingerprint = 7;
+  // @gotags: form:"status"
+  optional string status = 8;
+  // @gotags: form:"lastSeenStart"
+  optional google.protobuf.Timestamp lastSeenStart = 9;
+  // @gotags: form:"lastSeenEnd"
+  optional google.protobuf.Timestamp lastSeenEnd = 10;
+}
+
+// ListCurrentAlertEventsResponse returns current alert list.
+message ListCurrentAlertEventsResponse {
+  int64 totalCount = 1;
+  repeated AlertEvent events = 2;
+}
+
+// ListHistoryAlertEventsRequest lists history events.
+message ListHistoryAlertEventsRequest {
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // @gotags: form:"severity"
+  optional string severity = 3;
+  // @gotags: form:"service"
+  optional string service = 4;
+  // @gotags: form:"cluster"
+  optional string cluster = 5;
+  // @gotags: form:"namespace"
+  optional string namespace = 6;
+  // @gotags: form:"fingerprint"
+  optional string fingerprint = 7;
+  // @gotags: form:"status"
+  optional string status = 8;
+  // @gotags: form:"incidentID"
+  optional string incidentID = 9;
+  // @gotags: form:"lastSeenStart"
+  optional google.protobuf.Timestamp lastSeenStart = 10;
+  // @gotags: form:"lastSeenEnd"
+  optional google.protobuf.Timestamp lastSeenEnd = 11;
+}
+
+// ListHistoryAlertEventsResponse returns history list.
+message ListHistoryAlertEventsResponse {
+  int64 totalCount = 1;
+  repeated AlertEvent events = 2;
+}
+
+// AckAlertEventRequest acknowledges one alert event.
+message AckAlertEventRequest {
+  // @gotags: uri:"eventID"
+  string eventID = 1;
+  optional string ackedBy = 2;
+}
+
+// AckAlertEventResponse returns ack result.
+message AckAlertEventResponse {
+  string eventID = 1;
+  optional string incidentID = 2;
+  google.protobuf.Timestamp ackedAt = 3;
+  string ackedBy = 4;
+}

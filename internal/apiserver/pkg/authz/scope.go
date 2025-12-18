@@ -11,6 +11,11 @@ import (
 const (
 	scopeHeader = "X-Scopes"
 
+	// P0 uses X-Scopes mock auth for integration; P1 will switch to JWT/gateway injected scopes.
+	ScopeAlertRead   = "alert.read"
+	ScopeAlertIngest = "alert.ingest"
+	ScopeAlertAck    = "alert.ack"
+
 	ScopeDatasourceRead  = "datasource.read"
 	ScopeDatasourceAdmin = "datasource.admin"
 	ScopeEvidenceQuery   = "evidence.query"

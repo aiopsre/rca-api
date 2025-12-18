@@ -207,7 +207,7 @@ type RunAIJobRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// incidentID identifies incident in URI.
 	// @gotags: uri:"incidentID"
-	IncidentID string `protobuf:"bytes,1,opt,name=incidentID,proto3" json:"incidentID,omitempty"`
+	IncidentID string `protobuf:"bytes,1,opt,name=incidentID,proto3" json:"incidentID,omitempty" uri:"incidentID"`
 	// idempotencyKey supports idempotent run retries.
 	IdempotencyKey *string `protobuf:"bytes,2,opt,name=idempotencyKey,proto3,oneof" json:"idempotencyKey,omitempty"`
 	// pipeline defaults to basic_rca when omitted.
@@ -358,7 +358,7 @@ type GetAIJobRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// jobID identifies AI job in URI.
 	// @gotags: uri:"jobID"
-	JobID         string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty"`
+	JobID         string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty" uri:"jobID"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -450,13 +450,13 @@ type ListIncidentAIJobsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// incidentID identifies incident in URI.
 	// @gotags: uri:"incidentID"
-	IncidentID string `protobuf:"bytes,1,opt,name=incidentID,proto3" json:"incidentID,omitempty"`
+	IncidentID string `protobuf:"bytes,1,opt,name=incidentID,proto3" json:"incidentID,omitempty" uri:"incidentID"`
 	// offset for pagination.
 	// @gotags: form:"offset"
-	Offset int64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Offset int64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty" form:"offset"`
 	// limit for pagination.
 	// @gotags: form:"limit"
-	Limit         int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit         int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty" form:"limit"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -570,7 +570,7 @@ type StartAIJobRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// jobID identifies AI job in URI.
 	// @gotags: uri:"jobID"
-	JobID         string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty"`
+	JobID         string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty" uri:"jobID"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -654,7 +654,7 @@ type CancelAIJobRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// jobID identifies AI job in URI.
 	// @gotags: uri:"jobID"
-	JobID         string  `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty"`
+	JobID         string  `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty" uri:"jobID"`
 	Reason        *string `protobuf:"bytes,2,opt,name=reason,proto3,oneof" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -746,7 +746,7 @@ type FinalizeAIJobRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// jobID identifies AI job in URI.
 	// @gotags: uri:"jobID"
-	JobID string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty"`
+	JobID string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty" uri:"jobID"`
 	// status accepts succeeded|failed|canceled.
 	Status        string  `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
 	OutputSummary *string `protobuf:"bytes,3,opt,name=outputSummary,proto3,oneof" json:"outputSummary,omitempty"`
@@ -1030,7 +1030,7 @@ type CreateAIToolCallRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// jobID identifies AI job in URI.
 	// @gotags: uri:"jobID"
-	JobID        string  `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty"`
+	JobID        string  `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty" uri:"jobID"`
 	Seq          int64   `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
 	NodeName     string  `protobuf:"bytes,3,opt,name=nodeName,proto3" json:"nodeName,omitempty"`
 	ToolName     string  `protobuf:"bytes,4,opt,name=toolName,proto3" json:"toolName,omitempty"`
@@ -1204,16 +1204,16 @@ type ListAIToolCallsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// jobID identifies AI job in URI.
 	// @gotags: uri:"jobID"
-	JobID string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty"`
+	JobID string `protobuf:"bytes,1,opt,name=jobID,proto3" json:"jobID,omitempty" uri:"jobID"`
 	// offset for pagination.
 	// @gotags: form:"offset"
-	Offset int64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Offset int64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty" form:"offset"`
 	// limit for pagination.
 	// @gotags: form:"limit"
-	Limit int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty" form:"limit"`
 	// optional exact seq filter.
 	// @gotags: form:"seq"
-	Seq           *int64 `protobuf:"varint,4,opt,name=seq,proto3,oneof" json:"seq,omitempty"`
+	Seq           *int64 `protobuf:"varint,4,opt,name=seq,proto3,oneof" json:"seq,omitempty" form:"seq"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

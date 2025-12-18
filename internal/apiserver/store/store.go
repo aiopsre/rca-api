@@ -28,6 +28,7 @@ type IStore interface {
 	TX(ctx context.Context, fn func(ctx context.Context) error) error
 	Fake() FakeStore
 	Incident() IncidentStore
+	AlertEvent() AlertEventStore
 	Datasource() DatasourceStore
 	Evidence() EvidenceStore
 	AIJob() AIJobStore
@@ -94,6 +95,10 @@ func (s *store) Fake() FakeStore {
 
 func (s *store) Incident() IncidentStore {
 	return newIncidentStore(s)
+}
+
+func (s *store) AlertEvent() AlertEventStore {
+	return newAlertEventStore(s)
 }
 
 func (s *store) Datasource() DatasourceStore {

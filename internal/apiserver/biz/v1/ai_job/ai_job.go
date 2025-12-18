@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"zk8s.com/rca-api/internal/apiserver/model"
+	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
@@ -158,7 +159,7 @@ func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJo
 		}
 
 		jobID = job.JobID
-		b.appendIncidentTimelineIfExists(txCtx, incidentID, "ai_job_queued", jobID, map[string]any{
+		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), incidentID, "ai_job_queued", jobID, map[string]any{
 			"status":  jobStatusQueued,
 			"trigger": trigger,
 		})
@@ -233,7 +234,7 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 			return errno.ErrIncidentUpdateFailed
 		}
 
-		b.appendIncidentTimelineIfExists(txCtx, job.IncidentID, "ai_job_running", jobID, map[string]any{
+		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_running", jobID, map[string]any{
 			"status": jobStatusRunning,
 		})
 		return nil
@@ -286,7 +287,7 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 			return errno.ErrIncidentUpdateFailed
 		}
 
-		b.appendIncidentTimelineIfExists(txCtx, job.IncidentID, "ai_job_canceled", jobID, map[string]any{
+		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_canceled", jobID, map[string]any{
 			"status": jobStatusCanceled,
 			"reason": reason,
 		})
@@ -397,7 +398,7 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 			return errno.ErrIncidentUpdateFailed
 		}
 
-		b.appendIncidentTimelineIfExists(txCtx, job.IncidentID, "ai_job_finalized", jobID, map[string]any{
+		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_finalized", jobID, map[string]any{
 			"status":       targetStatus,
 			"evidence_ids": evidenceIDs,
 		})
@@ -789,67 +790,4 @@ func buildEvidenceRefsJSON(jobID string, evidenceIDs []string) string {
 		return `{"job_id":"","evidence_ids":[]}`
 	}
 	return string(raw)
-}
-
-func (b *aiJobBiz) appendIncidentTimelineIfExists(ctx context.Context, incidentID string, eventType string, refID string, payload map[string]any) {
-	db := b.store.DB(ctx)
-	if !db.Migrator().HasTable("incident_timeline") {
-		return
-	}
-
-	columns, err := db.Migrator().ColumnTypes("incident_timeline")
-	if err != nil {
-		return
-	}
-	colSet := make(map[string]struct{}, len(columns))
-	for _, c := range columns {
-		colSet[strings.ToLower(c.Name())] = struct{}{}
-	}
-	if _, ok := colSet["incident_id"]; !ok {
-		return
-	}
-
-	row := map[string]any{
-		"incident_id": incidentID,
-	}
-	now := time.Now().UTC()
-	if _, ok := colSet["event_type"]; ok {
-		row["event_type"] = eventType
-	} else if _, ok := colSet["type"]; ok {
-		row["type"] = eventType
-	}
-	if _, ok := colSet["ref_id"]; ok {
-		row["ref_id"] = refID
-	} else if _, ok := colSet["ref"]; ok {
-		row["ref"] = refID
-	}
-
-	if payload != nil {
-		if encoded, err := json.Marshal(payload); err == nil {
-			switch {
-			case hasCol(colSet, "payload_json"):
-				row["payload_json"] = string(encoded)
-			case hasCol(colSet, "detail_json"):
-				row["detail_json"] = string(encoded)
-			case hasCol(colSet, "detail"):
-				row["detail"] = string(encoded)
-			case hasCol(colSet, "message"):
-				row["message"] = string(encoded)
-			}
-		}
-	}
-
-	if hasCol(colSet, "created_at") {
-		row["created_at"] = now
-	}
-	if hasCol(colSet, "updated_at") {
-		row["updated_at"] = now
-	}
-
-	_ = db.Table("incident_timeline").Create(row).Error
-}
-
-func hasCol(cols map[string]struct{}, key string) bool {
-	_, ok := cols[key]
-	return ok
 }

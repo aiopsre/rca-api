@@ -187,6 +187,7 @@ CREATE TABLE incidents (
 	source TEXT NOT NULL DEFAULT 'alertmanager',
 	alertname TEXT,
 	fingerprint TEXT,
+	active_fingerprint_key TEXT,
 	rule_id TEXT,
 	labels_json TEXT,
 	annotations_json TEXT,
