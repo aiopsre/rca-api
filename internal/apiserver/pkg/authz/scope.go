@@ -16,6 +16,9 @@ const (
 	ScopeEvidenceQuery   = "evidence.query"
 	ScopeEvidenceSave    = "evidence.save"
 	ScopeEvidenceRead    = "evidence.read"
+	ScopeAIRun           = "ai.run"
+	ScopeAIRead          = "ai.read"
+	ScopeAICancel        = "ai.cancel"
 )
 
 // RequireAnyScope verifies caller scopes from X-Scopes header.

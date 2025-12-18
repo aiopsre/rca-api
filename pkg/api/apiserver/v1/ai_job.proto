@@ -1,0 +1,205 @@
+// AI Job and ToolCall API messages for P0 RCA orchestration.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+
+// AIJob represents one RCA orchestration run.
+message AIJob {
+  // jobID is the business resource ID (e.g. ai-job-xxxxxx).
+  string jobID = 1;
+  // incidentID is the bound incident.
+  string incidentID = 2;
+  // pipeline is the orchestration pipeline name, e.g. basic_rca.
+  string pipeline = 3;
+  // trigger is one of manual|on_ingest|on_escalation|scheduled.
+  string trigger = 4;
+  // status is queued|running|succeeded|failed|canceled.
+  string status = 5;
+  // timeRangeStart/timeRangeEnd define fixed analysis window.
+  google.protobuf.Timestamp timeRangeStart = 6;
+  google.protobuf.Timestamp timeRangeEnd = 7;
+  // inputHintsJSON stores optional hints provided by caller.
+  optional string inputHintsJSON = 8;
+  // outputSummary stores human-readable final summary.
+  optional string outputSummary = 9;
+  // outputJSON stores structured run output.
+  optional string outputJSON = 10;
+  // evidenceIDsJSON stores referenced/generated evidence ids.
+  optional string evidenceIDsJSON = 11;
+  // errorMessage stores terminal error text.
+  optional string errorMessage = 12;
+  // createdAt/startedAt/finishedAt are lifecycle timestamps.
+  google.protobuf.Timestamp createdAt = 13;
+  optional google.protobuf.Timestamp startedAt = 14;
+  optional google.protobuf.Timestamp finishedAt = 15;
+  // createdBy is actor identifier: system|user:{id}|ai:{job_id}.
+  string createdBy = 16;
+}
+
+// RunAIJobRequest creates one AI job for an incident.
+message RunAIJobRequest {
+  // incidentID identifies incident in URI.
+  // @gotags: uri:"incidentID"
+  string incidentID = 1;
+  // idempotencyKey supports idempotent run retries.
+  optional string idempotencyKey = 2;
+  // pipeline defaults to basic_rca when omitted.
+  optional string pipeline = 3;
+  // trigger defaults to manual when omitted.
+  optional string trigger = 4;
+  google.protobuf.Timestamp timeRangeStart = 5;
+  google.protobuf.Timestamp timeRangeEnd = 6;
+  optional string inputHintsJSON = 7;
+  optional string createdBy = 8;
+}
+
+// RunAIJobResponse returns created/reused job id.
+message RunAIJobResponse {
+  string jobID = 1;
+}
+
+// GetAIJobRequest fetches one AI job.
+message GetAIJobRequest {
+  // jobID identifies AI job in URI.
+  // @gotags: uri:"jobID"
+  string jobID = 1;
+}
+
+// GetAIJobResponse returns one AI job.
+message GetAIJobResponse {
+  AIJob job = 1;
+}
+
+// ListIncidentAIJobsRequest lists jobs for an incident.
+message ListIncidentAIJobsRequest {
+  // incidentID identifies incident in URI.
+  // @gotags: uri:"incidentID"
+  string incidentID = 1;
+  // offset for pagination.
+  // @gotags: form:"offset"
+  int64 offset = 2;
+  // limit for pagination.
+  // @gotags: form:"limit"
+  int64 limit = 3;
+}
+
+// ListIncidentAIJobsResponse lists jobs for an incident.
+message ListIncidentAIJobsResponse {
+  int64 totalCount = 1;
+  repeated AIJob jobs = 2;
+}
+
+// StartAIJobRequest transitions job queued -> running.
+message StartAIJobRequest {
+  // jobID identifies AI job in URI.
+  // @gotags: uri:"jobID"
+  string jobID = 1;
+}
+
+// StartAIJobResponse indicates transition result.
+message StartAIJobResponse {}
+
+// CancelAIJobRequest transitions job to canceled.
+message CancelAIJobRequest {
+  // jobID identifies AI job in URI.
+  // @gotags: uri:"jobID"
+  string jobID = 1;
+  optional string reason = 2;
+}
+
+// CancelAIJobResponse indicates transition result.
+message CancelAIJobResponse {}
+
+// FinalizeAIJobRequest finalizes a running job and writes back incident RCA.
+message FinalizeAIJobRequest {
+  // jobID identifies AI job in URI.
+  // @gotags: uri:"jobID"
+  string jobID = 1;
+  // status accepts succeeded|failed|canceled.
+  string status = 2;
+  optional string outputSummary = 3;
+  // diagnosisJSON follows Appendix J2 when status=succeeded.
+  optional string diagnosisJSON = 4;
+  repeated string evidenceIDs = 5;
+  optional string errorMessage = 6;
+}
+
+// FinalizeAIJobResponse indicates finalize result.
+message FinalizeAIJobResponse {}
+
+// AIToolCall records one tool invocation audit.
+message AIToolCall {
+  // toolCallID is the business id (e.g. tool-call-xxxxxx).
+  string toolCallID = 1;
+  // jobID binds this call to AI job.
+  string jobID = 2;
+  // seq is monotonically increasing in one job.
+  int64 seq = 3;
+  // nodeName is LangGraph node identity.
+  string nodeName = 4;
+  // toolName is tool identifier such as evidence.queryMetrics.
+  string toolName = 5;
+  // requestJSON is tool request payload.
+  string requestJSON = 6;
+  // responseJSON is tool response payload or preview.
+  optional string responseJSON = 7;
+  // responseRef is external reference when response is too large.
+  optional string responseRef = 8;
+  int64 responseSizeBytes = 9;
+  // status is ok|error|timeout|canceled.
+  string status = 10;
+  int64 latencyMs = 11;
+  optional string errorMessage = 12;
+  optional string evidenceIDsJSON = 13;
+  google.protobuf.Timestamp createdAt = 14;
+}
+
+// CreateAIToolCallRequest appends one tool call audit record.
+message CreateAIToolCallRequest {
+  // jobID identifies AI job in URI.
+  // @gotags: uri:"jobID"
+  string jobID = 1;
+  int64 seq = 2;
+  string nodeName = 3;
+  string toolName = 4;
+  string requestJSON = 5;
+  optional string responseJSON = 6;
+  // responseRef points to external object storage when response is large.
+  optional string responseRef = 7;
+  // status is ok|error|timeout|canceled.
+  string status = 8;
+  int64 latencyMs = 9;
+  optional string errorMessage = 10;
+  repeated string evidenceIDs = 11;
+}
+
+// CreateAIToolCallResponse returns created tool call id.
+message CreateAIToolCallResponse {
+  string toolCallID = 1;
+}
+
+// ListAIToolCallsRequest lists tool call audits for one job.
+message ListAIToolCallsRequest {
+  // jobID identifies AI job in URI.
+  // @gotags: uri:"jobID"
+  string jobID = 1;
+  // offset for pagination.
+  // @gotags: form:"offset"
+  int64 offset = 2;
+  // limit for pagination.
+  // @gotags: form:"limit"
+  int64 limit = 3;
+  // optional exact seq filter.
+  // @gotags: form:"seq"
+  optional int64 seq = 4;
+}
+
+// ListAIToolCallsResponse lists tool call audits.
+message ListAIToolCallsResponse {
+  int64 totalCount = 1;
+  repeated AIToolCall toolCalls = 2;
+}

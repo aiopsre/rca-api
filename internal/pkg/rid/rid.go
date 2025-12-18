@@ -15,6 +15,10 @@ const (
 	DatasourceID ResourceID = "datasource"
 	// EvidenceID defines evidence resource identifier.
 	EvidenceID ResourceID = "evidence"
+	// AIJobID defines ai job resource identifier.
+	AIJobID ResourceID = "ai-job"
+	// AIToolCallID defines ai tool call resource identifier.
+	AIToolCallID ResourceID = "tool-call"
 )
 
 // String 将资源标识符转换为字符串.

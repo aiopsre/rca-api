@@ -26,6 +26,14 @@ func TestResourceID_String(t *testing.T) {
 	// 测试 EvidenceID 转换为字符串
 	evidenceID := rid.EvidenceID
 	assert.Equal(t, "evidence", evidenceID.String(), "evidenceID.String() should return 'evidence'")
+
+	// 测试 AIJobID 转换为字符串
+	aiJobID := rid.AIJobID
+	assert.Equal(t, "ai-job", aiJobID.String(), "aiJobID.String() should return 'ai-job'")
+
+	// 测试 AIToolCallID 转换为字符串
+	toolCallID := rid.AIToolCallID
+	assert.Equal(t, "tool-call", toolCallID.String(), "toolCallID.String() should return 'tool-call'")
 }
 
 func TestResourceID_New(t *testing.T) {

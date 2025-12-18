@@ -30,6 +30,8 @@ type IStore interface {
 	Incident() IncidentStore
 	Datasource() DatasourceStore
 	Evidence() EvidenceStore
+	AIJob() AIJobStore
+	AIToolCall() AIToolCallStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -100,4 +102,12 @@ func (s *store) Datasource() DatasourceStore {
 
 func (s *store) Evidence() EvidenceStore {
 	return newEvidenceStore(s)
+}
+
+func (s *store) AIJob() AIJobStore {
+	return newAIJobStore(s)
+}
+
+func (s *store) AIToolCall() AIToolCallStore {
+	return newAIToolCallStore(s)
 }

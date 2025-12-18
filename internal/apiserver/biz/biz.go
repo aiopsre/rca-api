@@ -2,6 +2,7 @@ package biz
 
 import (
 	"github.com/google/wire"
+	aijobv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/ai_job"
 	datasourcev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/incident"
@@ -17,6 +18,7 @@ type IBiz interface {
 	IncidentV1() incidentv1.IncidentBiz
 	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
+	AIJobV1() aijobv1.AIJobBiz
 }
 
 // biz is the concrete implementation of the business logic IBiz.
@@ -42,4 +44,8 @@ func (b *biz) DatasourceV1() datasourcev1.DatasourceBiz {
 
 func (b *biz) EvidenceV1() evidencev1.EvidenceBiz {
 	return evidencev1.New(b.store)
+}
+
+func (b *biz) AIJobV1() aijobv1.AIJobBiz {
+	return aijobv1.New(b.store)
 }

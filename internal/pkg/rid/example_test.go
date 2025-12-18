@@ -17,5 +17,5 @@ func ExampleResourceID_String() {
 	fmt.Println(idString)
 
 	// Output:
-	// user
+	// incident
 }
