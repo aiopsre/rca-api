@@ -11,6 +11,10 @@ type ResourceID string
 const (
 	// IncidentID 定义用户资源标识符.
 	IncidentID ResourceID = "incident"
+	// DatasourceID defines datasource resource identifier.
+	DatasourceID ResourceID = "datasource"
+	// EvidenceID defines evidence resource identifier.
+	EvidenceID ResourceID = "evidence"
 )
 
 // String 将资源标识符转换为字符串.

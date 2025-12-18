@@ -28,6 +28,8 @@ type IStore interface {
 	TX(ctx context.Context, fn func(ctx context.Context) error) error
 	Fake() FakeStore
 	Incident() IncidentStore
+	Datasource() DatasourceStore
+	Evidence() EvidenceStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -90,4 +92,12 @@ func (s *store) Fake() FakeStore {
 
 func (s *store) Incident() IncidentStore {
 	return newIncidentStore(s)
+}
+
+func (s *store) Datasource() DatasourceStore {
+	return newDatasourceStore(s)
+}
+
+func (s *store) Evidence() EvidenceStore {
+	return newEvidenceStore(s)
 }

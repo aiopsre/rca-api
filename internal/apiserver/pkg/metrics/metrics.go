@@ -3,6 +3,7 @@ package metrics
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -14,6 +15,8 @@ type Metrics struct {
 	Meter                     metric.Meter
 	RESTResourceCreateCounter metric.Int64Counter
 	RESTResourceGetCounter    metric.Int64Counter
+	EvidenceQueryCounter      metric.Int64Counter
+	EvidenceQueryLatency      metric.Float64Histogram
 }
 
 var (
@@ -39,11 +42,23 @@ func Init(scope string) error {
 			metric.WithDescription("Total number of REST resource get requests"),
 		)
 
+		evidenceQueryCounter, _ := meter.Int64Counter(
+			"rca_api_apiserver_evidence_query_total",
+			metric.WithDescription("Total number of evidence query requests by type/outcome"),
+		)
+
+		evidenceQueryLatency, _ := meter.Float64Histogram(
+			"rca_api_apiserver_evidence_query_latency_ms",
+			metric.WithDescription("Latency in milliseconds for evidence queries"),
+		)
+
 		// Assign the global singleton.
 		M = &Metrics{
 			Meter:                     meter,
 			RESTResourceCreateCounter: createCounter,
 			RESTResourceGetCounter:    getCount,
+			EvidenceQueryCounter:      evidenceQueryCounter,
+			EvidenceQueryLatency:      evidenceQueryLatency,
 		}
 	})
 
@@ -62,4 +77,15 @@ func (m *Metrics) RecordResourceGet(ctx context.Context, resource string) {
 	attrs := []attribute.KeyValue{attribute.String("resource", resource)}
 
 	m.RESTResourceGetCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordEvidenceQuery records evidence query metrics for observability.
+func (m *Metrics) RecordEvidenceQuery(ctx context.Context, queryType string, datasourceType string, outcome string, duration time.Duration) {
+	attrs := []attribute.KeyValue{
+		attribute.String("query_type", queryType),
+		attribute.String("datasource_type", datasourceType),
+		attribute.String("outcome", outcome),
+	}
+	m.EvidenceQueryCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
+	m.EvidenceQueryLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
 }

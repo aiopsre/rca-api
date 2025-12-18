@@ -1,0 +1,122 @@
+// Datasource API messages for evidence query backends.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+
+// Datasource represents a query backend (prometheus/loki/elasticsearch/tempo).
+message Datasource {
+  // datasourceID is the business resource ID (e.g. ds-xxxxxx).
+  string datasourceID = 1;
+  // type is datasource type: prometheus|loki|elasticsearch|tempo.
+  string type = 2;
+  // name is display name.
+  string name = 3;
+  // baseURL is endpoint root.
+  string baseURL = 4;
+  // authType is auth strategy: none|basic|bearer|api_key.
+  string authType = 5;
+  // authSecretRef stores secret reference only (not plain secret).
+  optional string authSecretRef = 6;
+  // timeoutMs controls per-request timeout to the upstream datasource.
+  int64 timeoutMs = 7;
+  // isEnabled controls whether this datasource can be used.
+  bool isEnabled = 8;
+  // labelsJSON helps routing by cluster/env/tenant.
+  optional string labelsJSON = 9;
+  // defaultHeadersJSON stores optional default headers.
+  optional string defaultHeadersJSON = 10;
+  // tlsConfigJSON stores optional TLS config.
+  optional string tlsConfigJSON = 11;
+  // createdAt is create timestamp.
+  google.protobuf.Timestamp createdAt = 12;
+  // updatedAt is update timestamp.
+  google.protobuf.Timestamp updatedAt = 13;
+}
+
+// CreateDatasourceRequest creates a datasource.
+message CreateDatasourceRequest {
+  string type = 1;
+  string name = 2;
+  string baseURL = 3;
+  optional string authType = 4;
+  optional string authSecretRef = 5;
+  optional int64 timeoutMs = 6;
+  optional bool isEnabled = 7;
+  optional string labelsJSON = 8;
+  optional string defaultHeadersJSON = 9;
+  optional string tlsConfigJSON = 10;
+}
+
+// CreateDatasourceResponse returns created datasource id.
+message CreateDatasourceResponse {
+  string datasourceID = 1;
+}
+
+// UpdateDatasourceRequest patches a datasource with field whitelist.
+message UpdateDatasourceRequest {
+  // datasourceID identifies datasource in URI.
+  // @gotags: uri:"datasourceID"
+  string datasourceID = 1;
+
+  optional string name = 2;
+  optional string baseURL = 3;
+  optional string authType = 4;
+  optional string authSecretRef = 5;
+  optional int64 timeoutMs = 6;
+  optional bool isEnabled = 7;
+  optional string labelsJSON = 8;
+  optional string defaultHeadersJSON = 9;
+  optional string tlsConfigJSON = 10;
+}
+
+// UpdateDatasourceResponse indicates update success.
+message UpdateDatasourceResponse {}
+
+// DeleteDatasourceRequest soft-deletes(disables) datasource.
+message DeleteDatasourceRequest {
+  // datasourceID identifies datasource in URI.
+  // @gotags: uri:"datasourceID"
+  string datasourceID = 1;
+}
+
+// DeleteDatasourceResponse indicates delete success.
+message DeleteDatasourceResponse {}
+
+// GetDatasourceRequest fetches one datasource.
+message GetDatasourceRequest {
+  // datasourceID identifies datasource in URI.
+  // @gotags: uri:"datasourceID"
+  string datasourceID = 1;
+}
+
+// GetDatasourceResponse contains one datasource.
+message GetDatasourceResponse {
+  Datasource datasource = 1;
+}
+
+// ListDatasourceRequest lists datasources with paging and filters.
+message ListDatasourceRequest {
+  // offset for pagination.
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // limit for pagination.
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // filter by datasource type.
+  optional string type = 3;
+  // filter by enabled flag.
+  optional bool isEnabled = 4;
+  // fuzzy filter by datasource name.
+  optional string name = 5;
+}
+
+// ListDatasourceResponse lists datasources.
+message ListDatasourceResponse {
+  int64 totalCount = 1;
+  repeated Datasource datasources = 2;
+}

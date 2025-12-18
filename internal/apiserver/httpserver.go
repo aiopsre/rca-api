@@ -35,6 +35,7 @@ func (c *ServerConfig) NewGinServer() (server.Server, error) {
 		mw.NoCache,
 		mw.Cors(mw.DefaultCorsConfig()),
 		mw.Secure,
+		mw.RequestIDMiddleware(),
 		otelgin.Middleware(serviceName, otelgin.WithFilter(shouldRecordTelemetry)),
 		genericmw.Observability(),
 		mw.Context(),
