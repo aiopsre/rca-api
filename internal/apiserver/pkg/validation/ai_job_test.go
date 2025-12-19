@@ -35,6 +35,39 @@ func TestValidateFinalizeAIJobRequest_SucceededRequiresDiagnosis(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestValidateListAIJobsRequest_Defaults(t *testing.T) {
+	val := &Validator{}
+	rq := &v1.ListAIJobsRequest{}
+
+	err := val.ValidateListAIJobsRequest(context.Background(), rq)
+	require.NoError(t, err)
+	require.Equal(t, "queued", rq.GetStatus())
+	require.Equal(t, int64(10), rq.GetLimit())
+}
+
+func TestValidateListAIJobsRequest_Guardrails(t *testing.T) {
+	val := &Validator{}
+
+	err := val.ValidateListAIJobsRequest(context.Background(), &v1.ListAIJobsRequest{
+		Status: "running",
+		Limit:  10,
+	})
+	require.Error(t, err)
+
+	err = val.ValidateListAIJobsRequest(context.Background(), &v1.ListAIJobsRequest{
+		Status: "queued",
+		Limit:  51,
+	})
+	require.Error(t, err)
+
+	err = val.ValidateListAIJobsRequest(context.Background(), &v1.ListAIJobsRequest{
+		Status: "queued",
+		Offset: -1,
+		Limit:  10,
+	})
+	require.Error(t, err)
+}
+
 func TestValidateCreateAIToolCallRequest_Guardrails(t *testing.T) {
 	val := &Validator{}
 

@@ -58,6 +58,7 @@ var (
 type AIJobBiz interface {
 	Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error)
 	Get(ctx context.Context, rq *v1.GetAIJobRequest) (*v1.GetAIJobResponse, error)
+	List(ctx context.Context, rq *v1.ListAIJobsRequest) (*v1.ListAIJobsResponse, error)
 	ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobsRequest) (*v1.ListIncidentAIJobsResponse, error)
 	Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error)
 	Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.CancelAIJobResponse, error)
@@ -178,6 +179,30 @@ func (b *aiJobBiz) Get(ctx context.Context, rq *v1.GetAIJobRequest) (*v1.GetAIJo
 		return nil, toAIJobGetError(err)
 	}
 	return &v1.GetAIJobResponse{Job: conversion.AIJobMToAIJobV1(job)}, nil
+}
+
+func (b *aiJobBiz) List(ctx context.Context, rq *v1.ListAIJobsRequest) (*v1.ListAIJobsResponse, error) {
+	limit := rq.GetLimit()
+	if limit <= 0 {
+		limit = 10
+	}
+	status := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
+	if status == "" {
+		status = jobStatusQueued
+	}
+
+	total, list, err := b.store.AIJob().ListByStatus(ctx, status, int(rq.GetOffset()), int(limit), true)
+	if err != nil {
+		return nil, errno.ErrAIJobListFailed
+	}
+	out := make([]*v1.AIJob, 0, len(list))
+	for _, item := range list {
+		out = append(out, conversion.AIJobMToAIJobV1(item))
+	}
+	return &v1.ListAIJobsResponse{
+		TotalCount: total,
+		Jobs:       out,
+	}, nil
 }
 
 func (b *aiJobBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobsRequest) (*v1.ListIncidentAIJobsResponse, error) {

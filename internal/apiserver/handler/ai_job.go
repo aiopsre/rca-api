@@ -5,11 +5,13 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 
 	"zk8s.com/rca-api/internal/apiserver/pkg/authz"
+	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
 	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
 )
 
@@ -83,6 +85,49 @@ func (h *Handler) GetAIJob(c *gin.Context) {
 	}
 
 	resp, err := h.biz.AIJobV1().Get(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) ListAIJobs(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	req := &v1.ListAIJobsRequest{
+		Status: strings.TrimSpace(c.Query("status")),
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		if v, err := strconv.ParseInt(offset, 10, 64); err == nil {
+			req.Offset = v
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.Limit = v
+		}
+	}
+
+	startedAt := time.Now()
+	outcome := "success"
+	queueStatus := req.GetStatus()
+	defer func() {
+		if metrics.M != nil {
+			metrics.M.RecordAIJobQueuePull(c.Request.Context(), queueStatus, outcome, time.Since(startedAt))
+		}
+	}()
+
+	if err := h.val.ValidateListAIJobsRequest(c.Request.Context(), req); err != nil {
+		outcome = "error"
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	queueStatus = req.GetStatus()
+
+	resp, err := h.biz.AIJobV1().List(c.Request.Context(), req)
+	if err != nil {
+		outcome = "error"
+	}
 	core.WriteResponse(c, resp, err)
 }
 
@@ -207,6 +252,7 @@ func init() {
 		incidentGroup.GET("/:incidentID/ai", handler.ListIncidentAIJobs)
 
 		jobGroup := v1.Group("/ai/jobs", mws...)
+		jobGroup.GET("", handler.ListAIJobs)
 		jobGroup.GET("/:jobID", handler.GetAIJob)
 		jobGroup.POST("/:jobID/start", handler.StartAIJob)
 		jobGroup.POST("/:jobID/cancel", handler.CancelAIJob)

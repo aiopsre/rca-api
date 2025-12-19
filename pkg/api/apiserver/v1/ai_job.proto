@@ -74,6 +74,25 @@ message GetAIJobResponse {
   AIJob job = 1;
 }
 
+// ListAIJobsRequest lists jobs with status filter for orchestrator queue pull.
+message ListAIJobsRequest {
+  // status is exact status filter; P0 queue pull requires queued.
+  // @gotags: form:"status"
+  string status = 1;
+  // offset for pagination.
+  // @gotags: form:"offset"
+  int64 offset = 2;
+  // limit for pagination.
+  // @gotags: form:"limit"
+  int64 limit = 3;
+}
+
+// ListAIJobsResponse lists jobs with status filter.
+message ListAIJobsResponse {
+  int64 totalCount = 1;
+  repeated AIJob jobs = 2;
+}
+
 // ListIncidentAIJobsRequest lists jobs for an incident.
 message ListIncidentAIJobsRequest {
   // incidentID identifies incident in URI.

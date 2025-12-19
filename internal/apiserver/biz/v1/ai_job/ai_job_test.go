@@ -165,6 +165,71 @@ func TestAIJobFinalize_RejectsInvalidDiagnosis(t *testing.T) {
 	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
 }
 
+func TestAIJobList_QueuedOrderAndPagination(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentC := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	jobA, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentA.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	jobB, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentB.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: jobB.JobID})
+	require.NoError(t, err)
+
+	jobC, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentC.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	resp, err := biz.List(context.Background(), &v1.ListAIJobsRequest{
+		Status: "queued",
+		Offset: 0,
+		Limit:  10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), resp.TotalCount)
+	require.Len(t, resp.Jobs, 2)
+	require.Equal(t, "queued", resp.Jobs[0].Status)
+	require.Equal(t, "queued", resp.Jobs[1].Status)
+	require.Contains(t, []string{jobA.JobID, jobC.JobID}, resp.Jobs[0].JobID)
+	require.Contains(t, []string{jobA.JobID, jobC.JobID}, resp.Jobs[1].JobID)
+
+	first, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", resp.Jobs[0].JobID))
+	require.NoError(t, err)
+	second, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", resp.Jobs[1].JobID))
+	require.NoError(t, err)
+	require.Less(t, first.ID, second.ID)
+
+	page2, err := biz.List(context.Background(), &v1.ListAIJobsRequest{
+		Status: "queued",
+		Offset: 1,
+		Limit:  1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), page2.TotalCount)
+	require.Len(t, page2.Jobs, 1)
+	require.Equal(t, resp.Jobs[1].JobID, page2.Jobs[0].JobID)
+}
+
 func newAIJobTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"

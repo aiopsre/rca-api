@@ -19,6 +19,8 @@ type Metrics struct {
 	EvidenceQueryLatency      metric.Float64Histogram
 	AlertEventIngestCounter   metric.Int64Counter
 	AlertEventIngestLatency   metric.Float64Histogram
+	AIJobQueuePullCounter     metric.Int64Counter
+	AIJobQueuePullLatency     metric.Float64Histogram
 }
 
 var (
@@ -64,6 +66,16 @@ func Init(scope string) error {
 			metric.WithDescription("Latency in milliseconds for alert ingest requests"),
 		)
 
+		aiJobQueuePullCounter, _ := meter.Int64Counter(
+			"rca_api_apiserver_ai_job_queue_pull_total",
+			metric.WithDescription("Total number of AI job queue pull requests by status/outcome"),
+		)
+
+		aiJobQueuePullLatency, _ := meter.Float64Histogram(
+			"rca_api_apiserver_ai_job_queue_pull_latency_ms",
+			metric.WithDescription("Latency in milliseconds for AI job queue pull requests"),
+		)
+
 		// Assign the global singleton.
 		M = &Metrics{
 			Meter:                     meter,
@@ -73,6 +85,8 @@ func Init(scope string) error {
 			EvidenceQueryLatency:      evidenceQueryLatency,
 			AlertEventIngestCounter:   alertEventIngestCounter,
 			AlertEventIngestLatency:   alertEventIngestLatency,
+			AIJobQueuePullCounter:     aiJobQueuePullCounter,
+			AIJobQueuePullLatency:     aiJobQueuePullLatency,
 		}
 	})
 
@@ -118,4 +132,20 @@ func (m *Metrics) RecordAlertEventIngest(ctx context.Context, mergeResult string
 	}
 	m.AlertEventIngestCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.AlertEventIngestLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordAIJobQueuePull records queue pull metrics for orchestrator polling.
+func (m *Metrics) RecordAIJobQueuePull(ctx context.Context, status string, outcome string, duration time.Duration) {
+	if status == "" {
+		status = "unknown"
+	}
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("status", status),
+		attribute.String("outcome", outcome),
+	}
+	m.AIJobQueuePullCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
+	m.AIJobQueuePullLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
 }

@@ -13,6 +13,7 @@ type AIJobStore interface {
 	Delete(ctx context.Context, opts *where.Options) error
 	Get(ctx context.Context, opts *where.Options) (*model.AIJobM, error)
 	List(ctx context.Context, opts *where.Options) (int64, []*model.AIJobM, error)
+	ListByStatus(ctx context.Context, status string, offset int, limit int, ascending bool) (int64, []*model.AIJobM, error)
 	UpdateStatus(ctx context.Context, jobID string, fromStatuses []string, updates map[string]any) (int64, error)
 
 	AIJobExpansion
@@ -78,6 +79,36 @@ func (a *aiJobStore) List(ctx context.Context, opts *where.Options) (int64, []*m
 
 	var list []*model.AIJobM
 	if err := listDB.Order("created_at DESC").Find(&list).Error; err != nil {
+		return 0, nil, err
+	}
+
+	return total, list, nil
+}
+
+func (a *aiJobStore) ListByStatus(ctx context.Context, status string, offset int, limit int, ascending bool) (int64, []*model.AIJobM, error) {
+	base := a.s.DB(ctx).Model(&model.AIJobM{}).Where("status = ?", status)
+
+	var total int64
+	if err := base.Count(&total).Error; err != nil {
+		return 0, nil, err
+	}
+
+	if offset < 0 {
+		offset = 0
+	}
+
+	orderBy := "created_at DESC, id DESC"
+	if ascending {
+		orderBy = "created_at ASC, id ASC"
+	}
+
+	listDB := base.Order(orderBy).Offset(offset)
+	if limit > 0 {
+		listDB = listDB.Limit(limit)
+	}
+
+	var list []*model.AIJobM
+	if err := listDB.Find(&list).Error; err != nil {
 		return 0, nil, err
 	}
 

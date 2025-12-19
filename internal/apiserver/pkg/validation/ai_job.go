@@ -11,18 +11,20 @@ import (
 )
 
 const (
-	defaultAIJobListLimit  = int64(20)
-	maxAIJobListLimit      = int64(200)
-	defaultToolCallList    = int64(50)
-	maxToolCallList        = int64(200)
-	maxAIHintsLength       = 16384
-	maxAIErrorMessage      = 8192
-	maxAIPipelineLength    = 64
-	maxAITriggerLength     = 64
-	maxToolCallJSONSize    = 4 * 1024 * 1024
-	maxToolCallRefLength   = 1024
-	maxAIIdempotencyLength = 128
-	maxAIWindowRange       = 24 * time.Hour
+	defaultAIJobQueueListLimit = int64(10)
+	maxAIJobQueueListLimit     = int64(50)
+	defaultAIJobListLimit      = int64(20)
+	maxAIJobListLimit          = int64(200)
+	defaultToolCallList        = int64(50)
+	maxToolCallList            = int64(200)
+	maxAIHintsLength           = 16384
+	maxAIErrorMessage          = 8192
+	maxAIPipelineLength        = 64
+	maxAITriggerLength         = 64
+	maxToolCallJSONSize        = 4 * 1024 * 1024
+	maxToolCallRefLength       = 1024
+	maxAIIdempotencyLength     = 128
+	maxAIWindowRange           = 24 * time.Hour
 )
 
 var (
@@ -36,6 +38,9 @@ var (
 		"on_ingest":     {},
 		"on_escalation": {},
 		"scheduled":     {},
+	}
+	allowedAIJobQueueStatus = map[string]struct{}{
+		"queued": {},
 	}
 	allowedAIToolCallStatus = map[string]struct{}{
 		"ok":       {},
@@ -79,6 +84,29 @@ func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJob
 func (v *Validator) ValidateGetAIJobRequest(ctx context.Context, rq *v1.GetAIJobRequest) error {
 	_ = ctx
 	if strings.TrimSpace(rq.GetJobID()) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateListAIJobsRequest(ctx context.Context, rq *v1.ListAIJobsRequest) error {
+	_ = ctx
+	status := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
+	if status == "" {
+		status = "queued"
+	}
+	if _, ok := allowedAIJobQueueStatus[status]; !ok {
+		return errorsx.ErrInvalidArgument
+	}
+	rq.Status = status
+
+	if rq.GetOffset() < 0 {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.GetLimit() <= 0 {
+		rq.Limit = defaultAIJobQueueListLimit
+	}
+	if rq.GetLimit() > maxAIJobQueueListLimit {
 		return errorsx.ErrInvalidArgument
 	}
 	return nil

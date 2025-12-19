@@ -445,6 +445,126 @@ func (x *GetAIJobResponse) GetJob() *AIJob {
 	return nil
 }
 
+// ListAIJobsRequest lists jobs with status filter for orchestrator queue pull.
+type ListAIJobsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// status is exact status filter; P0 queue pull requires queued.
+	// @gotags: form:"status"
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty" form:"status"`
+	// offset for pagination.
+	// @gotags: form:"offset"
+	Offset int64 `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty" form:"offset"`
+	// limit for pagination.
+	// @gotags: form:"limit"
+	Limit         int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty" form:"limit"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAIJobsRequest) Reset() {
+	*x = ListAIJobsRequest{}
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAIJobsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAIJobsRequest) ProtoMessage() {}
+
+func (x *ListAIJobsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAIJobsRequest.ProtoReflect.Descriptor instead.
+func (*ListAIJobsRequest) Descriptor() ([]byte, []int) {
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *ListAIJobsRequest) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *ListAIJobsRequest) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ListAIJobsRequest) GetLimit() int64 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// ListAIJobsResponse lists jobs with status filter.
+type ListAIJobsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TotalCount    int64                  `protobuf:"varint,1,opt,name=totalCount,proto3" json:"totalCount,omitempty"`
+	Jobs          []*AIJob               `protobuf:"bytes,2,rep,name=jobs,proto3" json:"jobs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAIJobsResponse) Reset() {
+	*x = ListAIJobsResponse{}
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAIJobsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAIJobsResponse) ProtoMessage() {}
+
+func (x *ListAIJobsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAIJobsResponse.ProtoReflect.Descriptor instead.
+func (*ListAIJobsResponse) Descriptor() ([]byte, []int) {
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ListAIJobsResponse) GetTotalCount() int64 {
+	if x != nil {
+		return x.TotalCount
+	}
+	return 0
+}
+
+func (x *ListAIJobsResponse) GetJobs() []*AIJob {
+	if x != nil {
+		return x.Jobs
+	}
+	return nil
+}
+
 // ListIncidentAIJobsRequest lists jobs for an incident.
 type ListIncidentAIJobsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -463,7 +583,7 @@ type ListIncidentAIJobsRequest struct {
 
 func (x *ListIncidentAIJobsRequest) Reset() {
 	*x = ListIncidentAIJobsRequest{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[5]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -475,7 +595,7 @@ func (x *ListIncidentAIJobsRequest) String() string {
 func (*ListIncidentAIJobsRequest) ProtoMessage() {}
 
 func (x *ListIncidentAIJobsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[5]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -488,7 +608,7 @@ func (x *ListIncidentAIJobsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIncidentAIJobsRequest.ProtoReflect.Descriptor instead.
 func (*ListIncidentAIJobsRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{5}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListIncidentAIJobsRequest) GetIncidentID() string {
@@ -523,7 +643,7 @@ type ListIncidentAIJobsResponse struct {
 
 func (x *ListIncidentAIJobsResponse) Reset() {
 	*x = ListIncidentAIJobsResponse{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[6]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -535,7 +655,7 @@ func (x *ListIncidentAIJobsResponse) String() string {
 func (*ListIncidentAIJobsResponse) ProtoMessage() {}
 
 func (x *ListIncidentAIJobsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[6]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -548,7 +668,7 @@ func (x *ListIncidentAIJobsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListIncidentAIJobsResponse.ProtoReflect.Descriptor instead.
 func (*ListIncidentAIJobsResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{6}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListIncidentAIJobsResponse) GetTotalCount() int64 {
@@ -577,7 +697,7 @@ type StartAIJobRequest struct {
 
 func (x *StartAIJobRequest) Reset() {
 	*x = StartAIJobRequest{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[7]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -589,7 +709,7 @@ func (x *StartAIJobRequest) String() string {
 func (*StartAIJobRequest) ProtoMessage() {}
 
 func (x *StartAIJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[7]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -602,7 +722,7 @@ func (x *StartAIJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartAIJobRequest.ProtoReflect.Descriptor instead.
 func (*StartAIJobRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{7}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StartAIJobRequest) GetJobID() string {
@@ -621,7 +741,7 @@ type StartAIJobResponse struct {
 
 func (x *StartAIJobResponse) Reset() {
 	*x = StartAIJobResponse{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[8]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -633,7 +753,7 @@ func (x *StartAIJobResponse) String() string {
 func (*StartAIJobResponse) ProtoMessage() {}
 
 func (x *StartAIJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[8]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -646,7 +766,7 @@ func (x *StartAIJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartAIJobResponse.ProtoReflect.Descriptor instead.
 func (*StartAIJobResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{8}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{10}
 }
 
 // CancelAIJobRequest transitions job to canceled.
@@ -662,7 +782,7 @@ type CancelAIJobRequest struct {
 
 func (x *CancelAIJobRequest) Reset() {
 	*x = CancelAIJobRequest{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[9]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -674,7 +794,7 @@ func (x *CancelAIJobRequest) String() string {
 func (*CancelAIJobRequest) ProtoMessage() {}
 
 func (x *CancelAIJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[9]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -687,7 +807,7 @@ func (x *CancelAIJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelAIJobRequest.ProtoReflect.Descriptor instead.
 func (*CancelAIJobRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{9}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CancelAIJobRequest) GetJobID() string {
@@ -713,7 +833,7 @@ type CancelAIJobResponse struct {
 
 func (x *CancelAIJobResponse) Reset() {
 	*x = CancelAIJobResponse{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[10]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +845,7 @@ func (x *CancelAIJobResponse) String() string {
 func (*CancelAIJobResponse) ProtoMessage() {}
 
 func (x *CancelAIJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[10]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +858,7 @@ func (x *CancelAIJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelAIJobResponse.ProtoReflect.Descriptor instead.
 func (*CancelAIJobResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{10}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{12}
 }
 
 // FinalizeAIJobRequest finalizes a running job and writes back incident RCA.
@@ -760,7 +880,7 @@ type FinalizeAIJobRequest struct {
 
 func (x *FinalizeAIJobRequest) Reset() {
 	*x = FinalizeAIJobRequest{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[11]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -772,7 +892,7 @@ func (x *FinalizeAIJobRequest) String() string {
 func (*FinalizeAIJobRequest) ProtoMessage() {}
 
 func (x *FinalizeAIJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[11]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -785,7 +905,7 @@ func (x *FinalizeAIJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeAIJobRequest.ProtoReflect.Descriptor instead.
 func (*FinalizeAIJobRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{11}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *FinalizeAIJobRequest) GetJobID() string {
@@ -839,7 +959,7 @@ type FinalizeAIJobResponse struct {
 
 func (x *FinalizeAIJobResponse) Reset() {
 	*x = FinalizeAIJobResponse{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[12]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +971,7 @@ func (x *FinalizeAIJobResponse) String() string {
 func (*FinalizeAIJobResponse) ProtoMessage() {}
 
 func (x *FinalizeAIJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[12]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +984,7 @@ func (x *FinalizeAIJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeAIJobResponse.ProtoReflect.Descriptor instead.
 func (*FinalizeAIJobResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{12}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{14}
 }
 
 // AIToolCall records one tool invocation audit.
@@ -899,7 +1019,7 @@ type AIToolCall struct {
 
 func (x *AIToolCall) Reset() {
 	*x = AIToolCall{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[13]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -911,7 +1031,7 @@ func (x *AIToolCall) String() string {
 func (*AIToolCall) ProtoMessage() {}
 
 func (x *AIToolCall) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[13]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -924,7 +1044,7 @@ func (x *AIToolCall) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AIToolCall.ProtoReflect.Descriptor instead.
 func (*AIToolCall) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{13}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AIToolCall) GetToolCallID() string {
@@ -1049,7 +1169,7 @@ type CreateAIToolCallRequest struct {
 
 func (x *CreateAIToolCallRequest) Reset() {
 	*x = CreateAIToolCallRequest{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[14]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1061,7 +1181,7 @@ func (x *CreateAIToolCallRequest) String() string {
 func (*CreateAIToolCallRequest) ProtoMessage() {}
 
 func (x *CreateAIToolCallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[14]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1074,7 +1194,7 @@ func (x *CreateAIToolCallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAIToolCallRequest.ProtoReflect.Descriptor instead.
 func (*CreateAIToolCallRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{14}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CreateAIToolCallRequest) GetJobID() string {
@@ -1164,7 +1284,7 @@ type CreateAIToolCallResponse struct {
 
 func (x *CreateAIToolCallResponse) Reset() {
 	*x = CreateAIToolCallResponse{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[15]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1176,7 +1296,7 @@ func (x *CreateAIToolCallResponse) String() string {
 func (*CreateAIToolCallResponse) ProtoMessage() {}
 
 func (x *CreateAIToolCallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[15]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1189,7 +1309,7 @@ func (x *CreateAIToolCallResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAIToolCallResponse.ProtoReflect.Descriptor instead.
 func (*CreateAIToolCallResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{15}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CreateAIToolCallResponse) GetToolCallID() string {
@@ -1220,7 +1340,7 @@ type ListAIToolCallsRequest struct {
 
 func (x *ListAIToolCallsRequest) Reset() {
 	*x = ListAIToolCallsRequest{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[16]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1232,7 +1352,7 @@ func (x *ListAIToolCallsRequest) String() string {
 func (*ListAIToolCallsRequest) ProtoMessage() {}
 
 func (x *ListAIToolCallsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[16]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1245,7 +1365,7 @@ func (x *ListAIToolCallsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAIToolCallsRequest.ProtoReflect.Descriptor instead.
 func (*ListAIToolCallsRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{16}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ListAIToolCallsRequest) GetJobID() string {
@@ -1287,7 +1407,7 @@ type ListAIToolCallsResponse struct {
 
 func (x *ListAIToolCallsResponse) Reset() {
 	*x = ListAIToolCallsResponse{}
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[17]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1299,7 +1419,7 @@ func (x *ListAIToolCallsResponse) String() string {
 func (*ListAIToolCallsResponse) ProtoMessage() {}
 
 func (x *ListAIToolCallsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_ai_job_proto_msgTypes[17]
+	mi := &file_apiserver_v1_ai_job_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1312,7 +1432,7 @@ func (x *ListAIToolCallsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAIToolCallsResponse.ProtoReflect.Descriptor instead.
 func (*ListAIToolCallsResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{17}
+	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ListAIToolCallsResponse) GetTotalCount() int64 {
@@ -1389,7 +1509,16 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"\x0fGetAIJobRequest\x12\x14\n" +
 	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"9\n" +
 	"\x10GetAIJobResponse\x12%\n" +
-	"\x03job\x18\x01 \x01(\v2\x13.apiserver.v1.AIJobR\x03job\"i\n" +
+	"\x03job\x18\x01 \x01(\v2\x13.apiserver.v1.AIJobR\x03job\"Y\n" +
+	"\x11ListAIJobsRequest\x12\x16\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x14\n" +
+	"\x05limit\x18\x03 \x01(\x03R\x05limit\"]\n" +
+	"\x12ListAIJobsResponse\x12\x1e\n" +
+	"\n" +
+	"totalCount\x18\x01 \x01(\x03R\n" +
+	"totalCount\x12'\n" +
+	"\x04jobs\x18\x02 \x03(\v2\x13.apiserver.v1.AIJobR\x04jobs\"i\n" +
 	"\x19ListIncidentAIJobsRequest\x12\x1e\n" +
 	"\n" +
 	"incidentID\x18\x01 \x01(\tR\n" +
@@ -1487,45 +1616,48 @@ func file_apiserver_v1_ai_job_proto_rawDescGZIP() []byte {
 	return file_apiserver_v1_ai_job_proto_rawDescData
 }
 
-var file_apiserver_v1_ai_job_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_apiserver_v1_ai_job_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_apiserver_v1_ai_job_proto_goTypes = []any{
 	(*AIJob)(nil),                      // 0: apiserver.v1.AIJob
 	(*RunAIJobRequest)(nil),            // 1: apiserver.v1.RunAIJobRequest
 	(*RunAIJobResponse)(nil),           // 2: apiserver.v1.RunAIJobResponse
 	(*GetAIJobRequest)(nil),            // 3: apiserver.v1.GetAIJobRequest
 	(*GetAIJobResponse)(nil),           // 4: apiserver.v1.GetAIJobResponse
-	(*ListIncidentAIJobsRequest)(nil),  // 5: apiserver.v1.ListIncidentAIJobsRequest
-	(*ListIncidentAIJobsResponse)(nil), // 6: apiserver.v1.ListIncidentAIJobsResponse
-	(*StartAIJobRequest)(nil),          // 7: apiserver.v1.StartAIJobRequest
-	(*StartAIJobResponse)(nil),         // 8: apiserver.v1.StartAIJobResponse
-	(*CancelAIJobRequest)(nil),         // 9: apiserver.v1.CancelAIJobRequest
-	(*CancelAIJobResponse)(nil),        // 10: apiserver.v1.CancelAIJobResponse
-	(*FinalizeAIJobRequest)(nil),       // 11: apiserver.v1.FinalizeAIJobRequest
-	(*FinalizeAIJobResponse)(nil),      // 12: apiserver.v1.FinalizeAIJobResponse
-	(*AIToolCall)(nil),                 // 13: apiserver.v1.AIToolCall
-	(*CreateAIToolCallRequest)(nil),    // 14: apiserver.v1.CreateAIToolCallRequest
-	(*CreateAIToolCallResponse)(nil),   // 15: apiserver.v1.CreateAIToolCallResponse
-	(*ListAIToolCallsRequest)(nil),     // 16: apiserver.v1.ListAIToolCallsRequest
-	(*ListAIToolCallsResponse)(nil),    // 17: apiserver.v1.ListAIToolCallsResponse
-	(*timestamppb.Timestamp)(nil),      // 18: google.protobuf.Timestamp
+	(*ListAIJobsRequest)(nil),          // 5: apiserver.v1.ListAIJobsRequest
+	(*ListAIJobsResponse)(nil),         // 6: apiserver.v1.ListAIJobsResponse
+	(*ListIncidentAIJobsRequest)(nil),  // 7: apiserver.v1.ListIncidentAIJobsRequest
+	(*ListIncidentAIJobsResponse)(nil), // 8: apiserver.v1.ListIncidentAIJobsResponse
+	(*StartAIJobRequest)(nil),          // 9: apiserver.v1.StartAIJobRequest
+	(*StartAIJobResponse)(nil),         // 10: apiserver.v1.StartAIJobResponse
+	(*CancelAIJobRequest)(nil),         // 11: apiserver.v1.CancelAIJobRequest
+	(*CancelAIJobResponse)(nil),        // 12: apiserver.v1.CancelAIJobResponse
+	(*FinalizeAIJobRequest)(nil),       // 13: apiserver.v1.FinalizeAIJobRequest
+	(*FinalizeAIJobResponse)(nil),      // 14: apiserver.v1.FinalizeAIJobResponse
+	(*AIToolCall)(nil),                 // 15: apiserver.v1.AIToolCall
+	(*CreateAIToolCallRequest)(nil),    // 16: apiserver.v1.CreateAIToolCallRequest
+	(*CreateAIToolCallResponse)(nil),   // 17: apiserver.v1.CreateAIToolCallResponse
+	(*ListAIToolCallsRequest)(nil),     // 18: apiserver.v1.ListAIToolCallsRequest
+	(*ListAIToolCallsResponse)(nil),    // 19: apiserver.v1.ListAIToolCallsResponse
+	(*timestamppb.Timestamp)(nil),      // 20: google.protobuf.Timestamp
 }
 var file_apiserver_v1_ai_job_proto_depIdxs = []int32{
-	18, // 0: apiserver.v1.AIJob.timeRangeStart:type_name -> google.protobuf.Timestamp
-	18, // 1: apiserver.v1.AIJob.timeRangeEnd:type_name -> google.protobuf.Timestamp
-	18, // 2: apiserver.v1.AIJob.createdAt:type_name -> google.protobuf.Timestamp
-	18, // 3: apiserver.v1.AIJob.startedAt:type_name -> google.protobuf.Timestamp
-	18, // 4: apiserver.v1.AIJob.finishedAt:type_name -> google.protobuf.Timestamp
-	18, // 5: apiserver.v1.RunAIJobRequest.timeRangeStart:type_name -> google.protobuf.Timestamp
-	18, // 6: apiserver.v1.RunAIJobRequest.timeRangeEnd:type_name -> google.protobuf.Timestamp
+	20, // 0: apiserver.v1.AIJob.timeRangeStart:type_name -> google.protobuf.Timestamp
+	20, // 1: apiserver.v1.AIJob.timeRangeEnd:type_name -> google.protobuf.Timestamp
+	20, // 2: apiserver.v1.AIJob.createdAt:type_name -> google.protobuf.Timestamp
+	20, // 3: apiserver.v1.AIJob.startedAt:type_name -> google.protobuf.Timestamp
+	20, // 4: apiserver.v1.AIJob.finishedAt:type_name -> google.protobuf.Timestamp
+	20, // 5: apiserver.v1.RunAIJobRequest.timeRangeStart:type_name -> google.protobuf.Timestamp
+	20, // 6: apiserver.v1.RunAIJobRequest.timeRangeEnd:type_name -> google.protobuf.Timestamp
 	0,  // 7: apiserver.v1.GetAIJobResponse.job:type_name -> apiserver.v1.AIJob
-	0,  // 8: apiserver.v1.ListIncidentAIJobsResponse.jobs:type_name -> apiserver.v1.AIJob
-	18, // 9: apiserver.v1.AIToolCall.createdAt:type_name -> google.protobuf.Timestamp
-	13, // 10: apiserver.v1.ListAIToolCallsResponse.toolCalls:type_name -> apiserver.v1.AIToolCall
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	0,  // 8: apiserver.v1.ListAIJobsResponse.jobs:type_name -> apiserver.v1.AIJob
+	0,  // 9: apiserver.v1.ListIncidentAIJobsResponse.jobs:type_name -> apiserver.v1.AIJob
+	20, // 10: apiserver.v1.AIToolCall.createdAt:type_name -> google.protobuf.Timestamp
+	15, // 11: apiserver.v1.ListAIToolCallsResponse.toolCalls:type_name -> apiserver.v1.AIToolCall
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_apiserver_v1_ai_job_proto_init() }
@@ -1535,18 +1667,18 @@ func file_apiserver_v1_ai_job_proto_init() {
 	}
 	file_apiserver_v1_ai_job_proto_msgTypes[0].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[1].OneofWrappers = []any{}
-	file_apiserver_v1_ai_job_proto_msgTypes[9].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[11].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[13].OneofWrappers = []any{}
-	file_apiserver_v1_ai_job_proto_msgTypes[14].OneofWrappers = []any{}
+	file_apiserver_v1_ai_job_proto_msgTypes[15].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[16].OneofWrappers = []any{}
+	file_apiserver_v1_ai_job_proto_msgTypes[18].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_apiserver_v1_ai_job_proto_rawDesc), len(file_apiserver_v1_ai_job_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

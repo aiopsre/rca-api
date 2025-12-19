@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-orchestrator"
+version = "0.1.0"
+description = "LangGraph-based P0 orchestrator for rca-api AI jobs."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph>=0.2.56,<1.0.0",
+  "pydantic>=2.8.0,<3.0.0",
+  "requests>=2.31.0,<3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["orchestrator*"]

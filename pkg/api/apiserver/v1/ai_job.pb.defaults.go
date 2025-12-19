@@ -31,6 +31,12 @@ func (x *GetAIJobRequest) Default() {
 func (x *GetAIJobResponse) Default() {
 }
 
+func (x *ListAIJobsRequest) Default() {
+}
+
+func (x *ListAIJobsResponse) Default() {
+}
+
 func (x *ListIncidentAIJobsRequest) Default() {
 }
 

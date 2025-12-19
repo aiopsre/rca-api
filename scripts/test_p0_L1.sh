@@ -5,9 +5,9 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 CURL="${CURL:-curl}"
 SCOPES="${SCOPES:-*}"
 RUN_QUERY="${RUN_QUERY:-0}"
-DS_BASE_URL="${DS_BASE_URL:-}"
-AUTO_CREATE_DATASOURCE="${AUTO_CREATE_DATASOURCE:-1}"
 DEBUG="${DEBUG:-0}"
+JOB_WAIT_TIMEOUT_SEC="${JOB_WAIT_TIMEOUT_SEC:-120}"
+JOB_POLL_INTERVAL_SEC="${JOB_POLL_INTERVAL_SEC:-1}"
 
 INCIDENT_ID=""
 DATASOURCE_ID="${DATASOURCE_ID:-}"
@@ -30,15 +30,6 @@ need_cmd() {
 	command -v "$1" >/dev/null 2>&1
 }
 
-json_quote() {
-	local raw="$1"
-	if need_cmd jq; then
-		printf '%s' "${raw}" | jq -Rs .
-	else
-		printf '"%s"' "$(printf '%s' "${raw}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/\\r/g; s/\n/\\n/g')"
-	fi
-}
-
 extract_field() {
 	local json="$1"
 	shift
@@ -49,7 +40,9 @@ extract_field() {
 		for key in "${keys[@]}"; do
 			value="$(
 				printf '%s' "${json}" | jq -r --arg k "${key}" '
-					(.[$k] // .data[$k] // .incident[$k] // .data.incident[$k]) |
+					(.[$k] // .data[$k] // .job[$k] // .data.job[$k] //
+					 .incident[$k] // .data.incident[$k] //
+					 .evidence[$k] // .data.evidence[$k]) |
 					if . == null then empty
 					elif type == "string" then .
 					else tojson
@@ -158,20 +151,41 @@ call_or_fail() {
 	debug "${step} code=${LAST_HTTP_CODE}"
 }
 
-create_datasource() {
-	local rand="$1"
-	local base_url="$2"
-	local body
-	body=$(cat <<EOF
-{"type":"prometheus","name":"p0-l1-ds-${rand}","baseURL":"${base_url}","authType":"none","timeoutMs":5000,"isEnabled":true}
-EOF
-)
-	call_or_fail "CreateDatasource" POST "${BASE_URL}/v1/datasources" "${body}"
-	DATASOURCE_ID="$(extract_field "${LAST_BODY}" "datasourceID" "datasource_id")" || true
-	if [[ -z "${DATASOURCE_ID}" ]]; then
-		fail_step "CreateDatasource" "${LAST_HTTP_CODE}" "${LAST_BODY}"
-	fi
-	export DATASOURCE_ID
+wait_for_ai_job_terminal() {
+	local deadline status now
+	deadline="$(( $(date +%s) + JOB_WAIT_TIMEOUT_SEC ))"
+
+	while true; do
+		call_or_fail "PollAIJob" GET "${BASE_URL}/v1/ai/jobs/${JOB_ID}"
+		status="$(extract_field "${LAST_BODY}" "status")" || true
+		if [[ -z "${status}" ]]; then
+			fail_step "PollAIJobStatusParse" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+		fi
+		debug "job_id=${JOB_ID} status=${status}"
+
+		case "${status}" in
+			queued|running)
+				now="$(date +%s)"
+				if (( now > deadline )); then
+					fail_step "PollAIJobTimeout" "TIMEOUT" "${LAST_BODY}"
+				fi
+				sleep "${JOB_POLL_INTERVAL_SEC}"
+				;;
+			succeeded)
+				return 0
+				;;
+			failed|canceled)
+				fail_step "PollAIJobTerminal=${status}" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+				;;
+			*)
+				now="$(date +%s)"
+				if (( now > deadline )); then
+					fail_step "PollAIJobTimeoutUnknownStatus=${status}" "TIMEOUT" "${LAST_BODY}"
+				fi
+				sleep "${JOB_POLL_INTERVAL_SEC}"
+				;;
+		esac
+	done
 }
 
 validate_incident_writeback() {
@@ -199,6 +213,10 @@ validate_incident_writeback() {
 		if [[ -z "${evidence_count}" ]] || (( evidence_count < 1 )); then
 			fail_step "GetIncidentEvidenceRefsValidation" "${LAST_HTTP_CODE}" "${body}"
 		fi
+		EVIDENCE_ID="$(printf '%s' "${evidence_refs_raw}" | jq -r '.evidence_ids[0] // empty' 2>/dev/null || true)"
+		if [[ -z "${EVIDENCE_ID}" ]]; then
+			EVIDENCE_ID="$(printf '%s' "${diagnosis_raw}" | jq -r '.root_cause.evidence_ids[0] // empty' 2>/dev/null || true)"
+		fi
 	else
 		if ! printf '%s' "${body}" | grep -Eq '"diagnosisJSON"|"diagnosis_json"'; then
 			fail_step "GetIncidentValidate" "${LAST_HTTP_CODE}" "${body}"
@@ -216,9 +234,6 @@ validate_incident_writeback() {
 			fail_step "GetIncidentDiagnosisValidation" "${LAST_HTTP_CODE}" "${body}"
 		fi
 		if ! printf '%s' "${body}" | grep -q 'confidence'; then
-			fail_step "GetIncidentDiagnosisValidation" "${LAST_HTTP_CODE}" "${body}"
-		fi
-		if ! printf '%s' "${body}" | grep -q 'evidence_ids'; then
 			fail_step "GetIncidentDiagnosisValidation" "${LAST_HTTP_CODE}" "${body}"
 		fi
 		if ! printf '%s' "${body}" | grep -q 'evidence_ids'; then
@@ -244,55 +259,8 @@ if [[ -z "${INCIDENT_ID}" ]]; then
 	fail_step "IngestAlertEventParseIncidentID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
 fi
 
-if [[ "${RUN_QUERY}" == "1" ]]; then
-	if [[ -z "${DATASOURCE_ID}" ]] && [[ "${AUTO_CREATE_DATASOURCE}" == "1" ]]; then
-		if [[ -z "${DS_BASE_URL}" ]]; then
-			fail_step "ConfigDSBaseURLRequired" "CONFIG" "RUN_QUERY=1 requires DS_BASE_URL when AUTO_CREATE_DATASOURCE=1 and DATASOURCE_ID is empty"
-		fi
-		create_datasource "${rand}" "${DS_BASE_URL}"
-	fi
-	if [[ -z "${DATASOURCE_ID}" ]]; then
-		fail_step "DatasourceMissingForQuery" "CONFIG" "RUN_QUERY=1 requires DATASOURCE_ID or AUTO_CREATE_DATASOURCE=1 with DS_BASE_URL"
-	fi
-	export DATASOURCE_ID
-fi
-
-query_result='{"status":"synthetic","reason":"RUN_QUERY=0"}'
-if [[ "${RUN_QUERY}" == "1" ]]; then
-	query_body=$(cat <<EOF
-{"datasourceID":"${DATASOURCE_ID}","promql":"up","timeRangeStart":{"seconds":${start_epoch},"nanos":0},"timeRangeEnd":{"seconds":${now_epoch},"nanos":0},"stepSeconds":30}
-EOF
-)
-	call_or_fail "QueryMetrics" POST "${BASE_URL}/v1/evidence:queryMetrics" "${query_body}"
-	query_result="$(extract_field "${LAST_BODY}" "queryResultJSON" "query_result_json")" || true
-	if [[ -z "${query_result}" ]]; then
-		fail_step "QueryMetricsParseResult" "${LAST_HTTP_CODE}" "${LAST_BODY}"
-	fi
-fi
-
-datasource_field=""
-if [[ -n "${DATASOURCE_ID}" ]]; then
-	datasource_field=",\"datasourceID\":\"${DATASOURCE_ID}\""
-fi
-
-save_body=$(cat <<EOF
-{"incidentID":"${INCIDENT_ID}","idempotencyKey":"idem-p0-l1-evidence-${rand}","type":"metrics"${datasource_field},"queryText":"sum(rate(http_requests_total[5m]))","queryJSON":"{}","timeRangeStart":{"seconds":${start_epoch},"nanos":0},"timeRangeEnd":{"seconds":${now_epoch},"nanos":0},"resultJSON":$(json_quote "${query_result}"),"summary":"p0 l1 synthetic evidence","createdBy":"system"}
-EOF
-)
-
-call_or_fail "SaveEvidence" POST "${BASE_URL}/v1/incidents/${INCIDENT_ID}/evidence" "${save_body}"
-EVIDENCE_ID="$(extract_field "${LAST_BODY}" "evidenceID" "evidence_id")" || true
-if [[ -z "${EVIDENCE_ID}" ]]; then
-	fail_step "SaveEvidenceParseEvidenceID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
-fi
-
-call_or_fail "ListIncidentEvidence" GET "${BASE_URL}/v1/incidents/${INCIDENT_ID}/evidence?offset=0&limit=20"
-if ! printf '%s' "${LAST_BODY}" | grep -q "\"evidenceID\":\"${EVIDENCE_ID}\""; then
-	fail_step "ListIncidentEvidenceValidate" "${LAST_HTTP_CODE}" "${LAST_BODY}"
-fi
-
 run_body=$(cat <<EOF
-{"incidentID":"${INCIDENT_ID}","idempotencyKey":"idem-p0-l1-ai-run-${rand}","pipeline":"basic_rca","trigger":"manual","timeRangeStart":{"seconds":${start_epoch},"nanos":0},"timeRangeEnd":{"seconds":${now_epoch},"nanos":0},"inputHintsJSON":"{\"scenario\":\"L1\"}","createdBy":"system"}
+{"incidentID":"${INCIDENT_ID}","idempotencyKey":"idem-p0-l1-ai-run-${rand}","pipeline":"basic_rca","trigger":"manual","timeRangeStart":{"seconds":${start_epoch},"nanos":0},"timeRangeEnd":{"seconds":${now_epoch},"nanos":0},"inputHintsJSON":"{\"scenario\":\"L1\",\"event_id\":\"${EVENT_ID:-unknown}\"}","createdBy":"system"}
 EOF
 )
 call_or_fail "RunAIJob" POST "${BASE_URL}/v1/incidents/${INCIDENT_ID}/ai:run" "${run_body}"
@@ -301,27 +269,7 @@ if [[ -z "${JOB_ID}" ]]; then
 	fail_step "RunAIJobParseJobID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
 fi
 
-call_or_fail "StartAIJob" POST "${BASE_URL}/v1/ai/jobs/${JOB_ID}/start"
-
-tool_call_1_body=$(cat <<EOF
-{"jobID":"${JOB_ID}","seq":1,"nodeName":"metrics_specialist","toolName":"evidence.queryMetrics","requestJSON":$(json_quote "{\"incident_id\":\"${INCIDENT_ID}\",\"query\":\"up\"}"),"responseJSON":$(json_quote "{\"status\":\"ok\",\"rows\":12}"),"status":"ok","latencyMs":18,"errorMessage":"","evidenceIDs":["${EVIDENCE_ID}"]}
-EOF
-)
-call_or_fail "CreateToolCallSeq1" POST "${BASE_URL}/v1/ai/jobs/${JOB_ID}/tool-calls" "${tool_call_1_body}"
-TOOL_CALL_ID_1="$(extract_field "${LAST_BODY}" "toolCallID" "tool_call_id")" || true
-if [[ -z "${TOOL_CALL_ID_1}" ]]; then
-	fail_step "CreateToolCallSeq1ParseID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
-fi
-
-tool_call_2_body=$(cat <<EOF
-{"jobID":"${JOB_ID}","seq":2,"nodeName":"logs_specialist","toolName":"evidence.queryLogs","requestJSON":$(json_quote "{\"incident_id\":\"${INCIDENT_ID}\",\"query\":\"error|exception\"}"),"responseJSON":$(json_quote "{\"status\":\"error\",\"reason\":\"mock timeout\"}"),"status":"error","latencyMs":31,"errorMessage":"mock timeout","evidenceIDs":["${EVIDENCE_ID}"]}
-EOF
-)
-call_or_fail "CreateToolCallSeq2" POST "${BASE_URL}/v1/ai/jobs/${JOB_ID}/tool-calls" "${tool_call_2_body}"
-TOOL_CALL_ID_2="$(extract_field "${LAST_BODY}" "toolCallID" "tool_call_id")" || true
-if [[ -z "${TOOL_CALL_ID_2}" ]]; then
-	fail_step "CreateToolCallSeq2ParseID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
-fi
+wait_for_ai_job_terminal
 
 call_or_fail "ListToolCalls" GET "${BASE_URL}/v1/ai/jobs/${JOB_ID}/tool-calls?offset=0&limit=20"
 if need_cmd jq; then
@@ -329,6 +277,8 @@ if need_cmd jq; then
 	if [[ "${tool_count}" != "2" ]]; then
 		fail_step "ListToolCallsCount" "${LAST_HTTP_CODE}" "${LAST_BODY}"
 	fi
+	TOOL_CALL_ID_1="$(printf '%s' "${LAST_BODY}" | jq -r '(.toolCalls // .data.toolCalls // [])[0].toolCallID // empty' 2>/dev/null || true)"
+	TOOL_CALL_ID_2="$(printf '%s' "${LAST_BODY}" | jq -r '(.toolCalls // .data.toolCalls // [])[1].toolCallID // empty' 2>/dev/null || true)"
 else
 	if ! printf '%s' "${LAST_BODY}" | grep -q '"seq":1'; then
 		fail_step "ListToolCallsSeq1Missing" "${LAST_HTTP_CODE}" "${LAST_BODY}"
@@ -338,19 +288,16 @@ else
 	fi
 fi
 
-diagnosis_json=$(cat <<EOF
-{"summary":"P0 L1 synthetic RCA summary","root_cause":{"category":"app","statement":"http 5xx ratio elevated in service","confidence":0.4,"evidence_ids":["${EVIDENCE_ID}"]},"timeline":[{"t":"2026-02-07T00:00:00Z","event":"alert_fired","ref":"${EVENT_ID:-alert-event}"}],"hypotheses":[{"statement":"application regression drives 5xx increase","confidence":0.4,"supporting_evidence_ids":["${EVIDENCE_ID}"],"missing_evidence":["need request trace sample"]}],"recommendations":[{"type":"readonly_check","action":"check recent deployment and error logs","risk":"low"}],"unknowns":["upstream dependency status"],"next_steps":["collect trace sample for top failing endpoint"]}
-EOF
-)
-
-finalize_body=$(cat <<EOF
-{"jobID":"${JOB_ID}","status":"succeeded","outputSummary":"P0 L1 synthetic RCA summary","diagnosisJSON":$(json_quote "${diagnosis_json}"),"evidenceIDs":["${EVIDENCE_ID}"]}
-EOF
-)
-call_or_fail "FinalizeAIJob" POST "${BASE_URL}/v1/ai/jobs/${JOB_ID}/finalize" "${finalize_body}"
-
 call_or_fail "GetIncident" GET "${BASE_URL}/v1/incidents/${INCIDENT_ID}"
 validate_incident_writeback "${LAST_BODY}"
+
+if [[ -n "${EVIDENCE_ID}" ]]; then
+	call_or_fail "GetEvidence" GET "${BASE_URL}/v1/evidence/${EVIDENCE_ID}"
+	ds_id="$(extract_field "${LAST_BODY}" "datasourceID" "datasource_id")" || true
+	if [[ -n "${ds_id}" ]]; then
+		DATASOURCE_ID="${ds_id}"
+	fi
+fi
 
 echo "PASS L1"
 echo "incident_id=${INCIDENT_ID}"
