@@ -32,3 +32,10 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# python
+.venv/
+__pycache__
+*.pyc
+*.egg-info/
+.pytest_cache/
