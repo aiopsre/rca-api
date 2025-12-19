@@ -59,6 +59,14 @@ message Incident {
   google.protobuf.Timestamp createdAt = 20;
   // updatedAt 表示更新时间
   google.protobuf.Timestamp updatedAt = 21;
+  // rcaStatus 表示 RCA 状态（pending/running/done/failed）。
+  optional string rcaStatus = 22;
+  // rootCauseSummary 表示根因摘要（一句话结论）。
+  optional string rootCauseSummary = 23;
+  // diagnosisJSON 表示结构化诊断结果（附录 J2）。
+  optional string diagnosisJSON = 24;
+  // evidenceRefsJSON 表示 evidence 引用集合（至少包含 evidence_ids）。
+  optional string evidenceRefsJSON = 25;
 }
 
 // CreateIncidentRequest 表示创建事件单请求

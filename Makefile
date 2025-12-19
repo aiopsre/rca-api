@@ -220,7 +220,38 @@ cover: test ## Run tests and enforce coverage threshold (COVERAGE%).
 .PHONY: lint
 lint: ## Static analysis with golangci-lint (uses .golangci.yaml).
 	@echo "===========> Running golangci to lint source codes"
-	@golangci-lint run -c $(PROJ_ROOT_DIR)/.golangci.yaml $(PROJ_ROOT_DIR)/...
+	@golangci-lint run -c .golangci.yaml ./...
+
+.PHONY: lint-new
+lint-new: ## Run golangci-lint only on changed Go packages; fallback to LINT_PKGS in non-git env.
+	@echo "===========> Running golangci to lint changed packages"
+	@set -e; \
+	changed_files=""; \
+	new_arg=""; \
+	if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then \
+		new_arg="--new-from-merge-base=HEAD --new-from-rev=HEAD"; \
+		changed_files="$$( \
+			{ \
+				git diff --name-only -- '*.go'; \
+				git diff --name-only --cached -- '*.go'; \
+				git ls-files --others --exclude-standard -- '*.go'; \
+			} | awk 'NF' | sort -u \
+		)"; \
+	fi; \
+	if [ -n "$$changed_files" ]; then \
+		lint_pkgs="$$( \
+			printf '%s\n' "$$changed_files" | xargs -n1 dirname | \
+			awk '{ if ($$0 == ".") print "./"; else print "./" $$0 }' | \
+			sort -u | tr '\n' ' ' \
+		)"; \
+	elif [ -n "$(LINT_PKGS)" ]; then \
+		lint_pkgs="$(LINT_PKGS)"; \
+	else \
+		echo "No changed Go files detected. Set LINT_PKGS to lint explicit packages in non-git environments."; \
+		exit 0; \
+	fi; \
+	echo "lint packages: $$lint_pkgs"; \
+	golangci-lint run -c .golangci.yaml $$new_arg $$lint_pkgs
 
 .PHONY: deps
 deps: ## Install build and codegen tools.

@@ -155,6 +155,16 @@ mysql:
   max-open-connections: 100 # 连接池中允许同时打开的最大连接数（包括正在用的和空闲的）
 ```  
 
+### Linting
+
+建议本仓库使用两级 lint：
+
+```bash
+$ make lint-new                   # 增量门槛：仅检查变更包
+$ LINT_PKGS=./internal/... make lint-new  # 非 git 场景 fallback
+$ make lint                       # 全量检查：用于后续历史问题还债
+```
+
 ## Versioning
 
 本项目遵循 [语义版本控制](https://semver.org/lang/zh-CN/) 规范。

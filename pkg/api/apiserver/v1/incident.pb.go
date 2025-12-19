@@ -68,9 +68,17 @@ type Incident struct {
 	// createdAt 表示创建时间
 	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,20,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
 	// updatedAt 表示更新时间
-	UpdatedAt     *timestamppb.Timestamp `protobuf:"bytes,21,opt,name=updatedAt,proto3" json:"updatedAt,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	UpdatedAt *timestamppb.Timestamp `protobuf:"bytes,21,opt,name=updatedAt,proto3" json:"updatedAt,omitempty"`
+	// rcaStatus 表示 RCA 状态（pending/running/done/failed）。
+	RcaStatus *string `protobuf:"bytes,22,opt,name=rcaStatus,proto3,oneof" json:"rcaStatus,omitempty"`
+	// rootCauseSummary 表示根因摘要（一句话结论）。
+	RootCauseSummary *string `protobuf:"bytes,23,opt,name=rootCauseSummary,proto3,oneof" json:"rootCauseSummary,omitempty"`
+	// diagnosisJSON 表示结构化诊断结果（附录 J2）。
+	DiagnosisJSON *string `protobuf:"bytes,24,opt,name=diagnosisJSON,proto3,oneof" json:"diagnosisJSON,omitempty"`
+	// evidenceRefsJSON 表示 evidence 引用集合（至少包含 evidence_ids）。
+	EvidenceRefsJSON *string `protobuf:"bytes,25,opt,name=evidenceRefsJSON,proto3,oneof" json:"evidenceRefsJSON,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Incident) Reset() {
@@ -248,6 +256,34 @@ func (x *Incident) GetUpdatedAt() *timestamppb.Timestamp {
 		return x.UpdatedAt
 	}
 	return nil
+}
+
+func (x *Incident) GetRcaStatus() string {
+	if x != nil && x.RcaStatus != nil {
+		return *x.RcaStatus
+	}
+	return ""
+}
+
+func (x *Incident) GetRootCauseSummary() string {
+	if x != nil && x.RootCauseSummary != nil {
+		return *x.RootCauseSummary
+	}
+	return ""
+}
+
+func (x *Incident) GetDiagnosisJSON() string {
+	if x != nil && x.DiagnosisJSON != nil {
+		return *x.DiagnosisJSON
+	}
+	return ""
+}
+
+func (x *Incident) GetEvidenceRefsJSON() string {
+	if x != nil && x.EvidenceRefsJSON != nil {
+		return *x.EvidenceRefsJSON
+	}
+	return ""
 }
 
 // CreateIncidentRequest 表示创建事件单请求
@@ -966,7 +1002,7 @@ var File_apiserver_v1_incident_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_incident_proto_rawDesc = "" +
 	"\n" +
-	"\x1bapiserver/v1/incident.proto\x12\fapiserver.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfa\x06\n" +
+	"\x1bapiserver/v1/incident.proto\x12\fapiserver.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf4\b\n" +
 	"\bIncident\x12\x1e\n" +
 	"\n" +
 	"incidentID\x18\x01 \x01(\tR\n" +
@@ -991,7 +1027,12 @@ const file_apiserver_v1_incident_proto_rawDesc = "" +
 	"\astartAt\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampH\aR\astartAt\x88\x01\x01\x125\n" +
 	"\x05endAt\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampH\bR\x05endAt\x88\x01\x01\x128\n" +
 	"\tcreatedAt\x18\x14 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x128\n" +
-	"\tupdatedAt\x18\x15 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\t\n" +
+	"\tupdatedAt\x18\x15 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12!\n" +
+	"\trcaStatus\x18\x16 \x01(\tH\tR\trcaStatus\x88\x01\x01\x12/\n" +
+	"\x10rootCauseSummary\x18\x17 \x01(\tH\n" +
+	"R\x10rootCauseSummary\x88\x01\x01\x12)\n" +
+	"\rdiagnosisJSON\x18\x18 \x01(\tH\vR\rdiagnosisJSON\x88\x01\x01\x12/\n" +
+	"\x10evidenceRefsJSON\x18\x19 \x01(\tH\fR\x10evidenceRefsJSON\x88\x01\x01B\t\n" +
 	"\a_sourceB\f\n" +
 	"\n" +
 	"_alertNameB\x0e\n" +
@@ -1003,7 +1044,12 @@ const file_apiserver_v1_incident_proto_rawDesc = "" +
 	"\t_changeIDB\n" +
 	"\n" +
 	"\b_startAtB\b\n" +
-	"\x06_endAt\"\xd2\x05\n" +
+	"\x06_endAtB\f\n" +
+	"\n" +
+	"_rcaStatusB\x13\n" +
+	"\x11_rootCauseSummaryB\x10\n" +
+	"\x0e_diagnosisJSONB\x13\n" +
+	"\x11_evidenceRefsJSON\"\xd2\x05\n" +
 	"\x15CreateIncidentRequest\x12\x1f\n" +
 	"\btenantID\x18\x01 \x01(\tH\x00R\btenantID\x88\x01\x01\x12\x1d\n" +
 	"\acluster\x18\x02 \x01(\tH\x01R\acluster\x88\x01\x01\x12%\n" +
