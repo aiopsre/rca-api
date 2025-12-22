@@ -330,3 +330,23 @@ python -m orchestrator.main
 * 当队列为空时，orchestrator 的拉取频率应明显下降（如果你在 orchestrator 日志里打了“pull start/end”，应看到间隔接近 wait_seconds）。
 * 当你触发一次 `ai:run` 创建 queued job 后，orchestrator 应能在超时前拿到 job 并执行（随后 L1 能 PASS）。
 
+---
+
+## P0-7 L2 回归：证据不足（Missing Evidence）路径
+
+### Spec
+- docs/devel/zh-CN/附录Lx_L2_证据不足回归用例.md
+
+### Done Definition（验收口径）
+1) orchestrator 支持可控触发 L2（证据不足）路径（推荐 `FORCE_NO_EVIDENCE=1` 或等价开关），并仍完整执行：
+   start -> toolcalls -> finalize（LangGraph 执行链路不变）
+2) diagnosis_json 写回满足附录 J2/J3 + 附录 Lx 要求：
+   - root_cause.type=missing_evidence（或等价）
+   - confidence <= 0.3
+   - missing_evidence 列表非空
+   - evidence_ids 规则按 J2/J3（若要求非空则必须保存占位 evidence 并引用）
+3) 新增回归脚本 `scripts/test_p0_L2.sh`（或 L1 脚本 MODE=L2）：
+   - 触发 ai:run -> 等待 job 终态 -> GET incident 断言上述字段
+   - 输出格式可沿用 L1 严格风格（PASS L2 + 关键 IDs），失败非 0 退出并打印诊断
+4) 工程验证：make test / make lint-new 通过
+

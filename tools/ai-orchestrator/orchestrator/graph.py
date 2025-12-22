@@ -14,6 +14,7 @@ from .tools_rca_api import RCAApiClient
 @dataclass
 class OrchestratorConfig:
     run_query: bool = False
+    force_no_evidence: bool = False
     ds_base_url: str = ""
     auto_create_datasource: bool = True
 
@@ -41,7 +42,22 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
     if not state.incident_id:
         raise RuntimeError("incident_id is required before collect_evidence")
 
-    if not cfg.run_query:
+    state.force_no_evidence = cfg.force_no_evidence
+    if cfg.force_no_evidence:
+        state.missing_evidence = ["logs", "traces"]
+        evidence_id = client.save_mock_evidence(
+            incident_id=state.incident_id,
+            summary="no evidence found (forced)",
+            raw={
+                "source": "orchestrator",
+                "mode": "forced_missing_evidence",
+                "kind": "no_data",
+                "missing": state.missing_evidence,
+                "reason": "FORCE_NO_EVIDENCE=1",
+            },
+        )
+    elif not cfg.run_query:
+        state.missing_evidence = []
         evidence_id = client.save_mock_evidence(
             incident_id=state.incident_id,
             summary="P0 mock evidence saved by orchestrator (RUN_QUERY=0).",
@@ -59,6 +75,7 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
 
         datasource_id = client.ensure_datasource(cfg.ds_base_url)
         state.datasource_id = datasource_id
+        state.missing_evidence = []
 
         now_s = int(time.time())
         query_request = {
@@ -92,7 +109,11 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
         raise RuntimeError("evidence_ids is empty before write_tool_calls")
 
     primary_evidence = state.evidence_ids[0]
-    collect_tool_name = "evidence.queryMetrics" if state.datasource_id else "evidence.saveMock"
+    missing_evidence = state.missing_evidence or ["logs", "traces"]
+    if state.force_no_evidence:
+        collect_tool_name = "evidence.collectPlaceholder"
+    else:
+        collect_tool_name = "evidence.queryMetrics" if state.datasource_id else "evidence.saveMock"
 
     started_ms = int(time.time() * 1000)
     client.add_tool_call(
@@ -103,14 +124,32 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
         request_json={
             "incident_id": state.incident_id,
             "datasource_id": state.datasource_id,
+            "force_no_evidence": state.force_no_evidence,
         },
-        response_json={
-            "evidence_ids": [primary_evidence],
-            "status": "ok",
-        },
+        response_json=(
+            {
+                "evidence_ids": [primary_evidence],
+                "status": "no_data",
+                "reason": "FORCE_NO_EVIDENCE=1",
+                "missing_evidence": missing_evidence,
+            }
+            if state.force_no_evidence
+            else {
+                "evidence_ids": [primary_evidence],
+                "status": "ok",
+            }
+        ),
         latency_ms=max(1, int(time.time() * 1000) - started_ms),
         status="ok",
     )
+
+    synthesize_request = {
+        "incident_id": state.incident_id,
+        "evidence_ids": state.evidence_ids,
+        "missing_evidence": missing_evidence,
+    }
+    if state.force_no_evidence:
+        synthesize_request["target_confidence_max"] = 0.3
 
     started_ms = int(time.time() * 1000)
     client.add_tool_call(
@@ -118,14 +157,23 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
         seq=2,
         node_name="synthesize",
         tool_name="diagnosis.generate",
-        request_json={
-            "incident_id": state.incident_id,
-            "evidence_ids": state.evidence_ids,
-        },
-        response_json={
-            "status": "ok",
-            "result": "diagnosis_json_ready",
-        },
+        request_json=synthesize_request,
+        response_json=(
+            {
+                "status": "ok",
+                "result": "missing_evidence_low_confidence",
+                "root_cause": {
+                    "type": "missing_evidence",
+                    "confidence": 0.15,
+                },
+                "missing_evidence": missing_evidence,
+            }
+            if state.force_no_evidence
+            else {
+                "status": "ok",
+                "result": "diagnosis_json_ready",
+            }
+        ),
         latency_ms=max(1, int(time.time() * 1000) - started_ms),
         status="ok",
     )
@@ -178,6 +226,56 @@ def _build_success_diagnosis(state: GraphState) -> dict:
     }
 
 
+def _build_missing_evidence_diagnosis(state: GraphState) -> dict:
+    primary_evidence = state.evidence_ids[0]
+    missing_evidence = state.missing_evidence or ["logs", "traces"]
+    return {
+        "schema_version": "1.0",
+        "generated_at": _diagnosis_timestamp(),
+        "incident_id": state.incident_id,
+        "summary": "Insufficient evidence to determine root cause.",
+        "root_cause": {
+            "type": "missing_evidence",
+            "category": "unknown",
+            "summary": "Insufficient evidence to determine root cause.",
+            "statement": "",
+            "confidence": 0.15,
+            "evidence_ids": [primary_evidence],
+        },
+        "missing_evidence": missing_evidence,
+        "timeline": [
+            {
+                "t": _diagnosis_timestamp(),
+                "event": "evidence_gap_detected",
+                "ref": primary_evidence,
+            }
+        ],
+        "observations": [
+            {
+                "title": "Evidence gap",
+                "detail": "Logs/traces were not available or not found in the query window.",
+            }
+        ],
+        "hypotheses": [
+            {
+                "statement": "Evidence gap prevents confident root-cause attribution.",
+                "confidence": 0.15,
+                "supporting_evidence_ids": [primary_evidence],
+                "missing_evidence": missing_evidence,
+            }
+        ],
+        "recommendations": [
+            {
+                "type": "readonly_check",
+                "action": "Expand time window and collect logs/traces before concluding.",
+                "risk": "low",
+            }
+        ],
+        "unknowns": ["Root cause remains unknown because critical evidence is missing."],
+        "next_steps": ["Re-run RCA after logs and traces become available."],
+    }
+
+
 def _guard(node_name: str, fn: Callable[[GraphState], GraphState]) -> Callable[[GraphState], GraphState]:
     def wrapped(state: GraphState) -> GraphState:
         if state.last_error:
@@ -204,7 +302,10 @@ def finalize_job(state: GraphState, client: RCAApiClient) -> GraphState:
             state.finalized = True
             return state
 
-        diagnosis_json = _build_success_diagnosis(state)
+        if state.force_no_evidence:
+            diagnosis_json = _build_missing_evidence_diagnosis(state)
+        else:
+            diagnosis_json = _build_success_diagnosis(state)
         state.diagnosis_json = diagnosis_json
         client.finalize_job(state.job_id, status="succeeded", diagnosis_json=diagnosis_json, error_message=None)
         state.finalized = True

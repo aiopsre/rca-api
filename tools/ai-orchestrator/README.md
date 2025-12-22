@@ -28,6 +28,7 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - `LONG_POLL_WAIT_SECONDS`：默认 `20`（范围 `0~30`；上次拉取为空时用于 `wait_seconds`）
 - `CONCURRENCY`：默认 `1`
 - `RUN_QUERY`：默认 `0`（`0`=保存 mock evidence，`1`=query metrics + save）
+- `FORCE_NO_EVIDENCE`：默认 `0`（`1`=强制走 L2 证据不足路径，保存占位 evidence + 低置信度 missing_evidence 结论）
 - `DS_BASE_URL`：`RUN_QUERY=1` 时需要
 - `AUTO_CREATE_DATASOURCE`：默认 `1`
 - `DEBUG`：默认 `0`

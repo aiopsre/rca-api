@@ -18,6 +18,7 @@ class Settings:
     poll_interval_ms: int
     concurrency: int
     run_query: bool
+    force_no_evidence: bool
     ds_base_url: str
     auto_create_datasource: bool
     debug: bool
@@ -51,6 +52,7 @@ def load_settings() -> Settings:
         poll_interval_ms=max(100, _env_int("POLL_INTERVAL_MS", 1000)),
         concurrency=max(1, _env_int("CONCURRENCY", 1)),
         run_query=_env_bool("RUN_QUERY", False),
+        force_no_evidence=_env_bool("FORCE_NO_EVIDENCE", False),
         ds_base_url=os.getenv("DS_BASE_URL", "").strip(),
         auto_create_datasource=_env_bool("AUTO_CREATE_DATASOURCE", True),
         debug=_env_bool("DEBUG", False),
@@ -96,12 +98,14 @@ def main() -> None:
         f"poll_interval_ms={settings.poll_interval_ms} "
         f"concurrency={settings.concurrency} "
         f"run_query={int(settings.run_query)} "
+        f"force_no_evidence={int(settings.force_no_evidence)} "
         f"long_poll_wait_seconds={settings.long_poll_wait_seconds}"
     )
 
     client = RCAApiClient(settings.base_url, settings.scopes, timeout_s=10.0)
     graph_cfg = OrchestratorConfig(
         run_query=settings.run_query,
+        force_no_evidence=settings.force_no_evidence,
         ds_base_url=settings.ds_base_url,
         auto_create_datasource=settings.auto_create_datasource,
     )

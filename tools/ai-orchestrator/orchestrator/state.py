@@ -11,10 +11,12 @@ class GraphState(BaseModel):
     datasource_id: Optional[str] = None
 
     evidence_ids: List[str] = Field(default_factory=list)
+    missing_evidence: List[str] = Field(default_factory=list)
     tool_calls_written: int = 0
 
     diagnosis_json: Optional[Dict[str, Any]] = None
     last_error: Optional[str] = None
 
+    force_no_evidence: bool = False
     started: bool = False
     finalized: bool = False

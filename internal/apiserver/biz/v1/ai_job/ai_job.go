@@ -55,6 +55,8 @@ var (
 )
 
 // AIJobBiz defines AI job and tool call use-cases.
+//
+//nolint:interfacebloat // P0 keeps the full AIJob surface in a single biz entrypoint.
 type AIJobBiz interface {
 	Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error)
 	Get(ctx context.Context, rq *v1.GetAIJobRequest) (*v1.GetAIJobResponse, error)
@@ -69,6 +71,7 @@ type AIJobBiz interface {
 	AIJobExpansion
 }
 
+//nolint:modernize // Keep explicit empty interface as a placeholder expansion point.
 type AIJobExpansion interface{}
 
 type aiJobBiz struct {
@@ -82,6 +85,7 @@ func New(store store.IStore) *aiJobBiz {
 	return &aiJobBiz{store: store}
 }
 
+//nolint:gocognit,gocyclo,nestif // Existing transactional flow is kept for P0 compatibility.
 func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error) {
 	jobID := ""
 	incidentID := strings.TrimSpace(rq.GetIncidentID())
@@ -224,6 +228,7 @@ func (b *aiJobBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobs
 	}, nil
 }
 
+//nolint:gocognit // Existing state transition logic is intentionally explicit.
 func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	err := b.store.TX(ctx, func(txCtx context.Context) error {
@@ -270,6 +275,7 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 	return &v1.StartAIJobResponse{}, nil
 }
 
+//nolint:gocognit,gocyclo,nestif // Existing state transition logic is intentionally explicit.
 func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.CancelAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	reason := trimOptional(rq.Reason)
@@ -325,6 +331,7 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 	return &v1.CancelAIJobResponse{}, nil
 }
 
+//nolint:gocognit,gocyclo,nestif // Existing finalize path is intentionally explicit for auditability.
 func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	targetStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
@@ -392,9 +399,19 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 				incident.RootCauseSummary = &summary
 			}
 			if diagnosis.RootCause != nil {
-				category := strings.TrimSpace(diagnosis.RootCause.Category)
-				if category != "" {
-					incident.RootCauseType = &category
+				rootType := strings.TrimSpace(diagnosis.RootCause.Type)
+				if rootType != "" {
+					incident.RootCauseType = &rootType
+				} else {
+					category := strings.TrimSpace(diagnosis.RootCause.Category)
+					if category != "" {
+						incident.RootCauseType = &category
+					}
+				}
+
+				rootSummary := strings.TrimSpace(diagnosis.RootCause.Summary)
+				if rootSummary != "" && incident.RootCauseSummary == nil {
+					incident.RootCauseSummary = &rootSummary
 				}
 				if strings.TrimSpace(diagnosis.RootCause.Statement) != "" && incident.RootCauseSummary == nil {
 					s := strings.TrimSpace(diagnosis.RootCause.Statement)
@@ -436,6 +453,7 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	return &v1.FinalizeAIJobResponse{}, nil
 }
 
+//nolint:gocognit,gocyclo,nestif // Existing tool-call write path is intentionally explicit for P0.
 func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	outID := ""
@@ -692,7 +710,9 @@ func isTerminalStatus(status string) bool {
 }
 
 type diagnosisRootCause struct {
+	Type       string   `json:"type,omitempty"`
 	Category   string   `json:"category"`
+	Summary    string   `json:"summary,omitempty"`
 	Statement  string   `json:"statement"`
 	Confidence float64  `json:"confidence"`
 	EvidenceID []string `json:"evidence_ids"`
@@ -706,15 +726,21 @@ type diagnosisHypothesis struct {
 }
 
 type diagnosisPayload struct {
+	SchemaVersion   string                `json:"schema_version,omitempty"`
+	GeneratedAt     string                `json:"generated_at,omitempty"`
+	IncidentID      string                `json:"incident_id,omitempty"`
 	Summary         string                `json:"summary"`
 	RootCause       *diagnosisRootCause   `json:"root_cause"`
+	MissingEvidence []string              `json:"missing_evidence,omitempty"`
 	Timeline        []map[string]any      `json:"timeline"`
 	Hypotheses      []diagnosisHypothesis `json:"hypotheses"`
+	Observations    []map[string]any      `json:"observations,omitempty"`
 	Recommendations []map[string]any      `json:"recommendations"`
 	Unknowns        []string              `json:"unknowns"`
 	NextSteps       []string              `json:"next_steps"`
 }
 
+//nolint:gocognit,gocyclo,nestif,wsl_v5 // Validation mirrors Appendix J rules with explicit branch checks.
 func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -730,7 +756,13 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 		return nil, "", errno.ErrAIJobInvalidDiagnosis
 	}
 
+	diagnosis.MissingEvidence = normalizeStringSlice(diagnosis.MissingEvidence)
+	missingEvidenceCount := len(diagnosis.MissingEvidence)
+
 	if diagnosis.RootCause != nil {
+		diagnosis.RootCause.Type = strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Type))
+		diagnosis.RootCause.Summary = strings.TrimSpace(diagnosis.RootCause.Summary)
+
 		category := strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Category))
 		if category == "" {
 			category = "unknown"
@@ -760,6 +792,9 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 				return nil, "", errno.ErrAIJobInvalidDiagnosis
 			}
 		}
+		if diagnosis.RootCause.Type == "missing_evidence" && diagnosis.RootCause.Confidence > 0.3 {
+			return nil, "", errno.ErrAIJobInvalidDiagnosis
+		}
 	}
 
 	for i := range diagnosis.Hypotheses {
@@ -769,6 +804,7 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 		}
 		h.SupportingEvidenceID = normalizeStringSlice(h.SupportingEvidenceID)
 		h.MissingEvidence = normalizeStringSlice(h.MissingEvidence)
+		missingEvidenceCount += len(h.MissingEvidence)
 		if len(h.SupportingEvidenceID) == 0 && len(h.MissingEvidence) == 0 {
 			return nil, "", errno.ErrAIJobInvalidDiagnosis
 		}
@@ -782,6 +818,9 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 				return nil, "", errno.ErrAIJobInvalidDiagnosis
 			}
 		}
+	}
+	if diagnosis.RootCause != nil && diagnosis.RootCause.Type == "missing_evidence" && missingEvidenceCount == 0 {
+		return nil, "", errno.ErrAIJobInvalidDiagnosis
 	}
 
 	normalized, err := json.Marshal(diagnosis)

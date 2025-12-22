@@ -2,6 +2,7 @@ package ai_job
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -159,6 +160,123 @@ func TestAIJobFinalize_RejectsInvalidDiagnosis(t *testing.T) {
 				"confidence":0.8,
 				"evidence_ids":["only-one"]
 			}
+		}`),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_MissingEvidenceTemplate(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"schema_version":"1.0",
+			"generated_at":"2026-02-07T00:00:00Z",
+			"incident_id":"` + incident.IncidentID + `",
+			"summary":"Insufficient evidence to determine root cause.",
+			"root_cause":{
+				"type":"missing_evidence",
+				"category":"unknown",
+				"summary":"Insufficient evidence to determine root cause.",
+				"statement":"",
+				"confidence":0.15,
+				"evidence_ids":["evidence-placeholder-1"]
+			},
+			"missing_evidence":["logs","traces"],
+			"hypotheses":[
+				{
+					"statement":"Evidence gap prevents confident root-cause attribution.",
+					"confidence":0.15,
+					"supporting_evidence_ids":["evidence-placeholder-1"],
+					"missing_evidence":["logs","traces"]
+				}
+			],
+			"recommendations":[{"type":"readonly_check","action":"collect more evidence","risk":"low"}],
+			"unknowns":["root cause remains unknown"],
+			"next_steps":["re-run after logs/traces are available"]
+		}`),
+		EvidenceIDs: []string{"evidence-placeholder-1"},
+	})
+	require.NoError(t, err)
+
+	updatedIncident, err := s.Incident().Get(context.Background(), where.T(context.Background()).F("incident_id", incident.IncidentID))
+	require.NoError(t, err)
+	require.Equal(t, incidentRCAStatusDone, updatedIncident.RCAStatus)
+	require.NotNil(t, updatedIncident.DiagnosisJSON)
+	require.NotNil(t, updatedIncident.RootCauseType)
+	require.Equal(t, "missing_evidence", *updatedIncident.RootCauseType)
+	require.NotNil(t, updatedIncident.EvidenceRefsJSON)
+
+	var diagnosis map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.DiagnosisJSON), &diagnosis))
+	root, ok := diagnosis["root_cause"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "missing_evidence", root["type"])
+	require.Equal(t, 0.15, root["confidence"])
+	missing, ok := diagnosis["missing_evidence"].([]any)
+	require.True(t, ok)
+	require.Len(t, missing, 2)
+}
+
+func TestAIJobFinalize_RejectsMissingEvidenceWithHighConfidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"invalid missing evidence diagnosis",
+			"root_cause":{
+				"type":"missing_evidence",
+				"category":"unknown",
+				"statement":"definitive root cause",
+				"confidence":0.5,
+				"evidence_ids":["evidence-1"]
+			},
+			"missing_evidence":["logs"],
+			"hypotheses":[
+				{
+					"statement":"need more logs",
+					"confidence":0.2,
+					"supporting_evidence_ids":["evidence-1"],
+					"missing_evidence":["logs"]
+				}
+			]
 		}`),
 	})
 	require.Error(t, err)
