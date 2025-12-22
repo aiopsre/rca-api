@@ -22,6 +22,7 @@ class Settings:
     auto_create_datasource: bool
     debug: bool
     pull_limit: int
+    long_poll_wait_seconds: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -42,6 +43,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def load_settings() -> Settings:
+    long_poll_wait_seconds = _env_int("LONG_POLL_WAIT_SECONDS", 20)
+    long_poll_wait_seconds = max(0, min(30, long_poll_wait_seconds))
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
@@ -52,6 +55,7 @@ def load_settings() -> Settings:
         auto_create_datasource=_env_bool("AUTO_CREATE_DATASOURCE", True),
         debug=_env_bool("DEBUG", False),
         pull_limit=max(1, min(50, _env_int("PULL_LIMIT", 10))),
+        long_poll_wait_seconds=long_poll_wait_seconds,
     )
 
 
@@ -91,7 +95,8 @@ def main() -> None:
         f"base_url={settings.base_url} "
         f"poll_interval_ms={settings.poll_interval_ms} "
         f"concurrency={settings.concurrency} "
-        f"run_query={int(settings.run_query)}"
+        f"run_query={int(settings.run_query)} "
+        f"long_poll_wait_seconds={settings.long_poll_wait_seconds}"
     )
 
     client = RCAApiClient(settings.base_url, settings.scopes, timeout_s=10.0)
@@ -103,17 +108,26 @@ def main() -> None:
     compiled_graph = build_graph(client, graph_cfg)
 
     sleep_s = settings.poll_interval_ms / 1000.0
+    wait_seconds = 0
     while True:
         try:
-            listed = client.list_jobs(status="queued", limit=settings.pull_limit, offset=0)
+            listed = client.list_jobs(
+                status="queued",
+                limit=settings.pull_limit,
+                offset=0,
+                wait_seconds=wait_seconds,
+            )
             jobs = _extract_jobs(listed)
             if settings.debug:
-                _log(f"[DEBUG] pulled queued jobs: count={len(jobs)}")
+                _log(f"[DEBUG] pulled queued jobs: wait_seconds={wait_seconds} count={len(jobs)}")
 
             if not jobs:
-                time.sleep(sleep_s)
+                wait_seconds = settings.long_poll_wait_seconds
+                if wait_seconds <= 0:
+                    time.sleep(sleep_s)
                 continue
 
+            wait_seconds = 0
             if settings.concurrency <= 1:
                 for job in jobs:
                     job_id = _extract_job_id(job)
@@ -135,7 +149,6 @@ def main() -> None:
                         future.result()
         except Exception as exc:  # noqa: BLE001
             _log(f"poll loop error: {exc}")
-        finally:
             time.sleep(sleep_s)
 
 

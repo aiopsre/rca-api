@@ -11,20 +11,21 @@ import (
 )
 
 const (
-	defaultAIJobQueueListLimit = int64(10)
-	maxAIJobQueueListLimit     = int64(50)
-	defaultAIJobListLimit      = int64(20)
-	maxAIJobListLimit          = int64(200)
-	defaultToolCallList        = int64(50)
-	maxToolCallList            = int64(200)
-	maxAIHintsLength           = 16384
-	maxAIErrorMessage          = 8192
-	maxAIPipelineLength        = 64
-	maxAITriggerLength         = 64
-	maxToolCallJSONSize        = 4 * 1024 * 1024
-	maxToolCallRefLength       = 1024
-	maxAIIdempotencyLength     = 128
-	maxAIWindowRange           = 24 * time.Hour
+	defaultAIJobQueueListLimit      = int64(10)
+	maxAIJobQueueListLimit          = int64(50)
+	defaultAIJobQueueWaitSecondsMax = int64(30)
+	defaultAIJobListLimit           = int64(20)
+	maxAIJobListLimit               = int64(200)
+	defaultToolCallList             = int64(50)
+	maxToolCallList                 = int64(200)
+	maxAIHintsLength                = 16384
+	maxAIErrorMessage               = 8192
+	maxAIPipelineLength             = 64
+	maxAITriggerLength              = 64
+	maxToolCallJSONSize             = 4 * 1024 * 1024
+	maxToolCallRefLength            = 1024
+	maxAIIdempotencyLength          = 128
+	maxAIWindowRange                = 24 * time.Hour
 )
 
 var (
@@ -107,6 +108,21 @@ func (v *Validator) ValidateListAIJobsRequest(ctx context.Context, rq *v1.ListAI
 		rq.Limit = defaultAIJobQueueListLimit
 	}
 	if rq.GetLimit() > maxAIJobQueueListLimit {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateAIJobQueueWaitSeconds(ctx context.Context, waitSeconds int64) error {
+	_ = ctx
+	if waitSeconds < 0 {
+		return errorsx.ErrInvalidArgument
+	}
+	maxWaitSeconds := v.maxAIJobQueueWaitSeconds
+	if maxWaitSeconds <= 0 {
+		maxWaitSeconds = defaultAIJobQueueWaitSecondsMax
+	}
+	if waitSeconds > maxWaitSeconds {
 		return errorsx.ErrInvalidArgument
 	}
 	return nil

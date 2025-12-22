@@ -24,7 +24,8 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 
 - `BASE_URL`：默认 `http://127.0.0.1:5555`
 - `SCOPES`：非空时所有请求附带 `X-Scopes`
-- `POLL_INTERVAL_MS`：默认 `1000`
+- `POLL_INTERVAL_MS`：默认 `1000`（仅用于错误重试或禁用 long poll 时的 sleep/backoff）
+- `LONG_POLL_WAIT_SECONDS`：默认 `20`（范围 `0~30`；上次拉取为空时用于 `wait_seconds`）
 - `CONCURRENCY`：默认 `1`
 - `RUN_QUERY`：默认 `0`（`0`=保存 mock evidence，`1`=query metrics + save）
 - `DS_BASE_URL`：`RUN_QUERY=1` 时需要

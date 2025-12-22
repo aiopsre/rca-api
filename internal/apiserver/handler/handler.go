@@ -6,13 +6,15 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"zk8s.com/rca-api/internal/apiserver/biz"
+	"zk8s.com/rca-api/internal/apiserver/pkg/queue"
 	"zk8s.com/rca-api/internal/apiserver/pkg/validation"
 )
 
 // Handler manages the business logic for API requests and event processing.
 type Handler struct {
-	biz biz.IBiz
-	val *validation.Validator
+	biz              biz.IBiz
+	val              *validation.Validator
+	jobQueueNotifier *queue.Notifier
 }
 
 // Registrar defines a function signature for registering HTTP routes.
@@ -23,8 +25,9 @@ var registrars []Registrar
 // NewHandler creates a new instance of Handler.
 func NewHandler(biz biz.IBiz, val *validation.Validator) *Handler {
 	return &Handler{
-		biz: biz,
-		val: val,
+		biz:              biz,
+		val:              val,
+		jobQueueNotifier: queue.NewNotifier(),
 	}
 }
 

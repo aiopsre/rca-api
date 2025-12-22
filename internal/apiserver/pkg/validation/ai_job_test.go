@@ -68,6 +68,22 @@ func TestValidateListAIJobsRequest_Guardrails(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestValidateAIJobQueueWaitSeconds_Guardrails(t *testing.T) {
+	val := &Validator{}
+
+	err := val.ValidateAIJobQueueWaitSeconds(context.Background(), -1)
+	require.Error(t, err)
+
+	err = val.ValidateAIJobQueueWaitSeconds(context.Background(), 0)
+	require.NoError(t, err)
+
+	err = val.ValidateAIJobQueueWaitSeconds(context.Background(), 30)
+	require.NoError(t, err)
+
+	err = val.ValidateAIJobQueueWaitSeconds(context.Background(), 31)
+	require.Error(t, err)
+}
+
 func TestValidateCreateAIToolCallRequest_Guardrails(t *testing.T) {
 	val := &Validator{}
 

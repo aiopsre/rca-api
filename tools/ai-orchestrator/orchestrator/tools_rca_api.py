@@ -55,14 +55,16 @@ class RCAApiClient:
         path: str,
         json_body: Optional[Dict[str, Any]] = None,
         params: Optional[Dict[str, Any]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
+        request_timeout = self.timeout_s if timeout_s is None else max(float(timeout_s), 0.1)
         response = self.session.request(
             method=method.upper(),
             url=url,
             json=json_body,
             params=params,
-            timeout=self.timeout_s,
+            timeout=request_timeout,
         )
 
         body_text = response.text.strip()
@@ -82,11 +84,23 @@ class RCAApiClient:
         raise RuntimeError(f"{method.upper()} {path} returned invalid JSON type: {type(payload).__name__}")
 
     # jobs
-    def list_jobs(self, status: str, limit: int = 10, offset: int = 0) -> Dict[str, Any]:
+    def list_jobs(
+        self,
+        status: str,
+        limit: int = 10,
+        offset: int = 0,
+        wait_seconds: int = 0,
+    ) -> Dict[str, Any]:
+        wait = max(int(wait_seconds), 0)
+        params: Dict[str, Any] = {"status": status, "limit": int(limit), "offset": int(offset)}
+        if wait > 0:
+            params["wait_seconds"] = wait
+        request_timeout = max(self.timeout_s, float(wait) + 5.0) if wait > 0 else self.timeout_s
         payload = self._request(
             "GET",
             "/v1/ai/jobs",
-            params={"status": status, "limit": int(limit), "offset": int(offset)},
+            params=params,
+            timeout_s=request_timeout,
         )
         data = payload.get("data", payload)
         if not isinstance(data, dict):

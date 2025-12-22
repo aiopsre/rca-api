@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
+	"github.com/onexstack/onexstack/pkg/errorsx"
 
 	"zk8s.com/rca-api/internal/apiserver/pkg/authz"
 	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
@@ -39,6 +40,9 @@ func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 	}
 
 	resp, err := h.biz.AIJobV1().Run(c.Request.Context(), &req)
+	if err == nil {
+		h.jobQueueNotifier.Notify()
+	}
 	core.WriteResponse(c, resp, err)
 }
 
@@ -117,14 +121,51 @@ func (h *Handler) ListAIJobs(c *gin.Context) {
 		}
 	}()
 
+	waitSeconds := int64(0)
+	if wait := strings.TrimSpace(c.Query("wait_seconds")); wait != "" {
+		v, err := strconv.ParseInt(wait, 10, 64)
+		if err != nil {
+			outcome = "error"
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		waitSeconds = v
+	}
+
 	if err := h.val.ValidateListAIJobsRequest(c.Request.Context(), req); err != nil {
+		outcome = "error"
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	if err := h.val.ValidateAIJobQueueWaitSeconds(c.Request.Context(), waitSeconds); err != nil {
 		outcome = "error"
 		core.WriteResponse(c, nil, err)
 		return
 	}
 	queueStatus = req.GetStatus()
 
+	version := h.jobQueueNotifier.Version()
 	resp, err := h.biz.AIJobV1().List(c.Request.Context(), req)
+	if err != nil {
+		outcome = "error"
+		core.WriteResponse(c, resp, err)
+		return
+	}
+	if len(resp.GetJobs()) > 0 || waitSeconds <= 0 {
+		core.WriteResponse(c, resp, err)
+		return
+	}
+
+	h.jobQueueNotifier.Wait(c.Request.Context(), version, time.Duration(waitSeconds)*time.Second)
+	if c.Request.Context().Err() != nil {
+		core.WriteResponse(c, &v1.ListAIJobsResponse{
+			TotalCount: 0,
+			Jobs:       []*v1.AIJob{},
+		}, nil)
+		return
+	}
+
+	resp, err = h.biz.AIJobV1().List(c.Request.Context(), req)
 	if err != nil {
 		outcome = "error"
 	}
