@@ -2,6 +2,7 @@ package alert_event
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -249,3 +250,48 @@ CREATE TABLE incidents (
 }
 
 func ptrAlertString(v string) *string { return &v }
+
+func TestRetryIncidentDuplicateReadback(t *testing.T) {
+	t.Run("retries record not found then succeeds", func(t *testing.T) {
+		attempt := 0
+		incident, err := retryIncidentDuplicateReadback(context.Background(), 5, 0, func() (*model.IncidentM, error) {
+			attempt++
+			if attempt < 3 {
+				return nil, gorm.ErrRecordNotFound
+			}
+			return &model.IncidentM{IncidentID: "incident-readback"}, nil
+		})
+
+		require.NoError(t, err)
+		require.NotNil(t, incident)
+		require.Equal(t, "incident-readback", incident.IncidentID)
+		require.Equal(t, 3, attempt)
+	})
+
+	t.Run("returns immediately on non not-found error", func(t *testing.T) {
+		sentinel := errors.New("boom")
+		attempt := 0
+		incident, err := retryIncidentDuplicateReadback(context.Background(), 5, 0, func() (*model.IncidentM, error) {
+			attempt++
+			return nil, sentinel
+		})
+
+		require.Nil(t, incident)
+		require.ErrorIs(t, err, sentinel)
+		require.Equal(t, 1, attempt)
+	})
+
+	t.Run("stops when context is canceled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		attempt := 0
+		incident, err := retryIncidentDuplicateReadback(ctx, 5, 5*time.Millisecond, func() (*model.IncidentM, error) {
+			attempt++
+			return nil, gorm.ErrRecordNotFound
+		})
+
+		require.Nil(t, incident)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Equal(t, 1, attempt)
+	})
+}

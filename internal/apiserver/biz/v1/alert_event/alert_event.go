@@ -458,10 +458,20 @@ func (b *alertEventBiz) resolveIncidentForIngest(ctx context.Context, in *ingest
 
 	if createErr := b.store.Incident().Create(ctx, incident); createErr != nil {
 		if isDuplicateKeyError(createErr) {
-			existing, getErr := b.store.Incident().Get(ctx, where.T(ctx).F("active_fingerprint_key", in.fingerprint))
+			existing, getErr := b.retryGetIncidentAfterDuplicateCreate(ctx, in.fingerprint)
 			if getErr == nil {
 				return existing, false, false, nil
 			}
+			slog.WarnContext(ctx, "incident create duplicate fallback read failed",
+				"request_id", contextx.RequestID(ctx),
+				"incident_id", "",
+				"event_id", "",
+				"job_id", "",
+				"tool_call_id", "",
+				"datasource_id", "",
+				"fingerprint", in.fingerprint,
+				"error", getErr,
+			)
 		}
 		return nil, false, false, errno.ErrIncidentCreateFailed
 	}
@@ -796,6 +806,67 @@ func normalizeListLimit(limit int64) int64 {
 		return maxListLimit
 	}
 	return limit
+}
+
+func (b *alertEventBiz) retryGetIncidentAfterDuplicateCreate(ctx context.Context, fingerprint string) (*model.IncidentM, error) {
+	const (
+		maxAttempts = 6
+		backoff     = 20 * time.Millisecond
+	)
+	//nolint:contextcheck // Detach from TX-scoped context to avoid stale readback after duplicate-key races.
+	readbackCtx := context.Background()
+
+	return retryIncidentDuplicateReadback(ctx, maxAttempts, backoff, func() (*model.IncidentM, error) {
+		return b.store.Incident().Get(readbackCtx, where.T(ctx).F("active_fingerprint_key", fingerprint))
+	})
+}
+
+func retryIncidentDuplicateReadback(ctx context.Context, attempts int, backoff time.Duration, readFn func() (*model.IncidentM, error)) (*model.IncidentM, error) {
+	attempts, backoff = normalizeDuplicateReadbackPolicy(attempts, backoff)
+
+	for i := range attempts {
+		incident, err := readFn()
+		if err == nil {
+			return incident, nil
+		}
+		if !errorsx.Is(err, gorm.ErrRecordNotFound) || i == attempts-1 {
+			return nil, err
+		}
+		if waitErr := waitDuplicateReadback(ctx, backoff); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+
+	return nil, gorm.ErrRecordNotFound
+}
+
+func normalizeDuplicateReadbackPolicy(attempts int, backoff time.Duration) (int, time.Duration) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+	if backoff < 0 {
+		backoff = 0
+	}
+
+	return attempts, backoff
+}
+
+func waitDuplicateReadback(ctx context.Context, backoff time.Duration) error {
+	if backoff == 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(backoff):
+		return nil
+	}
 }
 
 func isDuplicateKeyError(err error) bool {

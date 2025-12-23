@@ -350,3 +350,21 @@ python -m orchestrator.main
    - 输出格式可沿用 L1 严格风格（PASS L2 + 关键 IDs），失败非 0 退出并打印诊断
 4) 工程验证：make test / make lint-new 通过
 
+---
+
+## P0-8 L4-2 回归：幂等与风暴保护（N=200）
+
+### Spec
+- docs/devel/zh-CN/附录L4-2_回归_幂等与风暴保护.md
+
+### Done Definition（验收口径）
+1) 新增风暴回归脚本 `scripts/test_p0_L4_2_storm.sh`（或同等命名）：
+   - 默认 N=200、CONCURRENCY=10、IDEM_REUSE_RATIO=0.5
+   - 并发触发 ingest + ai:run（覆盖重复 fingerprint 与幂等键复用）
+   - 可选等待 job 终态（默认 WAIT_JOB=1），含超时与失败诊断
+2) 脚本必须输出统计摘要并做断言（按附录 L4-2 的不变量与阈值）：
+   - unique_incidents / unique_current_events / unique_jobs / unique_toolcalls / unique_evidences 等
+   - 验证幂等不变量、merge 策略 A、AIJob/ToolCall 去重不被打穿，不出现线性爆炸
+3) 工程验证：make test / make lint-new 通过
+4) 复现步骤：提供 rca-api + orchestrator 启动方式与一条命令跑风暴脚本的示例
+
