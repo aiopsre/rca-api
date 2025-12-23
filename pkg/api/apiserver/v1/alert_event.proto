@@ -40,6 +40,10 @@ message AlertEvent {
   optional string ackedBy = 22;
   google.protobuf.Timestamp createdAt = 23;
   google.protobuf.Timestamp updatedAt = 24;
+  // isSilenced indicates this event matched an active silence window.
+  bool isSilenced = 25;
+  // silenceID is present when isSilenced=true.
+  optional string silenceID = 26;
 }
 
 // IngestAlertEventRequest ingests one normalized alert payload.
@@ -78,6 +82,10 @@ message IngestAlertEventResponse {
   bool reused = 5;
   // mergeResult explains how current view changed.
   string mergeResult = 6;
+  // silenced indicates whether this ingest matched an active silence.
+  bool silenced = 7;
+  // silenceID is present when silenced=true.
+  optional string silenceID = 8;
 }
 
 // ListCurrentAlertEventsRequest lists current alert view.

@@ -21,6 +21,8 @@ var (
 )
 
 // IStore defines the methods that the persistence layer must implement.
+//
+//nolint:interfacebloat // Aggregation interface intentionally exposes all domain stores.
 type IStore interface {
 	// DB returns the underlying *gorm.DB instance, optionally applying filter conditions.
 	DB(ctx context.Context, wheres ...where.Where) *gorm.DB
@@ -33,6 +35,7 @@ type IStore interface {
 	Evidence() EvidenceStore
 	AIJob() AIJobStore
 	AIToolCall() AIToolCallStore
+	Silence() SilenceStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -115,4 +118,8 @@ func (s *store) AIJob() AIJobStore {
 
 func (s *store) AIToolCall() AIToolCallStore {
 	return newAIToolCallStore(s)
+}
+
+func (s *store) Silence() SilenceStore {
+	return newSilenceStore(s)
 }

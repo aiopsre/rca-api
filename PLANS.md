@@ -368,3 +368,34 @@ python -m orchestrator.main
 3) 工程验证：make test / make lint-new 通过
 4) 复现步骤：提供 rca-api + orchestrator 启动方式与一条命令跑风暴脚本的示例
 
+---
+
+## P1-1 Silence（抑制/维护窗口）最小闭环
+
+### Spec
+- docs/devel/zh-CN/附录P1-1_Silence_接口与行为规范.md
+
+### Done Definition（验收口径）
+1) 新增 Silence 资源（CRUD + 查询）：
+   - POST /v1/silences
+   - GET /v1/silences/{silenceID}
+   - GET /v1/silences?namespace=&enabled=&active=
+   - PATCH /v1/silences/{silenceID}（enabled / endsAt / reason）
+   - DELETE /v1/silences/{silenceID}（软删/禁用）
+   - 校验：matchers 非空、endsAt>startsAt、matcher key/op/value 合法（P1-1 仅支持 op='='）
+2) RBAC scopes：
+   - silence.read / silence.admin
+3) 事件域集成（关键行为）：
+   - 在 POST /v1/alert-events:ingest 入口增加 “active silence match”
+   - 命中 silence 时：
+     - 返回/记录 silenced=true（并携带 silence_id）
+     - 默认不创建/不推进 incident（止血）
+     - timeline best effort 记录 alert_silenced（含 event_id/fingerprint/silence_id）
+   - 未命中则保持现有 ingest+merge 策略 A 行为不变
+4) 回归脚本（L3）：
+   - 新增 scripts/test_p1_L3_silence.sh：
+     - 创建 silence -> ingest 命中断言不创建/不推进 incident
+     - disable/过期 -> 再 ingest 断言恢复正常 merge
+     - 输出 PASS L3 + IDs；失败输出诊断并非 0 退出
+5) 工程验证：make protoc / make test / make lint-new 通过
+

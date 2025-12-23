@@ -30,6 +30,7 @@ func TestAlertEventBiz_P0Policies(t *testing.T) {
 		t.Helper()
 		require.NoError(t, db.Exec("DELETE FROM alert_events_history").Error)
 		require.NoError(t, db.Exec("DELETE FROM incidents").Error)
+		require.NoError(t, db.Exec("DELETE FROM silences").Error)
 	}
 
 	base := time.Date(2026, 2, 1, 10, 0, 0, 0, time.UTC)
@@ -195,6 +196,138 @@ func TestAlertEventBiz_P0Policies(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(2), incidentTotal)
 	})
+
+	t.Run("active silence blocks incident creation and disabled silence restores merge", func(t *testing.T) {
+		reset(t)
+		now := time.Now().UTC().Truncate(time.Second)
+
+		matchersJSON := `[{"key":"fingerprint","op":"=","value":"fp-silenced"}]`
+		silence := &model.SilenceM{
+			Namespace:    "default",
+			Enabled:      true,
+			StartsAt:     now.Add(-1 * time.Minute),
+			EndsAt:       now.Add(1 * time.Hour),
+			MatchersJSON: matchersJSON,
+		}
+		require.NoError(t, s.Silence().Create(ctx, silence))
+		require.NotEmpty(t, silence.SilenceID)
+
+		first, err := biz.Ingest(ctx, &v1.IngestAlertEventRequest{
+			IdempotencyKey: ptrAlertString("idem-alert-4-a"),
+			Fingerprint:    ptrAlertString("fp-silenced"),
+			Status:         "firing",
+			Severity:       "warning",
+			Service:        ptrAlertString("checkout"),
+			Cluster:        ptrAlertString("prod-a"),
+			Namespace:      ptrAlertString("default"),
+			Workload:       ptrAlertString("checkout-api"),
+			LastSeenAt:     timestamppb.New(now),
+		})
+		require.NoError(t, err)
+		require.True(t, first.GetSilenced())
+		require.NotNil(t, first.SilenceID)
+		require.Equal(t, silence.SilenceID, first.GetSilenceID())
+		require.Nil(t, first.IncidentID)
+
+		incidentTotal, _, err := s.Incident().List(ctx, where.T(ctx).O(0).L(20).F("fingerprint", "fp-silenced"))
+		require.NoError(t, err)
+		require.Equal(t, int64(0), incidentTotal)
+
+		current, err := biz.ListCurrent(ctx, &v1.ListCurrentAlertEventsRequest{
+			Fingerprint: ptrAlertString("fp-silenced"),
+			Offset:      0,
+			Limit:       20,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), current.TotalCount)
+		require.True(t, current.Events[0].GetIsSilenced())
+		require.Equal(t, silence.SilenceID, current.Events[0].GetSilenceID())
+
+		silence.Enabled = false
+		require.NoError(t, s.Silence().Update(ctx, silence))
+
+		second, err := biz.Ingest(ctx, &v1.IngestAlertEventRequest{
+			IdempotencyKey: ptrAlertString("idem-alert-4-b"),
+			Fingerprint:    ptrAlertString("fp-silenced"),
+			Status:         "firing",
+			Severity:       "critical",
+			Service:        ptrAlertString("checkout"),
+			Cluster:        ptrAlertString("prod-a"),
+			Namespace:      ptrAlertString("default"),
+			Workload:       ptrAlertString("checkout-api"),
+			LastSeenAt:     timestamppb.New(now.Add(2 * time.Minute)),
+		})
+		require.NoError(t, err)
+		require.False(t, second.GetSilenced())
+		require.NotNil(t, second.IncidentID)
+		require.Nil(t, second.SilenceID)
+
+		incidentTotal, _, err = s.Incident().List(ctx, where.T(ctx).O(0).L(20).F("fingerprint", "fp-silenced"))
+		require.NoError(t, err)
+		require.Equal(t, int64(1), incidentTotal)
+	})
+
+	t.Run("active silence clears stale current incident link", func(t *testing.T) {
+		reset(t)
+		now := time.Now().UTC().Truncate(time.Second)
+
+		seed, err := biz.Ingest(ctx, &v1.IngestAlertEventRequest{
+			IdempotencyKey: ptrAlertString("idem-alert-5-a"),
+			Fingerprint:    ptrAlertString("fp-silenced-existing"),
+			Status:         "firing",
+			Severity:       "warning",
+			Service:        ptrAlertString("checkout"),
+			Cluster:        ptrAlertString("prod-a"),
+			Namespace:      ptrAlertString("default"),
+			Workload:       ptrAlertString("checkout-api"),
+			LastSeenAt:     timestamppb.New(now.Add(-2 * time.Minute)),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, seed.IncidentID)
+
+		matchersJSON := `[{"key":"fingerprint","op":"=","value":"fp-silenced-existing"}]`
+		silence := &model.SilenceM{
+			Namespace:    "default",
+			Enabled:      true,
+			StartsAt:     now.Add(-1 * time.Minute),
+			EndsAt:       now.Add(1 * time.Hour),
+			MatchersJSON: matchersJSON,
+		}
+		require.NoError(t, s.Silence().Create(ctx, silence))
+		require.NotEmpty(t, silence.SilenceID)
+
+		second, err := biz.Ingest(ctx, &v1.IngestAlertEventRequest{
+			IdempotencyKey: ptrAlertString("idem-alert-5-b"),
+			Fingerprint:    ptrAlertString("fp-silenced-existing"),
+			Status:         "firing",
+			Severity:       "critical",
+			Service:        ptrAlertString("checkout"),
+			Cluster:        ptrAlertString("prod-a"),
+			Namespace:      ptrAlertString("default"),
+			Workload:       ptrAlertString("checkout-api"),
+			LastSeenAt:     timestamppb.New(now),
+		})
+		require.NoError(t, err)
+		require.Equal(t, "silenced_current_updated", second.GetMergeResult())
+		require.True(t, second.GetSilenced())
+		require.Nil(t, second.IncidentID)
+		require.Equal(t, silence.SilenceID, second.GetSilenceID())
+
+		current, err := biz.ListCurrent(ctx, &v1.ListCurrentAlertEventsRequest{
+			Fingerprint: ptrAlertString("fp-silenced-existing"),
+			Offset:      0,
+			Limit:       20,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), current.TotalCount)
+		require.True(t, current.Events[0].GetIsSilenced())
+		require.Equal(t, silence.SilenceID, current.Events[0].GetSilenceID())
+		require.Nil(t, current.Events[0].IncidentID)
+
+		incidentTotal, _, err := s.Incident().List(ctx, where.T(ctx).O(0).L(20).F("fingerprint", "fp-silenced-existing"))
+		require.NoError(t, err)
+		require.Equal(t, int64(1), incidentTotal)
+	})
 }
 
 func newAlertEventTestDB(t *testing.T) *gorm.DB {
@@ -246,6 +379,7 @@ CREATE TABLE incidents (
 	require.NoError(t, db.Exec("CREATE UNIQUE INDEX uniq_incidents_incident_id ON incidents(incident_id)").Error)
 	require.NoError(t, db.Exec("CREATE UNIQUE INDEX uniq_incidents_active_fingerprint_key ON incidents(active_fingerprint_key)").Error)
 	require.NoError(t, db.AutoMigrate(&model.AlertEventM{}))
+	require.NoError(t, db.AutoMigrate(&model.SilenceM{}))
 	return db
 }
 

@@ -11,7 +11,6 @@ import (
 const (
 	scopeHeader = "X-Scopes"
 
-	// P0 uses X-Scopes mock auth for integration; P1 will switch to JWT/gateway injected scopes.
 	ScopeAlertRead   = "alert.read"
 	ScopeAlertIngest = "alert.ingest"
 	ScopeAlertAck    = "alert.ack"
@@ -24,6 +23,8 @@ const (
 	ScopeAIRun           = "ai.run"
 	ScopeAIRead          = "ai.read"
 	ScopeAICancel        = "ai.cancel"
+	ScopeSilenceRead     = "silence.read"
+	ScopeSilenceAdmin    = "silence.admin"
 )
 
 // RequireAnyScope verifies caller scopes from X-Scopes header.

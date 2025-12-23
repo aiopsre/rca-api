@@ -1,0 +1,99 @@
+// Silence API messages for P1-1 suppression/maintenance window.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+
+// SilenceMatcher defines one exact-match condition in P1-1.
+message SilenceMatcher {
+  // key supports: fingerprint|service|workloadKind|workloadName|severity.
+  string key = 1;
+  // op supports only "=" in P1-1.
+  string op = 2;
+  string value = 3;
+}
+
+// Silence represents one suppression rule in a time window.
+message Silence {
+  string silenceID = 1;
+  string namespace = 2;
+  bool enabled = 3;
+  google.protobuf.Timestamp startsAt = 4;
+  google.protobuf.Timestamp endsAt = 5;
+  optional string reason = 6;
+  optional string createdBy = 7;
+  repeated SilenceMatcher matchers = 8;
+  google.protobuf.Timestamp createdAt = 9;
+  google.protobuf.Timestamp updatedAt = 10;
+}
+
+// CreateSilenceRequest creates one silence.
+message CreateSilenceRequest {
+  optional string namespace = 1;
+  optional bool enabled = 2;
+  google.protobuf.Timestamp startsAt = 3;
+  google.protobuf.Timestamp endsAt = 4;
+  optional string reason = 5;
+  optional string createdBy = 6;
+  repeated SilenceMatcher matchers = 7;
+}
+
+// CreateSilenceResponse returns created silence details.
+message CreateSilenceResponse {
+  Silence silence = 1;
+}
+
+// GetSilenceRequest fetches one silence.
+message GetSilenceRequest {
+  // @gotags: uri:"silenceID"
+  string silenceID = 1;
+}
+
+// GetSilenceResponse returns one silence.
+message GetSilenceResponse {
+  Silence silence = 1;
+}
+
+// ListSilencesRequest lists silences with optional filters.
+message ListSilencesRequest {
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // @gotags: form:"limit"
+  int64 limit = 2;
+  // @gotags: form:"namespace"
+  optional string namespace = 3;
+  // @gotags: form:"enabled"
+  optional bool enabled = 4;
+  // @gotags: form:"active"
+  optional bool active = 5;
+}
+
+// ListSilencesResponse returns silence list.
+message ListSilencesResponse {
+  int64 totalCount = 1;
+  repeated Silence silences = 2;
+}
+
+// PatchSilenceRequest updates minimal mutable fields.
+message PatchSilenceRequest {
+  // @gotags: uri:"silenceID"
+  string silenceID = 1;
+  optional bool enabled = 2;
+  optional google.protobuf.Timestamp endsAt = 3;
+  optional string reason = 4;
+}
+
+// PatchSilenceResponse indicates update success.
+message PatchSilenceResponse {}
+
+// DeleteSilenceRequest soft-disables one silence.
+message DeleteSilenceRequest {
+  // @gotags: uri:"silenceID"
+  string silenceID = 1;
+}
+
+// DeleteSilenceResponse indicates delete(successful disable) result.
+message DeleteSilenceResponse {}

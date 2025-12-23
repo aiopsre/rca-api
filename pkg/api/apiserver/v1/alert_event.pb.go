@@ -58,8 +58,12 @@ type AlertEvent struct {
 	AckedBy         *string                `protobuf:"bytes,22,opt,name=ackedBy,proto3,oneof" json:"ackedBy,omitempty"`
 	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,23,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
 	UpdatedAt       *timestamppb.Timestamp `protobuf:"bytes,24,opt,name=updatedAt,proto3" json:"updatedAt,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// isSilenced indicates this event matched an active silence window.
+	IsSilenced bool `protobuf:"varint,25,opt,name=isSilenced,proto3" json:"isSilenced,omitempty"`
+	// silenceID is present when isSilenced=true.
+	SilenceID     *string `protobuf:"bytes,26,opt,name=silenceID,proto3,oneof" json:"silenceID,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AlertEvent) Reset() {
@@ -260,6 +264,20 @@ func (x *AlertEvent) GetUpdatedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *AlertEvent) GetIsSilenced() bool {
+	if x != nil {
+		return x.IsSilenced
+	}
+	return false
+}
+
+func (x *AlertEvent) GetSilenceID() string {
+	if x != nil && x.SilenceID != nil {
+		return *x.SilenceID
+	}
+	return ""
+}
+
 // IngestAlertEventRequest ingests one normalized alert payload.
 type IngestAlertEventRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -455,7 +473,11 @@ type IngestAlertEventResponse struct {
 	Status      string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	Reused      bool                   `protobuf:"varint,5,opt,name=reused,proto3" json:"reused,omitempty"`
 	// mergeResult explains how current view changed.
-	MergeResult   string `protobuf:"bytes,6,opt,name=mergeResult,proto3" json:"mergeResult,omitempty"`
+	MergeResult string `protobuf:"bytes,6,opt,name=mergeResult,proto3" json:"mergeResult,omitempty"`
+	// silenced indicates whether this ingest matched an active silence.
+	Silenced bool `protobuf:"varint,7,opt,name=silenced,proto3" json:"silenced,omitempty"`
+	// silenceID is present when silenced=true.
+	SilenceID     *string `protobuf:"bytes,8,opt,name=silenceID,proto3,oneof" json:"silenceID,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -528,6 +550,20 @@ func (x *IngestAlertEventResponse) GetReused() bool {
 func (x *IngestAlertEventResponse) GetMergeResult() string {
 	if x != nil {
 		return x.MergeResult
+	}
+	return ""
+}
+
+func (x *IngestAlertEventResponse) GetSilenced() bool {
+	if x != nil {
+		return x.Silenced
+	}
+	return false
+}
+
+func (x *IngestAlertEventResponse) GetSilenceID() string {
+	if x != nil && x.SilenceID != nil {
+		return *x.SilenceID
 	}
 	return ""
 }
@@ -1028,7 +1064,7 @@ var File_apiserver_v1_alert_event_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_alert_event_proto_rawDesc = "" +
 	"\n" +
-	"\x1eapiserver/v1/alert_event.proto\x12\fapiserver.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x95\t\n" +
+	"\x1eapiserver/v1/alert_event.proto\x12\fapiserver.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe6\t\n" +
 	"\n" +
 	"AlertEvent\x12\x18\n" +
 	"\aeventID\x18\x01 \x01(\tR\aeventID\x12#\n" +
@@ -1062,7 +1098,11 @@ const file_apiserver_v1_alert_event_proto_rawDesc = "" +
 	"\aackedAt\x18\x15 \x01(\v2\x1a.google.protobuf.TimestampH\rR\aackedAt\x88\x01\x01\x12\x1d\n" +
 	"\aackedBy\x18\x16 \x01(\tH\x0eR\aackedBy\x88\x01\x01\x128\n" +
 	"\tcreatedAt\x18\x17 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x128\n" +
-	"\tupdatedAt\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\r\n" +
+	"\tupdatedAt\x18\x18 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12\x1e\n" +
+	"\n" +
+	"isSilenced\x18\x19 \x01(\bR\n" +
+	"isSilenced\x12!\n" +
+	"\tsilenceID\x18\x1a \x01(\tH\x0fR\tsilenceID\x88\x01\x01B\r\n" +
 	"\v_incidentIDB\v\n" +
 	"\t_dedupKeyB\f\n" +
 	"\n" +
@@ -1083,7 +1123,9 @@ const file_apiserver_v1_alert_event_proto_rawDesc = "" +
 	"\n" +
 	"\b_ackedAtB\n" +
 	"\n" +
-	"\b_ackedBy\"\xc9\a\n" +
+	"\b_ackedByB\f\n" +
+	"\n" +
+	"_silenceID\"\xc9\a\n" +
 	"\x17IngestAlertEventRequest\x12+\n" +
 	"\x0eidempotencyKey\x18\x01 \x01(\tH\x00R\x0eidempotencyKey\x88\x01\x01\x12%\n" +
 	"\vfingerprint\x18\x02 \x01(\tH\x01R\vfingerprint\x88\x01\x01\x12\x1f\n" +
@@ -1128,7 +1170,7 @@ const file_apiserver_v1_alert_event_proto_rawDesc = "" +
 	"\v_labelsJSONB\x12\n" +
 	"\x10_annotationsJSONB\x0f\n" +
 	"\r_generatorURLB\x0f\n" +
-	"\r_rawEventJSON\"\xdc\x01\n" +
+	"\r_rawEventJSON\"\xa9\x02\n" +
 	"\x18IngestAlertEventResponse\x12\x18\n" +
 	"\aeventID\x18\x01 \x01(\tR\aeventID\x12#\n" +
 	"\n" +
@@ -1137,8 +1179,12 @@ const file_apiserver_v1_alert_event_proto_rawDesc = "" +
 	"\vfingerprint\x18\x03 \x01(\tR\vfingerprint\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x16\n" +
 	"\x06reused\x18\x05 \x01(\bR\x06reused\x12 \n" +
-	"\vmergeResult\x18\x06 \x01(\tR\vmergeResultB\r\n" +
-	"\v_incidentID\"\x8d\x04\n" +
+	"\vmergeResult\x18\x06 \x01(\tR\vmergeResult\x12\x1a\n" +
+	"\bsilenced\x18\a \x01(\bR\bsilenced\x12!\n" +
+	"\tsilenceID\x18\b \x01(\tH\x01R\tsilenceID\x88\x01\x01B\r\n" +
+	"\v_incidentIDB\f\n" +
+	"\n" +
+	"_silenceID\"\x8d\x04\n" +
 	"\x1dListCurrentAlertEventsRequest\x12\x16\n" +
 	"\x06offset\x18\x01 \x01(\x03R\x06offset\x12\x14\n" +
 	"\x05limit\x18\x02 \x01(\x03R\x05limit\x12\x1f\n" +

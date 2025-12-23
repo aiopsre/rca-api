@@ -21,6 +21,8 @@ const (
 	AIJobID ResourceID = "ai-job"
 	// AIToolCallID defines ai tool call resource identifier.
 	AIToolCallID ResourceID = "tool-call"
+	// SilenceID defines silence resource identifier.
+	SilenceID ResourceID = "silence"
 )
 
 // String 将资源标识符转换为字符串.

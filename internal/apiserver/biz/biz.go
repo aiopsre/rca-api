@@ -7,6 +7,7 @@ import (
 	datasourcev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/incident"
+	silencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/silence"
 
 	"zk8s.com/rca-api/internal/apiserver/store"
 )
@@ -15,12 +16,15 @@ import (
 var ProviderSet = wire.NewSet(NewBiz, wire.Bind(new(IBiz), new(*biz)))
 
 // IBiz defines the access points for various business logic modules.
+//
+//nolint:interfacebloat // Aggregation interface intentionally exposes all domain biz modules.
 type IBiz interface {
 	IncidentV1() incidentv1.IncidentBiz
 	AlertEventV1() alerteventv1.AlertEventBiz
 	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
+	SilenceV1() silencev1.SilenceBiz
 }
 
 // biz is the concrete implementation of the business logic IBiz.
@@ -54,4 +58,8 @@ func (b *biz) EvidenceV1() evidencev1.EvidenceBiz {
 
 func (b *biz) AIJobV1() aijobv1.AIJobBiz {
 	return aijobv1.New(b.store)
+}
+
+func (b *biz) SilenceV1() silencev1.SilenceBiz {
+	return silencev1.New(b.store)
 }

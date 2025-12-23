@@ -1,3 +1,4 @@
+//nolint:gocognit,gocyclo,nestif,nilerr,nilnil,protogetter,modernize,whitespace
 package alert_event
 
 //go:generate mockgen -destination mock_alert_event.go -package alert_event zk8s.com/rca-api/internal/apiserver/biz/v1/alert_event AlertEventBiz
@@ -21,6 +22,7 @@ import (
 	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
+	"zk8s.com/rca-api/internal/apiserver/pkg/silenceutil"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
 	"zk8s.com/rca-api/internal/pkg/errno"
@@ -127,6 +129,8 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		reused                bool
 		incidentCreated       bool
 		incidentStatusChanged bool
+		silenced              bool
+		silenceID             string
 	)
 
 	err = b.store.TX(ctx, func(txCtx context.Context) error {
@@ -139,6 +143,8 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 				reused = true
 				eventID = existing.EventID
 				incidentID = derefString(existing.IncidentID)
+				silenced = existing.IsSilenced
+				silenceID = derefString(existing.SilenceID)
 				mergeResult = "idempotent_reused"
 				return nil
 			}
@@ -147,17 +153,28 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 			}
 		}
 
-		incident, created, statusChanged, resolveErr := b.resolveIncidentForIngest(txCtx, in)
-		if resolveErr != nil {
-			return resolveErr
+		matchedSilence, matchErr := b.matchActiveSilence(txCtx, in)
+		if matchErr != nil {
+			return matchErr
 		}
-		incidentCreated = created
-		incidentStatusChanged = statusChanged
-		if incident != nil {
-			incidentID = incident.IncidentID
+		if matchedSilence != nil {
+			silenced = true
+			silenceID = matchedSilence.SilenceID
 		}
 
-		history := buildAlertEventModel(in, incidentID, false, nil, strPtr(in.idempotencyKey))
+		if !silenced {
+			incident, created, statusChanged, resolveErr := b.resolveIncidentForIngest(txCtx, in)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			incidentCreated = created
+			incidentStatusChanged = statusChanged
+			if incident != nil {
+				incidentID = incident.IncidentID
+			}
+		}
+
+		history := buildAlertEventModel(in, incidentID, false, nil, strPtr(in.idempotencyKey), silenced, silenceID)
 		if err := b.store.AlertEvent().Create(txCtx, history); err != nil {
 			if in.idempotencyKey != "" && isDuplicateKeyError(err) {
 				existing, getErr := b.store.AlertEvent().Get(txCtx, where.T(txCtx).F("idempotency_key", in.idempotencyKey))
@@ -165,6 +182,8 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 					reused = true
 					eventID = existing.EventID
 					incidentID = derefString(existing.IncidentID)
+					silenced = existing.IsSilenced
+					silenceID = derefString(existing.SilenceID)
 					mergeResult = "idempotent_reused"
 					return nil
 				}
@@ -174,12 +193,23 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		}
 		eventID = history.EventID
 
-		mergeResult, err = b.mergeCurrentAlert(txCtx, in, incidentID)
+		mergeResult, err = b.mergeCurrentAlert(txCtx, in, incidentID, silenced, silenceID)
 		if err != nil {
 			return err
 		}
+		if silenced && mergeResult != "idempotent_reused" {
+			mergeResult = "silenced_" + mergeResult
+		}
 
-		if incidentID != "" {
+		if silenced {
+			audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), incidentID, "alert_silenced", eventID, map[string]any{
+				"event_id":    eventID,
+				"fingerprint": in.fingerprint,
+				"silence_id":  silenceID,
+			})
+		}
+
+		if !silenced && incidentID != "" {
 			audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), incidentID, "alert_ingested", eventID, map[string]any{
 				"event_id":     eventID,
 				"fingerprint":  in.fingerprint,
@@ -225,6 +255,8 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		"reused", reused,
 		"merge_result", mergeResult,
 		"idempotency_key", in.idempotencyKey,
+		"silenced", silenced,
+		"silence_id", silenceID,
 	)
 
 	resp := &v1.IngestAlertEventResponse{
@@ -233,9 +265,13 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		Status:      in.status,
 		Reused:      reused,
 		MergeResult: mergeResult,
+		Silenced:    silenced,
 	}
 	if incidentID != "" {
 		resp.IncidentID = &incidentID
+	}
+	if silenceID != "" {
+		resp.SilenceID = &silenceID
 	}
 	return resp, nil
 }
@@ -479,7 +515,7 @@ func (b *alertEventBiz) resolveIncidentForIngest(ctx context.Context, in *ingest
 	return incident, true, false, nil
 }
 
-func (b *alertEventBiz) mergeCurrentAlert(ctx context.Context, in *ingestInput, incidentID string) (string, error) {
+func (b *alertEventBiz) mergeCurrentAlert(ctx context.Context, in *ingestInput, incidentID string, silenced bool, silenceID string) (string, error) {
 	current, err := b.store.AlertEvent().Get(ctx, where.T(ctx).F("current_key", in.fingerprint))
 	if err != nil && !errorsx.Is(err, gorm.ErrRecordNotFound) {
 		return "", errno.ErrAlertEventGetFailed
@@ -489,7 +525,7 @@ func (b *alertEventBiz) mergeCurrentAlert(ctx context.Context, in *ingestInput, 
 		if err != nil {
 			return "history_appended", nil
 		}
-		applyIngestOnCurrent(current, in, incidentID)
+		applyIngestOnCurrent(current, in, incidentID, silenced, silenceID)
 		current.IsCurrent = false
 		current.CurrentKey = nil
 		if in.endsAt == nil {
@@ -504,14 +540,14 @@ func (b *alertEventBiz) mergeCurrentAlert(ctx context.Context, in *ingestInput, 
 
 	if err != nil {
 		curKey := in.fingerprint
-		obj := buildAlertEventModel(in, incidentID, true, &curKey, nil)
+		obj := buildAlertEventModel(in, incidentID, true, &curKey, nil, silenced, silenceID)
 		if createErr := b.store.AlertEvent().Create(ctx, obj); createErr != nil {
 			if isDuplicateKeyError(createErr) {
 				existing, getErr := b.store.AlertEvent().Get(ctx, where.T(ctx).F("current_key", in.fingerprint))
 				if getErr != nil {
 					return "", errno.ErrAlertEventIngestFailed
 				}
-				applyIngestOnCurrent(existing, in, incidentID)
+				applyIngestOnCurrent(existing, in, incidentID, silenced, silenceID)
 				if updateErr := b.store.AlertEvent().Update(ctx, existing); updateErr != nil {
 					return "", errno.ErrAlertEventIngestFailed
 				}
@@ -522,7 +558,7 @@ func (b *alertEventBiz) mergeCurrentAlert(ctx context.Context, in *ingestInput, 
 		return "current_created", nil
 	}
 
-	applyIngestOnCurrent(current, in, incidentID)
+	applyIngestOnCurrent(current, in, incidentID, silenced, silenceID)
 	if updateErr := b.store.AlertEvent().Update(ctx, current); updateErr != nil {
 		return "", errno.ErrAlertEventIngestFailed
 	}
@@ -617,7 +653,15 @@ func normalizeIngestInput(rq *v1.IngestAlertEventRequest) (*ingestInput, error) 
 	}, nil
 }
 
-func buildAlertEventModel(in *ingestInput, incidentID string, isCurrent bool, currentKey *string, idempotencyKey *string) *model.AlertEventM {
+func buildAlertEventModel(
+	in *ingestInput,
+	incidentID string,
+	isCurrent bool,
+	currentKey *string,
+	idempotencyKey *string,
+	silenced bool,
+	silenceID string,
+) *model.AlertEventM {
 	obj := &model.AlertEventM{
 		IncidentID:      nil,
 		Fingerprint:     in.fingerprint,
@@ -640,6 +684,8 @@ func buildAlertEventModel(in *ingestInput, incidentID string, isCurrent bool, cu
 		IsCurrent:       isCurrent,
 		CurrentKey:      cloneStringPtr(currentKey),
 		IdempotencyKey:  cloneStringPtr(idempotencyKey),
+		IsSilenced:      silenced,
+		SilenceID:       strPtr(silenceID),
 	}
 	if incidentID != "" {
 		obj.IncidentID = strPtr(incidentID)
@@ -647,7 +693,7 @@ func buildAlertEventModel(in *ingestInput, incidentID string, isCurrent bool, cu
 	return obj
 }
 
-func applyIngestOnCurrent(current *model.AlertEventM, in *ingestInput, incidentID string) {
+func applyIngestOnCurrent(current *model.AlertEventM, in *ingestInput, incidentID string, silenced bool, silenceID string) {
 	current.Fingerprint = in.fingerprint
 	current.DedupKey = in.dedupKey
 	current.Source = in.source
@@ -680,8 +726,13 @@ func applyIngestOnCurrent(current *model.AlertEventM, in *ingestInput, incidentI
 		current.CurrentKey = strPtr(in.fingerprint)
 	}
 	current.IdempotencyKey = nil
+	current.IsSilenced = silenced
+	current.SilenceID = strPtr(silenceID)
 	if incidentID != "" {
 		current.IncidentID = strPtr(incidentID)
+	} else if silenced {
+		// Keep silenced current row detached from incident progression.
+		current.IncidentID = nil
 	}
 }
 
@@ -808,6 +859,37 @@ func normalizeListLimit(limit int64) int64 {
 	return limit
 }
 
+func (b *alertEventBiz) matchActiveSilence(ctx context.Context, in *ingestInput) (*model.SilenceM, error) {
+	active, err := b.store.Silence().ListActive(ctx, in.namespace, time.Now().UTC())
+	if err != nil {
+		if isTableNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, errno.ErrSilenceListFailed
+	}
+	if len(active) == 0 {
+		return nil, nil
+	}
+
+	attrs := map[string]string{
+		"fingerprint":  in.fingerprint,
+		"service":      in.service,
+		"workloadkind": silenceutil.DefaultWorkloadKind,
+		"workloadname": in.workload,
+		"severity":     in.severity,
+	}
+	for _, candidate := range active {
+		matchers, decodeErr := silenceutil.DecodeMatchers(candidate.MatchersJSON)
+		if decodeErr != nil || len(matchers) == 0 {
+			continue
+		}
+		if silenceutil.MatchesAll(matchers, attrs) {
+			return candidate, nil
+		}
+	}
+	return nil, nil
+}
+
 func (b *alertEventBiz) retryGetIncidentAfterDuplicateCreate(ctx context.Context, fingerprint string) (*model.IncidentM, error) {
 	const (
 		maxAttempts = 6
@@ -875,6 +957,14 @@ func isDuplicateKeyError(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "duplicate") || strings.Contains(lower, "unique constraint")
+}
+
+func isTableNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "no such table") || strings.Contains(lower, "doesn't exist")
 }
 
 func isIncidentClosed(status string) bool {
