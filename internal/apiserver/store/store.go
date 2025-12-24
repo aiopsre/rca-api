@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"flag"
 	"sync"
 
 	"github.com/google/wire"
@@ -63,6 +64,12 @@ func NewStore(db *gorm.DB) *store {
 // ResetForTest resets package-level singleton state.
 // It should only be used by tests that require strict store isolation.
 func ResetForTest() {
+	// Safety guard: this function must never be called from production code.
+	// In normal binaries, the "test" flags are not registered, so we can detect
+	// that we're not running under `go test`.
+	if flag.Lookup("test.v") == nil {
+		panic("store.ResetForTest must only be called from tests")
+	}
 	once = sync.Once{}
 	S = nil
 }

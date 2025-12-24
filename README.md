@@ -165,6 +165,23 @@ $ LINT_PKGS=./internal/... make lint-new  # 非 git 场景 fallback
 $ make lint                       # 全量检查：用于后续历史问题还债
 ```
 
+### CI / Gate（门禁分层）
+
+为避免 PR 被重型 E2E 拖慢，同时又能持续覆盖关键回归，本仓库提供两级门禁脚本：
+
+```bash
+# PR Gate：快、确定性、默认无外部依赖
+$ ./scripts/ci_pr_gate.sh
+
+# PR Gate（可选）带最小 E2E：需要你先启动 rca-api
+$ RUN_E2E=1 SCOPES='*' RUN_QUERY=0 BASE_URL='http://127.0.0.1:5555' ./scripts/ci_pr_gate.sh
+
+# Nightly Gate：重型回归（风暴/运营回归），需要你先启动 rca-api（以及对应 orchestrator）
+$ SCOPES='*' BASE_URL='http://127.0.0.1:5555' ./scripts/ci_nightly_gate.sh
+```
+
+测试稳定性与隔离约定见：`docs/devel/zh-CN/附录T1_测试稳定性与隔离约定.md`。
+
 ## Versioning
 
 本项目遵循 [语义版本控制](https://semver.org/lang/zh-CN/) 规范。
