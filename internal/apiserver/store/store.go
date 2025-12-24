@@ -60,6 +60,13 @@ func NewStore(db *gorm.DB) *store {
 	return S
 }
 
+// ResetForTest resets package-level singleton state.
+// It should only be used by tests that require strict store isolation.
+func ResetForTest() {
+	once = sync.Once{}
+	S = nil
+}
+
 // DB returns the database instance. If a transaction exists in the context,
 // it returns the transactional DB; otherwise, it returns the core DB.
 // Optional 'where' clauses can be applied to the returned DB instance.
