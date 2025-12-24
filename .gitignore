@@ -39,3 +39,7 @@ __pycache__
 *.pyc
 *.egg-info/
 .pytest_cache/
+
+# macos
+.DS_Store
+**/.DS_Store

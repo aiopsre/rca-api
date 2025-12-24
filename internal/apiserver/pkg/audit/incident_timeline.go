@@ -14,8 +14,13 @@ import (
 
 // AppendIncidentTimelineIfExists writes one incident timeline event only when table/columns are present.
 // It never blocks main workflow: schema mismatch/write errors are logged and ignored.
+//
+//nolint:gocognit,gocyclo // Best-effort schema-compatible insert intentionally handles many branches defensively.
 func AppendIncidentTimelineIfExists(ctx context.Context, db *gorm.DB, incidentID string, eventType string, refID string, payload map[string]any) {
 	if db == nil {
+		return
+	}
+	if strings.TrimSpace(incidentID) == "" {
 		return
 	}
 
