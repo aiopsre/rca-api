@@ -3,6 +3,7 @@ package conversion
 import (
 	"encoding/json"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -38,18 +39,24 @@ func NoticeDeliveryMToNoticeDeliveryV1(m *model.NoticeDeliveryM) *v1.NoticeDeliv
 	}
 
 	return &v1.NoticeDelivery{
-		DeliveryID:   m.DeliveryID,
-		ChannelID:    m.ChannelID,
-		EventType:    m.EventType,
-		IncidentID:   cloneOptionalString(m.IncidentID),
-		JobID:        cloneOptionalString(m.JobID),
-		RequestBody:  m.RequestBody,
-		ResponseCode: int32ToInt64Ptr(m.ResponseCode),
-		ResponseBody: cloneOptionalString(m.ResponseBody),
-		LatencyMs:    m.LatencyMs,
-		Status:       m.Status,
-		Error:        cloneOptionalString(m.Error),
-		CreatedAt:    timestamppb.New(m.CreatedAt.UTC()),
+		DeliveryID:     m.DeliveryID,
+		ChannelID:      m.ChannelID,
+		EventType:      m.EventType,
+		IncidentID:     cloneOptionalString(m.IncidentID),
+		JobID:          cloneOptionalString(m.JobID),
+		RequestBody:    m.RequestBody,
+		ResponseCode:   int32ToInt64Ptr(m.ResponseCode),
+		ResponseBody:   cloneOptionalString(m.ResponseBody),
+		LatencyMs:      m.LatencyMs,
+		Status:         m.Status,
+		Error:          cloneOptionalString(m.Error),
+		CreatedAt:      timestamppb.New(m.CreatedAt.UTC()),
+		Attempts:       m.Attempts,
+		MaxAttempts:    m.MaxAttempts,
+		NextRetryAt:    timestamppb.New(m.NextRetryAt.UTC()),
+		LockedBy:       cloneOptionalString(m.LockedBy),
+		LockedAt:       timePtrToTimestampPtr(m.LockedAt),
+		IdempotencyKey: m.IdempotencyKey,
 	}
 }
 
@@ -91,4 +98,11 @@ func int32ToInt64Ptr(v *int32) *int64 {
 	}
 	out := int64(*v)
 	return &out
+}
+
+func timePtrToTimestampPtr(v *time.Time) *timestamppb.Timestamp {
+	if v == nil {
+		return nil
+	}
+	return timestamppb.New(v.UTC())
 }

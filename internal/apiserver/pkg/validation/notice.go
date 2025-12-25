@@ -25,8 +25,15 @@ const (
 	maxNoticeEventTypeLen   = 64
 	maxNoticeStatusLen      = 16
 	maxNoticeResourceIDLen  = 64
-	maxNoticeRetries        = int64(10)
+	maxNoticeRetries        = int64(20)
 )
+
+var allowedNoticeDeliveryStatus = map[string]struct{}{
+	"pending":   {},
+	"succeeded": {},
+	"failed":    {},
+	"canceled":  {},
+}
 
 //nolint:gocognit,gocyclo // Guardrails are explicit by design for auditability.
 func (v *Validator) ValidateCreateNoticeChannelRequest(ctx context.Context, rq *v1.CreateNoticeChannelRequest) error {
@@ -169,6 +176,9 @@ func (v *Validator) ValidateListNoticeDeliveriesRequest(ctx context.Context, rq 
 	if rq.Status != nil {
 		status := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
 		if status == "" || len(status) > maxNoticeStatusLen {
+			return errorsx.ErrInvalidArgument
+		}
+		if _, ok := allowedNoticeDeliveryStatus[status]; !ok {
 			return errorsx.ErrInvalidArgument
 		}
 		rq.Status = &status

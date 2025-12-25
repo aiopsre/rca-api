@@ -720,21 +720,28 @@ func (*DeleteNoticeChannelResponse) Descriptor() ([]byte, []int) {
 
 // NoticeDelivery records one notification delivery audit.
 type NoticeDelivery struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	DeliveryID    string                 `protobuf:"bytes,1,opt,name=deliveryID,proto3" json:"deliveryID,omitempty"`
-	ChannelID     string                 `protobuf:"bytes,2,opt,name=channelID,proto3" json:"channelID,omitempty"`
-	EventType     string                 `protobuf:"bytes,3,opt,name=eventType,proto3" json:"eventType,omitempty"`
-	IncidentID    *string                `protobuf:"bytes,4,opt,name=incidentID,proto3,oneof" json:"incidentID,omitempty"`
-	JobID         *string                `protobuf:"bytes,5,opt,name=jobID,proto3,oneof" json:"jobID,omitempty"`
-	RequestBody   string                 `protobuf:"bytes,6,opt,name=requestBody,proto3" json:"requestBody,omitempty"`
-	ResponseCode  *int64                 `protobuf:"varint,7,opt,name=responseCode,proto3,oneof" json:"responseCode,omitempty"`
-	ResponseBody  *string                `protobuf:"bytes,8,opt,name=responseBody,proto3,oneof" json:"responseBody,omitempty"`
-	LatencyMs     int64                  `protobuf:"varint,9,opt,name=latencyMs,proto3" json:"latencyMs,omitempty"`
-	Status        string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
-	Error         *string                `protobuf:"bytes,11,opt,name=error,proto3,oneof" json:"error,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	DeliveryID   string                 `protobuf:"bytes,1,opt,name=deliveryID,proto3" json:"deliveryID,omitempty"`
+	ChannelID    string                 `protobuf:"bytes,2,opt,name=channelID,proto3" json:"channelID,omitempty"`
+	EventType    string                 `protobuf:"bytes,3,opt,name=eventType,proto3" json:"eventType,omitempty"`
+	IncidentID   *string                `protobuf:"bytes,4,opt,name=incidentID,proto3,oneof" json:"incidentID,omitempty"`
+	JobID        *string                `protobuf:"bytes,5,opt,name=jobID,proto3,oneof" json:"jobID,omitempty"`
+	RequestBody  string                 `protobuf:"bytes,6,opt,name=requestBody,proto3" json:"requestBody,omitempty"`
+	ResponseCode *int64                 `protobuf:"varint,7,opt,name=responseCode,proto3,oneof" json:"responseCode,omitempty"`
+	ResponseBody *string                `protobuf:"bytes,8,opt,name=responseBody,proto3,oneof" json:"responseBody,omitempty"`
+	LatencyMs    int64                  `protobuf:"varint,9,opt,name=latencyMs,proto3" json:"latencyMs,omitempty"`
+	// status is pending|succeeded|failed|canceled(optional).
+	Status         string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
+	Error          *string                `protobuf:"bytes,11,opt,name=error,proto3,oneof" json:"error,omitempty"`
+	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
+	Attempts       int64                  `protobuf:"varint,13,opt,name=attempts,proto3" json:"attempts,omitempty"`
+	MaxAttempts    int64                  `protobuf:"varint,14,opt,name=maxAttempts,proto3" json:"maxAttempts,omitempty"`
+	NextRetryAt    *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=nextRetryAt,proto3" json:"nextRetryAt,omitempty"`
+	LockedBy       *string                `protobuf:"bytes,16,opt,name=lockedBy,proto3,oneof" json:"lockedBy,omitempty"`
+	LockedAt       *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=lockedAt,proto3,oneof" json:"lockedAt,omitempty"`
+	IdempotencyKey string                 `protobuf:"bytes,18,opt,name=idempotencyKey,proto3" json:"idempotencyKey,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NoticeDelivery) Reset() {
@@ -849,6 +856,48 @@ func (x *NoticeDelivery) GetCreatedAt() *timestamppb.Timestamp {
 		return x.CreatedAt
 	}
 	return nil
+}
+
+func (x *NoticeDelivery) GetAttempts() int64 {
+	if x != nil {
+		return x.Attempts
+	}
+	return 0
+}
+
+func (x *NoticeDelivery) GetMaxAttempts() int64 {
+	if x != nil {
+		return x.MaxAttempts
+	}
+	return 0
+}
+
+func (x *NoticeDelivery) GetNextRetryAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.NextRetryAt
+	}
+	return nil
+}
+
+func (x *NoticeDelivery) GetLockedBy() string {
+	if x != nil && x.LockedBy != nil {
+		return *x.LockedBy
+	}
+	return ""
+}
+
+func (x *NoticeDelivery) GetLockedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LockedAt
+	}
+	return nil
+}
+
+func (x *NoticeDelivery) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 // GetNoticeDeliveryRequest gets one delivery.
@@ -1171,7 +1220,7 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x1aPatchNoticeChannelResponse\":\n" +
 	"\x1aDeleteNoticeChannelRequest\x12\x1c\n" +
 	"\tchannelID\x18\x01 \x01(\tR\tchannelID\"\x1d\n" +
-	"\x1bDeleteNoticeChannelResponse\"\xf0\x03\n" +
+	"\x1bDeleteNoticeChannelResponse\"\x8c\x06\n" +
 	"\x0eNoticeDelivery\x12\x1e\n" +
 	"\n" +
 	"deliveryID\x18\x01 \x01(\tR\n" +
@@ -1189,12 +1238,20 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x06status\x18\n" +
 	" \x01(\tR\x06status\x12\x19\n" +
 	"\x05error\x18\v \x01(\tH\x04R\x05error\x88\x01\x01\x128\n" +
-	"\tcreatedAt\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\r\n" +
+	"\tcreatedAt\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x1a\n" +
+	"\battempts\x18\r \x01(\x03R\battempts\x12 \n" +
+	"\vmaxAttempts\x18\x0e \x01(\x03R\vmaxAttempts\x12<\n" +
+	"\vnextRetryAt\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\x12\x1f\n" +
+	"\blockedBy\x18\x10 \x01(\tH\x05R\blockedBy\x88\x01\x01\x12;\n" +
+	"\blockedAt\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampH\x06R\blockedAt\x88\x01\x01\x12&\n" +
+	"\x0eidempotencyKey\x18\x12 \x01(\tR\x0eidempotencyKeyB\r\n" +
 	"\v_incidentIDB\b\n" +
 	"\x06_jobIDB\x0f\n" +
 	"\r_responseCodeB\x0f\n" +
 	"\r_responseBodyB\b\n" +
-	"\x06_error\":\n" +
+	"\x06_errorB\v\n" +
+	"\t_lockedByB\v\n" +
+	"\t_lockedAt\":\n" +
 	"\x18GetNoticeDeliveryRequest\x12\x1e\n" +
 	"\n" +
 	"deliveryID\x18\x01 \x01(\tR\n" +
@@ -1267,13 +1324,15 @@ var file_apiserver_v1_notice_proto_depIdxs = []int32{
 	0,  // 6: apiserver.v1.ListNoticeChannelsResponse.noticeChannels:type_name -> apiserver.v1.NoticeChannel
 	18, // 7: apiserver.v1.PatchNoticeChannelRequest.headers:type_name -> apiserver.v1.PatchNoticeChannelRequest.HeadersEntry
 	19, // 8: apiserver.v1.NoticeDelivery.createdAt:type_name -> google.protobuf.Timestamp
-	11, // 9: apiserver.v1.GetNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
-	11, // 10: apiserver.v1.ListNoticeDeliveriesResponse.noticeDeliveries:type_name -> apiserver.v1.NoticeDelivery
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	19, // 9: apiserver.v1.NoticeDelivery.nextRetryAt:type_name -> google.protobuf.Timestamp
+	19, // 10: apiserver.v1.NoticeDelivery.lockedAt:type_name -> google.protobuf.Timestamp
+	11, // 11: apiserver.v1.GetNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
+	11, // 12: apiserver.v1.ListNoticeDeliveriesResponse.noticeDeliveries:type_name -> apiserver.v1.NoticeDelivery
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_apiserver_v1_notice_proto_init() }

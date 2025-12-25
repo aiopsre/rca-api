@@ -7,6 +7,12 @@ SCOPES="${SCOPES:-*}"
 DEBUG="${DEBUG:-0}"
 MOCK_PORT="${MOCK_PORT:-19091}"
 MOCK_WAIT_TIMEOUT_SEC="${MOCK_WAIT_TIMEOUT_SEC:-20}"
+WAIT_TIMEOUT_SEC="${WAIT_TIMEOUT_SEC:-60}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+WORKER_CONFIG="${WORKER_CONFIG:-${REPO_ROOT}/configs/rca-apiserver.yaml}"
+WORKER_CMD="${WORKER_CMD:-GOLANG_PROTOBUF_REGISTRATION_CONFLICT=warn go run ./cmd/rca-apiserver --config ${WORKER_CONFIG} notice-worker --notice-worker-poll-interval=200ms --notice-worker-batch-size=8 --notice-worker-lock-timeout=5s}"
 
 LAST_HTTP_CODE=""
 LAST_BODY=""
@@ -20,7 +26,9 @@ MOCK_TOTAL="0"
 
 MOCK_EVENTS_FILE="$(mktemp)"
 MOCK_LOG_FILE="$(mktemp)"
+WORKER_LOG_FILE="$(mktemp)"
 MOCK_PID=""
+WORKER_PID=""
 
 debug() {
 	if [[ "${DEBUG}" == "1" ]]; then
@@ -152,6 +160,34 @@ call_or_fail() {
 	debug "${step} code=${LAST_HTTP_CODE}"
 }
 
+start_ai_job_or_skip() {
+	local step="$1"
+	local job_id="$2"
+	if http_json "POST" "${BASE_URL}/v1/ai/jobs/${job_id}/start" '{}'; then
+		if [[ "${LAST_HTTP_CODE}" =~ ^2[0-9][0-9]$ ]]; then
+			debug "${step} code=${LAST_HTTP_CODE}"
+			return 0
+		fi
+	fi
+
+	if [[ "${LAST_HTTP_CODE}" != "409" ]]; then
+		fail_l3_notice "${step}"
+	fi
+
+	call_or_fail "${step}GetJobAfter409" "GET" "${BASE_URL}/v1/ai/jobs/${job_id}"
+	local job_status
+	job_status="$(extract_field "${LAST_BODY}" "status" || true)"
+	case "${job_status}" in
+		running | succeeded | failed | canceled)
+			debug "${step} skip start due current status=${job_status}"
+			return 0
+			;;
+		*)
+			fail_l3_notice "${step}" "status after 409 is unexpected: ${job_status:-EMPTY}"
+			;;
+	esac
+}
+
 count_mock_event() {
 	local event_type="$1"
 	if [[ ! -s "${MOCK_EVENTS_FILE}" ]]; then
@@ -173,14 +209,23 @@ count_mock_total() {
 	wc -l <"${MOCK_EVENTS_FILE}" | tr -d ' '
 }
 
+assert_worker_alive() {
+	if [[ -n "${WORKER_PID}" ]] && ! kill -0 "${WORKER_PID}" >/dev/null 2>&1; then
+		LAST_HTTP_CODE="WORKER_EXITED"
+		LAST_BODY="$(cat "${WORKER_LOG_FILE}" 2>/dev/null || true)"
+		fail_l3_notice "$1" "worker exited before callback completed"
+	fi
+}
+
 wait_for_event_or_fail() {
 	local step="$1"
 	local event_type="$2"
 	local expected="$3"
 	local deadline now cnt
-	deadline="$(( $(date +%s) + MOCK_WAIT_TIMEOUT_SEC ))"
+	deadline="$(( $(date +%s) + WAIT_TIMEOUT_SEC ))"
 
 	while true; do
+		assert_worker_alive "${step}"
 		cnt="$(count_mock_event "${event_type}")"
 		if [[ "${cnt}" =~ ^[0-9]+$ ]] && (( cnt >= expected )); then
 			return 0
@@ -194,11 +239,15 @@ wait_for_event_or_fail() {
 }
 
 cleanup() {
+	if [[ -n "${WORKER_PID}" ]]; then
+		kill "${WORKER_PID}" >/dev/null 2>&1 || true
+		wait "${WORKER_PID}" >/dev/null 2>&1 || true
+	fi
 	if [[ -n "${MOCK_PID}" ]]; then
 		kill "${MOCK_PID}" >/dev/null 2>&1 || true
 		wait "${MOCK_PID}" >/dev/null 2>&1 || true
 	fi
-	rm -f "${MOCK_EVENTS_FILE}" "${MOCK_LOG_FILE}"
+	rm -f "${MOCK_EVENTS_FILE}" "${MOCK_LOG_FILE}" "${WORKER_LOG_FILE}"
 }
 trap cleanup EXIT
 
@@ -277,7 +326,21 @@ json_string() {
 	fi
 }
 
+start_worker() {
+	(
+		cd "${REPO_ROOT}" && bash -lc "${WORKER_CMD}"
+	) >"${WORKER_LOG_FILE}" 2>&1 &
+	WORKER_PID="$!"
+	sleep 0.3
+	if ! kill -0 "${WORKER_PID}" >/dev/null 2>&1; then
+		LAST_HTTP_CODE="WORKER_EXITED"
+		LAST_BODY="$(cat "${WORKER_LOG_FILE}" 2>/dev/null || true)"
+		fail_l3_notice "StartWorker" "worker exited immediately"
+	fi
+}
+
 start_mock
+start_worker
 
 rand="${RAND:-$RANDOM}"
 now_epoch="$(date -u +%s)"
@@ -319,7 +382,7 @@ if [[ -z "${JOB_ID}" ]]; then
 	fail_l3_notice "RunAIJobParseJobID" "job_id missing"
 fi
 
-call_or_fail "StartAIJob" POST "${BASE_URL}/v1/ai/jobs/${JOB_ID}/start" '{}'
+start_ai_job_or_skip "StartAIJob" "${JOB_ID}"
 
 diagnosis_json='{"summary":"db pool exhausted","root_cause":{"category":"db","statement":"connection pool saturated","confidence":0.9,"evidence_ids":["evidence-l3-1","evidence-l3-2"]},"timeline":[{"t":"2026-02-08T00:00:00Z","event":"alert_fired","ref":"alert-l3"}],"hypotheses":[{"statement":"db pool limit reached","confidence":0.9,"supporting_evidence_ids":["evidence-l3-1","evidence-l3-2"],"missing_evidence":[]}],"recommendations":[{"type":"readonly_check","action":"inspect db pool","risk":"low"}],"unknowns":[],"next_steps":["increase max open connections"]}'
 finalize_body=$(cat <<EOF

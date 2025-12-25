@@ -26,7 +26,7 @@ const (
 	maxNoticeDeliveryListLimit     = int64(200)
 
 	defaultNoticeTimeoutMs = int64(3000)
-	defaultNoticeRetries   = int64(0)
+	defaultNoticeRetries   = int64(3)
 )
 
 // NoticeBiz defines notice use-cases.

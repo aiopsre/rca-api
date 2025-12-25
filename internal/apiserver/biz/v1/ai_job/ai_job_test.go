@@ -3,10 +3,7 @@ package ai_job
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -357,18 +354,11 @@ func TestAIJobFinalize_DiagnosisWrittenTriggersNoticeDelivery(t *testing.T) {
 	biz := New(s)
 	incident := createTestIncident(t, s)
 
-	var hitCount atomic.Int32
-	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hitCount.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer mockSrv.Close()
-
 	require.NoError(t, s.NoticeChannel().Create(context.Background(), &model.NoticeChannelM{
 		Name:        "notice-diagnosis-written",
 		Type:        "webhook",
 		Enabled:     true,
-		EndpointURL: mockSrv.URL,
+		EndpointURL: "http://127.0.0.1:19999/hook",
 		TimeoutMs:   1000,
 	}))
 
@@ -412,13 +402,12 @@ func TestAIJobFinalize_DiagnosisWrittenTriggersNoticeDelivery(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.Equal(t, int32(1), hitCount.Load())
-
 	total, deliveries, err := s.NoticeDelivery().List(context.Background(),
 		where.T(context.Background()).P(0, 20).F("incident_id", incident.IncidentID).F("event_type", "diagnosis_written"))
 	require.NoError(t, err)
 	require.Equal(t, int64(1), total)
-	require.Equal(t, "succeeded", deliveries[0].Status)
+	require.Equal(t, "pending", deliveries[0].Status)
+	require.Equal(t, int64(0), deliveries[0].Attempts)
 	require.NotNil(t, deliveries[0].JobID)
 	require.Equal(t, runResp.GetJobID(), *deliveries[0].JobID)
 }

@@ -3,10 +3,7 @@ package alert_event
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -440,18 +437,11 @@ func TestAlertEventBiz_IncidentCreatedTriggersNoticeDelivery(t *testing.T) {
 	biz := New(s)
 	ctx := context.Background()
 
-	var hitCount atomic.Int32
-	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hitCount.Add(1)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer mockSrv.Close()
-
 	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
 		Name:        "notice-alert-ingest",
 		Type:        "webhook",
 		Enabled:     true,
-		EndpointURL: mockSrv.URL,
+		EndpointURL: "http://127.0.0.1:19999/hook",
 		TimeoutMs:   1000,
 	}))
 
@@ -470,11 +460,10 @@ func TestAlertEventBiz_IncidentCreatedTriggersNoticeDelivery(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ingestResp.GetIncidentID())
 
-	require.Equal(t, int32(1), hitCount.Load())
-
 	total, deliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 20).F("incident_id", ingestResp.GetIncidentID()))
 	require.NoError(t, err)
 	require.Equal(t, int64(1), total)
 	require.Equal(t, "incident_created", deliveries[0].EventType)
-	require.Equal(t, "succeeded", deliveries[0].Status)
+	require.Equal(t, "pending", deliveries[0].Status)
+	require.Equal(t, int64(0), deliveries[0].Attempts)
 }

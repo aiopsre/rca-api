@@ -102,9 +102,16 @@ message NoticeDelivery {
   optional int64 responseCode = 7;
   optional string responseBody = 8;
   int64 latencyMs = 9;
+  // status is pending|succeeded|failed|canceled(optional).
   string status = 10;
   optional string error = 11;
   google.protobuf.Timestamp createdAt = 12;
+  int64 attempts = 13;
+  int64 maxAttempts = 14;
+  google.protobuf.Timestamp nextRetryAt = 15;
+  optional string lockedBy = 16;
+  optional google.protobuf.Timestamp lockedAt = 17;
+  string idempotencyKey = 18;
 }
 
 // GetNoticeDeliveryRequest gets one delivery.

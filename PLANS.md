@@ -430,3 +430,33 @@ python -m orchestrator.main
    - 断言 mock 收到 2 次回调 + deliveries 可按 incident_id 查询到 >=2 且 succeeded
 6) 工程验证：make protoc / make test / make lint-new 通过
 
+---
+
+## P1-3 Notice（Delivery Queue + Retry Worker）最小可靠性闭环
+
+### Spec
+- docs/devel/zh-CN/附录P1-3_Notice_投递队列与重试规范.md
+
+### Done Definition（验收口径）
+1) 采用 DB Outbox：业务路径不再直接网络投递，仅创建 `NoticeDelivery(status=pending)`（best effort，不阻塞主流程）：
+   - `incident_created` / `diagnosis_written` 触发点改为：写入 pending delivery（含 request_body 截断）
+2) `NoticeDelivery` 扩展调度字段（最小集）：
+   - status: pending/succeeded/failed（canceled 可选）
+   - attempts、max_attempts、next_retry_at
+   - locked_by/locked_at（支持 claim；单实例也要保证并发不重复）
+   - idempotency_key（HTTP Header: Idempotency-Key）
+3) 新增 notice-worker（独立进程/子命令均可）：
+   - 拉取并 claim `pending && next_retry_at<=now` 的 deliveries（按 created_at 或 id）
+   - 发送 webhook（timeout=channel.timeoutMs 钳制 500~10000）
+   - 成功：置 succeeded；失败（可重试）：attempts++，计算 backoff+ jitter，更新 next_retry_at；达到上限置 failed
+   - 可重试：网络错误/timeout/429/5xx；不可重试：4xx（除 429）
+4) 可观测性（最小指标 + 日志字段）：
+   - notice_delivery_dispatch_total / notice_delivery_send_total{status} / notice_delivery_send_latency_ms
+   - pending gauge（可选）与 failed total（建议）
+   - 日志贯穿 delivery_id/channel_id/event_type/incident_id/job_id/attempts/http_code/error
+5) 回归脚本（L4）：新增 `scripts/test_p1_L4_notice_retry.sh`
+   - mock webhook 前 2 次返回 500，之后返回 200
+   - 触发产生 delivery -> 启动 worker -> 断言最终 succeeded、attempts>=3、收到 Idempotency-Key
+   - 成功输出 PASS L4-NOTICE-RETRY + IDs；失败输出 FAIL step=<STEP> + HTTP code/body<=2KB + IDs
+6) 工程验证：make protoc / make test / make lint-new 通过
+

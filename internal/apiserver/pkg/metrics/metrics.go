@@ -12,15 +12,19 @@ import (
 
 // Metrics holds the OpenTelemetry instruments for capturing application metrics.
 type Metrics struct {
-	Meter                     metric.Meter
-	RESTResourceCreateCounter metric.Int64Counter
-	RESTResourceGetCounter    metric.Int64Counter
-	EvidenceQueryCounter      metric.Int64Counter
-	EvidenceQueryLatency      metric.Float64Histogram
-	AlertEventIngestCounter   metric.Int64Counter
-	AlertEventIngestLatency   metric.Float64Histogram
-	AIJobQueuePullCounter     metric.Int64Counter
-	AIJobQueuePullLatency     metric.Float64Histogram
+	Meter                       metric.Meter
+	RESTResourceCreateCounter   metric.Int64Counter
+	RESTResourceGetCounter      metric.Int64Counter
+	EvidenceQueryCounter        metric.Int64Counter
+	EvidenceQueryLatency        metric.Float64Histogram
+	AlertEventIngestCounter     metric.Int64Counter
+	AlertEventIngestLatency     metric.Float64Histogram
+	AIJobQueuePullCounter       metric.Int64Counter
+	AIJobQueuePullLatency       metric.Float64Histogram
+	NoticeDeliveryDispatchTotal metric.Int64Counter
+	NoticeDeliverySendTotal     metric.Int64Counter
+	NoticeDeliverySendLatencyMS metric.Float64Histogram
+	NoticeDeliveryFailedTotal   metric.Int64Counter
 }
 
 var (
@@ -76,17 +80,41 @@ func Init(scope string) error {
 			metric.WithDescription("Latency in milliseconds for AI job queue pull requests"),
 		)
 
+		noticeDispatchTotal, _ := meter.Int64Counter(
+			"notice_delivery_dispatch_total",
+			metric.WithDescription("Total number of notice deliveries enqueued to outbox"),
+		)
+
+		noticeSendTotal, _ := meter.Int64Counter(
+			"notice_delivery_send_total",
+			metric.WithDescription("Total number of notice webhook send attempts by status"),
+		)
+
+		noticeSendLatency, _ := meter.Float64Histogram(
+			"notice_delivery_send_latency_ms",
+			metric.WithDescription("Latency in milliseconds for notice webhook send attempts"),
+		)
+
+		noticeFailedTotal, _ := meter.Int64Counter(
+			"notice_delivery_failed_total",
+			metric.WithDescription("Total number of notice deliveries ended in failed status"),
+		)
+
 		// Assign the global singleton.
 		M = &Metrics{
-			Meter:                     meter,
-			RESTResourceCreateCounter: createCounter,
-			RESTResourceGetCounter:    getCount,
-			EvidenceQueryCounter:      evidenceQueryCounter,
-			EvidenceQueryLatency:      evidenceQueryLatency,
-			AlertEventIngestCounter:   alertEventIngestCounter,
-			AlertEventIngestLatency:   alertEventIngestLatency,
-			AIJobQueuePullCounter:     aiJobQueuePullCounter,
-			AIJobQueuePullLatency:     aiJobQueuePullLatency,
+			Meter:                       meter,
+			RESTResourceCreateCounter:   createCounter,
+			RESTResourceGetCounter:      getCount,
+			EvidenceQueryCounter:        evidenceQueryCounter,
+			EvidenceQueryLatency:        evidenceQueryLatency,
+			AlertEventIngestCounter:     alertEventIngestCounter,
+			AlertEventIngestLatency:     alertEventIngestLatency,
+			AIJobQueuePullCounter:       aiJobQueuePullCounter,
+			AIJobQueuePullLatency:       aiJobQueuePullLatency,
+			NoticeDeliveryDispatchTotal: noticeDispatchTotal,
+			NoticeDeliverySendTotal:     noticeSendTotal,
+			NoticeDeliverySendLatencyMS: noticeSendLatency,
+			NoticeDeliveryFailedTotal:   noticeFailedTotal,
 		}
 	})
 
@@ -148,4 +176,42 @@ func (m *Metrics) RecordAIJobQueuePull(ctx context.Context, status string, outco
 	}
 	m.AIJobQueuePullCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.AIJobQueuePullLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordNoticeDeliveryDispatch records one notice delivery enqueue event.
+func (m *Metrics) RecordNoticeDeliveryDispatch(ctx context.Context, eventType string) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("event_type", eventType),
+	}
+	m.NoticeDeliveryDispatchTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordNoticeDeliverySend records one notice webhook send attempt.
+func (m *Metrics) RecordNoticeDeliverySend(ctx context.Context, eventType string, status string, duration time.Duration) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("event_type", eventType),
+		attribute.String("status", status),
+	}
+	m.NoticeDeliverySendTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+	m.NoticeDeliverySendLatencyMS.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordNoticeDeliveryFailed records one notice delivery terminal failure.
+func (m *Metrics) RecordNoticeDeliveryFailed(ctx context.Context, eventType string) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("event_type", eventType),
+	}
+	m.NoticeDeliveryFailedTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -69,13 +70,17 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.NoError(t, err)
 
 	delivery := &model.NoticeDeliveryM{
-		ChannelID:   channelID,
-		EventType:   "incident_created",
-		IncidentID:  strPtrNoticeBiz("incident-1"),
-		JobID:       nil,
-		RequestBody: `{"event_type":"incident_created"}`,
-		LatencyMs:   22,
-		Status:      "succeeded",
+		ChannelID:      channelID,
+		EventType:      "incident_created",
+		IncidentID:     strPtrNoticeBiz("incident-1"),
+		JobID:          nil,
+		RequestBody:    `{"event_type":"incident_created"}`,
+		LatencyMs:      22,
+		Status:         "succeeded",
+		Attempts:       1,
+		MaxAttempts:    3,
+		NextRetryAt:    time.Now().UTC(),
+		IdempotencyKey: "notice-test-idem-1",
 	}
 	require.NoError(t, s.NoticeDelivery().Create(ctx, delivery))
 	require.NotEmpty(t, delivery.DeliveryID)

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/onexstack/onexstack/pkg/cli/cli"
 	"github.com/onexstack/onexstack/pkg/core"
@@ -12,6 +13,9 @@ import (
 	genericapiserver "k8s.io/apiserver/pkg/server"
 
 	"zk8s.com/rca-api/cmd/rca-apiserver/app/options"
+	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
+	"zk8s.com/rca-api/internal/apiserver/store"
 )
 
 const (
@@ -43,37 +47,7 @@ func NewAPIServerCommand() *cobra.Command {
 		// SilenceUsage ensures that the help message is not printed when an error occurs.
 		SilenceUsage: true,
 		// RunE defines the function to execute when cmd.Execute() is called.
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Setup a context that listens for OS signals (e.g., Ctrl+C) for graceful shutdown.
-			ctx := genericapiserver.SetupSignalContext()
-
-			// Check if the --version flag was requested. If so, print version info and exit.
-			version.PrintAndExitIfRequested()
-
-			// Unmarshal the configuration from Viper into the ServerOptions struct.
-			if err := viper.Unmarshal(opts); err != nil {
-				return fmt.Errorf("failed to unmarshal configuration: %w", err)
-			}
-
-			// Complete the options by setting default values and deriving configurations.
-			if err := opts.Complete(); err != nil {
-				return fmt.Errorf("failed to complete options: %w", err)
-			}
-
-			// Validate the command-line options to ensure they are valid.
-			if err := opts.Validate(); err != nil {
-				return fmt.Errorf("invalid options: %w", err)
-			}
-
-			// Initialize and configure OpenTelemetry providers based on enabled signals.
-			if err := opts.OTelOptions.Apply(); err != nil {
-				return err
-			}
-			// Ensure OpenTelemetry resources are properly cleaned up on application shutdown.
-			defer func() { _ = opts.OTelOptions.Shutdown(ctx) }()
-
-			return run(ctx, opts)
-		},
+		RunE: runWithPreparedOptions(opts, run),
 
 		// Args ensures no command-line arguments are allowed, e.g., './rca-apiserver param1'.
 		Args: cobra.NoArgs,
@@ -97,6 +71,7 @@ func NewAPIServerCommand() *cobra.Command {
 
 	// Add the standard --version flag to the command.
 	version.AddFlags(cmd.PersistentFlags())
+	cmd.AddCommand(newNoticeWorkerCommand(opts))
 
 	return cmd
 }
@@ -117,4 +92,90 @@ func run(ctx context.Context, opts *options.ServerOptions) error {
 
 	// Run the server until the context is canceled or an error occurs.
 	return server.Run(ctx)
+}
+
+func newNoticeWorkerCommand(opts *options.ServerOptions) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "notice-worker",
+		Short:        "Run notice delivery worker (DB outbox retry)",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE:         runWithPreparedOptions(opts, runNoticeWorker),
+	}
+	return cmd
+}
+
+func runWithPreparedOptions(
+	opts *options.ServerOptions,
+	runner func(context.Context, *options.ServerOptions) error,
+) func(*cobra.Command, []string) error {
+
+	return func(cmd *cobra.Command, args []string) error {
+		// Setup a context that listens for OS signals (e.g., Ctrl+C) for graceful shutdown.
+		ctx := genericapiserver.SetupSignalContext()
+
+		// Check if the --version flag was requested. If so, print version info and exit.
+		version.PrintAndExitIfRequested()
+
+		// Unmarshal the configuration from Viper into the ServerOptions struct.
+		if err := viper.Unmarshal(opts); err != nil {
+			return fmt.Errorf("failed to unmarshal configuration: %w", err)
+		}
+
+		// Complete the options by setting default values and deriving configurations.
+		if err := opts.Complete(); err != nil {
+			return fmt.Errorf("failed to complete options: %w", err)
+		}
+
+		// Validate the command-line options to ensure they are valid.
+		if err := opts.Validate(); err != nil {
+			return fmt.Errorf("invalid options: %w", err)
+		}
+
+		// Initialize and configure OpenTelemetry providers based on enabled signals.
+		if err := opts.OTelOptions.Apply(); err != nil {
+			return err
+		}
+		// Ensure OpenTelemetry resources are properly cleaned up on application shutdown.
+		defer func() { _ = opts.OTelOptions.Shutdown(ctx) }()
+
+		return runner(ctx, opts)
+	}
+}
+
+func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
+	cfg, err := opts.Config()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+	db, err := cfg.NewDB()
+	if err != nil {
+		return fmt.Errorf("failed to initialize database: %w", err)
+	}
+	st := store.NewStore(db)
+	_ = metrics.Init("notice-worker")
+
+	worker := noticepkg.NewWorker(st, noticepkg.WorkerOptions{
+		WorkerID:     opts.NoticeWorkerID,
+		BatchSize:    opts.NoticeWorkerBatchSize,
+		PollInterval: opts.NoticeWorkerPollInterval,
+		LockTimeout:  opts.NoticeWorkerLockTimeout,
+	})
+
+	slog.Info("notice worker started",
+		"worker_id", workerIDForLog(opts.NoticeWorkerID),
+		"batch_size", opts.NoticeWorkerBatchSize,
+		"poll_interval", opts.NoticeWorkerPollInterval.String(),
+		"lock_timeout", opts.NoticeWorkerLockTimeout.String(),
+	)
+	defer slog.Info("notice worker exited")
+
+	return worker.Run(ctx)
+}
+
+func workerIDForLog(id string) string {
+	if id == "" {
+		return "auto"
+	}
+	return id
 }
