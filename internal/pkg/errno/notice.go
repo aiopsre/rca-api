@@ -1,0 +1,29 @@
+package errno
+
+import (
+	"net/http"
+
+	"github.com/onexstack/onexstack/pkg/errorsx"
+)
+
+var (
+	// ErrNoticeChannelNotFound indicates notice channel does not exist.
+	ErrNoticeChannelNotFound = errorsx.New(http.StatusNotFound, "NotFound.NoticeChannelNotFound", "The requested notice channel was not found.")
+	// ErrNoticeChannelCreateFailed indicates notice channel create failure.
+	ErrNoticeChannelCreateFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeChannelCreateFailed", "Failed to create the notice channel.")
+	// ErrNoticeChannelUpdateFailed indicates notice channel update failure.
+	ErrNoticeChannelUpdateFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeChannelUpdateFailed", "Failed to update the notice channel.")
+	// ErrNoticeChannelDeleteFailed indicates notice channel soft-delete(disable) failure.
+	ErrNoticeChannelDeleteFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeChannelDeleteFailed", "Failed to disable the notice channel.")
+	// ErrNoticeChannelGetFailed indicates notice channel get failure.
+	ErrNoticeChannelGetFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeChannelGetFailed", "Failed to retrieve the notice channel.")
+	// ErrNoticeChannelListFailed indicates notice channel list failure.
+	ErrNoticeChannelListFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeChannelListFailed", "Failed to list notice channels.")
+
+	// ErrNoticeDeliveryNotFound indicates notice delivery does not exist.
+	ErrNoticeDeliveryNotFound = errorsx.New(http.StatusNotFound, "NotFound.NoticeDeliveryNotFound", "The requested notice delivery was not found.")
+	// ErrNoticeDeliveryGetFailed indicates notice delivery get failure.
+	ErrNoticeDeliveryGetFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryGetFailed", "Failed to retrieve the notice delivery.")
+	// ErrNoticeDeliveryListFailed indicates notice delivery list failure.
+	ErrNoticeDeliveryListFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryListFailed", "Failed to list notice deliveries.")
+)

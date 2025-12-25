@@ -37,6 +37,8 @@ type IStore interface {
 	AIJob() AIJobStore
 	AIToolCall() AIToolCallStore
 	Silence() SilenceStore
+	NoticeChannel() NoticeChannelStore
+	NoticeDelivery() NoticeDeliveryStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -136,4 +138,12 @@ func (s *store) AIToolCall() AIToolCallStore {
 
 func (s *store) Silence() SilenceStore {
 	return newSilenceStore(s)
+}
+
+func (s *store) NoticeChannel() NoticeChannelStore {
+	return newNoticeChannelStore(s)
+}
+
+func (s *store) NoticeDelivery() NoticeDeliveryStore {
+	return newNoticeDeliveryStore(s)
 }

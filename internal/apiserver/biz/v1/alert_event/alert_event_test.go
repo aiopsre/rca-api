@@ -3,7 +3,10 @@ package alert_event
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -380,6 +383,7 @@ CREATE TABLE incidents (
 	require.NoError(t, db.Exec("CREATE UNIQUE INDEX uniq_incidents_active_fingerprint_key ON incidents(active_fingerprint_key)").Error)
 	require.NoError(t, db.AutoMigrate(&model.AlertEventM{}))
 	require.NoError(t, db.AutoMigrate(&model.SilenceM{}))
+	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }
 
@@ -428,4 +432,49 @@ func TestRetryIncidentDuplicateReadback(t *testing.T) {
 		require.ErrorIs(t, err, context.Canceled)
 		require.Equal(t, 1, attempt)
 	})
+}
+
+func TestAlertEventBiz_IncidentCreatedTriggersNoticeDelivery(t *testing.T) {
+	db := newAlertEventTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	ctx := context.Background()
+
+	var hitCount atomic.Int32
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitCount.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mockSrv.Close()
+
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:        "notice-alert-ingest",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: mockSrv.URL,
+		TimeoutMs:   1000,
+	}))
+
+	now := time.Now().UTC()
+	ingestResp, err := biz.Ingest(ctx, &v1.IngestAlertEventRequest{
+		IdempotencyKey: ptrAlertString("idem-notice-ingest"),
+		Fingerprint:    ptrAlertString("fp-notice-ingest"),
+		Status:         "firing",
+		Severity:       "P1",
+		Service:        ptrAlertString("checkout"),
+		Cluster:        ptrAlertString("prod"),
+		Namespace:      ptrAlertString("default"),
+		Workload:       ptrAlertString("checkout-api"),
+		LastSeenAt:     timestamppb.New(now),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ingestResp.GetIncidentID())
+
+	require.Equal(t, int32(1), hitCount.Load())
+
+	total, deliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 20).F("incident_id", ingestResp.GetIncidentID()))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Equal(t, "incident_created", deliveries[0].EventType)
+	require.Equal(t, "succeeded", deliveries[0].Status)
 }

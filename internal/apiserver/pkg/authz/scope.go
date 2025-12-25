@@ -25,6 +25,8 @@ const (
 	ScopeAICancel        = "ai.cancel"
 	ScopeSilenceRead     = "silence.read"
 	ScopeSilenceAdmin    = "silence.admin"
+	ScopeNoticeRead      = "notice.read"
+	ScopeNoticeAdmin     = "notice.admin"
 )
 
 // RequireAnyScope verifies caller scopes from X-Scopes header.

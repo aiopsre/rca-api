@@ -1,0 +1,141 @@
+// Notice API messages for P1-2B webhook notifications.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+
+// NoticeChannel configures one outbound notification channel.
+message NoticeChannel {
+  string channelID = 1;
+  string name = 2;
+  // type is fixed to webhook in P1-2B.
+  string type = 3;
+  bool enabled = 4;
+  string endpointURL = 5;
+  optional string secret = 6;
+  map<string, string> headers = 7;
+  int64 timeoutMs = 8;
+  int64 maxRetries = 9;
+  google.protobuf.Timestamp createdAt = 10;
+  google.protobuf.Timestamp updatedAt = 11;
+}
+
+// CreateNoticeChannelRequest creates a notice channel.
+message CreateNoticeChannelRequest {
+  string name = 1;
+  optional string type = 2;
+  optional bool enabled = 3;
+  string endpointURL = 4;
+  optional string secret = 5;
+  map<string, string> headers = 6;
+  optional int64 timeoutMs = 7;
+  optional int64 maxRetries = 8;
+}
+
+// CreateNoticeChannelResponse returns created channel.
+message CreateNoticeChannelResponse {
+  NoticeChannel noticeChannel = 1;
+}
+
+// GetNoticeChannelRequest gets one notice channel.
+message GetNoticeChannelRequest {
+  // @gotags: uri:"channelID"
+  string channelID = 1;
+}
+
+// GetNoticeChannelResponse returns one notice channel.
+message GetNoticeChannelResponse {
+  NoticeChannel noticeChannel = 1;
+}
+
+// ListNoticeChannelsRequest lists channels.
+message ListNoticeChannelsRequest {
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // @gotags: form:"limit"
+  int64 limit = 2;
+  // @gotags: form:"enabled"
+  optional bool enabled = 3;
+}
+
+// ListNoticeChannelsResponse returns channels.
+message ListNoticeChannelsResponse {
+  int64 totalCount = 1;
+  repeated NoticeChannel noticeChannels = 2;
+}
+
+// PatchNoticeChannelRequest updates mutable fields.
+message PatchNoticeChannelRequest {
+  // @gotags: uri:"channelID"
+  string channelID = 1;
+  optional bool enabled = 2;
+  optional string endpointURL = 3;
+  map<string, string> headers = 4;
+  optional int64 timeoutMs = 5;
+  optional int64 maxRetries = 6;
+  optional string secret = 7;
+}
+
+// PatchNoticeChannelResponse indicates update result.
+message PatchNoticeChannelResponse {}
+
+// DeleteNoticeChannelRequest soft-disables one channel.
+message DeleteNoticeChannelRequest {
+  // @gotags: uri:"channelID"
+  string channelID = 1;
+}
+
+// DeleteNoticeChannelResponse indicates delete result.
+message DeleteNoticeChannelResponse {}
+
+// NoticeDelivery records one notification delivery audit.
+message NoticeDelivery {
+  string deliveryID = 1;
+  string channelID = 2;
+  string eventType = 3;
+  optional string incidentID = 4;
+  optional string jobID = 5;
+  string requestBody = 6;
+  optional int64 responseCode = 7;
+  optional string responseBody = 8;
+  int64 latencyMs = 9;
+  string status = 10;
+  optional string error = 11;
+  google.protobuf.Timestamp createdAt = 12;
+}
+
+// GetNoticeDeliveryRequest gets one delivery.
+message GetNoticeDeliveryRequest {
+  // @gotags: uri:"deliveryID"
+  string deliveryID = 1;
+}
+
+// GetNoticeDeliveryResponse returns one delivery.
+message GetNoticeDeliveryResponse {
+  NoticeDelivery noticeDelivery = 1;
+}
+
+// ListNoticeDeliveriesRequest lists delivery audits.
+message ListNoticeDeliveriesRequest {
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // @gotags: form:"limit"
+  int64 limit = 2;
+  // @gotags: form:"channel_id"
+  optional string channelID = 3;
+  // @gotags: form:"incident_id"
+  optional string incidentID = 4;
+  // @gotags: form:"event_type"
+  optional string eventType = 5;
+  // @gotags: form:"status"
+  optional string status = 6;
+}
+
+// ListNoticeDeliveriesResponse returns delivery list.
+message ListNoticeDeliveriesResponse {
+  int64 totalCount = 1;
+  repeated NoticeDelivery noticeDeliveries = 2;
+}

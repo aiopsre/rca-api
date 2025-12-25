@@ -399,3 +399,34 @@ python -m orchestrator.main
      - 输出 PASS L3 + IDs；失败输出诊断并非 0 退出
 5) 工程验证：make protoc / make test / make lint-new 通过
 
+---
+
+## P1-2B Notice（Webhook 通知）最小闭环
+
+### Spec
+- docs/devel/zh-CN/附录P1-2B_Notice_接口与行为规范.md
+
+### Done Definition（验收口径）
+1) NoticeChannel + NoticeDelivery 落地（proto -> make protoc -> model/store/biz/handler -> validation -> tests）：
+   - NoticeChannel CRUD：
+     - POST /v1/notice-channels
+     - GET /v1/notice-channels/{channelID}
+     - GET /v1/notice-channels?enabled=
+     - PATCH /v1/notice-channels/{channelID}
+     - DELETE /v1/notice-channels/{channelID}（软删/禁用）
+   - Delivery 只读查询：
+     - GET /v1/notice-deliveries?incident_id=&channel_id=&event_type=&status=&limit=&offset=
+     - GET /v1/notice-deliveries/{deliveryID}
+2) RBAC scopes：notice.read / notice.admin，并在 handler 强制校验。
+3) 触发点（best effort，不阻塞主流程）：
+   - incident_created：merge 新建 incident 成功后触发通知
+   - diagnosis_written：AIJob finalize 成功写回 incident.diagnosis_json 后触发通知
+   - 每次投递必须落库 NoticeDelivery（含 request/response/latency/error，截断保护）。
+4) Guardrails：
+   - request/response body 截断（默认 8KB）、error 截断（默认 2KB）
+   - endpointURL 仅允许 http/https；timeoutMs 钳制 500~10000
+5) 回归脚本：新增 scripts/test_p1_L3_notice.sh
+   - 启动本地 mock webhook -> 创建 NoticeChannel -> 触发 incident_created + diagnosis_written
+   - 断言 mock 收到 2 次回调 + deliveries 可按 incident_id 查询到 >=2 且 succeeded
+6) 工程验证：make protoc / make test / make lint-new 通过
+

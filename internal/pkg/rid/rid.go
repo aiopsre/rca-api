@@ -23,6 +23,10 @@ const (
 	AIToolCallID ResourceID = "tool-call"
 	// SilenceID defines silence resource identifier.
 	SilenceID ResourceID = "silence"
+	// NoticeChannelID defines notice channel resource identifier.
+	NoticeChannelID ResourceID = "notice-channel"
+	// NoticeDeliveryID defines notice delivery resource identifier.
+	NoticeDeliveryID ResourceID = "notice-delivery"
 )
 
 // String 将资源标识符转换为字符串.

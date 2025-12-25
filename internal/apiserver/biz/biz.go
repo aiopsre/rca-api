@@ -7,6 +7,7 @@ import (
 	datasourcev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/incident"
+	noticev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/notice"
 	silencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/silence"
 
 	"zk8s.com/rca-api/internal/apiserver/store"
@@ -25,6 +26,7 @@ type IBiz interface {
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
 	SilenceV1() silencev1.SilenceBiz
+	NoticeV1() noticev1.NoticeBiz
 }
 
 // biz is the concrete implementation of the business logic IBiz.
@@ -62,4 +64,8 @@ func (b *biz) AIJobV1() aijobv1.AIJobBiz {
 
 func (b *biz) SilenceV1() silencev1.SilenceBiz {
 	return silencev1.New(b.store)
+}
+
+func (b *biz) NoticeV1() noticev1.NoticeBiz {
+	return noticev1.New(b.store)
 }

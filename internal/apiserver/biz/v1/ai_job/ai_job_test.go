@@ -3,7 +3,10 @@ package ai_job
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -348,6 +351,78 @@ func TestAIJobList_QueuedOrderAndPagination(t *testing.T) {
 	require.Equal(t, resp.Jobs[1].JobID, page2.Jobs[0].JobID)
 }
 
+func TestAIJobFinalize_DiagnosisWrittenTriggersNoticeDelivery(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	var hitCount atomic.Int32
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hitCount.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mockSrv.Close()
+
+	require.NoError(t, s.NoticeChannel().Create(context.Background(), &model.NoticeChannelM{
+		Name:        "notice-diagnosis-written",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: mockSrv.URL,
+		TimeoutMs:   1000,
+	}))
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.GetJobID()})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.GetJobID(),
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"db pool exhausted",
+			"root_cause":{
+				"category":"db",
+				"statement":"connection pool saturated",
+				"confidence":0.9,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"timeline":[{"t":"2026-02-01T10:00:00Z","event":"alert_fired","ref":"alert-1"}],
+			"hypotheses":[
+				{
+					"statement":"db pool limit reached",
+					"confidence":0.9,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			],
+			"recommendations":[{"type":"readonly_check","action":"check pool config","risk":"low"}],
+			"unknowns":[],
+			"next_steps":["increase max open connections"]
+		}`),
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, int32(1), hitCount.Load())
+
+	total, deliveries, err := s.NoticeDelivery().List(context.Background(),
+		where.T(context.Background()).P(0, 20).F("incident_id", incident.IncidentID).F("event_type", "diagnosis_written"))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Equal(t, "succeeded", deliveries[0].Status)
+	require.NotNil(t, deliveries[0].JobID)
+	require.Equal(t, runResp.GetJobID(), *deliveries[0].JobID)
+}
+
 func newAIJobTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
@@ -395,6 +470,7 @@ CREATE TABLE incidents (
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
 	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIToolCallM{}))
+	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }
 

@@ -22,6 +22,7 @@ import (
 	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
 	"zk8s.com/rca-api/internal/apiserver/pkg/silenceutil"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
@@ -241,6 +242,22 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 
 	if reused {
 		outcome = "reused"
+	}
+
+	if incidentCreated && !silenced && incidentID != "" {
+		incidentModel, getErr := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", incidentID))
+		if getErr != nil {
+			slog.WarnContext(ctx, "notice incident_created skipped: incident lookup failed",
+				"incident_id", incidentID,
+				"error", getErr,
+			)
+		} else {
+			noticepkg.DispatchBestEffort(ctx, b.store, noticepkg.DispatchRequest{
+				EventType:  noticepkg.EventTypeIncidentCreated,
+				Incident:   incidentModel,
+				OccurredAt: time.Now().UTC(),
+			})
+		}
 	}
 
 	slog.InfoContext(ctx, "alert event ingested",

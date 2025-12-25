@@ -14,6 +14,7 @@ import (
 	"zk8s.com/rca-api/internal/apiserver/model"
 	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
+	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
 	"zk8s.com/rca-api/internal/pkg/errno"
@@ -335,6 +336,7 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	targetStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
+	var noticeReq *noticepkg.DispatchRequest
 
 	err := b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
@@ -420,6 +422,18 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 			}
 			refsJSON := buildEvidenceRefsJSON(jobID, evidenceIDs)
 			incident.EvidenceRefsJSON = &refsJSON
+
+			diagnosisConfidence := 0.0
+			if diagnosis.RootCause != nil {
+				diagnosisConfidence = diagnosis.RootCause.Confidence
+			}
+			noticeReq = &noticepkg.DispatchRequest{
+				EventType:           noticepkg.EventTypeDiagnosisWritten,
+				JobID:               jobID,
+				DiagnosisConfidence: diagnosisConfidence,
+				DiagnosisEvidenceID: append([]string(nil), evidenceIDs...),
+				OccurredAt:          now,
+			}
 		}
 
 		if len(evidenceIDs) > 0 {
@@ -439,6 +453,10 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 		if err := b.store.Incident().Update(txCtx, incident); err != nil {
 			return errno.ErrIncidentUpdateFailed
 		}
+		if noticeReq != nil {
+			incidentCopy := *incident
+			noticeReq.Incident = &incidentCopy
+		}
 
 		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_finalized", jobID, map[string]any{
 			"status":       targetStatus,
@@ -448,6 +466,10 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if noticeReq != nil {
+		noticepkg.DispatchBestEffort(ctx, b.store, *noticeReq)
 	}
 
 	return &v1.FinalizeAIJobResponse{}, nil
