@@ -135,6 +135,23 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 
 //nolint:gocognit,gocyclo // Worker attempt state transitions are explicit for auditability.
 func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeliveryM) error {
+	latest, err := w.store.NoticeDelivery().GetClaimedPending(ctx, delivery.DeliveryID, w.opts.WorkerID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			slog.InfoContext(ctx, "notice delivery skipped due stale claim",
+				"worker_id", w.opts.WorkerID,
+				"delivery_id", delivery.DeliveryID,
+				"channel_id", delivery.ChannelID,
+				"event_type", delivery.EventType,
+				"incident_id", derefString(delivery.IncidentID),
+				"job_id", derefString(delivery.JobID),
+			)
+			return nil
+		}
+		return err
+	}
+	delivery = latest
+
 	channel, err := w.store.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", delivery.ChannelID))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -167,20 +184,20 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 	switch {
 	case sendErr == nil && code != nil && *code >= 200 && *code < 300:
 		if err := w.store.NoticeDelivery().MarkSucceeded(ctx, delivery.DeliveryID, w.opts.WorkerID, code, responseBodyPtr, latencyMs); err != nil {
-			return err
+			return w.handleMarkClaimLost(ctx, delivery, err)
 		}
 		outcome = DeliveryStatusSucceeded
 
 	case retryable && attemptNow < maxAttempts:
 		nextRetryAt := time.Now().UTC().Add(computeRetryDelay(attemptNow, w.opts.BaseBackoff, w.opts.CapBackoff, w.opts.JitterMax))
 		if err := w.store.NoticeDelivery().MarkRetry(ctx, delivery.DeliveryID, w.opts.WorkerID, code, responseBodyPtr, errText, latencyMs, nextRetryAt); err != nil {
-			return err
+			return w.handleMarkClaimLost(ctx, delivery, err)
 		}
 		outcome = "retry"
 
 	default:
 		if err := w.store.NoticeDelivery().MarkFailed(ctx, delivery.DeliveryID, w.opts.WorkerID, code, responseBodyPtr, errText, latencyMs); err != nil {
-			return err
+			return w.handleMarkClaimLost(ctx, delivery, err)
 		}
 		outcome = DeliveryStatusFailed
 	}
@@ -211,7 +228,7 @@ func (w *Worker) failWithoutSend(ctx context.Context, delivery *model.NoticeDeli
 	text := truncateString(reason.Error(), ErrorBodyMaxBytes)
 	errPtr := &text
 	if err := w.store.NoticeDelivery().MarkFailed(ctx, delivery.DeliveryID, w.opts.WorkerID, nil, nil, errPtr, 0); err != nil {
-		return err
+		return w.handleMarkClaimLost(ctx, delivery, err)
 	}
 	if metrics.M != nil {
 		metrics.M.RecordNoticeDeliverySend(ctx, delivery.EventType, DeliveryStatusFailed, 0)
@@ -227,6 +244,21 @@ func (w *Worker) failWithoutSend(ctx context.Context, delivery *model.NoticeDeli
 		"attempts", delivery.Attempts+1,
 		"status", DeliveryStatusFailed,
 		"error", text,
+	)
+	return nil
+}
+
+func (w *Worker) handleMarkClaimLost(ctx context.Context, delivery *model.NoticeDeliveryM, err error) error {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	slog.WarnContext(ctx, "notice delivery claim lost before status update",
+		"worker_id", w.opts.WorkerID,
+		"delivery_id", delivery.DeliveryID,
+		"channel_id", delivery.ChannelID,
+		"event_type", delivery.EventType,
+		"incident_id", derefString(delivery.IncidentID),
+		"job_id", derefString(delivery.JobID),
 	)
 	return nil
 }

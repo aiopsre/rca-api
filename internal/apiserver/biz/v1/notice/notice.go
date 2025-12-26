@@ -4,14 +4,18 @@ package notice
 
 import (
 	"context"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
 	"zk8s.com/rca-api/internal/apiserver/model"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
+	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
 	"zk8s.com/rca-api/internal/apiserver/store"
+	"zk8s.com/rca-api/internal/pkg/contextx"
 	"zk8s.com/rca-api/internal/pkg/errno"
 	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
 	"zk8s.com/rca-api/pkg/store/where"
@@ -41,6 +45,8 @@ type NoticeBiz interface {
 
 	GetDelivery(ctx context.Context, rq *v1.GetNoticeDeliveryRequest) (*v1.GetNoticeDeliveryResponse, error)
 	ListDeliveries(ctx context.Context, rq *v1.ListNoticeDeliveriesRequest) (*v1.ListNoticeDeliveriesResponse, error)
+	ReplayDelivery(ctx context.Context, rq *v1.ReplayNoticeDeliveryRequest) (*v1.ReplayNoticeDeliveryResponse, error)
+	CancelDelivery(ctx context.Context, rq *v1.CancelNoticeDeliveryRequest) (*v1.CancelNoticeDeliveryResponse, error)
 
 	NoticeExpansion
 }
@@ -215,6 +221,80 @@ func (b *noticeBiz) ListDeliveries(ctx context.Context, rq *v1.ListNoticeDeliver
 		TotalCount:       total,
 		NoticeDeliveries: out,
 	}, nil
+}
+
+//nolint:dupl // Replay/Cancel wrappers intentionally mirror each other with different operation specs.
+func (b *noticeBiz) ReplayDelivery(ctx context.Context, rq *v1.ReplayNoticeDeliveryRequest) (*v1.ReplayNoticeDeliveryResponse, error) {
+	noticeDelivery, err := b.operateDelivery(ctx, strings.TrimSpace(rq.GetDeliveryID()), deliveryOpSpec{
+		op:          "replay",
+		exec:        b.store.NoticeDelivery().Replay,
+		internalErr: errno.ErrNoticeDeliveryReplayFailed,
+		recordMetric: func(status string) {
+			if metrics.M != nil {
+				metrics.M.RecordNoticeDeliveryReplay(ctx, status)
+			}
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &v1.ReplayNoticeDeliveryResponse{
+		NoticeDelivery: noticeDelivery,
+	}, nil
+}
+
+//nolint:dupl // Replay/Cancel wrappers intentionally mirror each other with different operation specs.
+func (b *noticeBiz) CancelDelivery(ctx context.Context, rq *v1.CancelNoticeDeliveryRequest) (*v1.CancelNoticeDeliveryResponse, error) {
+	noticeDelivery, err := b.operateDelivery(ctx, strings.TrimSpace(rq.GetDeliveryID()), deliveryOpSpec{
+		op:          "cancel",
+		exec:        b.store.NoticeDelivery().Cancel,
+		internalErr: errno.ErrNoticeDeliveryCancelFailed,
+		recordMetric: func(status string) {
+			if metrics.M != nil {
+				metrics.M.RecordNoticeDeliveryCancel(ctx, status)
+			}
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &v1.CancelNoticeDeliveryResponse{
+		NoticeDelivery: noticeDelivery,
+	}, nil
+}
+
+type deliveryOpSpec struct {
+	op           string
+	exec         func(context.Context, string, time.Time) (*model.NoticeDeliveryM, error)
+	internalErr  error
+	recordMetric func(status string)
+}
+
+func (b *noticeBiz) operateDelivery(
+	ctx context.Context,
+	deliveryID string,
+	spec deliveryOpSpec,
+) (*v1.NoticeDelivery, error) {
+
+	out, err := spec.exec(ctx, deliveryID, time.Now().UTC())
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrNoticeDeliveryNotFound
+		}
+		return nil, spec.internalErr
+	}
+
+	status := strings.ToLower(strings.TrimSpace(out.Status))
+	spec.recordMetric(status)
+	slog.InfoContext(ctx, "notice delivery op succeeded",
+		"op", spec.op,
+		"delivery_id", out.DeliveryID,
+		"status", out.Status,
+		"request_id", contextx.RequestID(ctx),
+	)
+	return conversion.NoticeDeliveryMToNoticeDeliveryV1(out), nil
 }
 
 func normalizeOptionalString(v *string) *string {

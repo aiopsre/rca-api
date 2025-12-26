@@ -25,6 +25,8 @@ type Metrics struct {
 	NoticeDeliverySendTotal     metric.Int64Counter
 	NoticeDeliverySendLatencyMS metric.Float64Histogram
 	NoticeDeliveryFailedTotal   metric.Int64Counter
+	NoticeDeliveryReplayTotal   metric.Int64Counter
+	NoticeDeliveryCancelTotal   metric.Int64Counter
 }
 
 var (
@@ -100,6 +102,16 @@ func Init(scope string) error {
 			metric.WithDescription("Total number of notice deliveries ended in failed status"),
 		)
 
+		noticeReplayTotal, _ := meter.Int64Counter(
+			"notice_delivery_replay_total",
+			metric.WithDescription("Total number of notice delivery replay operations"),
+		)
+
+		noticeCancelTotal, _ := meter.Int64Counter(
+			"notice_delivery_cancel_total",
+			metric.WithDescription("Total number of notice delivery cancel operations"),
+		)
+
 		// Assign the global singleton.
 		M = &Metrics{
 			Meter:                       meter,
@@ -115,6 +127,8 @@ func Init(scope string) error {
 			NoticeDeliverySendTotal:     noticeSendTotal,
 			NoticeDeliverySendLatencyMS: noticeSendLatency,
 			NoticeDeliveryFailedTotal:   noticeFailedTotal,
+			NoticeDeliveryReplayTotal:   noticeReplayTotal,
+			NoticeDeliveryCancelTotal:   noticeCancelTotal,
 		}
 	})
 
@@ -214,4 +228,26 @@ func (m *Metrics) RecordNoticeDeliveryFailed(ctx context.Context, eventType stri
 		attribute.String("event_type", eventType),
 	}
 	m.NoticeDeliveryFailedTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordNoticeDeliveryReplay records one replay operation.
+func (m *Metrics) RecordNoticeDeliveryReplay(ctx context.Context, status string) {
+	if status == "" {
+		status = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("status", status),
+	}
+	m.NoticeDeliveryReplayTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordNoticeDeliveryCancel records one cancel operation.
+func (m *Metrics) RecordNoticeDeliveryCancel(ctx context.Context, status string) {
+	if status == "" {
+		status = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("status", status),
+	}
+	m.NoticeDeliveryCancelTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

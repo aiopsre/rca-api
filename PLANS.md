@@ -460,3 +460,30 @@ python -m orchestrator.main
    - 成功输出 PASS L4-NOTICE-RETRY + IDs；失败输出 FAIL step=<STEP> + HTTP code/body<=2KB + IDs
 6) 工程验证：make protoc / make test / make lint-new 通过
 
+---
+
+## P1-4 Notice（Replay / Cancel / DLQ）可运营控制面
+
+### Spec
+- docs/devel/zh-CN/附录P1-4_Notice_重放与取消规范.md
+
+### Done Definition（验收口径）
+1) API 扩展（RBAC：notice.admin）：
+   - POST /v1/notice-deliveries/{deliveryID}:replay
+     - 将 failed（或 pending 可选）重置为 pending：attempts=0、next_retry_at=now、清 locked_by/locked_at
+   - POST /v1/notice-deliveries/{deliveryID}:cancel
+     - 将 pending/failed 置为 canceled，并清 locked_by/locked_at；worker 必须跳过 canceled
+2) 并发一致性：
+   - replay/cancel 与 worker claim 并发不出错；更新需事务化；发送前可二次检查 status（建议）
+   - replay/cancel API 幂等（重复调用仍 200，返回当前 status）
+3) DLQ 语义明确：
+   - failed 视为 DLQ，可通过现有 list/filter 查询；修复后 replay 即可重投
+4) 可观测性（最小）：
+   - notice_delivery_replay_total / notice_delivery_cancel_total（或等价指标）
+   - 日志包含 delivery_id/status/op（replay/cancel）与 request_id
+5) 回归脚本：
+   - 新增 scripts/test_p1_L5_notice_replay_cancel.sh
+   - 覆盖：500→failed(DLQ)→mock变200→replay→worker→succeeded；以及 cancel 后不再发送
+   - 成功输出 PASS L5-NOTICE-OPS + IDs；失败输出 FAIL step=<STEP> + HTTP code/body<=2KB + IDs
+6) 工程验证：make protoc / make test / make lint-new 通过
+

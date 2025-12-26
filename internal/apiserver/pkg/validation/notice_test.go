@@ -79,6 +79,24 @@ func TestValidateListNoticeDeliveriesRequest_DefaultLimitAndFilters(t *testing.T
 	require.Equal(t, "succeeded", req.GetStatus())
 }
 
+func TestValidateReplayAndCancelNoticeDeliveryRequest(t *testing.T) {
+	val := &Validator{}
+
+	require.Error(t, val.ValidateReplayNoticeDeliveryRequest(context.Background(), &v1.ReplayNoticeDeliveryRequest{
+		DeliveryID: "",
+	}))
+	require.NoError(t, val.ValidateReplayNoticeDeliveryRequest(context.Background(), &v1.ReplayNoticeDeliveryRequest{
+		DeliveryID: "notice-delivery-1",
+	}))
+
+	require.Error(t, val.ValidateCancelNoticeDeliveryRequest(context.Background(), &v1.CancelNoticeDeliveryRequest{
+		DeliveryID: "",
+	}))
+	require.NoError(t, val.ValidateCancelNoticeDeliveryRequest(context.Background(), &v1.CancelNoticeDeliveryRequest{
+		DeliveryID: "notice-delivery-1",
+	}))
+}
+
 func int64PtrValidationNotice(v int64) *int64 { return &v }
 
 func strPtrValidationNotice(v string) *string { return &v }

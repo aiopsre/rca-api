@@ -26,4 +26,8 @@ var (
 	ErrNoticeDeliveryGetFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryGetFailed", "Failed to retrieve the notice delivery.")
 	// ErrNoticeDeliveryListFailed indicates notice delivery list failure.
 	ErrNoticeDeliveryListFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryListFailed", "Failed to list notice deliveries.")
+	// ErrNoticeDeliveryReplayFailed indicates notice delivery replay failure.
+	ErrNoticeDeliveryReplayFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryReplayFailed", "Failed to replay the notice delivery.")
+	// ErrNoticeDeliveryCancelFailed indicates notice delivery cancel failure.
+	ErrNoticeDeliveryCancelFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryCancelFailed", "Failed to cancel the notice delivery.")
 )

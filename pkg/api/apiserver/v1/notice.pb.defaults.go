@@ -63,3 +63,15 @@ func (x *ListNoticeDeliveriesRequest) Default() {
 
 func (x *ListNoticeDeliveriesResponse) Default() {
 }
+
+func (x *ReplayNoticeDeliveryRequest) Default() {
+}
+
+func (x *ReplayNoticeDeliveryResponse) Default() {
+}
+
+func (x *CancelNoticeDeliveryRequest) Default() {
+}
+
+func (x *CancelNoticeDeliveryResponse) Default() {
+}

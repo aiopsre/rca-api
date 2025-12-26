@@ -145,6 +145,22 @@ func (v *Validator) ValidateGetNoticeDeliveryRequest(ctx context.Context, rq *v1
 	return nil
 }
 
+func (v *Validator) ValidateReplayNoticeDeliveryRequest(ctx context.Context, rq *v1.ReplayNoticeDeliveryRequest) error {
+	_ = ctx
+	if rq == nil || !isValidResourceID(rq.GetDeliveryID()) {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateCancelNoticeDeliveryRequest(ctx context.Context, rq *v1.CancelNoticeDeliveryRequest) error {
+	_ = ctx
+	if rq == nil || !isValidResourceID(rq.GetDeliveryID()) {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
 //nolint:gocognit,gocyclo // Query guardrails are explicit by design for auditability.
 func (v *Validator) ValidateListNoticeDeliveriesRequest(ctx context.Context, rq *v1.ListNoticeDeliveriesRequest) error {
 	_ = ctx

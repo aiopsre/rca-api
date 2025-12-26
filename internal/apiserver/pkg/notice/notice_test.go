@@ -199,6 +199,58 @@ func TestWorker_NonRetryable4xxFailed(t *testing.T) {
 	require.Equal(t, int32(1), hitCount.Load())
 }
 
+func TestWorker_SkipCanceledAfterClaim(t *testing.T) {
+	var hitCount atomic.Int32
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hitCount.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mockSrv.Close()
+
+	s := newNoticeTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:        "hook-cancel-race",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: mockSrv.URL,
+		TimeoutMs:   1000,
+		MaxRetries:  3,
+	}))
+
+	DispatchBestEffort(ctx, s, DispatchRequest{
+		EventType: EventTypeIncidentCreated,
+		Incident: &model.IncidentM{
+			IncidentID: "incident-cancel-race-1",
+			Namespace:  "default",
+			Service:    "checkout",
+			Severity:   "P1",
+			RCAStatus:  "pending",
+		},
+		OccurredAt: time.Now().UTC(),
+	})
+
+	claimed, err := s.NoticeDelivery().ClaimPending(ctx, "test-worker-cancel-race", 1, time.Now().UTC(), 2*time.Second)
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+
+	canceled, err := s.NoticeDelivery().Cancel(ctx, claimed[0].DeliveryID, time.Now().UTC())
+	require.NoError(t, err)
+	require.Equal(t, DeliveryStatusCanceled, canceled.Status)
+
+	worker := NewWorker(s, WorkerOptions{
+		WorkerID: "test-worker-cancel-race",
+	})
+	require.NoError(t, worker.processDelivery(ctx, claimed[0]))
+	require.Equal(t, int32(0), hitCount.Load())
+
+	got, err := s.NoticeDelivery().Get(ctx, where.T(ctx).F("delivery_id", claimed[0].DeliveryID))
+	require.NoError(t, err)
+	require.Equal(t, DeliveryStatusCanceled, got.Status)
+	require.Equal(t, int64(0), got.Attempts)
+}
+
 func newNoticeTestStore(t *testing.T) store.IStore {
 	t.Helper()
 	store.ResetForTest()

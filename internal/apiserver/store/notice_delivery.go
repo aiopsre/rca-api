@@ -15,7 +15,10 @@ import (
 type NoticeDeliveryStore interface {
 	Create(ctx context.Context, obj *model.NoticeDeliveryM) error
 	Get(ctx context.Context, opts *where.Options) (*model.NoticeDeliveryM, error)
+	GetClaimedPending(ctx context.Context, deliveryID string, workerID string) (*model.NoticeDeliveryM, error)
 	List(ctx context.Context, opts *where.Options) (int64, []*model.NoticeDeliveryM, error)
+	Replay(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error)
+	Cancel(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error)
 	ClaimPending(ctx context.Context, workerID string, limit int, now time.Time, lockTimeout time.Duration) ([]*model.NoticeDeliveryM, error)
 	MarkSucceeded(
 		ctx context.Context,
@@ -73,6 +76,16 @@ func (n *noticeDeliveryStore) Get(ctx context.Context, opts *where.Options) (*mo
 	return &out, nil
 }
 
+func (n *noticeDeliveryStore) GetClaimedPending(ctx context.Context, deliveryID string, workerID string) (*model.NoticeDeliveryM, error) {
+	var out model.NoticeDeliveryM
+	if err := n.s.DB(ctx).
+		Where("delivery_id = ? AND status = ? AND locked_by = ?", deliveryID, "pending", workerID).
+		First(&out).Error; err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (n *noticeDeliveryStore) List(ctx context.Context, opts *where.Options) (int64, []*model.NoticeDeliveryM, error) {
 	db := n.s.DB(ctx)
 
@@ -100,6 +113,62 @@ func (n *noticeDeliveryStore) List(ctx context.Context, opts *where.Options) (in
 		return 0, nil, err
 	}
 	return total, list, nil
+}
+
+func (n *noticeDeliveryStore) Replay(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error) {
+	return n.operateDelivery(ctx, deliveryID, now, canReplayDeliveryStatus, applyReplayUpdate)
+}
+
+func (n *noticeDeliveryStore) Cancel(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error) {
+	return n.operateDelivery(ctx, deliveryID, now, canCancelDeliveryStatus, applyCancelUpdate)
+}
+
+//nolint:gocognit // Small transactional state switch is kept explicit for auditability.
+func (n *noticeDeliveryStore) operateDelivery(
+	ctx context.Context,
+	deliveryID string,
+	now time.Time,
+	canApply func(status string) bool,
+	applyUpdate func(tx *gorm.DB, deliveryID string, now time.Time) error,
+) (*model.NoticeDeliveryM, error) {
+
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+
+	var out model.NoticeDeliveryM
+	err := n.s.DB(ctx).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		current, err := findNoticeDeliveryForUpdate(tx, deliveryID)
+		if err != nil {
+			return err
+		}
+
+		if canApply(current.Status) {
+			if err := applyUpdate(tx, deliveryID, now); err != nil {
+				return err
+			}
+		}
+
+		updated, err := findNoticeDeliveryForUpdate(tx, deliveryID)
+		if err != nil {
+			return err
+		}
+		out = *updated
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func canReplayDeliveryStatus(status string) bool {
+	return status == "failed" || status == "pending"
+}
+
+func canCancelDeliveryStatus(status string) bool {
+	return status == "pending" || status == "failed"
 }
 
 func (n *noticeDeliveryStore) ClaimPending(
@@ -203,6 +272,41 @@ func (n *noticeDeliveryStore) getClaimedDeliveries(
 		return nil, err
 	}
 	return out, nil
+}
+
+func findNoticeDeliveryForUpdate(tx *gorm.DB, deliveryID string) (*model.NoticeDeliveryM, error) {
+	var out model.NoticeDeliveryM
+	if err := tx.Where("delivery_id = ?", deliveryID).First(&out).Error; err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func applyReplayUpdate(tx *gorm.DB, deliveryID string, now time.Time) error {
+	return tx.Model(&model.NoticeDeliveryM{}).
+		Where("delivery_id = ?", deliveryID).
+		Updates(map[string]any{
+			"status":        "pending",
+			"attempts":      int64(0),
+			"next_retry_at": now,
+			"locked_by":     nil,
+			"locked_at":     nil,
+			"response_code": nil,
+			"response_body": nil,
+			"latency_ms":    int64(0),
+			"error":         nil,
+		}).Error
+}
+
+func applyCancelUpdate(tx *gorm.DB, deliveryID string, now time.Time) error {
+	return tx.Model(&model.NoticeDeliveryM{}).
+		Where("delivery_id = ?", deliveryID).
+		Updates(map[string]any{
+			"status":        "canceled",
+			"next_retry_at": now,
+			"locked_by":     nil,
+			"locked_at":     nil,
+		}).Error
 }
 
 func (n *noticeDeliveryStore) MarkSucceeded(

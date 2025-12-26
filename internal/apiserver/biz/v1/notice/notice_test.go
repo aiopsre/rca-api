@@ -99,6 +99,66 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.Equal(t, "incident_created", getDeliveryResp.GetNoticeDelivery().GetEventType())
 }
 
+func TestNoticeBiz_ReplayAndCancelDeliveryOps(t *testing.T) {
+	db := newNoticeTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	ctx := context.Background()
+
+	lockedBy := "worker-1"
+	lockedAt := time.Now().UTC().Add(-1 * time.Minute)
+	responseBody := `{"ok":false}`
+	errText := "http_status_500"
+	delivery := &model.NoticeDeliveryM{
+		ChannelID:      "notice-channel-op-1",
+		EventType:      "incident_created",
+		IncidentID:     strPtrNoticeBiz("incident-op-1"),
+		RequestBody:    `{"event_type":"incident_created"}`,
+		ResponseCode:   int32PtrNoticeBiz(500),
+		ResponseBody:   &responseBody,
+		LatencyMs:      37,
+		Status:         "failed",
+		Attempts:       2,
+		MaxAttempts:    3,
+		NextRetryAt:    time.Now().UTC().Add(10 * time.Minute),
+		LockedBy:       &lockedBy,
+		LockedAt:       &lockedAt,
+		IdempotencyKey: "notice-test-op-idem-1",
+		Error:          &errText,
+	}
+	require.NoError(t, s.NoticeDelivery().Create(ctx, delivery))
+
+	replayResp, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
+	require.NoError(t, err)
+	require.Equal(t, "pending", replayResp.GetNoticeDelivery().GetStatus())
+	require.Equal(t, int64(0), replayResp.GetNoticeDelivery().GetAttempts())
+	require.Nil(t, replayResp.GetNoticeDelivery().LockedBy)
+	require.Nil(t, replayResp.GetNoticeDelivery().LockedAt)
+	require.Nil(t, replayResp.GetNoticeDelivery().ResponseCode)
+	require.Nil(t, replayResp.GetNoticeDelivery().ResponseBody)
+	require.Nil(t, replayResp.GetNoticeDelivery().Error)
+
+	replayResp2, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
+	require.NoError(t, err)
+	require.Equal(t, "pending", replayResp2.GetNoticeDelivery().GetStatus())
+	require.Equal(t, int64(0), replayResp2.GetNoticeDelivery().GetAttempts())
+
+	cancelResp, err := biz.CancelDelivery(ctx, &v1.CancelNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
+	require.NoError(t, err)
+	require.Equal(t, "canceled", cancelResp.GetNoticeDelivery().GetStatus())
+	require.Nil(t, cancelResp.GetNoticeDelivery().LockedBy)
+	require.Nil(t, cancelResp.GetNoticeDelivery().LockedAt)
+
+	cancelResp2, err := biz.CancelDelivery(ctx, &v1.CancelNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
+	require.NoError(t, err)
+	require.Equal(t, "canceled", cancelResp2.GetNoticeDelivery().GetStatus())
+
+	// Replay on canceled is idempotent no-op and returns current status.
+	replayResp3, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
+	require.NoError(t, err)
+	require.Equal(t, "canceled", replayResp3.GetNoticeDelivery().GetStatus())
+}
+
 func newNoticeTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
@@ -113,3 +173,5 @@ func boolPtrNoticeBiz(v bool) *bool { return &v }
 func int64PtrNoticeBiz(v int64) *int64 { return &v }
 
 func strPtrNoticeBiz(v string) *string { return &v }
+
+func int32PtrNoticeBiz(v int32) *int32 { return &v }

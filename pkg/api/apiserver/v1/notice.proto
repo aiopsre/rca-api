@@ -146,3 +146,25 @@ message ListNoticeDeliveriesResponse {
   int64 totalCount = 1;
   repeated NoticeDelivery noticeDeliveries = 2;
 }
+
+// ReplayNoticeDeliveryRequest requeues one delivery from DLQ/failed(or pending) to pending.
+message ReplayNoticeDeliveryRequest {
+  // @gotags: uri:"deliveryID"
+  string deliveryID = 1;
+}
+
+// ReplayNoticeDeliveryResponse returns current delivery state after replay op.
+message ReplayNoticeDeliveryResponse {
+  NoticeDelivery noticeDelivery = 1;
+}
+
+// CancelNoticeDeliveryRequest cancels one delivery and prevents further sends.
+message CancelNoticeDeliveryRequest {
+  // @gotags: uri:"deliveryID"
+  string deliveryID = 1;
+}
+
+// CancelNoticeDeliveryResponse returns current delivery state after cancel op.
+message CancelNoticeDeliveryResponse {
+  NoticeDelivery noticeDelivery = 1;
+}
