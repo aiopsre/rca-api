@@ -487,3 +487,9 @@ python -m orchestrator.main
    - 成功输出 PASS L5-NOTICE-OPS + IDs；失败输出 FAIL step=<STEP> + HTTP code/body<=2KB + IDs
 6) 工程验证：make protoc / make test / make lint-new 通过
 
+### P1-3/4 回归脚本兼容性补丁：L3 Notice 适配 Outbox
+- 升级 scripts/test_p1_L3_notice.sh：
+  - 新增 RUN_WORKER=1 时自动拉起短生命周期 notice-worker，确保能验证 webhook 回调
+  - RUN_WORKER=0 时退化为仅断言 deliveries（避免因 outbox 语义导致 0 回调误报）
+  - 保持 PASS/FAIL step 诊断风格与 body 截断规范一致
+

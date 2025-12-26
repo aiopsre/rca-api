@@ -8,6 +8,9 @@ DEBUG="${DEBUG:-0}"
 MOCK_PORT="${MOCK_PORT:-19091}"
 MOCK_WAIT_TIMEOUT_SEC="${MOCK_WAIT_TIMEOUT_SEC:-20}"
 WAIT_TIMEOUT_SEC="${WAIT_TIMEOUT_SEC:-60}"
+RUN_WORKER="${RUN_WORKER:-0}"
+WORKER_DURATION_SECONDS="${WORKER_DURATION_SECONDS:-6}"
+WORKER_CONCURRENCY="${WORKER_CONCURRENCY:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -28,7 +31,8 @@ MOCK_EVENTS_FILE="$(mktemp)"
 MOCK_LOG_FILE="$(mktemp)"
 WORKER_LOG_FILE="$(mktemp)"
 MOCK_PID=""
-WORKER_PID=""
+WORKER_PIDS=()
+WORKER_STOPPER_PIDS=()
 
 debug() {
 	if [[ "${DEBUG}" == "1" ]]; then
@@ -38,6 +42,27 @@ debug() {
 
 need_cmd() {
 	command -v "$1" >/dev/null 2>&1
+}
+
+is_positive_int() {
+	[[ "$1" =~ ^[0-9]+$ ]] && (( "$1" > 0 ))
+}
+
+validate_runtime_flags() {
+	case "${RUN_WORKER}" in
+		0 | 1) ;;
+		*)
+			fail_l3_notice "ValidateFlags" "RUN_WORKER must be 0 or 1, got=${RUN_WORKER}"
+			;;
+	esac
+
+	if ! is_positive_int "${WORKER_DURATION_SECONDS}"; then
+		fail_l3_notice "ValidateFlags" "WORKER_DURATION_SECONDS must be >0 integer, got=${WORKER_DURATION_SECONDS}"
+	fi
+
+	if ! is_positive_int "${WORKER_CONCURRENCY}"; then
+		fail_l3_notice "ValidateFlags" "WORKER_CONCURRENCY must be >0 integer, got=${WORKER_CONCURRENCY}"
+	fi
 }
 
 truncate_2kb() {
@@ -210,7 +235,15 @@ count_mock_total() {
 }
 
 assert_worker_alive() {
-	if [[ -n "${WORKER_PID}" ]] && ! kill -0 "${WORKER_PID}" >/dev/null 2>&1; then
+	local pid alive
+	alive=0
+	for pid in "${WORKER_PIDS[@]}"; do
+		if kill -0 "${pid}" >/dev/null 2>&1; then
+			alive=1
+			break
+		fi
+	done
+	if (( alive == 0 )); then
 		LAST_HTTP_CODE="WORKER_EXITED"
 		LAST_BODY="$(cat "${WORKER_LOG_FILE}" 2>/dev/null || true)"
 		fail_l3_notice "$1" "worker exited before callback completed"
@@ -239,10 +272,17 @@ wait_for_event_or_fail() {
 }
 
 cleanup() {
-	if [[ -n "${WORKER_PID}" ]]; then
-		kill "${WORKER_PID}" >/dev/null 2>&1 || true
-		wait "${WORKER_PID}" >/dev/null 2>&1 || true
-	fi
+	local pid
+	for pid in "${WORKER_PIDS[@]}"; do
+		kill "${pid}" >/dev/null 2>&1 || true
+	done
+	for pid in "${WORKER_PIDS[@]}"; do
+		wait "${pid}" >/dev/null 2>&1 || true
+	done
+	for pid in "${WORKER_STOPPER_PIDS[@]}"; do
+		kill "${pid}" >/dev/null 2>&1 || true
+		wait "${pid}" >/dev/null 2>&1 || true
+	done
 	if [[ -n "${MOCK_PID}" ]]; then
 		kill "${MOCK_PID}" >/dev/null 2>&1 || true
 		wait "${MOCK_PID}" >/dev/null 2>&1 || true
@@ -326,21 +366,38 @@ json_string() {
 	fi
 }
 
-start_worker() {
+start_worker_instance() {
+	local idx="$1"
+	local worker_id="p1-l3-notice-worker-${rand}-${idx}-$$"
 	(
-		cd "${REPO_ROOT}" && bash -lc "${WORKER_CMD}"
-	) >"${WORKER_LOG_FILE}" 2>&1 &
-	WORKER_PID="$!"
+		cd "${REPO_ROOT}" && bash -lc "${WORKER_CMD} --notice-worker-id ${worker_id}"
+	) >>"${WORKER_LOG_FILE}" 2>&1 &
+	local worker_pid="$!"
 	sleep 0.3
-	if ! kill -0 "${WORKER_PID}" >/dev/null 2>&1; then
+	if ! kill -0 "${worker_pid}" >/dev/null 2>&1; then
 		LAST_HTTP_CODE="WORKER_EXITED"
 		LAST_BODY="$(cat "${WORKER_LOG_FILE}" 2>/dev/null || true)"
 		fail_l3_notice "StartWorker" "worker exited immediately"
 	fi
+	WORKER_PIDS+=("${worker_pid}")
+
+	(
+		sleep "${WORKER_DURATION_SECONDS}"
+		kill "${worker_pid}" >/dev/null 2>&1 || true
+		wait "${worker_pid}" >/dev/null 2>&1 || true
+	) >/dev/null 2>&1 &
+	WORKER_STOPPER_PIDS+=("$!")
 }
 
+start_workers() {
+	local idx
+	for ((idx = 1; idx <= WORKER_CONCURRENCY; idx++)); do
+		start_worker_instance "${idx}"
+	done
+}
+
+validate_runtime_flags
 start_mock
-start_worker
 
 rand="${RAND:-$RANDOM}"
 now_epoch="$(date -u +%s)"
@@ -370,8 +427,6 @@ if [[ -z "${INCIDENT_ID}" ]]; then
 	fail_l3_notice "IngestAlertEventParseIncidentID" "incident_id missing"
 fi
 
-wait_for_event_or_fail "WaitIncidentCreatedCallback" "incident_created" 1
-
 run_body=$(cat <<EOF
 {"incidentID":"${INCIDENT_ID}","idempotencyKey":"idem-p1-l3-notice-run-${rand}","pipeline":"basic_rca","trigger":"manual","timeRangeStart":{"seconds":${start_epoch},"nanos":0},"timeRangeEnd":{"seconds":${now_epoch},"nanos":0}}
 EOF
@@ -391,35 +446,68 @@ EOF
 )
 call_or_fail "FinalizeAIJob" POST "${BASE_URL}/v1/ai/jobs/${JOB_ID}/finalize" "${finalize_body}"
 
-wait_for_event_or_fail "WaitDiagnosisWrittenCallback" "diagnosis_written" 1
+if [[ "${RUN_WORKER}" == "1" ]]; then
+	start_workers
+	wait_for_event_or_fail "WaitIncidentCreatedCallback" "incident_created" 1
+	wait_for_event_or_fail "WaitDiagnosisWrittenCallback" "diagnosis_written" 1
+fi
 
 call_or_fail "ListNoticeDeliveriesByIncident" GET "${BASE_URL}/v1/notice-deliveries?incident_id=${INCIDENT_ID}&offset=0&limit=50"
 if need_cmd jq; then
 	DELIVERY_COUNT="$(printf '%s' "${LAST_BODY}" | jq -r '(.noticeDeliveries // .data.noticeDeliveries // []) | length' 2>/dev/null || true)"
-	succeeded_count="$(printf '%s' "${LAST_BODY}" | jq -r '[((.noticeDeliveries // .data.noticeDeliveries // [])[] | select((.status // "")=="succeeded"))] | length' 2>/dev/null || true)"
 	if [[ -z "${DELIVERY_COUNT}" ]] || (( DELIVERY_COUNT < 2 )); then
 		fail_l3_notice "ListNoticeDeliveriesAssertCount" "delivery count expected >=2, got=${DELIVERY_COUNT:-EMPTY}"
 	fi
-	if [[ -z "${succeeded_count}" ]] || (( succeeded_count < 2 )); then
-		fail_l3_notice "ListNoticeDeliveriesAssertSucceeded" "succeeded count expected >=2, got=${succeeded_count:-EMPTY}"
+	if [[ "${RUN_WORKER}" == "1" ]]; then
+		succeeded_count="$(printf '%s' "${LAST_BODY}" | jq -r '[((.noticeDeliveries // .data.noticeDeliveries // [])[] | select((.status // "")=="succeeded"))] | length' 2>/dev/null || true)"
+		if [[ -z "${succeeded_count}" ]] || (( succeeded_count < 2 )); then
+			fail_l3_notice "ListNoticeDeliveriesAssertSucceeded" "succeeded count expected >=2, got=${succeeded_count:-EMPTY}"
+		fi
+	else
+		invalid_status_count="$(printf '%s' "${LAST_BODY}" | jq -r '[((.noticeDeliveries // .data.noticeDeliveries // [])[] | select((.status // "") as $s | ($s != "pending" and $s != "failed" and $s != "succeeded")))] | length' 2>/dev/null || true)"
+		if [[ -z "${invalid_status_count}" ]]; then
+			fail_l3_notice "ListNoticeDeliveriesAssertStatus" "cannot parse delivery statuses"
+		fi
+		if (( invalid_status_count > 0 )); then
+			fail_l3_notice "ListNoticeDeliveriesAssertStatus" "unexpected delivery status found, invalid_count=${invalid_status_count}"
+		fi
 	fi
 else
 	DELIVERY_COUNT="$(printf '%s' "${LAST_BODY}" | grep -o '"deliveryID"' | wc -l | tr -d ' ')"
 	if [[ -z "${DELIVERY_COUNT}" ]] || (( DELIVERY_COUNT < 2 )); then
 		fail_l3_notice "ListNoticeDeliveriesAssertCount" "delivery count expected >=2, got=${DELIVERY_COUNT:-EMPTY}"
 	fi
-	if ! printf '%s' "${LAST_BODY}" | grep -q '"status"[[:space:]]*:[[:space:]]*"succeeded"'; then
-		fail_l3_notice "ListNoticeDeliveriesAssertSucceeded" "no succeeded delivery found"
+	if [[ "${RUN_WORKER}" == "1" ]]; then
+		succeeded_count="$(printf '%s' "${LAST_BODY}" | grep -Eo '"status"[[:space:]]*:[[:space:]]*"succeeded"' | wc -l | tr -d ' ')"
+		if [[ -z "${succeeded_count}" ]] || (( succeeded_count < 2 )); then
+			fail_l3_notice "ListNoticeDeliveriesAssertSucceeded" "succeeded count expected >=2, got=${succeeded_count:-EMPTY}"
+		fi
+	else
+		status_lines="$(printf '%s' "${LAST_BODY}" | tr ',' '\n' | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+		if [[ -z "${status_lines}" ]]; then
+			fail_l3_notice "ListNoticeDeliveriesAssertStatus" "delivery status missing"
+		fi
+		while IFS= read -r st; do
+			case "${st}" in
+				pending | failed | succeeded) ;;
+				*)
+					fail_l3_notice "ListNoticeDeliveriesAssertStatus" "unexpected delivery status=${st}"
+					;;
+			esac
+		done <<<"${status_lines}"
 	fi
 fi
 
 MOCK_TOTAL="$(count_mock_total)"
-if [[ -z "${MOCK_TOTAL}" ]] || (( MOCK_TOTAL < 2 )); then
-	fail_l3_notice "MockCallbackCount" "mock callback total expected >=2, got=${MOCK_TOTAL:-EMPTY}"
+if [[ "${RUN_WORKER}" == "1" ]]; then
+	if [[ -z "${MOCK_TOTAL}" ]] || (( MOCK_TOTAL < 2 )); then
+		fail_l3_notice "MockCallbackCount" "mock callback total expected >=2, got=${MOCK_TOTAL:-EMPTY}"
+	fi
 fi
 
 echo "PASS L3-NOTICE"
 echo "channel_id=${CHANNEL_ID}"
 echo "incident_id=${INCIDENT_ID}"
 echo "job_id=${JOB_ID}"
+echo "run_worker=${RUN_WORKER}"
 echo "delivery_count=${DELIVERY_COUNT}"
