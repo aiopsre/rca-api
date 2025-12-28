@@ -25,6 +25,7 @@ func NoticeChannelMToNoticeChannelV1(m *model.NoticeChannelM) *v1.NoticeChannel 
 		EndpointURL: m.EndpointURL,
 		Secret:      cloneOptionalString(m.Secret),
 		Headers:     decodeStringMap(m.HeadersJSON),
+		Selectors:   DecodeNoticeSelectors(m.SelectorsJSON),
 		TimeoutMs:   m.TimeoutMs,
 		MaxRetries:  m.MaxRetries,
 		CreatedAt:   timestamppb.New(m.CreatedAt.UTC()),
@@ -81,6 +82,37 @@ func EncodeStringMap(headers map[string]string) *string {
 	return &out
 }
 
+// EncodeNoticeSelectors encodes selectors to JSON text.
+func EncodeNoticeSelectors(selectors *v1.NoticeSelectors) *string {
+	if selectors == nil {
+		return nil
+	}
+	modelSelectors := selectorsV1ToModel(selectors)
+	if isEmptyNoticeSelectors(modelSelectors) {
+		return nil
+	}
+
+	raw, _ := json.Marshal(modelSelectors)
+	out := string(raw)
+	return &out
+}
+
+// DecodeNoticeSelectors decodes selectors JSON text.
+func DecodeNoticeSelectors(raw *string) *v1.NoticeSelectors {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil
+	}
+
+	var out model.NoticeSelectors
+	if err := json.Unmarshal([]byte(*raw), &out); err != nil {
+		return nil
+	}
+	if isEmptyNoticeSelectors(&out) {
+		return nil
+	}
+	return selectorsModelToV1(&out)
+}
+
 func decodeStringMap(raw *string) map[string]string {
 	if raw == nil || strings.TrimSpace(*raw) == "" {
 		return map[string]string{}
@@ -105,4 +137,41 @@ func timePtrToTimestampPtr(v *time.Time) *timestamppb.Timestamp {
 		return nil
 	}
 	return timestamppb.New(v.UTC())
+}
+
+func selectorsV1ToModel(in *v1.NoticeSelectors) *model.NoticeSelectors {
+	if in == nil {
+		return nil
+	}
+	return &model.NoticeSelectors{
+		EventTypes:     append([]string(nil), in.GetEventTypes()...),
+		Namespaces:     append([]string(nil), in.GetNamespaces()...),
+		Services:       append([]string(nil), in.GetServices()...),
+		Severities:     append([]string(nil), in.GetSeverities()...),
+		RootCauseTypes: append([]string(nil), in.GetRootCauseTypes()...),
+	}
+}
+
+func selectorsModelToV1(in *model.NoticeSelectors) *v1.NoticeSelectors {
+	if in == nil {
+		return nil
+	}
+	return &v1.NoticeSelectors{
+		EventTypes:     append([]string(nil), in.EventTypes...),
+		Namespaces:     append([]string(nil), in.Namespaces...),
+		Services:       append([]string(nil), in.Services...),
+		Severities:     append([]string(nil), in.Severities...),
+		RootCauseTypes: append([]string(nil), in.RootCauseTypes...),
+	}
+}
+
+func isEmptyNoticeSelectors(in *model.NoticeSelectors) bool {
+	if in == nil {
+		return true
+	}
+	return len(in.EventTypes) == 0 &&
+		len(in.Namespaces) == 0 &&
+		len(in.Services) == 0 &&
+		len(in.Severities) == 0 &&
+		len(in.RootCauseTypes) == 0
 }

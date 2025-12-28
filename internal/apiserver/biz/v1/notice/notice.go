@@ -86,14 +86,15 @@ func (b *noticeBiz) CreateChannel(ctx context.Context, rq *v1.CreateNoticeChanne
 	}
 
 	obj := &model.NoticeChannelM{
-		Name:        strings.TrimSpace(rq.GetName()),
-		Type:        chType,
-		Enabled:     enabled,
-		EndpointURL: strings.TrimSpace(rq.GetEndpointURL()),
-		Secret:      normalizeOptionalString(rq.Secret),
-		HeadersJSON: conversion.EncodeStringMap(rq.GetHeaders()),
-		TimeoutMs:   timeoutMs,
-		MaxRetries:  maxRetries,
+		Name:          strings.TrimSpace(rq.GetName()),
+		Type:          chType,
+		Enabled:       enabled,
+		EndpointURL:   strings.TrimSpace(rq.GetEndpointURL()),
+		Secret:        normalizeOptionalString(rq.Secret),
+		HeadersJSON:   conversion.EncodeStringMap(rq.GetHeaders()),
+		SelectorsJSON: conversion.EncodeNoticeSelectors(rq.GetSelectors()),
+		TimeoutMs:     timeoutMs,
+		MaxRetries:    maxRetries,
 	}
 	if err := b.store.NoticeChannel().Create(ctx, obj); err != nil {
 		return nil, errno.ErrNoticeChannelCreateFailed
@@ -159,6 +160,9 @@ func (b *noticeBiz) PatchChannel(ctx context.Context, rq *v1.PatchNoticeChannelR
 	}
 	if rq.Secret != nil {
 		obj.Secret = normalizeOptionalString(rq.Secret)
+	}
+	if rq.GetSelectors() != nil {
+		obj.SelectorsJSON = conversion.EncodeNoticeSelectors(rq.GetSelectors())
 	}
 	if err := b.store.NoticeChannel().Update(ctx, obj); err != nil {
 		return nil, errno.ErrNoticeChannelUpdateFailed

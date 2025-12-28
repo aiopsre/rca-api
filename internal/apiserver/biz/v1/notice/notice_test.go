@@ -30,6 +30,10 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 		TimeoutMs:  int64PtrNoticeBiz(1500),
 		MaxRetries: int64PtrNoticeBiz(0),
 		Secret:     strPtrNoticeBiz("secret-1"),
+		Selectors: &v1.NoticeSelectors{
+			EventTypes: []string{"incident_created"},
+			Services:   []string{"checkout"},
+		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, createResp.GetNoticeChannel())
@@ -42,6 +46,8 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.Equal(t, "ops-webhook", getResp.GetNoticeChannel().GetName())
 	require.Equal(t, "webhook", getResp.GetNoticeChannel().GetType())
 	require.Equal(t, "abc", getResp.GetNoticeChannel().GetHeaders()["X-Token"])
+	require.Equal(t, []string{"incident_created"}, getResp.GetNoticeChannel().GetSelectors().GetEventTypes())
+	require.Equal(t, []string{"checkout"}, getResp.GetNoticeChannel().GetSelectors().GetServices())
 
 	listResp, err := biz.ListChannels(ctx, &v1.ListNoticeChannelsRequest{
 		Enabled: boolPtrNoticeBiz(true),
@@ -57,6 +63,10 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 		EndpointURL: strPtrNoticeBiz("https://example.org/new"),
 		Headers:     map[string]string{},
 		TimeoutMs:   int64PtrNoticeBiz(5000),
+		Selectors: &v1.NoticeSelectors{
+			EventTypes: []string{"diagnosis_written"},
+			Severities: []string{"warning"},
+		},
 	})
 	require.NoError(t, err)
 
@@ -65,6 +75,8 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.False(t, getAfterPatch.GetNoticeChannel().GetEnabled())
 	require.Equal(t, "https://example.org/new", getAfterPatch.GetNoticeChannel().GetEndpointURL())
 	require.Empty(t, getAfterPatch.GetNoticeChannel().GetHeaders())
+	require.Equal(t, []string{"diagnosis_written"}, getAfterPatch.GetNoticeChannel().GetSelectors().GetEventTypes())
+	require.Equal(t, []string{"warning"}, getAfterPatch.GetNoticeChannel().GetSelectors().GetSeverities())
 
 	_, err = biz.DeleteChannel(ctx, &v1.DeleteNoticeChannelRequest{ChannelID: channelID})
 	require.NoError(t, err)

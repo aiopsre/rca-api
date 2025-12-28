@@ -493,3 +493,25 @@ python -m orchestrator.main
   - RUN_WORKER=0 时退化为仅断言 deliveries（避免因 outbox 语义导致 0 回调误报）
   - 保持 PASS/FAIL step 诊断风格与 body 截断规范一致
 
+---
+
+## P1-5 Notice Selectors（订阅/路由）
+
+### Spec
+- docs/devel/zh-CN/附录P1-5_Notice_Selectors_订阅与路由规范.md
+
+### Done Definition（验收口径）
+1) NoticeChannel 增加 selectors（最小 allow-list）：
+   - event_types / namespaces / services / severities（root_cause_types 可选）
+   - selectors 为空 = 全量订阅（兼容旧行为）
+2) 触发点改造（incident_created / diagnosis_written）：
+   - 写 pending delivery 前执行 match(event_ctx, selectors)
+   - 仅对匹配的 enabled channels 生成 NoticeDelivery(status=pending)
+3) Guardrails：
+   - event_types/severities 枚举校验；每列表长度/字符串长度上限
+4) 回归脚本：新增 scripts/test_p1_L6_notice_selectors.sh
+   - 创建 channel_all（无 selectors）与 channel_diag_only（event_types=[diagnosis_written]）
+   - 验证 incident_created 只命中 channel_all；diagnosis_written 两者均命中
+   - 含 worker 消费（脚本内启动或复用现有方式），PASS/FAIL step 诊断风格一致
+5) make protoc / make test / make lint-new 通过
+

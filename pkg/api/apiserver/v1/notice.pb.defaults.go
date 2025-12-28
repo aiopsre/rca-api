@@ -16,6 +16,9 @@ var (
 	_ *wrapperspb.BoolValue
 )
 
+func (x *NoticeSelectors) Default() {
+}
+
 func (x *NoticeChannel) Default() {
 }
 

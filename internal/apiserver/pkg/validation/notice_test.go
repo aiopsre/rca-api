@@ -32,10 +32,20 @@ func TestValidateCreateNoticeChannelRequest_Guardrails(t *testing.T) {
 		Headers: map[string]string{
 			"Authorization": "Bearer token",
 		},
+		Selectors: &v1.NoticeSelectors{
+			EventTypes: []string{"Incident_Created", "diagnosis_written"},
+			Severities: []string{"P1", "critical"},
+			Namespaces: []string{"Default"},
+			Services:   []string{"Checkout"},
+		},
 	}
 	err = val.ValidateCreateNoticeChannelRequest(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, int64(500), req.GetTimeoutMs())
+	require.Equal(t, []string{"incident_created", "diagnosis_written"}, req.GetSelectors().GetEventTypes())
+	require.Equal(t, []string{"warning", "critical"}, req.GetSelectors().GetSeverities())
+	require.Equal(t, []string{"default"}, req.GetSelectors().GetNamespaces())
+	require.Equal(t, []string{"checkout"}, req.GetSelectors().GetServices())
 }
 
 func TestValidatePatchNoticeChannelRequest_RequireFieldsAndClamp(t *testing.T) {
@@ -49,10 +59,36 @@ func TestValidatePatchNoticeChannelRequest_RequireFieldsAndClamp(t *testing.T) {
 	req := &v1.PatchNoticeChannelRequest{
 		ChannelID: "notice-channel-1",
 		TimeoutMs: int64PtrValidationNotice(30000),
+		Selectors: &v1.NoticeSelectors{
+			EventTypes: []string{"Diagnosis_Written"},
+			Severities: []string{"P2"},
+		},
 	}
 	err = val.ValidatePatchNoticeChannelRequest(context.Background(), req)
 	require.NoError(t, err)
 	require.Equal(t, int64(10000), req.GetTimeoutMs())
+	require.Equal(t, []string{"diagnosis_written"}, req.GetSelectors().GetEventTypes())
+	require.Equal(t, []string{"info"}, req.GetSelectors().GetSeverities())
+
+	err = val.ValidatePatchNoticeChannelRequest(context.Background(), &v1.PatchNoticeChannelRequest{
+		ChannelID: "notice-channel-1",
+		Selectors: &v1.NoticeSelectors{
+			EventTypes: []string{"unknown_event"},
+		},
+	})
+	require.Error(t, err)
+
+	tooMany := make([]string, 101)
+	for i := range tooMany {
+		tooMany[i] = "default"
+	}
+	err = val.ValidatePatchNoticeChannelRequest(context.Background(), &v1.PatchNoticeChannelRequest{
+		ChannelID: "notice-channel-1",
+		Selectors: &v1.NoticeSelectors{
+			Namespaces: tooMany,
+		},
+	})
+	require.Error(t, err)
 }
 
 func TestValidateListNoticeDeliveriesRequest_DefaultLimitAndFilters(t *testing.T) {

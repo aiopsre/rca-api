@@ -7,6 +7,15 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
 
+// NoticeSelectors defines channel-level allow-list subscriptions.
+message NoticeSelectors {
+  repeated string eventTypes = 1;
+  repeated string namespaces = 2;
+  repeated string services = 3;
+  repeated string severities = 4;
+  repeated string rootCauseTypes = 5;
+}
+
 // NoticeChannel configures one outbound notification channel.
 message NoticeChannel {
   string channelID = 1;
@@ -21,6 +30,7 @@ message NoticeChannel {
   int64 maxRetries = 9;
   google.protobuf.Timestamp createdAt = 10;
   google.protobuf.Timestamp updatedAt = 11;
+  NoticeSelectors selectors = 12;
 }
 
 // CreateNoticeChannelRequest creates a notice channel.
@@ -33,6 +43,7 @@ message CreateNoticeChannelRequest {
   map<string, string> headers = 6;
   optional int64 timeoutMs = 7;
   optional int64 maxRetries = 8;
+  NoticeSelectors selectors = 9;
 }
 
 // CreateNoticeChannelResponse returns created channel.
@@ -77,6 +88,7 @@ message PatchNoticeChannelRequest {
   optional int64 timeoutMs = 5;
   optional int64 maxRetries = 6;
   optional string secret = 7;
+  NoticeSelectors selectors = 8;
 }
 
 // PatchNoticeChannelResponse indicates update result.

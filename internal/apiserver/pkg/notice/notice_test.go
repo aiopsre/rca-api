@@ -2,6 +2,7 @@ package notice
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,6 +64,69 @@ func TestDispatchBestEffort_EnqueuePending(t *testing.T) {
 	require.Equal(t, int64(3), list[0].MaxAttempts)
 	require.NotEmpty(t, list[0].IdempotencyKey)
 	require.Len(t, list[0].RequestBody, RequestBodyMaxBytes)
+}
+
+func TestDispatchBestEffort_SelectorsRouting(t *testing.T) {
+	s := newNoticeTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:        "hook-all",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: "http://127.0.0.1:18081/all",
+		TimeoutMs:   1000,
+		MaxRetries:  3,
+	}))
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:        "hook-diagnosis-only",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: "http://127.0.0.1:18081/diag",
+		SelectorsJSON: mustSelectorJSON(t, &model.NoticeSelectors{
+			EventTypes: []string{EventTypeDiagnosisWritten},
+		}),
+		TimeoutMs:  1000,
+		MaxRetries: 3,
+	}))
+
+	incident := &model.IncidentM{
+		IncidentID:    "incident-selector-1",
+		Namespace:     "default",
+		Service:       "checkout",
+		Severity:      "P1",
+		RCAStatus:     "done",
+		RootCauseType: strPtrNoticeTest("database"),
+	}
+	DispatchBestEffort(ctx, s, DispatchRequest{
+		EventType:  EventTypeIncidentCreated,
+		Incident:   incident,
+		OccurredAt: time.Now().UTC(),
+	})
+	DispatchBestEffort(ctx, s, DispatchRequest{
+		EventType:  EventTypeDiagnosisWritten,
+		Incident:   incident,
+		JobID:      "ai-job-selector-1",
+		OccurredAt: time.Now().UTC(),
+	})
+
+	_, allDeliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 50).F("incident_id", incident.IncidentID))
+	require.NoError(t, err)
+	require.Len(t, allDeliveries, 3)
+
+	_, incidentCreatedDeliveries, err := s.NoticeDelivery().List(
+		ctx,
+		where.T(ctx).P(0, 50).F("incident_id", incident.IncidentID, "event_type", EventTypeIncidentCreated),
+	)
+	require.NoError(t, err)
+	require.Len(t, incidentCreatedDeliveries, 1)
+
+	_, diagnosisDeliveries, err := s.NoticeDelivery().List(
+		ctx,
+		where.T(ctx).P(0, 50).F("incident_id", incident.IncidentID, "event_type", EventTypeDiagnosisWritten),
+	)
+	require.NoError(t, err)
+	require.Len(t, diagnosisDeliveries, 2)
 }
 
 func TestWorker_RetryThenSucceed(t *testing.T) {
@@ -262,3 +326,13 @@ func newNoticeTestStore(t *testing.T) store.IStore {
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return store.NewStore(db)
 }
+
+func mustSelectorJSON(t *testing.T, selectors *model.NoticeSelectors) *string {
+	t.Helper()
+	raw, err := json.Marshal(selectors)
+	require.NoError(t, err)
+	out := string(raw)
+	return &out
+}
+
+func strPtrNoticeTest(v string) *string { return &v }

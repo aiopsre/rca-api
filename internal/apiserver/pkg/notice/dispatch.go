@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -31,6 +32,14 @@ type dispatchPlan struct {
 	eventType   string
 	requestBody string
 	occurredAt  time.Time
+}
+
+type eventContext struct {
+	EventType     string
+	Namespace     string
+	Service       string
+	Severity      string
+	RootCauseType string
 }
 
 // DispatchBestEffort enqueues webhook deliveries into DB outbox (pending), without network IO.
@@ -95,6 +104,12 @@ func prepareDispatchPlan(ctx context.Context, st store.IStore, rq DispatchReques
 		occurredAt = time.Now().UTC()
 	}
 	rq.OccurredAt = occurredAt
+	eventType := strings.ToLower(strings.TrimSpace(rq.EventType))
+	eventCtx := buildEventContext(eventType, rq.Incident)
+	matchedChannels := selectMatchedChannels(channels, eventCtx)
+	if len(matchedChannels) == 0 {
+		return nil, false
+	}
 
 	payloadRaw, err := buildPayload(rq)
 	if err != nil {
@@ -107,8 +122,8 @@ func prepareDispatchPlan(ctx context.Context, st store.IStore, rq DispatchReques
 	}
 
 	return &dispatchPlan{
-		channels:    channels,
-		eventType:   strings.ToLower(strings.TrimSpace(rq.EventType)),
+		channels:    matchedChannels,
+		eventType:   eventType,
 		requestBody: truncateString(string(payloadRaw), RequestBodyMaxBytes),
 		occurredAt:  occurredAt,
 	}, true
@@ -173,4 +188,157 @@ func newDeliveryIdempotencyKey(channelID string, eventType string, incidentID st
 	}, "|")
 	sum := sha256.Sum256([]byte(base))
 	return "notice-" + hex.EncodeToString(sum[:16])
+}
+
+func buildEventContext(eventType string, incident *model.IncidentM) eventContext {
+	if incident == nil {
+		return eventContext{EventType: strings.ToLower(strings.TrimSpace(eventType))}
+	}
+	return eventContext{
+		EventType:     strings.ToLower(strings.TrimSpace(eventType)),
+		Namespace:     strings.ToLower(strings.TrimSpace(incident.Namespace)),
+		Service:       strings.ToLower(strings.TrimSpace(incident.Service)),
+		Severity:      normalizeSelectorSeverity(strings.TrimSpace(incident.Severity)),
+		RootCauseType: strings.ToLower(strings.TrimSpace(derefString(incident.RootCauseType))),
+	}
+}
+
+func selectMatchedChannels(channels []*model.NoticeChannelM, ctx eventContext) []*model.NoticeChannelM {
+	if len(channels) == 0 {
+		return nil
+	}
+	out := make([]*model.NoticeChannelM, 0, len(channels))
+	for _, ch := range channels {
+		if ch == nil {
+			continue
+		}
+		if !matchChannelSelectors(ch.SelectorsJSON, ctx) {
+			continue
+		}
+		out = append(out, ch)
+	}
+	return out
+}
+
+func matchChannelSelectors(raw *string, ctx eventContext) bool {
+	selectors := decodeSelectors(raw)
+	if selectors == nil {
+		return true
+	}
+
+	if !matchSelectorDimension(selectors.EventTypes, ctx.EventType) {
+		return false
+	}
+	if !matchSelectorDimension(selectors.Namespaces, ctx.Namespace) {
+		return false
+	}
+	if !matchSelectorDimension(selectors.Services, ctx.Service) {
+		return false
+	}
+	if !matchSelectorDimension(selectors.Severities, ctx.Severity) {
+		return false
+	}
+
+	if ctx.EventType == EventTypeDiagnosisWritten {
+		if !matchSelectorDimension(selectors.RootCauseTypes, ctx.RootCauseType) {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeSelectors(raw *string) *model.NoticeSelectors {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil
+	}
+
+	var selectors model.NoticeSelectors
+	if err := json.Unmarshal([]byte(*raw), &selectors); err != nil {
+		return nil
+	}
+	normalizeSelectors(&selectors)
+	if isEmptySelectors(&selectors) {
+		return nil
+	}
+	return &selectors
+}
+
+func normalizeSelectors(selectors *model.NoticeSelectors) {
+	if selectors == nil {
+		return
+	}
+	selectors.EventTypes = normalizeSelectorList(selectors.EventTypes, normalizeSelectorEventType)
+	selectors.Namespaces = normalizeSelectorList(selectors.Namespaces, normalizeSelectorIdentity)
+	selectors.Services = normalizeSelectorList(selectors.Services, normalizeSelectorIdentity)
+	selectors.Severities = normalizeSelectorList(selectors.Severities, normalizeSelectorSeverity)
+	selectors.RootCauseTypes = normalizeSelectorList(selectors.RootCauseTypes, normalizeSelectorIdentity)
+}
+
+func normalizeSelectorList(items []string, normalize func(string) string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		v := normalize(item)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func normalizeSelectorEventType(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case EventTypeIncidentCreated, EventTypeDiagnosisWritten:
+		return v
+	default:
+		return ""
+	}
+}
+
+func normalizeSelectorIdentity(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func normalizeSelectorSeverity(raw string) string {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "critical", "p0", "high":
+		return "critical"
+	case "warning", "warn", "p1", "medium":
+		return "warning"
+	case "info", "p2", "p3", "low":
+		return "info"
+	default:
+		return v
+	}
+}
+
+func matchSelectorDimension(allowList []string, value string) bool {
+	if len(allowList) == 0 {
+		return true
+	}
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	return slices.Contains(allowList, value)
+}
+
+func isEmptySelectors(selectors *model.NoticeSelectors) bool {
+	if selectors == nil {
+		return true
+	}
+	return len(selectors.EventTypes) == 0 &&
+		len(selectors.Namespaces) == 0 &&
+		len(selectors.Services) == 0 &&
+		len(selectors.Severities) == 0 &&
+		len(selectors.RootCauseTypes) == 0
 }

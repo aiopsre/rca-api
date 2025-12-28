@@ -7,6 +7,7 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
+	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
 	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
 )
 
@@ -26,6 +27,8 @@ const (
 	maxNoticeStatusLen      = 16
 	maxNoticeResourceIDLen  = 64
 	maxNoticeRetries        = int64(20)
+	maxNoticeSelectorItems  = 100
+	maxNoticeSelectorLength = 128
 )
 
 var allowedNoticeDeliveryStatus = map[string]struct{}{
@@ -33,6 +36,11 @@ var allowedNoticeDeliveryStatus = map[string]struct{}{
 	"succeeded": {},
 	"failed":    {},
 	"canceled":  {},
+}
+
+var allowedNoticeSelectorEvents = map[string]struct{}{
+	noticepkg.EventTypeIncidentCreated:  {},
+	noticepkg.EventTypeDiagnosisWritten: {},
 }
 
 //nolint:gocognit,gocyclo // Guardrails are explicit by design for auditability.
@@ -56,6 +64,9 @@ func (v *Validator) ValidateCreateNoticeChannelRequest(ctx context.Context, rq *
 		return err
 	}
 	if err := validateHeaders(rq.GetHeaders()); err != nil {
+		return err
+	}
+	if err := validateNoticeSelectors(rq.GetSelectors()); err != nil {
 		return err
 	}
 	if rq.TimeoutMs != nil {
@@ -101,7 +112,14 @@ func (v *Validator) ValidatePatchNoticeChannelRequest(ctx context.Context, rq *v
 	if rq == nil || !isValidResourceID(rq.GetChannelID()) {
 		return errorsx.ErrInvalidArgument
 	}
-	if rq.Enabled == nil && rq.EndpointURL == nil && rq.Headers == nil && rq.TimeoutMs == nil && rq.MaxRetries == nil && rq.Secret == nil {
+	patchEmpty := rq.Enabled == nil &&
+		rq.EndpointURL == nil &&
+		rq.Headers == nil &&
+		rq.TimeoutMs == nil &&
+		rq.MaxRetries == nil &&
+		rq.Secret == nil &&
+		rq.GetSelectors() == nil
+	if patchEmpty {
 		return errorsx.ErrInvalidArgument
 	}
 	if rq.EndpointURL != nil {
@@ -125,6 +143,11 @@ func (v *Validator) ValidatePatchNoticeChannelRequest(ctx context.Context, rq *v
 	}
 	if rq.Secret != nil && len(strings.TrimSpace(rq.GetSecret())) > maxNoticeSecretLength {
 		return errorsx.ErrInvalidArgument
+	}
+	if rq.GetSelectors() != nil {
+		if err := validateNoticeSelectors(rq.GetSelectors()); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -244,4 +267,102 @@ func validateHeaders(headers map[string]string) error {
 func isValidResourceID(v string) bool {
 	trimmed := strings.TrimSpace(v)
 	return trimmed != "" && len(trimmed) <= maxNoticeResourceIDLen
+}
+
+func validateNoticeSelectors(selectors *v1.NoticeSelectors) error {
+	if selectors == nil {
+		return nil
+	}
+
+	eventTypes, err := normalizeSelectorList(selectors.GetEventTypes(), normalizeSelectorEventType)
+	if err != nil {
+		return err
+	}
+	selectors.EventTypes = eventTypes
+
+	namespaces, err := normalizeSelectorList(selectors.GetNamespaces(), normalizeSelectorIdentity)
+	if err != nil {
+		return err
+	}
+	selectors.Namespaces = namespaces
+
+	services, err := normalizeSelectorList(selectors.GetServices(), normalizeSelectorIdentity)
+	if err != nil {
+		return err
+	}
+	selectors.Services = services
+
+	severities, err := normalizeSelectorList(selectors.GetSeverities(), normalizeSelectorSeverity)
+	if err != nil {
+		return err
+	}
+	selectors.Severities = severities
+
+	rootCauseTypes, err := normalizeSelectorList(selectors.GetRootCauseTypes(), normalizeSelectorIdentity)
+	if err != nil {
+		return err
+	}
+	selectors.RootCauseTypes = rootCauseTypes
+
+	return nil
+}
+
+func normalizeSelectorList(items []string, normalize func(string) (string, bool)) ([]string, error) {
+	if len(items) > maxNoticeSelectorItems {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		v, ok := normalize(item)
+		if !ok {
+			return nil, errorsx.ErrInvalidArgument
+		}
+		if _, exists := seen[v]; exists {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+func normalizeSelectorEventType(raw string) (string, bool) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if v == "" || len(v) > maxNoticeSelectorLength {
+		return "", false
+	}
+	if _, ok := allowedNoticeSelectorEvents[v]; !ok {
+		return "", false
+	}
+	return v, true
+}
+
+func normalizeSelectorIdentity(raw string) (string, bool) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if v == "" || len(v) > maxNoticeSelectorLength {
+		return "", false
+	}
+	return v, true
+}
+
+func normalizeSelectorSeverity(raw string) (string, bool) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if v == "" || len(v) > maxNoticeSelectorLength {
+		return "", false
+	}
+	switch v {
+	case "critical", "p0", "high":
+		return "critical", true
+	case "warning", "warn", "p1", "medium":
+		return "warning", true
+	case "info", "p2", "p3", "low":
+		return "info", true
+	default:
+		return "", false
+	}
 }
