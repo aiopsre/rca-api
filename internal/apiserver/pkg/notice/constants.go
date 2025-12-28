@@ -14,6 +14,10 @@ const (
 	RequestBodyMaxBytes  = 8 * 1024
 	ResponseBodyMaxBytes = 8 * 1024
 	ErrorBodyMaxBytes    = 2 * 1024
+	SnapshotMaxBytes     = 4 * 1024
+	SnapshotHeaderMax    = 50
+	SnapshotHeaderKeyMax = 256
+	SnapshotHeaderValMax = 4096
 
 	timeoutMsMin     = int64(500)
 	timeoutMsMax     = int64(10000)

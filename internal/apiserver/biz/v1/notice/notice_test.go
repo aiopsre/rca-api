@@ -121,22 +121,32 @@ func TestNoticeBiz_ReplayAndCancelDeliveryOps(t *testing.T) {
 	lockedAt := time.Now().UTC().Add(-1 * time.Minute)
 	responseBody := `{"ok":false}`
 	errText := "http_status_500"
+	snapshotEndpoint := "http://127.0.0.1:19099/old-webhook"
+	snapshotTimeout := int64(1200)
+	snapshotHeaders := `{"Authorization":"Bearer old-token"}`
+	snapshotSecretFingerprint := "sha256:testfingerprint"
+	snapshotChannelVersion := int64(12345)
 	delivery := &model.NoticeDeliveryM{
-		ChannelID:      "notice-channel-op-1",
-		EventType:      "incident_created",
-		IncidentID:     strPtrNoticeBiz("incident-op-1"),
-		RequestBody:    `{"event_type":"incident_created"}`,
-		ResponseCode:   int32PtrNoticeBiz(500),
-		ResponseBody:   &responseBody,
-		LatencyMs:      37,
-		Status:         "failed",
-		Attempts:       2,
-		MaxAttempts:    3,
-		NextRetryAt:    time.Now().UTC().Add(10 * time.Minute),
-		LockedBy:       &lockedBy,
-		LockedAt:       &lockedAt,
-		IdempotencyKey: "notice-test-op-idem-1",
-		Error:          &errText,
+		ChannelID:                 "notice-channel-op-1",
+		EventType:                 "incident_created",
+		IncidentID:                strPtrNoticeBiz("incident-op-1"),
+		RequestBody:               `{"event_type":"incident_created"}`,
+		ResponseCode:              int32PtrNoticeBiz(500),
+		ResponseBody:              &responseBody,
+		LatencyMs:                 37,
+		Status:                    "failed",
+		Attempts:                  2,
+		MaxAttempts:               3,
+		NextRetryAt:               time.Now().UTC().Add(10 * time.Minute),
+		SnapshotEndpointURL:       &snapshotEndpoint,
+		SnapshotTimeoutMs:         &snapshotTimeout,
+		SnapshotHeadersJSON:       &snapshotHeaders,
+		SnapshotSecretFingerprint: &snapshotSecretFingerprint,
+		SnapshotChannelVersion:    &snapshotChannelVersion,
+		LockedBy:                  &lockedBy,
+		LockedAt:                  &lockedAt,
+		IdempotencyKey:            "notice-test-op-idem-1",
+		Error:                     &errText,
 	}
 	require.NoError(t, s.NoticeDelivery().Create(ctx, delivery))
 
@@ -149,6 +159,11 @@ func TestNoticeBiz_ReplayAndCancelDeliveryOps(t *testing.T) {
 	require.Nil(t, replayResp.GetNoticeDelivery().ResponseCode)
 	require.Nil(t, replayResp.GetNoticeDelivery().ResponseBody)
 	require.Nil(t, replayResp.GetNoticeDelivery().Error)
+	require.Equal(t, snapshotEndpoint, replayResp.GetNoticeDelivery().GetSnapshot().GetEndpointURL())
+	require.Equal(t, snapshotTimeout, replayResp.GetNoticeDelivery().GetSnapshot().GetTimeoutMs())
+	require.Equal(t, "Bearer old-token", replayResp.GetNoticeDelivery().GetSnapshot().GetHeaders()["Authorization"])
+	require.Equal(t, snapshotSecretFingerprint, replayResp.GetNoticeDelivery().GetSnapshot().GetSecretFingerprint())
+	require.Equal(t, snapshotChannelVersion, replayResp.GetNoticeDelivery().GetSnapshot().GetChannelVersion())
 
 	replayResp2, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
 	require.NoError(t, err)
@@ -160,6 +175,8 @@ func TestNoticeBiz_ReplayAndCancelDeliveryOps(t *testing.T) {
 	require.Equal(t, "canceled", cancelResp.GetNoticeDelivery().GetStatus())
 	require.Nil(t, cancelResp.GetNoticeDelivery().LockedBy)
 	require.Nil(t, cancelResp.GetNoticeDelivery().LockedAt)
+	require.Equal(t, snapshotEndpoint, cancelResp.GetNoticeDelivery().GetSnapshot().GetEndpointURL())
+	require.Equal(t, snapshotTimeout, cancelResp.GetNoticeDelivery().GetSnapshot().GetTimeoutMs())
 
 	cancelResp2, err := biz.CancelDelivery(ctx, &v1.CancelNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
 	require.NoError(t, err)

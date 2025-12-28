@@ -12,15 +12,20 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"zk8s.com/rca-api/internal/apiserver/model"
 )
 
 var errEmptyEndpointURL = errors.New("empty endpoint_url")
 
+type webhookSendConfig struct {
+	EndpointURL string
+	TimeoutMs   int64
+	HeadersJSON *string
+	Secret      *string
+}
+
 func sendWebhook(
 	ctx context.Context,
-	channel *model.NoticeChannelM,
+	cfg webhookSendConfig,
 	eventType string,
 	idempotencyKey string,
 	payloadRaw []byte,
@@ -28,7 +33,7 @@ func sendWebhook(
 
 	started := time.Now()
 
-	endpoint := strings.TrimSpace(channel.EndpointURL)
+	endpoint := strings.TrimSpace(cfg.EndpointURL)
 	if endpoint == "" {
 		return nil, "", 0, errEmptyEndpointURL
 	}
@@ -41,14 +46,14 @@ func sendWebhook(
 	req.Header.Set("X-Rca-Event-Type", strings.ToLower(strings.TrimSpace(eventType)))
 	req.Header.Set("Idempotency-Key", strings.TrimSpace(idempotencyKey))
 
-	for key, value := range parseHeaders(channel.HeadersJSON) {
+	for key, value := range parseHeaders(cfg.HeadersJSON) {
 		req.Header.Set(key, value)
 	}
-	if secret := strings.TrimSpace(derefString(channel.Secret)); secret != "" {
+	if secret := strings.TrimSpace(derefString(cfg.Secret)); secret != "" {
 		req.Header.Set("X-Rca-Signature", signPayload(secret, payloadRaw))
 	}
 
-	client := &http.Client{Timeout: time.Duration(clampTimeoutMs(channel.TimeoutMs)) * time.Millisecond}
+	client := &http.Client{Timeout: time.Duration(clampTimeoutMs(cfg.TimeoutMs)) * time.Millisecond}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", time.Since(started).Milliseconds(), err

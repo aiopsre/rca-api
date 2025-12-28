@@ -64,6 +64,11 @@ func TestDispatchBestEffort_EnqueuePending(t *testing.T) {
 	require.Equal(t, int64(3), list[0].MaxAttempts)
 	require.NotEmpty(t, list[0].IdempotencyKey)
 	require.Len(t, list[0].RequestBody, RequestBodyMaxBytes)
+	require.NotNil(t, list[0].SnapshotEndpointURL)
+	require.Equal(t, mockSrv.URL, *list[0].SnapshotEndpointURL)
+	require.NotNil(t, list[0].SnapshotTimeoutMs)
+	require.Equal(t, int64(1500), *list[0].SnapshotTimeoutMs)
+	require.Nil(t, list[0].SnapshotHeadersJSON)
 }
 
 func TestDispatchBestEffort_SelectorsRouting(t *testing.T) {
@@ -127,6 +132,74 @@ func TestDispatchBestEffort_SelectorsRouting(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Len(t, diagnosisDeliveries, 2)
+}
+
+func TestWorker_UsesSnapshotAfterChannelEndpointChange(t *testing.T) {
+	var hitOld atomic.Int32
+	var hitNew atomic.Int32
+	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hitOld.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer oldSrv.Close()
+	newSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hitNew.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer newSrv.Close()
+
+	s := newNoticeTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:        "hook-snapshot-old",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: oldSrv.URL,
+		TimeoutMs:   1000,
+		MaxRetries:  3,
+		HeadersJSON: mustHeaderJSON(t, map[string]string{
+			"Authorization": "Bearer old-token",
+		}),
+	}))
+
+	incidentID := "incident-snapshot-1"
+	DispatchBestEffort(ctx, s, DispatchRequest{
+		EventType: EventTypeIncidentCreated,
+		Incident: &model.IncidentM{
+			IncidentID: incidentID,
+			Namespace:  "default",
+			Service:    "checkout",
+			Severity:   "P1",
+			RCAStatus:  "pending",
+		},
+		OccurredAt: time.Now().UTC(),
+	})
+
+	_, queuedDeliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 20).F("incident_id", incidentID))
+	require.NoError(t, err)
+	require.Len(t, queuedDeliveries, 1)
+	require.NotNil(t, queuedDeliveries[0].SnapshotEndpointURL)
+	require.Equal(t, oldSrv.URL, *queuedDeliveries[0].SnapshotEndpointURL)
+
+	channel, err := s.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", queuedDeliveries[0].ChannelID))
+	require.NoError(t, err)
+	channel.EndpointURL = newSrv.URL
+	require.NoError(t, s.NoticeChannel().Update(ctx, channel))
+
+	worker := NewWorker(s, WorkerOptions{
+		WorkerID: "test-worker-snapshot",
+	})
+	_, err = worker.RunOnce(ctx)
+	require.NoError(t, err)
+
+	_, finalDeliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 20).F("incident_id", incidentID))
+	require.NoError(t, err)
+	require.Len(t, finalDeliveries, 1)
+	require.Equal(t, DeliveryStatusSucceeded, finalDeliveries[0].Status)
+	require.Equal(t, int32(1), hitOld.Load())
+	require.Equal(t, int32(0), hitNew.Load())
 }
 
 func TestWorker_RetryThenSucceed(t *testing.T) {
@@ -330,6 +403,14 @@ func newNoticeTestStore(t *testing.T) store.IStore {
 func mustSelectorJSON(t *testing.T, selectors *model.NoticeSelectors) *string {
 	t.Helper()
 	raw, err := json.Marshal(selectors)
+	require.NoError(t, err)
+	out := string(raw)
+	return &out
+}
+
+func mustHeaderJSON(t *testing.T, headers map[string]string) *string {
+	t.Helper()
+	raw, err := json.Marshal(headers)
 	require.NoError(t, err)
 	out := string(raw)
 	return &out

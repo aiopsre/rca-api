@@ -515,3 +515,20 @@ python -m orchestrator.main
    - 含 worker 消费（脚本内启动或复用现有方式），PASS/FAIL step 诊断风格一致
 5) make protoc / make test / make lint-new 通过
 
+---
+
+## P1-6 Notice（Channel 变更与投递一致性：Delivery Snapshot）
+
+### Spec
+- docs/devel/zh-CN/附录P1-6_Notice_Channel变更与投递一致性.md
+
+### Done Definition（验收口径）
+1) NoticeDelivery 增加 snapshot（最小：endpoint_url/timeout_ms/headers/secret_fingerprint/channel_version 可选），并有大小/数量 guardrails。
+2) delivery 创建时填充 snapshot；P1-5 selectors 匹配逻辑不变。
+3) notice-worker 发送时必须优先使用 snapshot（endpoint/timeout/headers），确保 channel 后续变更不影响已入队 delivery。
+4) replay 不修改 snapshot，保证可复现；cancel 不影响 snapshot。
+5) 新增回归脚本 scripts/test_p1_L7_notice_snapshot.sh：
+   - 生成 pending 后修改 channel endpoint，再启动 worker
+   - 断言投递仍到旧 endpoint（snapshot），新 endpoint 0 次
+6) make protoc / make test / make lint-new 通过
+

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -42,6 +44,8 @@ type eventContext struct {
 	RootCauseType string
 }
 
+var errNoticeSnapshotInvalid = errors.New("invalid notice delivery snapshot")
+
 // DispatchBestEffort enqueues webhook deliveries into DB outbox (pending), without network IO.
 func DispatchBestEffort(ctx context.Context, st store.IStore, rq DispatchRequest) {
 	if st == nil || rq.Incident == nil {
@@ -57,31 +61,50 @@ func DispatchBestEffort(ctx context.Context, st store.IStore, rq DispatchRequest
 		if channel == nil {
 			continue
 		}
+		enqueueDeliveryForChannel(ctx, st, plan, rq, channel)
+	}
+}
 
-		delivery := &model.NoticeDeliveryM{
-			ChannelID:      channel.ChannelID,
-			EventType:      plan.eventType,
-			IncidentID:     strPtrOrNil(strings.TrimSpace(rq.Incident.IncidentID)),
-			JobID:          strPtrOrNil(strings.TrimSpace(rq.JobID)),
-			RequestBody:    plan.requestBody,
-			Status:         DeliveryStatusPending,
-			Attempts:       0,
-			MaxAttempts:    deriveMaxAttempts(channel.MaxRetries),
-			NextRetryAt:    time.Now().UTC(),
-			IdempotencyKey: newDeliveryIdempotencyKey(channel.ChannelID, plan.eventType, rq.Incident.IncidentID, rq.JobID, plan.occurredAt),
-		}
-		if err := st.NoticeDelivery().Create(ctx, delivery); err != nil {
-			slog.ErrorContext(ctx, "notice delivery enqueue failed",
-				"error", err,
-				"event_type", plan.eventType,
-				"incident_id", rq.Incident.IncidentID,
-				"channel_id", channel.ChannelID,
-			)
-			continue
-		}
-		if metrics.M != nil {
-			metrics.M.RecordNoticeDeliveryDispatch(ctx, plan.eventType)
-		}
+func enqueueDeliveryForChannel(ctx context.Context, st store.IStore, plan *dispatchPlan, rq DispatchRequest, channel *model.NoticeChannelM) {
+	snapshot, err := buildDeliverySnapshot(channel)
+	if err != nil {
+		slog.WarnContext(ctx, "notice delivery snapshot build failed",
+			"error", err,
+			"event_type", plan.eventType,
+			"incident_id", rq.Incident.IncidentID,
+			"channel_id", channel.ChannelID,
+		)
+		return
+	}
+
+	delivery := &model.NoticeDeliveryM{
+		ChannelID:                 channel.ChannelID,
+		EventType:                 plan.eventType,
+		IncidentID:                strPtrOrNil(strings.TrimSpace(rq.Incident.IncidentID)),
+		JobID:                     strPtrOrNil(strings.TrimSpace(rq.JobID)),
+		RequestBody:               plan.requestBody,
+		Status:                    DeliveryStatusPending,
+		Attempts:                  0,
+		MaxAttempts:               deriveMaxAttempts(channel.MaxRetries),
+		NextRetryAt:               time.Now().UTC(),
+		IdempotencyKey:            newDeliveryIdempotencyKey(channel.ChannelID, plan.eventType, rq.Incident.IncidentID, rq.JobID, plan.occurredAt),
+		SnapshotEndpointURL:       snapshot.EndpointURL,
+		SnapshotTimeoutMs:         snapshot.TimeoutMs,
+		SnapshotHeadersJSON:       encodeSnapshotHeaders(snapshot.Headers),
+		SnapshotSecretFingerprint: snapshot.SecretFingerprint,
+		SnapshotChannelVersion:    snapshot.ChannelVersion,
+	}
+	if err := st.NoticeDelivery().Create(ctx, delivery); err != nil {
+		slog.ErrorContext(ctx, "notice delivery enqueue failed",
+			"error", err,
+			"event_type", plan.eventType,
+			"incident_id", rq.Incident.IncidentID,
+			"channel_id", channel.ChannelID,
+		)
+		return
+	}
+	if metrics.M != nil {
+		metrics.M.RecordNoticeDeliveryDispatch(ctx, plan.eventType)
 	}
 }
 
@@ -342,3 +365,122 @@ func isEmptySelectors(selectors *model.NoticeSelectors) bool {
 		len(selectors.Severities) == 0 &&
 		len(selectors.RootCauseTypes) == 0
 }
+
+func buildDeliverySnapshot(channel *model.NoticeChannelM) (*model.NoticeDeliverySnapshot, error) {
+	if channel == nil {
+		return nil, fmt.Errorf("%w: nil channel", errNoticeSnapshotInvalid)
+	}
+
+	endpoint := strings.TrimSpace(channel.EndpointURL)
+	if endpoint == "" {
+		return nil, fmt.Errorf("%w: empty endpoint_url", errNoticeSnapshotInvalid)
+	}
+
+	headers, err := normalizeSnapshotHeaders(channel.HeadersJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	timeout := clampTimeoutMs(channel.TimeoutMs)
+	snapshot := &model.NoticeDeliverySnapshot{
+		EndpointURL:       strPtrOrNil(endpoint),
+		TimeoutMs:         int64Ptr(timeout),
+		Headers:           headers,
+		SecretFingerprint: buildSecretFingerprint(channel.Secret),
+		ChannelVersion:    channelVersion(channel.UpdatedAt),
+	}
+	if err := validateSnapshotSize(snapshot); err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+func normalizeSnapshotHeaders(raw *string) (map[string]string, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return map[string]string{}, nil
+	}
+
+	decoded, err := parseSnapshotHeaders(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSnapshotHeaderCount(decoded); err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]string, len(decoded))
+	for key, value := range decoded {
+		normalizedKey, normalizedValue, err := normalizeSnapshotHeader(key, value)
+		if err != nil {
+			return nil, err
+		}
+		out[normalizedKey] = normalizedValue
+	}
+	return out, nil
+}
+
+func parseSnapshotHeaders(raw *string) (map[string]string, error) {
+	decoded := map[string]string{}
+	if err := json.Unmarshal([]byte(*raw), &decoded); err != nil {
+		return nil, fmt.Errorf("%w: invalid headers_json", errNoticeSnapshotInvalid)
+	}
+	return decoded, nil
+}
+
+func validateSnapshotHeaderCount(headers map[string]string) error {
+	if len(headers) > SnapshotHeaderMax {
+		return fmt.Errorf("%w: headers count exceeds %d", errNoticeSnapshotInvalid, SnapshotHeaderMax)
+	}
+	return nil
+}
+
+func normalizeSnapshotHeader(key string, value string) (string, string, error) {
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" || len(trimmedKey) > SnapshotHeaderKeyMax {
+		return "", "", fmt.Errorf("%w: invalid header key", errNoticeSnapshotInvalid)
+	}
+	if len(value) > SnapshotHeaderValMax {
+		return "", "", fmt.Errorf("%w: invalid header value length", errNoticeSnapshotInvalid)
+	}
+	return trimmedKey, value, nil
+}
+
+func validateSnapshotSize(snapshot *model.NoticeDeliverySnapshot) error {
+	raw, _ := json.Marshal(snapshot)
+	if len(raw) > SnapshotMaxBytes {
+		return fmt.Errorf("%w: snapshot too large", errNoticeSnapshotInvalid)
+	}
+	return nil
+}
+
+func encodeSnapshotHeaders(headers map[string]string) *string {
+	if len(headers) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(headers)
+	out := string(raw)
+	return &out
+}
+
+func buildSecretFingerprint(secret *string) *string {
+	if secret == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*secret)
+	if trimmed == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	fingerprint := "sha256:" + hex.EncodeToString(sum[:])
+	return &fingerprint
+}
+
+func channelVersion(t time.Time) *int64 {
+	if t.IsZero() {
+		return nil
+	}
+	v := t.UTC().UnixMilli()
+	return &v
+}
+
+func int64Ptr(v int64) *int64 { return &v }

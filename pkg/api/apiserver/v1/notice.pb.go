@@ -819,6 +819,83 @@ func (*DeleteNoticeChannelResponse) Descriptor() ([]byte, []int) {
 	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{11}
 }
 
+// NoticeDeliverySnapshot records immutable channel config used by one delivery.
+type NoticeDeliverySnapshot struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	EndpointURL       *string                `protobuf:"bytes,1,opt,name=endpointURL,proto3,oneof" json:"endpointURL,omitempty"`
+	TimeoutMs         *int64                 `protobuf:"varint,2,opt,name=timeoutMs,proto3,oneof" json:"timeoutMs,omitempty"`
+	Headers           map[string]string      `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	SecretFingerprint *string                `protobuf:"bytes,4,opt,name=secretFingerprint,proto3,oneof" json:"secretFingerprint,omitempty"`
+	ChannelVersion    *int64                 `protobuf:"varint,5,opt,name=channelVersion,proto3,oneof" json:"channelVersion,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *NoticeDeliverySnapshot) Reset() {
+	*x = NoticeDeliverySnapshot{}
+	mi := &file_apiserver_v1_notice_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NoticeDeliverySnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NoticeDeliverySnapshot) ProtoMessage() {}
+
+func (x *NoticeDeliverySnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_apiserver_v1_notice_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NoticeDeliverySnapshot.ProtoReflect.Descriptor instead.
+func (*NoticeDeliverySnapshot) Descriptor() ([]byte, []int) {
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *NoticeDeliverySnapshot) GetEndpointURL() string {
+	if x != nil && x.EndpointURL != nil {
+		return *x.EndpointURL
+	}
+	return ""
+}
+
+func (x *NoticeDeliverySnapshot) GetTimeoutMs() int64 {
+	if x != nil && x.TimeoutMs != nil {
+		return *x.TimeoutMs
+	}
+	return 0
+}
+
+func (x *NoticeDeliverySnapshot) GetHeaders() map[string]string {
+	if x != nil {
+		return x.Headers
+	}
+	return nil
+}
+
+func (x *NoticeDeliverySnapshot) GetSecretFingerprint() string {
+	if x != nil && x.SecretFingerprint != nil {
+		return *x.SecretFingerprint
+	}
+	return ""
+}
+
+func (x *NoticeDeliverySnapshot) GetChannelVersion() int64 {
+	if x != nil && x.ChannelVersion != nil {
+		return *x.ChannelVersion
+	}
+	return 0
+}
+
 // NoticeDelivery records one notification delivery audit.
 type NoticeDelivery struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
@@ -832,22 +909,23 @@ type NoticeDelivery struct {
 	ResponseBody *string                `protobuf:"bytes,8,opt,name=responseBody,proto3,oneof" json:"responseBody,omitempty"`
 	LatencyMs    int64                  `protobuf:"varint,9,opt,name=latencyMs,proto3" json:"latencyMs,omitempty"`
 	// status is pending|succeeded|failed|canceled(optional).
-	Status         string                 `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
-	Error          *string                `protobuf:"bytes,11,opt,name=error,proto3,oneof" json:"error,omitempty"`
-	CreatedAt      *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
-	Attempts       int64                  `protobuf:"varint,13,opt,name=attempts,proto3" json:"attempts,omitempty"`
-	MaxAttempts    int64                  `protobuf:"varint,14,opt,name=maxAttempts,proto3" json:"maxAttempts,omitempty"`
-	NextRetryAt    *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=nextRetryAt,proto3" json:"nextRetryAt,omitempty"`
-	LockedBy       *string                `protobuf:"bytes,16,opt,name=lockedBy,proto3,oneof" json:"lockedBy,omitempty"`
-	LockedAt       *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=lockedAt,proto3,oneof" json:"lockedAt,omitempty"`
-	IdempotencyKey string                 `protobuf:"bytes,18,opt,name=idempotencyKey,proto3" json:"idempotencyKey,omitempty"`
+	Status         string                  `protobuf:"bytes,10,opt,name=status,proto3" json:"status,omitempty"`
+	Error          *string                 `protobuf:"bytes,11,opt,name=error,proto3,oneof" json:"error,omitempty"`
+	CreatedAt      *timestamppb.Timestamp  `protobuf:"bytes,12,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
+	Attempts       int64                   `protobuf:"varint,13,opt,name=attempts,proto3" json:"attempts,omitempty"`
+	MaxAttempts    int64                   `protobuf:"varint,14,opt,name=maxAttempts,proto3" json:"maxAttempts,omitempty"`
+	NextRetryAt    *timestamppb.Timestamp  `protobuf:"bytes,15,opt,name=nextRetryAt,proto3" json:"nextRetryAt,omitempty"`
+	LockedBy       *string                 `protobuf:"bytes,16,opt,name=lockedBy,proto3,oneof" json:"lockedBy,omitempty"`
+	LockedAt       *timestamppb.Timestamp  `protobuf:"bytes,17,opt,name=lockedAt,proto3,oneof" json:"lockedAt,omitempty"`
+	IdempotencyKey string                  `protobuf:"bytes,18,opt,name=idempotencyKey,proto3" json:"idempotencyKey,omitempty"`
+	Snapshot       *NoticeDeliverySnapshot `protobuf:"bytes,19,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *NoticeDelivery) Reset() {
 	*x = NoticeDelivery{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[12]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -859,7 +937,7 @@ func (x *NoticeDelivery) String() string {
 func (*NoticeDelivery) ProtoMessage() {}
 
 func (x *NoticeDelivery) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[12]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -872,7 +950,7 @@ func (x *NoticeDelivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NoticeDelivery.ProtoReflect.Descriptor instead.
 func (*NoticeDelivery) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{12}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *NoticeDelivery) GetDeliveryID() string {
@@ -1001,6 +1079,13 @@ func (x *NoticeDelivery) GetIdempotencyKey() string {
 	return ""
 }
 
+func (x *NoticeDelivery) GetSnapshot() *NoticeDeliverySnapshot {
+	if x != nil {
+		return x.Snapshot
+	}
+	return nil
+}
+
 // GetNoticeDeliveryRequest gets one delivery.
 type GetNoticeDeliveryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1012,7 +1097,7 @@ type GetNoticeDeliveryRequest struct {
 
 func (x *GetNoticeDeliveryRequest) Reset() {
 	*x = GetNoticeDeliveryRequest{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[13]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1024,7 +1109,7 @@ func (x *GetNoticeDeliveryRequest) String() string {
 func (*GetNoticeDeliveryRequest) ProtoMessage() {}
 
 func (x *GetNoticeDeliveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[13]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1037,7 +1122,7 @@ func (x *GetNoticeDeliveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNoticeDeliveryRequest.ProtoReflect.Descriptor instead.
 func (*GetNoticeDeliveryRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{13}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *GetNoticeDeliveryRequest) GetDeliveryID() string {
@@ -1057,7 +1142,7 @@ type GetNoticeDeliveryResponse struct {
 
 func (x *GetNoticeDeliveryResponse) Reset() {
 	*x = GetNoticeDeliveryResponse{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[14]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1069,7 +1154,7 @@ func (x *GetNoticeDeliveryResponse) String() string {
 func (*GetNoticeDeliveryResponse) ProtoMessage() {}
 
 func (x *GetNoticeDeliveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[14]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1082,7 +1167,7 @@ func (x *GetNoticeDeliveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNoticeDeliveryResponse.ProtoReflect.Descriptor instead.
 func (*GetNoticeDeliveryResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{14}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *GetNoticeDeliveryResponse) GetNoticeDelivery() *NoticeDelivery {
@@ -1113,7 +1198,7 @@ type ListNoticeDeliveriesRequest struct {
 
 func (x *ListNoticeDeliveriesRequest) Reset() {
 	*x = ListNoticeDeliveriesRequest{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[15]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1125,7 +1210,7 @@ func (x *ListNoticeDeliveriesRequest) String() string {
 func (*ListNoticeDeliveriesRequest) ProtoMessage() {}
 
 func (x *ListNoticeDeliveriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[15]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1138,7 +1223,7 @@ func (x *ListNoticeDeliveriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNoticeDeliveriesRequest.ProtoReflect.Descriptor instead.
 func (*ListNoticeDeliveriesRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{15}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListNoticeDeliveriesRequest) GetOffset() int64 {
@@ -1194,7 +1279,7 @@ type ListNoticeDeliveriesResponse struct {
 
 func (x *ListNoticeDeliveriesResponse) Reset() {
 	*x = ListNoticeDeliveriesResponse{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[16]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1206,7 +1291,7 @@ func (x *ListNoticeDeliveriesResponse) String() string {
 func (*ListNoticeDeliveriesResponse) ProtoMessage() {}
 
 func (x *ListNoticeDeliveriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[16]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1219,7 +1304,7 @@ func (x *ListNoticeDeliveriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListNoticeDeliveriesResponse.ProtoReflect.Descriptor instead.
 func (*ListNoticeDeliveriesResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{16}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListNoticeDeliveriesResponse) GetTotalCount() int64 {
@@ -1247,7 +1332,7 @@ type ReplayNoticeDeliveryRequest struct {
 
 func (x *ReplayNoticeDeliveryRequest) Reset() {
 	*x = ReplayNoticeDeliveryRequest{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[17]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1259,7 +1344,7 @@ func (x *ReplayNoticeDeliveryRequest) String() string {
 func (*ReplayNoticeDeliveryRequest) ProtoMessage() {}
 
 func (x *ReplayNoticeDeliveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[17]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1272,7 +1357,7 @@ func (x *ReplayNoticeDeliveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayNoticeDeliveryRequest.ProtoReflect.Descriptor instead.
 func (*ReplayNoticeDeliveryRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{17}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ReplayNoticeDeliveryRequest) GetDeliveryID() string {
@@ -1292,7 +1377,7 @@ type ReplayNoticeDeliveryResponse struct {
 
 func (x *ReplayNoticeDeliveryResponse) Reset() {
 	*x = ReplayNoticeDeliveryResponse{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[18]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1304,7 +1389,7 @@ func (x *ReplayNoticeDeliveryResponse) String() string {
 func (*ReplayNoticeDeliveryResponse) ProtoMessage() {}
 
 func (x *ReplayNoticeDeliveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[18]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1317,7 +1402,7 @@ func (x *ReplayNoticeDeliveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayNoticeDeliveryResponse.ProtoReflect.Descriptor instead.
 func (*ReplayNoticeDeliveryResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{18}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ReplayNoticeDeliveryResponse) GetNoticeDelivery() *NoticeDelivery {
@@ -1338,7 +1423,7 @@ type CancelNoticeDeliveryRequest struct {
 
 func (x *CancelNoticeDeliveryRequest) Reset() {
 	*x = CancelNoticeDeliveryRequest{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[19]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1350,7 +1435,7 @@ func (x *CancelNoticeDeliveryRequest) String() string {
 func (*CancelNoticeDeliveryRequest) ProtoMessage() {}
 
 func (x *CancelNoticeDeliveryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[19]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1363,7 +1448,7 @@ func (x *CancelNoticeDeliveryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelNoticeDeliveryRequest.ProtoReflect.Descriptor instead.
 func (*CancelNoticeDeliveryRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{19}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CancelNoticeDeliveryRequest) GetDeliveryID() string {
@@ -1383,7 +1468,7 @@ type CancelNoticeDeliveryResponse struct {
 
 func (x *CancelNoticeDeliveryResponse) Reset() {
 	*x = CancelNoticeDeliveryResponse{}
-	mi := &file_apiserver_v1_notice_proto_msgTypes[20]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1395,7 +1480,7 @@ func (x *CancelNoticeDeliveryResponse) String() string {
 func (*CancelNoticeDeliveryResponse) ProtoMessage() {}
 
 func (x *CancelNoticeDeliveryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_notice_proto_msgTypes[20]
+	mi := &file_apiserver_v1_notice_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1408,7 +1493,7 @@ func (x *CancelNoticeDeliveryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelNoticeDeliveryResponse.ProtoReflect.Descriptor instead.
 func (*CancelNoticeDeliveryResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{20}
+	return file_apiserver_v1_notice_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CancelNoticeDeliveryResponse) GetNoticeDelivery() *NoticeDelivery {
@@ -1518,7 +1603,21 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x1aPatchNoticeChannelResponse\":\n" +
 	"\x1aDeleteNoticeChannelRequest\x12\x1c\n" +
 	"\tchannelID\x18\x01 \x01(\tR\tchannelID\"\x1d\n" +
-	"\x1bDeleteNoticeChannelResponse\"\x8c\x06\n" +
+	"\x1bDeleteNoticeChannelResponse\"\x92\x03\n" +
+	"\x16NoticeDeliverySnapshot\x12%\n" +
+	"\vendpointURL\x18\x01 \x01(\tH\x00R\vendpointURL\x88\x01\x01\x12!\n" +
+	"\ttimeoutMs\x18\x02 \x01(\x03H\x01R\ttimeoutMs\x88\x01\x01\x12K\n" +
+	"\aheaders\x18\x03 \x03(\v21.apiserver.v1.NoticeDeliverySnapshot.HeadersEntryR\aheaders\x121\n" +
+	"\x11secretFingerprint\x18\x04 \x01(\tH\x02R\x11secretFingerprint\x88\x01\x01\x12+\n" +
+	"\x0echannelVersion\x18\x05 \x01(\x03H\x03R\x0echannelVersion\x88\x01\x01\x1a:\n" +
+	"\fHeadersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x0e\n" +
+	"\f_endpointURLB\f\n" +
+	"\n" +
+	"_timeoutMsB\x14\n" +
+	"\x12_secretFingerprintB\x11\n" +
+	"\x0f_channelVersion\"\xce\x06\n" +
 	"\x0eNoticeDelivery\x12\x1e\n" +
 	"\n" +
 	"deliveryID\x18\x01 \x01(\tR\n" +
@@ -1542,7 +1641,8 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\vnextRetryAt\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampR\vnextRetryAt\x12\x1f\n" +
 	"\blockedBy\x18\x10 \x01(\tH\x05R\blockedBy\x88\x01\x01\x12;\n" +
 	"\blockedAt\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampH\x06R\blockedAt\x88\x01\x01\x12&\n" +
-	"\x0eidempotencyKey\x18\x12 \x01(\tR\x0eidempotencyKeyB\r\n" +
+	"\x0eidempotencyKey\x18\x12 \x01(\tR\x0eidempotencyKey\x12@\n" +
+	"\bsnapshot\x18\x13 \x01(\v2$.apiserver.v1.NoticeDeliverySnapshotR\bsnapshotB\r\n" +
 	"\v_incidentIDB\b\n" +
 	"\x06_jobIDB\x0f\n" +
 	"\r_responseCodeB\x0f\n" +
@@ -1601,7 +1701,7 @@ func file_apiserver_v1_notice_proto_rawDescGZIP() []byte {
 	return file_apiserver_v1_notice_proto_rawDescData
 }
 
-var file_apiserver_v1_notice_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_apiserver_v1_notice_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_apiserver_v1_notice_proto_goTypes = []any{
 	(*NoticeSelectors)(nil),              // 0: apiserver.v1.NoticeSelectors
 	(*NoticeChannel)(nil),                // 1: apiserver.v1.NoticeChannel
@@ -1615,44 +1715,48 @@ var file_apiserver_v1_notice_proto_goTypes = []any{
 	(*PatchNoticeChannelResponse)(nil),   // 9: apiserver.v1.PatchNoticeChannelResponse
 	(*DeleteNoticeChannelRequest)(nil),   // 10: apiserver.v1.DeleteNoticeChannelRequest
 	(*DeleteNoticeChannelResponse)(nil),  // 11: apiserver.v1.DeleteNoticeChannelResponse
-	(*NoticeDelivery)(nil),               // 12: apiserver.v1.NoticeDelivery
-	(*GetNoticeDeliveryRequest)(nil),     // 13: apiserver.v1.GetNoticeDeliveryRequest
-	(*GetNoticeDeliveryResponse)(nil),    // 14: apiserver.v1.GetNoticeDeliveryResponse
-	(*ListNoticeDeliveriesRequest)(nil),  // 15: apiserver.v1.ListNoticeDeliveriesRequest
-	(*ListNoticeDeliveriesResponse)(nil), // 16: apiserver.v1.ListNoticeDeliveriesResponse
-	(*ReplayNoticeDeliveryRequest)(nil),  // 17: apiserver.v1.ReplayNoticeDeliveryRequest
-	(*ReplayNoticeDeliveryResponse)(nil), // 18: apiserver.v1.ReplayNoticeDeliveryResponse
-	(*CancelNoticeDeliveryRequest)(nil),  // 19: apiserver.v1.CancelNoticeDeliveryRequest
-	(*CancelNoticeDeliveryResponse)(nil), // 20: apiserver.v1.CancelNoticeDeliveryResponse
-	nil,                                  // 21: apiserver.v1.NoticeChannel.HeadersEntry
-	nil,                                  // 22: apiserver.v1.CreateNoticeChannelRequest.HeadersEntry
-	nil,                                  // 23: apiserver.v1.PatchNoticeChannelRequest.HeadersEntry
-	(*timestamppb.Timestamp)(nil),        // 24: google.protobuf.Timestamp
+	(*NoticeDeliverySnapshot)(nil),       // 12: apiserver.v1.NoticeDeliverySnapshot
+	(*NoticeDelivery)(nil),               // 13: apiserver.v1.NoticeDelivery
+	(*GetNoticeDeliveryRequest)(nil),     // 14: apiserver.v1.GetNoticeDeliveryRequest
+	(*GetNoticeDeliveryResponse)(nil),    // 15: apiserver.v1.GetNoticeDeliveryResponse
+	(*ListNoticeDeliveriesRequest)(nil),  // 16: apiserver.v1.ListNoticeDeliveriesRequest
+	(*ListNoticeDeliveriesResponse)(nil), // 17: apiserver.v1.ListNoticeDeliveriesResponse
+	(*ReplayNoticeDeliveryRequest)(nil),  // 18: apiserver.v1.ReplayNoticeDeliveryRequest
+	(*ReplayNoticeDeliveryResponse)(nil), // 19: apiserver.v1.ReplayNoticeDeliveryResponse
+	(*CancelNoticeDeliveryRequest)(nil),  // 20: apiserver.v1.CancelNoticeDeliveryRequest
+	(*CancelNoticeDeliveryResponse)(nil), // 21: apiserver.v1.CancelNoticeDeliveryResponse
+	nil,                                  // 22: apiserver.v1.NoticeChannel.HeadersEntry
+	nil,                                  // 23: apiserver.v1.CreateNoticeChannelRequest.HeadersEntry
+	nil,                                  // 24: apiserver.v1.PatchNoticeChannelRequest.HeadersEntry
+	nil,                                  // 25: apiserver.v1.NoticeDeliverySnapshot.HeadersEntry
+	(*timestamppb.Timestamp)(nil),        // 26: google.protobuf.Timestamp
 }
 var file_apiserver_v1_notice_proto_depIdxs = []int32{
-	21, // 0: apiserver.v1.NoticeChannel.headers:type_name -> apiserver.v1.NoticeChannel.HeadersEntry
-	24, // 1: apiserver.v1.NoticeChannel.createdAt:type_name -> google.protobuf.Timestamp
-	24, // 2: apiserver.v1.NoticeChannel.updatedAt:type_name -> google.protobuf.Timestamp
+	22, // 0: apiserver.v1.NoticeChannel.headers:type_name -> apiserver.v1.NoticeChannel.HeadersEntry
+	26, // 1: apiserver.v1.NoticeChannel.createdAt:type_name -> google.protobuf.Timestamp
+	26, // 2: apiserver.v1.NoticeChannel.updatedAt:type_name -> google.protobuf.Timestamp
 	0,  // 3: apiserver.v1.NoticeChannel.selectors:type_name -> apiserver.v1.NoticeSelectors
-	22, // 4: apiserver.v1.CreateNoticeChannelRequest.headers:type_name -> apiserver.v1.CreateNoticeChannelRequest.HeadersEntry
+	23, // 4: apiserver.v1.CreateNoticeChannelRequest.headers:type_name -> apiserver.v1.CreateNoticeChannelRequest.HeadersEntry
 	0,  // 5: apiserver.v1.CreateNoticeChannelRequest.selectors:type_name -> apiserver.v1.NoticeSelectors
 	1,  // 6: apiserver.v1.CreateNoticeChannelResponse.noticeChannel:type_name -> apiserver.v1.NoticeChannel
 	1,  // 7: apiserver.v1.GetNoticeChannelResponse.noticeChannel:type_name -> apiserver.v1.NoticeChannel
 	1,  // 8: apiserver.v1.ListNoticeChannelsResponse.noticeChannels:type_name -> apiserver.v1.NoticeChannel
-	23, // 9: apiserver.v1.PatchNoticeChannelRequest.headers:type_name -> apiserver.v1.PatchNoticeChannelRequest.HeadersEntry
+	24, // 9: apiserver.v1.PatchNoticeChannelRequest.headers:type_name -> apiserver.v1.PatchNoticeChannelRequest.HeadersEntry
 	0,  // 10: apiserver.v1.PatchNoticeChannelRequest.selectors:type_name -> apiserver.v1.NoticeSelectors
-	24, // 11: apiserver.v1.NoticeDelivery.createdAt:type_name -> google.protobuf.Timestamp
-	24, // 12: apiserver.v1.NoticeDelivery.nextRetryAt:type_name -> google.protobuf.Timestamp
-	24, // 13: apiserver.v1.NoticeDelivery.lockedAt:type_name -> google.protobuf.Timestamp
-	12, // 14: apiserver.v1.GetNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
-	12, // 15: apiserver.v1.ListNoticeDeliveriesResponse.noticeDeliveries:type_name -> apiserver.v1.NoticeDelivery
-	12, // 16: apiserver.v1.ReplayNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
-	12, // 17: apiserver.v1.CancelNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	25, // 11: apiserver.v1.NoticeDeliverySnapshot.headers:type_name -> apiserver.v1.NoticeDeliverySnapshot.HeadersEntry
+	26, // 12: apiserver.v1.NoticeDelivery.createdAt:type_name -> google.protobuf.Timestamp
+	26, // 13: apiserver.v1.NoticeDelivery.nextRetryAt:type_name -> google.protobuf.Timestamp
+	26, // 14: apiserver.v1.NoticeDelivery.lockedAt:type_name -> google.protobuf.Timestamp
+	12, // 15: apiserver.v1.NoticeDelivery.snapshot:type_name -> apiserver.v1.NoticeDeliverySnapshot
+	13, // 16: apiserver.v1.GetNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
+	13, // 17: apiserver.v1.ListNoticeDeliveriesResponse.noticeDeliveries:type_name -> apiserver.v1.NoticeDelivery
+	13, // 18: apiserver.v1.ReplayNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
+	13, // 19: apiserver.v1.CancelNoticeDeliveryResponse.noticeDelivery:type_name -> apiserver.v1.NoticeDelivery
+	20, // [20:20] is the sub-list for method output_type
+	20, // [20:20] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_apiserver_v1_notice_proto_init() }
@@ -1665,14 +1769,15 @@ func file_apiserver_v1_notice_proto_init() {
 	file_apiserver_v1_notice_proto_msgTypes[6].OneofWrappers = []any{}
 	file_apiserver_v1_notice_proto_msgTypes[8].OneofWrappers = []any{}
 	file_apiserver_v1_notice_proto_msgTypes[12].OneofWrappers = []any{}
-	file_apiserver_v1_notice_proto_msgTypes[15].OneofWrappers = []any{}
+	file_apiserver_v1_notice_proto_msgTypes[13].OneofWrappers = []any{}
+	file_apiserver_v1_notice_proto_msgTypes[16].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_apiserver_v1_notice_proto_rawDesc), len(file_apiserver_v1_notice_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   24,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

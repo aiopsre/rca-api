@@ -58,6 +58,7 @@ func NoticeDeliveryMToNoticeDeliveryV1(m *model.NoticeDeliveryM) *v1.NoticeDeliv
 		LockedBy:       cloneOptionalString(m.LockedBy),
 		LockedAt:       timePtrToTimestampPtr(m.LockedAt),
 		IdempotencyKey: m.IdempotencyKey,
+		Snapshot:       noticeDeliverySnapshotMToV1(m),
 	}
 }
 
@@ -174,4 +175,34 @@ func isEmptyNoticeSelectors(in *model.NoticeSelectors) bool {
 		len(in.Services) == 0 &&
 		len(in.Severities) == 0 &&
 		len(in.RootCauseTypes) == 0
+}
+
+func noticeDeliverySnapshotMToV1(m *model.NoticeDeliveryM) *v1.NoticeDeliverySnapshot {
+	if m == nil {
+		return nil
+	}
+	if m.SnapshotEndpointURL == nil &&
+		m.SnapshotTimeoutMs == nil &&
+		m.SnapshotHeadersJSON == nil &&
+		m.SnapshotSecretFingerprint == nil &&
+		m.SnapshotChannelVersion == nil {
+
+		return nil
+	}
+
+	return &v1.NoticeDeliverySnapshot{
+		EndpointURL:       cloneOptionalString(m.SnapshotEndpointURL),
+		TimeoutMs:         cloneOptionalInt64(m.SnapshotTimeoutMs),
+		Headers:           decodeStringMap(m.SnapshotHeadersJSON),
+		SecretFingerprint: cloneOptionalString(m.SnapshotSecretFingerprint),
+		ChannelVersion:    cloneOptionalInt64(m.SnapshotChannelVersion),
+	}
+}
+
+func cloneOptionalInt64(v *int64) *int64 {
+	if v == nil {
+		return nil
+	}
+	out := *v
+	return &out
 }

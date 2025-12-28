@@ -152,20 +152,14 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 	}
 	delivery = latest
 
-	channel, err := w.store.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", delivery.ChannelID))
+	sendCfg, err := w.resolveSendConfig(ctx, delivery)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return w.failWithoutSend(ctx, delivery, fmt.Errorf("%w: %s", errNoticeChannelNotFound, delivery.ChannelID))
-		}
-		return err
-	}
-	if !channel.Enabled {
-		return w.failWithoutSend(ctx, delivery, errNoticeChannelDisabled)
+		return w.failWithoutSend(ctx, delivery, err)
 	}
 
 	code, responseBody, latencyMs, sendErr := sendWebhook(
 		ctx,
-		channel,
+		sendCfg,
 		delivery.EventType,
 		delivery.IdempotencyKey,
 		[]byte(delivery.RequestBody),
@@ -222,6 +216,38 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 		"error", derefString(errText),
 	)
 	return nil
+}
+
+func (w *Worker) resolveSendConfig(ctx context.Context, delivery *model.NoticeDeliveryM) (webhookSendConfig, error) {
+	if hasDeliverySnapshot(delivery) {
+		endpoint := strings.TrimSpace(derefString(delivery.SnapshotEndpointURL))
+		if endpoint == "" {
+			return webhookSendConfig{}, fmt.Errorf("%w: empty snapshot endpoint", errNoticeChannelNotFound)
+		}
+		return webhookSendConfig{
+			EndpointURL: endpoint,
+			TimeoutMs:   derefInt64(delivery.SnapshotTimeoutMs),
+			HeadersJSON: delivery.SnapshotHeadersJSON,
+			Secret:      nil,
+		}, nil
+	}
+
+	channel, err := w.store.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", delivery.ChannelID))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return webhookSendConfig{}, fmt.Errorf("%w: %s", errNoticeChannelNotFound, delivery.ChannelID)
+		}
+		return webhookSendConfig{}, err
+	}
+	if !channel.Enabled {
+		return webhookSendConfig{}, errNoticeChannelDisabled
+	}
+	return webhookSendConfig{
+		EndpointURL: channel.EndpointURL,
+		TimeoutMs:   channel.TimeoutMs,
+		HeadersJSON: channel.HeadersJSON,
+		Secret:      channel.Secret,
+	}, nil
 }
 
 func (w *Worker) failWithoutSend(ctx context.Context, delivery *model.NoticeDeliveryM, reason error) error {
@@ -322,6 +348,24 @@ func derefInt32(v *int32) int32 {
 		return 0
 	}
 	return *v
+}
+
+func derefInt64(v *int64) int64 {
+	if v == nil {
+		return defaultTimeoutMs
+	}
+	return *v
+}
+
+func hasDeliverySnapshot(delivery *model.NoticeDeliveryM) bool {
+	if delivery == nil {
+		return false
+	}
+	return delivery.SnapshotEndpointURL != nil ||
+		delivery.SnapshotTimeoutMs != nil ||
+		delivery.SnapshotHeadersJSON != nil ||
+		delivery.SnapshotSecretFingerprint != nil ||
+		delivery.SnapshotChannelVersion != nil
 }
 
 func randomNanos(maxNanos int64) int64 {

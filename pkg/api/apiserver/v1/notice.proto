@@ -103,6 +103,15 @@ message DeleteNoticeChannelRequest {
 // DeleteNoticeChannelResponse indicates delete result.
 message DeleteNoticeChannelResponse {}
 
+// NoticeDeliverySnapshot records immutable channel config used by one delivery.
+message NoticeDeliverySnapshot {
+  optional string endpointURL = 1;
+  optional int64 timeoutMs = 2;
+  map<string, string> headers = 3;
+  optional string secretFingerprint = 4;
+  optional int64 channelVersion = 5;
+}
+
 // NoticeDelivery records one notification delivery audit.
 message NoticeDelivery {
   string deliveryID = 1;
@@ -124,6 +133,7 @@ message NoticeDelivery {
   optional string lockedBy = 16;
   optional google.protobuf.Timestamp lockedAt = 17;
   string idempotencyKey = 18;
+  NoticeDeliverySnapshot snapshot = 19;
 }
 
 // GetNoticeDeliveryRequest gets one delivery.

@@ -52,6 +52,9 @@ func (x *DeleteNoticeChannelRequest) Default() {
 func (x *DeleteNoticeChannelResponse) Default() {
 }
 
+func (x *NoticeDeliverySnapshot) Default() {
+}
+
 func (x *NoticeDelivery) Default() {
 }
 
