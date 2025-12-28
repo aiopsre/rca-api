@@ -532,3 +532,27 @@ python -m orchestrator.main
    - 断言投递仍到旧 endpoint（snapshot），新 endpoint 0 次
 6) make protoc / make test / make lint-new 通过
 
+---
+
+## P1-7 Notice（Replay 使用最新 Channel：刷新 Snapshot）
+
+### Spec
+- docs/devel/zh-CN/附录P1-7_Notice_Replay_使用最新Channel规范.md
+
+### Done Definition（验收口径）
+1) 扩展 replay API：
+   - POST /v1/notice-deliveries/{deliveryID}:replay?use_latest_channel=0|1（默认 0）
+2) 语义：
+   - use_latest_channel=0：重置 pending（attempts=0、next_retry_at=now、清 lock），不修改 snapshot（P1-6 语义不变）
+   - use_latest_channel=1：除重置 pending 外，刷新 snapshot 为当前 channel 最新配置（endpoint/timeout/headers/secret_fingerprint/channel_version）
+   - replay 默认不修改 idempotency_key
+3) 错误处理：
+   - channel 不存在时：use_latest_channel=1 返回 409；use_latest_channel=0 仍可 replay
+4) 指标/日志：
+   - notice_delivery_replay_total 按 mode=snapshot/latest 计数（或等价）
+   - 日志包含 replay_mode 与 snapshot endpoint before/after（可选）
+5) 回归脚本：新增 scripts/test_p1_L8_notice_replay_latest.sh
+   - A=500 让 delivery 快速 failed；改 channel endpoint 到 B=200；replay(use_latest_channel=1)；worker 后断言打到 B 且 snapshot 更新
+   - PASS/FAIL step 诊断风格一致
+6) make protoc / make test / make lint-new 通过
+

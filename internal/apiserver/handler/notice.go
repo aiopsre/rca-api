@@ -148,7 +148,15 @@ func (h *Handler) ReplayNoticeDelivery(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	req := &v1.ReplayNoticeDeliveryRequest{DeliveryID: strings.TrimSpace(c.Param("deliveryID"))}
+	useLatestChannel, err := parseUseLatestChannel(c.Query("use_latest_channel"))
+	if err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &v1.ReplayNoticeDeliveryRequest{
+		DeliveryID:       strings.TrimSpace(c.Param("deliveryID")),
+		UseLatestChannel: &useLatestChannel,
+	}
 	if err := h.val.ValidateReplayNoticeDeliveryRequest(c.Request.Context(), req); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
@@ -185,7 +193,15 @@ func (h *Handler) OperateNoticeDelivery(c *gin.Context) {
 
 	switch op {
 	case "replay":
-		req := &v1.ReplayNoticeDeliveryRequest{DeliveryID: deliveryID}
+		useLatestChannel, err := parseUseLatestChannel(c.Query("use_latest_channel"))
+		if err != nil {
+			core.WriteResponse(c, nil, err)
+			return
+		}
+		req := &v1.ReplayNoticeDeliveryRequest{
+			DeliveryID:       deliveryID,
+			UseLatestChannel: &useLatestChannel,
+		}
 		if err := h.val.ValidateReplayNoticeDeliveryRequest(c.Request.Context(), req); err != nil {
 			core.WriteResponse(c, nil, err)
 			return
@@ -240,6 +256,21 @@ func parseColonNoticeDeliveryAction(action string) (string, string, bool) {
 
 func isSupportedNoticeDeliveryAction(deliveryID string, op string) bool {
 	return deliveryID != "" && (op == "replay" || op == "cancel")
+}
+
+func parseUseLatestChannel(raw string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "":
+		return false, nil
+	case "0":
+		return false, nil
+
+	case "1":
+		return true, nil
+
+	default:
+		return false, errorsx.ErrInvalidArgument
+	}
 }
 
 //nolint:gochecknoinits // Route registration is intentionally init-based in this codebase.

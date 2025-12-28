@@ -59,3 +59,56 @@ func TestParseNoticeDeliveryAction(t *testing.T) {
 		})
 	}
 }
+
+func TestParseUseLatestChannel(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantValue bool
+		wantErr   bool
+	}{
+		{
+			name:    "default empty",
+			raw:     "",
+			wantErr: false,
+		},
+		{
+			name:      "zero",
+			raw:       "0",
+			wantValue: false,
+		},
+		{
+			name:      "one",
+			raw:       "1",
+			wantValue: true,
+		},
+		{
+			name:      "trim spaces",
+			raw:       " 1 ",
+			wantValue: true,
+		},
+		{
+			name:    "invalid true",
+			raw:     "true",
+			wantErr: true,
+		},
+		{
+			name:    "invalid number",
+			raw:     "2",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseUseLatestChannel(tt.raw)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.wantValue, got)
+		})
+	}
+}

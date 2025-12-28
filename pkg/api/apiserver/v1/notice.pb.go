@@ -1325,9 +1325,11 @@ func (x *ListNoticeDeliveriesResponse) GetNoticeDeliveries() []*NoticeDelivery {
 type ReplayNoticeDeliveryRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// @gotags: uri:"deliveryID"
-	DeliveryID    string `protobuf:"bytes,1,opt,name=deliveryID,proto3" json:"deliveryID,omitempty" uri:"deliveryID"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	DeliveryID string `protobuf:"bytes,1,opt,name=deliveryID,proto3" json:"deliveryID,omitempty" uri:"deliveryID"`
+	// useLatestChannel controls whether replay refreshes delivery snapshot from latest channel config.
+	UseLatestChannel *bool `protobuf:"varint,2,opt,name=useLatestChannel,proto3,oneof" json:"useLatestChannel,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ReplayNoticeDeliveryRequest) Reset() {
@@ -1365,6 +1367,13 @@ func (x *ReplayNoticeDeliveryRequest) GetDeliveryID() string {
 		return x.DeliveryID
 	}
 	return ""
+}
+
+func (x *ReplayNoticeDeliveryRequest) GetUseLatestChannel() bool {
+	if x != nil && x.UseLatestChannel != nil {
+		return *x.UseLatestChannel
+	}
+	return false
 }
 
 // ReplayNoticeDeliveryResponse returns current delivery state after replay op.
@@ -1675,11 +1684,13 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\n" +
 	"totalCount\x18\x01 \x01(\x03R\n" +
 	"totalCount\x12H\n" +
-	"\x10noticeDeliveries\x18\x02 \x03(\v2\x1c.apiserver.v1.NoticeDeliveryR\x10noticeDeliveries\"=\n" +
+	"\x10noticeDeliveries\x18\x02 \x03(\v2\x1c.apiserver.v1.NoticeDeliveryR\x10noticeDeliveries\"\x83\x01\n" +
 	"\x1bReplayNoticeDeliveryRequest\x12\x1e\n" +
 	"\n" +
 	"deliveryID\x18\x01 \x01(\tR\n" +
-	"deliveryID\"d\n" +
+	"deliveryID\x12/\n" +
+	"\x10useLatestChannel\x18\x02 \x01(\bH\x00R\x10useLatestChannel\x88\x01\x01B\x13\n" +
+	"\x11_useLatestChannel\"d\n" +
 	"\x1cReplayNoticeDeliveryResponse\x12D\n" +
 	"\x0enoticeDelivery\x18\x01 \x01(\v2\x1c.apiserver.v1.NoticeDeliveryR\x0enoticeDelivery\"=\n" +
 	"\x1bCancelNoticeDeliveryRequest\x12\x1e\n" +
@@ -1771,6 +1782,7 @@ func file_apiserver_v1_notice_proto_init() {
 	file_apiserver_v1_notice_proto_msgTypes[12].OneofWrappers = []any{}
 	file_apiserver_v1_notice_proto_msgTypes[13].OneofWrappers = []any{}
 	file_apiserver_v1_notice_proto_msgTypes[16].OneofWrappers = []any{}
+	file_apiserver_v1_notice_proto_msgTypes[18].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

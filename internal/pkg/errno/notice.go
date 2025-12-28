@@ -28,6 +28,8 @@ var (
 	ErrNoticeDeliveryListFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryListFailed", "Failed to list notice deliveries.")
 	// ErrNoticeDeliveryReplayFailed indicates notice delivery replay failure.
 	ErrNoticeDeliveryReplayFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryReplayFailed", "Failed to replay the notice delivery.")
+	// ErrNoticeDeliveryReplayLatestChannelNotFound indicates replay(use_latest_channel=1) cannot refresh snapshot due missing channel.
+	ErrNoticeDeliveryReplayLatestChannelNotFound = errorsx.New(http.StatusConflict, "Conflict.NoticeDeliveryReplayLatestChannelNotFound", "Replay with latest channel requires an existing channel.")
 	// ErrNoticeDeliveryCancelFailed indicates notice delivery cancel failure.
 	ErrNoticeDeliveryCancelFailed = errorsx.New(http.StatusInternalServerError, "InternalError.NoticeDeliveryCancelFailed", "Failed to cancel the notice delivery.")
 )

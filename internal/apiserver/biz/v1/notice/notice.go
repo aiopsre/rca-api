@@ -14,6 +14,7 @@ import (
 	"zk8s.com/rca-api/internal/apiserver/model"
 	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
 	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
 	"zk8s.com/rca-api/internal/apiserver/store"
 	"zk8s.com/rca-api/internal/pkg/contextx"
 	"zk8s.com/rca-api/internal/pkg/errno"
@@ -31,6 +32,9 @@ const (
 
 	defaultNoticeTimeoutMs = int64(3000)
 	defaultNoticeRetries   = int64(3)
+
+	replayModeSnapshot = "snapshot"
+	replayModeLatest   = "latest"
 )
 
 // NoticeBiz defines notice use-cases.
@@ -229,19 +233,38 @@ func (b *noticeBiz) ListDeliveries(ctx context.Context, rq *v1.ListNoticeDeliver
 
 //nolint:dupl // Replay/Cancel wrappers intentionally mirror each other with different operation specs.
 func (b *noticeBiz) ReplayDelivery(ctx context.Context, rq *v1.ReplayNoticeDeliveryRequest) (*v1.ReplayNoticeDeliveryResponse, error) {
-	noticeDelivery, err := b.operateDelivery(ctx, strings.TrimSpace(rq.GetDeliveryID()), deliveryOpSpec{
-		op:          "replay",
-		exec:        b.store.NoticeDelivery().Replay,
-		internalErr: errno.ErrNoticeDeliveryReplayFailed,
-		recordMetric: func(status string) {
-			if metrics.M != nil {
-				metrics.M.RecordNoticeDeliveryReplay(ctx, status)
-			}
-		},
-	})
+	deliveryID := strings.TrimSpace(rq.GetDeliveryID())
+	replayMode := replayModeSnapshot
+	if rq.GetUseLatestChannel() {
+		replayMode = replayModeLatest
+	}
+
+	opts, beforeSnapshotEndpoint, err := b.prepareReplayOptions(ctx, deliveryID, rq.GetUseLatestChannel())
 	if err != nil {
 		return nil, err
 	}
+
+	out, err := b.store.NoticeDelivery().Replay(ctx, deliveryID, time.Now().UTC(), opts)
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrNoticeDeliveryNotFound
+		}
+		return nil, errno.ErrNoticeDeliveryReplayFailed
+	}
+	status := strings.ToLower(strings.TrimSpace(out.Status))
+	if metrics.M != nil {
+		metrics.M.RecordNoticeDeliveryReplay(ctx, status, replayMode)
+	}
+	slog.InfoContext(ctx, "notice delivery op succeeded",
+		"op", "replay",
+		"replay_mode", replayMode,
+		"delivery_id", out.DeliveryID,
+		"status", out.Status,
+		"snapshot_endpoint_before", beforeSnapshotEndpoint,
+		"snapshot_endpoint_after", snapshotEndpointFromDelivery(out),
+		"request_id", contextx.RequestID(ctx),
+	)
+	noticeDelivery := conversion.NoticeDeliveryMToNoticeDeliveryV1(out)
 
 	return &v1.ReplayNoticeDeliveryResponse{
 		NoticeDelivery: noticeDelivery,
@@ -267,6 +290,55 @@ func (b *noticeBiz) CancelDelivery(ctx context.Context, rq *v1.CancelNoticeDeliv
 	return &v1.CancelNoticeDeliveryResponse{
 		NoticeDelivery: noticeDelivery,
 	}, nil
+}
+
+func (b *noticeBiz) prepareReplayOptions(
+	ctx context.Context,
+	deliveryID string,
+	useLatest bool,
+) (store.ReplayDeliveryOptions, string, error) {
+
+	if !useLatest {
+		return store.ReplayDeliveryOptions{}, "", nil
+	}
+
+	current, err := b.store.NoticeDelivery().Get(ctx, where.T(ctx).F("delivery_id", deliveryID))
+	if err != nil {
+		return store.ReplayDeliveryOptions{}, "", toNoticeDeliveryGetError(err)
+	}
+	beforeSnapshotEndpoint := snapshotEndpointFromDelivery(current)
+	if !isReplayStatusMutable(current.Status) {
+		return store.ReplayDeliveryOptions{}, beforeSnapshotEndpoint, nil
+	}
+
+	channel, err := b.store.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", current.ChannelID))
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return store.ReplayDeliveryOptions{}, "", errno.ErrNoticeDeliveryReplayLatestChannelNotFound
+		}
+		return store.ReplayDeliveryOptions{}, "", errno.ErrNoticeDeliveryReplayFailed
+	}
+	snapshot, err := noticepkg.BuildDeliverySnapshotFromChannel(channel)
+	if err != nil {
+		return store.ReplayDeliveryOptions{}, "", errno.ErrNoticeDeliveryReplayFailed
+	}
+	return store.ReplayDeliveryOptions{Snapshot: snapshot}, beforeSnapshotEndpoint, nil
+}
+
+func isReplayStatusMutable(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "pending":
+		return true
+	default:
+		return false
+	}
+}
+
+func snapshotEndpointFromDelivery(delivery *model.NoticeDeliveryM) string {
+	if delivery == nil || delivery.SnapshotEndpointURL == nil {
+		return ""
+	}
+	return strings.TrimSpace(*delivery.SnapshotEndpointURL)
 }
 
 type deliveryOpSpec struct {

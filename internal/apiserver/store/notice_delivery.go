@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"gorm.io/gorm"
@@ -17,7 +18,7 @@ type NoticeDeliveryStore interface {
 	Get(ctx context.Context, opts *where.Options) (*model.NoticeDeliveryM, error)
 	GetClaimedPending(ctx context.Context, deliveryID string, workerID string) (*model.NoticeDeliveryM, error)
 	List(ctx context.Context, opts *where.Options) (int64, []*model.NoticeDeliveryM, error)
-	Replay(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error)
+	Replay(ctx context.Context, deliveryID string, now time.Time, opts ReplayDeliveryOptions) (*model.NoticeDeliveryM, error)
 	Cancel(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error)
 	ClaimPending(ctx context.Context, workerID string, limit int, now time.Time, lockTimeout time.Duration) ([]*model.NoticeDeliveryM, error)
 	MarkSucceeded(
@@ -56,6 +57,11 @@ type NoticeDeliveryExpansion interface{}
 
 type noticeDeliveryStore struct {
 	s *store
+}
+
+// ReplayDeliveryOptions controls replay mutation behavior.
+type ReplayDeliveryOptions struct {
+	Snapshot *model.NoticeDeliverySnapshot
 }
 
 func newNoticeDeliveryStore(s *store) *noticeDeliveryStore { return &noticeDeliveryStore{s: s} }
@@ -115,8 +121,10 @@ func (n *noticeDeliveryStore) List(ctx context.Context, opts *where.Options) (in
 	return total, list, nil
 }
 
-func (n *noticeDeliveryStore) Replay(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error) {
-	return n.operateDelivery(ctx, deliveryID, now, canReplayDeliveryStatus, applyReplayUpdate)
+func (n *noticeDeliveryStore) Replay(ctx context.Context, deliveryID string, now time.Time, opts ReplayDeliveryOptions) (*model.NoticeDeliveryM, error) {
+	return n.operateDelivery(ctx, deliveryID, now, canReplayDeliveryStatus, func(tx *gorm.DB, inDeliveryID string, inNow time.Time) error {
+		return applyReplayUpdate(tx, inDeliveryID, inNow, opts.Snapshot)
+	})
 }
 
 func (n *noticeDeliveryStore) Cancel(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error) {
@@ -282,20 +290,35 @@ func findNoticeDeliveryForUpdate(tx *gorm.DB, deliveryID string) (*model.NoticeD
 	return &out, nil
 }
 
-func applyReplayUpdate(tx *gorm.DB, deliveryID string, now time.Time) error {
-	return tx.Model(&model.NoticeDeliveryM{}).
-		Where("delivery_id = ?", deliveryID).
-		Updates(map[string]any{
-			"status":        "pending",
-			"attempts":      int64(0),
-			"next_retry_at": now,
-			"locked_by":     nil,
-			"locked_at":     nil,
-			"response_code": nil,
-			"response_body": nil,
-			"latency_ms":    int64(0),
-			"error":         nil,
-		}).Error
+func applyReplayUpdate(tx *gorm.DB, deliveryID string, now time.Time, snapshot *model.NoticeDeliverySnapshot) error {
+	updates := map[string]any{
+		"status":        "pending",
+		"attempts":      int64(0),
+		"next_retry_at": now,
+		"locked_by":     nil,
+		"locked_at":     nil,
+		"response_code": nil,
+		"response_body": nil,
+		"latency_ms":    int64(0),
+		"error":         nil,
+	}
+	if snapshot != nil {
+		updates["snapshot_endpoint_url"] = snapshot.EndpointURL
+		updates["snapshot_timeout_ms"] = snapshot.TimeoutMs
+		updates["snapshot_headers_json"] = encodeSnapshotHeaders(snapshot.Headers)
+		updates["snapshot_secret_fingerprint"] = snapshot.SecretFingerprint
+		updates["snapshot_channel_version"] = snapshot.ChannelVersion
+	}
+	return tx.Model(&model.NoticeDeliveryM{}).Where("delivery_id = ?", deliveryID).Updates(updates).Error
+}
+
+func encodeSnapshotHeaders(headers map[string]string) *string {
+	if len(headers) == 0 {
+		return nil
+	}
+	raw, _ := json.Marshal(headers)
+	out := string(raw)
+	return &out
 }
 
 func applyCancelUpdate(tx *gorm.DB, deliveryID string, now time.Time) error {

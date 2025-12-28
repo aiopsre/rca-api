@@ -231,12 +231,16 @@ func (m *Metrics) RecordNoticeDeliveryFailed(ctx context.Context, eventType stri
 }
 
 // RecordNoticeDeliveryReplay records one replay operation.
-func (m *Metrics) RecordNoticeDeliveryReplay(ctx context.Context, status string) {
+func (m *Metrics) RecordNoticeDeliveryReplay(ctx context.Context, status string, mode string) {
 	if status == "" {
 		status = "unknown"
 	}
+	if mode == "" {
+		mode = "unknown"
+	}
 	attrs := []attribute.KeyValue{
 		attribute.String("status", status),
+		attribute.String("mode", mode),
 	}
 	m.NoticeDeliveryReplayTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

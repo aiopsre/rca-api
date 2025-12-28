@@ -66,7 +66,7 @@ func DispatchBestEffort(ctx context.Context, st store.IStore, rq DispatchRequest
 }
 
 func enqueueDeliveryForChannel(ctx context.Context, st store.IStore, plan *dispatchPlan, rq DispatchRequest, channel *model.NoticeChannelM) {
-	snapshot, err := buildDeliverySnapshot(channel)
+	snapshot, err := BuildDeliverySnapshotFromChannel(channel)
 	if err != nil {
 		slog.WarnContext(ctx, "notice delivery snapshot build failed",
 			"error", err,
@@ -366,7 +366,8 @@ func isEmptySelectors(selectors *model.NoticeSelectors) bool {
 		len(selectors.RootCauseTypes) == 0
 }
 
-func buildDeliverySnapshot(channel *model.NoticeChannelM) (*model.NoticeDeliverySnapshot, error) {
+// BuildDeliverySnapshotFromChannel builds an immutable delivery snapshot from channel config with guardrails.
+func BuildDeliverySnapshotFromChannel(channel *model.NoticeChannelM) (*model.NoticeDeliverySnapshot, error) {
 	if channel == nil {
 		return nil, fmt.Errorf("%w: nil channel", errNoticeSnapshotInvalid)
 	}

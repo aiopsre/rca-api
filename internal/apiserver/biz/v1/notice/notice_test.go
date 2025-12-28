@@ -2,6 +2,9 @@ package notice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +15,14 @@ import (
 
 	"zk8s.com/rca-api/internal/apiserver/model"
 	"zk8s.com/rca-api/internal/apiserver/store"
+	"zk8s.com/rca-api/internal/pkg/errno"
 	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
 )
 
 func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
+	store.ResetForTest()
+	t.Cleanup(store.ResetForTest)
+
 	db := newNoticeTestDB(t)
 	s := store.NewStore(db)
 	biz := New(s)
@@ -112,6 +119,9 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 }
 
 func TestNoticeBiz_ReplayAndCancelDeliveryOps(t *testing.T) {
+	store.ResetForTest()
+	t.Cleanup(store.ResetForTest)
+
 	db := newNoticeTestDB(t)
 	s := store.NewStore(db)
 	biz := New(s)
@@ -186,6 +196,122 @@ func TestNoticeBiz_ReplayAndCancelDeliveryOps(t *testing.T) {
 	replayResp3, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{DeliveryID: delivery.DeliveryID})
 	require.NoError(t, err)
 	require.Equal(t, "canceled", replayResp3.GetNoticeDelivery().GetStatus())
+}
+
+func TestNoticeBiz_ReplayDeliveryUseLatestChannel(t *testing.T) {
+	store.ResetForTest()
+	t.Cleanup(store.ResetForTest)
+
+	db := newNoticeTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	ctx := context.Background()
+
+	secret := "secret-old"
+	headersJSON := `{"Authorization":"Bearer old-token"}`
+	channel := &model.NoticeChannelM{
+		Name:        "notice-channel-replay-latest",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: "http://127.0.0.1:19095/old",
+		Secret:      &secret,
+		HeadersJSON: &headersJSON,
+		TimeoutMs:   1200,
+		MaxRetries:  3,
+	}
+	require.NoError(t, s.NoticeChannel().Create(ctx, channel))
+	require.NotEmpty(t, channel.ChannelID)
+
+	oldSnapshotEndpoint := "http://127.0.0.1:19095/old"
+	oldSnapshotTimeout := int64(1200)
+	oldSnapshotHeaders := `{"Authorization":"Bearer old-token"}`
+	delivery := &model.NoticeDeliveryM{
+		ChannelID:              channel.ChannelID,
+		EventType:              "incident_created",
+		IncidentID:             strPtrNoticeBiz("incident-replay-latest-1"),
+		RequestBody:            `{"event_type":"incident_created"}`,
+		Status:                 "failed",
+		Attempts:               1,
+		MaxAttempts:            3,
+		NextRetryAt:            time.Now().UTC().Add(2 * time.Minute),
+		SnapshotEndpointURL:    &oldSnapshotEndpoint,
+		SnapshotTimeoutMs:      &oldSnapshotTimeout,
+		SnapshotHeadersJSON:    &oldSnapshotHeaders,
+		IdempotencyKey:         "notice-replay-latest-idem-1",
+		SnapshotChannelVersion: int64PtrNoticeBiz(100),
+	}
+	require.NoError(t, s.NoticeDelivery().Create(ctx, delivery))
+	require.NotEmpty(t, delivery.DeliveryID)
+
+	newSecret := "secret-new"
+	newHeaders := `{"Authorization":"Bearer new-token","X-Trace":"abc"}`
+	channel.EndpointURL = "http://127.0.0.1:19095/new"
+	channel.TimeoutMs = 12000 // should clamp to 10000 in snapshot builder
+	channel.Secret = &newSecret
+	channel.HeadersJSON = &newHeaders
+	require.NoError(t, s.NoticeChannel().Update(ctx, channel))
+
+	resp, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{
+		DeliveryID:       delivery.DeliveryID,
+		UseLatestChannel: boolPtrNoticeBiz(true),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "pending", resp.GetNoticeDelivery().GetStatus())
+	require.Equal(t, int64(0), resp.GetNoticeDelivery().GetAttempts())
+	require.Equal(t, "http://127.0.0.1:19095/new", resp.GetNoticeDelivery().GetSnapshot().GetEndpointURL())
+	require.Equal(t, int64(10000), resp.GetNoticeDelivery().GetSnapshot().GetTimeoutMs())
+	require.Equal(t, "Bearer new-token", resp.GetNoticeDelivery().GetSnapshot().GetHeaders()["Authorization"])
+	require.Equal(t, "abc", resp.GetNoticeDelivery().GetSnapshot().GetHeaders()["X-Trace"])
+	require.Equal(t, "notice-replay-latest-idem-1", resp.GetNoticeDelivery().GetIdempotencyKey())
+	require.NotZero(t, resp.GetNoticeDelivery().GetSnapshot().GetChannelVersion())
+
+	sum := sha256.Sum256([]byte(newSecret))
+	require.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), resp.GetNoticeDelivery().GetSnapshot().GetSecretFingerprint())
+}
+
+func TestNoticeBiz_ReplayUseLatestChannelMissingChannelConflict(t *testing.T) {
+	store.ResetForTest()
+	t.Cleanup(store.ResetForTest)
+
+	db := newNoticeTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	ctx := context.Background()
+
+	deliveryKeepSnapshot := &model.NoticeDeliveryM{
+		ChannelID:      "notice-channel-missing",
+		EventType:      "incident_created",
+		IncidentID:     strPtrNoticeBiz("incident-replay-missing-1"),
+		RequestBody:    `{"event_type":"incident_created"}`,
+		Status:         "failed",
+		Attempts:       1,
+		MaxAttempts:    3,
+		NextRetryAt:    time.Now().UTC().Add(2 * time.Minute),
+		IdempotencyKey: "notice-replay-missing-idem-1",
+	}
+	require.NoError(t, s.NoticeDelivery().Create(ctx, deliveryKeepSnapshot))
+	resp, err := biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{DeliveryID: deliveryKeepSnapshot.DeliveryID})
+	require.NoError(t, err)
+	require.Equal(t, "pending", resp.GetNoticeDelivery().GetStatus())
+
+	deliveryNeedLatest := &model.NoticeDeliveryM{
+		ChannelID:      "notice-channel-missing",
+		EventType:      "incident_created",
+		IncidentID:     strPtrNoticeBiz("incident-replay-missing-2"),
+		RequestBody:    `{"event_type":"incident_created"}`,
+		Status:         "failed",
+		Attempts:       1,
+		MaxAttempts:    3,
+		NextRetryAt:    time.Now().UTC().Add(2 * time.Minute),
+		IdempotencyKey: "notice-replay-missing-idem-2",
+	}
+	require.NoError(t, s.NoticeDelivery().Create(ctx, deliveryNeedLatest))
+	_, err = biz.ReplayDelivery(ctx, &v1.ReplayNoticeDeliveryRequest{
+		DeliveryID:       deliveryNeedLatest.DeliveryID,
+		UseLatestChannel: boolPtrNoticeBiz(true),
+	})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, errno.ErrNoticeDeliveryReplayLatestChannelNotFound))
 }
 
 func newNoticeTestDB(t *testing.T) *gorm.DB {

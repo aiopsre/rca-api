@@ -173,6 +173,8 @@ message ListNoticeDeliveriesResponse {
 message ReplayNoticeDeliveryRequest {
   // @gotags: uri:"deliveryID"
   string deliveryID = 1;
+  // useLatestChannel controls whether replay refreshes delivery snapshot from latest channel config.
+  optional bool useLatestChannel = 2;
 }
 
 // ReplayNoticeDeliveryResponse returns current delivery state after replay op.
