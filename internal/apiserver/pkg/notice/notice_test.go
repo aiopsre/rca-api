@@ -202,6 +202,69 @@ func TestWorker_UsesSnapshotAfterChannelEndpointChange(t *testing.T) {
 	require.Equal(t, int32(0), hitNew.Load())
 }
 
+func TestWorker_FailFastOnSecretFingerprintMismatch(t *testing.T) {
+	var hitCount atomic.Int32
+	mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hitCount.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mockSrv.Close()
+
+	s := newNoticeTestStore(t)
+	ctx := context.Background()
+	secretS1 := "secret-s1"
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:        "hook-secret-mismatch",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: mockSrv.URL,
+		Secret:      &secretS1,
+		TimeoutMs:   1000,
+		MaxRetries:  3,
+	}))
+
+	incidentID := "incident-secret-mismatch-1"
+	DispatchBestEffort(ctx, s, DispatchRequest{
+		EventType: EventTypeIncidentCreated,
+		Incident: &model.IncidentM{
+			IncidentID: incidentID,
+			Namespace:  "default",
+			Service:    "checkout",
+			Severity:   "P1",
+			RCAStatus:  "pending",
+		},
+		OccurredAt: time.Now().UTC(),
+	})
+
+	_, queuedDeliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 20).F("incident_id", incidentID))
+	require.NoError(t, err)
+	require.Len(t, queuedDeliveries, 1)
+	require.NotNil(t, queuedDeliveries[0].SnapshotSecretFingerprint)
+
+	channel, err := s.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", queuedDeliveries[0].ChannelID))
+	require.NoError(t, err)
+	secretS2 := "secret-s2"
+	channel.Secret = &secretS2
+	require.NoError(t, s.NoticeChannel().Update(ctx, channel))
+
+	worker := NewWorker(s, WorkerOptions{
+		WorkerID: "test-worker-secret-mismatch",
+	})
+	_, err = worker.RunOnce(ctx)
+	require.NoError(t, err)
+
+	got, err := s.NoticeDelivery().Get(ctx, where.T(ctx).F("delivery_id", queuedDeliveries[0].DeliveryID))
+	require.NoError(t, err)
+	require.Equal(t, DeliveryStatusFailed, got.Status)
+	require.Equal(t, int64(1), got.Attempts)
+	require.NotNil(t, got.Error)
+	require.Contains(t, *got.Error, "secret_fingerprint_mismatch")
+	require.Contains(t, *got.Error, "replay?useLatestChannel=1")
+	require.LessOrEqual(t, len(*got.Error), ErrorBodyMaxBytes)
+	require.Equal(t, int32(0), hitCount.Load())
+}
+
 func TestWorker_RetryThenSucceed(t *testing.T) {
 	var hitCount atomic.Int32
 	var headersMu sync.Mutex

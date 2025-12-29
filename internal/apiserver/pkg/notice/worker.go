@@ -34,6 +34,29 @@ var (
 	errNoticeChannelDisabled = errors.New("notice channel disabled")
 )
 
+const (
+	secretFingerprintMismatchKeyword    = "secret_fingerprint_mismatch"
+	secretFingerprintMismatchReplayHint = "replay?useLatestChannel=1"
+	fingerprintPrefixLength             = 12
+)
+
+type secretFingerprintMismatchError struct {
+	snapshotFingerprint string
+	channelFingerprint  string
+}
+
+type snapshotSecretResolution struct {
+	secret *string
+}
+
+func (e *secretFingerprintMismatchError) Error() string {
+	return fmt.Sprintf(
+		"%s: snapshot/channel secret changed, %s",
+		secretFingerprintMismatchKeyword,
+		secretFingerprintMismatchReplayHint,
+	)
+}
+
 // DefaultWorkerOptions returns default worker options.
 func DefaultWorkerOptions() WorkerOptions {
 	return WorkerOptions{
@@ -154,6 +177,7 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 
 	sendCfg, err := w.resolveSendConfig(ctx, delivery)
 	if err != nil {
+		w.recordSecretFingerprintMismatch(ctx, delivery, err)
 		return w.failWithoutSend(ctx, delivery, err)
 	}
 
@@ -224,11 +248,15 @@ func (w *Worker) resolveSendConfig(ctx context.Context, delivery *model.NoticeDe
 		if endpoint == "" {
 			return webhookSendConfig{}, fmt.Errorf("%w: empty snapshot endpoint", errNoticeChannelNotFound)
 		}
+		resolution, err := w.resolveSnapshotSecret(ctx, delivery)
+		if err != nil {
+			return webhookSendConfig{}, err
+		}
 		return webhookSendConfig{
 			EndpointURL: endpoint,
 			TimeoutMs:   derefInt64(delivery.SnapshotTimeoutMs),
 			HeadersJSON: delivery.SnapshotHeadersJSON,
-			Secret:      nil,
+			Secret:      resolution.secret,
 		}, nil
 	}
 
@@ -248,6 +276,30 @@ func (w *Worker) resolveSendConfig(ctx context.Context, delivery *model.NoticeDe
 		HeadersJSON: channel.HeadersJSON,
 		Secret:      channel.Secret,
 	}, nil
+}
+
+func (w *Worker) resolveSnapshotSecret(ctx context.Context, delivery *model.NoticeDeliveryM) (snapshotSecretResolution, error) {
+	snapshotFingerprint := strings.TrimSpace(derefString(delivery.SnapshotSecretFingerprint))
+	if snapshotFingerprint == "" {
+		return snapshotSecretResolution{}, nil
+	}
+
+	channel, err := w.store.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", delivery.ChannelID))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return snapshotSecretResolution{}, fmt.Errorf("%w: %s", errNoticeChannelNotFound, delivery.ChannelID)
+		}
+		return snapshotSecretResolution{}, err
+	}
+
+	channelFingerprint := strings.TrimSpace(derefString(buildSecretFingerprint(channel.Secret)))
+	if snapshotFingerprint != channelFingerprint {
+		return snapshotSecretResolution{}, &secretFingerprintMismatchError{
+			snapshotFingerprint: snapshotFingerprint,
+			channelFingerprint:  channelFingerprint,
+		}
+	}
+	return snapshotSecretResolution{secret: channel.Secret}, nil
 }
 
 func (w *Worker) failWithoutSend(ctx context.Context, delivery *model.NoticeDeliveryM, reason error) error {
@@ -272,6 +324,29 @@ func (w *Worker) failWithoutSend(ctx context.Context, delivery *model.NoticeDeli
 		"error", text,
 	)
 	return nil
+}
+
+func (w *Worker) recordSecretFingerprintMismatch(ctx context.Context, delivery *model.NoticeDeliveryM, reason error) {
+	var mismatchErr *secretFingerprintMismatchError
+	if !errors.As(reason, &mismatchErr) {
+		return
+	}
+	if metrics.M != nil {
+		metrics.M.RecordNoticeDeliverySnapshotMismatch(ctx, delivery.EventType)
+	}
+	slog.WarnContext(ctx, "notice delivery snapshot secret fingerprint mismatch",
+		"worker_id", w.opts.WorkerID,
+		"delivery_id", delivery.DeliveryID,
+		"channel_id", delivery.ChannelID,
+		"event_type", delivery.EventType,
+		"incident_id", derefString(delivery.IncidentID),
+		"job_id", derefString(delivery.JobID),
+		"mismatch", true,
+		"snap_fp_prefix", fingerprintPrefix(mismatchErr.snapshotFingerprint),
+		"channel_fp_prefix", fingerprintPrefix(mismatchErr.channelFingerprint),
+		"replay_hint", secretFingerprintMismatchReplayHint,
+		"error", truncateString(reason.Error(), ErrorBodyMaxBytes),
+	)
 }
 
 func (w *Worker) handleMarkClaimLost(ctx context.Context, delivery *model.NoticeDeliveryM, err error) error {
@@ -366,6 +441,17 @@ func hasDeliverySnapshot(delivery *model.NoticeDeliveryM) bool {
 		delivery.SnapshotHeadersJSON != nil ||
 		delivery.SnapshotSecretFingerprint != nil ||
 		delivery.SnapshotChannelVersion != nil
+}
+
+func fingerprintPrefix(raw string) string {
+	normalized := strings.TrimSpace(raw)
+	if normalized == "" {
+		return ""
+	}
+	if len(normalized) <= fingerprintPrefixLength {
+		return normalized
+	}
+	return normalized[:fingerprintPrefixLength]
 }
 
 func randomNanos(maxNanos int64) int64 {

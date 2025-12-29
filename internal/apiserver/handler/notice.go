@@ -148,7 +148,7 @@ func (h *Handler) ReplayNoticeDelivery(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	useLatestChannel, err := parseUseLatestChannel(c.Query("use_latest_channel"))
+	useLatestChannel, err := parseUseLatestChannelFromQuery(c)
 	if err != nil {
 		core.WriteResponse(c, nil, err)
 		return
@@ -193,7 +193,7 @@ func (h *Handler) OperateNoticeDelivery(c *gin.Context) {
 
 	switch op {
 	case "replay":
-		useLatestChannel, err := parseUseLatestChannel(c.Query("use_latest_channel"))
+		useLatestChannel, err := parseUseLatestChannelFromQuery(c)
 		if err != nil {
 			core.WriteResponse(c, nil, err)
 			return
@@ -271,6 +271,17 @@ func parseUseLatestChannel(raw string) (bool, error) {
 	default:
 		return false, errorsx.ErrInvalidArgument
 	}
+}
+
+func parseUseLatestChannelFromQuery(c *gin.Context) (bool, error) {
+	if c == nil {
+		return false, nil
+	}
+	raw := c.Query("use_latest_channel")
+	if strings.TrimSpace(raw) == "" {
+		raw = c.Query("useLatestChannel")
+	}
+	return parseUseLatestChannel(raw)
 }
 
 //nolint:gochecknoinits // Route registration is intentionally init-based in this codebase.

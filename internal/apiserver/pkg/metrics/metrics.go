@@ -12,21 +12,22 @@ import (
 
 // Metrics holds the OpenTelemetry instruments for capturing application metrics.
 type Metrics struct {
-	Meter                       metric.Meter
-	RESTResourceCreateCounter   metric.Int64Counter
-	RESTResourceGetCounter      metric.Int64Counter
-	EvidenceQueryCounter        metric.Int64Counter
-	EvidenceQueryLatency        metric.Float64Histogram
-	AlertEventIngestCounter     metric.Int64Counter
-	AlertEventIngestLatency     metric.Float64Histogram
-	AIJobQueuePullCounter       metric.Int64Counter
-	AIJobQueuePullLatency       metric.Float64Histogram
-	NoticeDeliveryDispatchTotal metric.Int64Counter
-	NoticeDeliverySendTotal     metric.Int64Counter
-	NoticeDeliverySendLatencyMS metric.Float64Histogram
-	NoticeDeliveryFailedTotal   metric.Int64Counter
-	NoticeDeliveryReplayTotal   metric.Int64Counter
-	NoticeDeliveryCancelTotal   metric.Int64Counter
+	Meter                               metric.Meter
+	RESTResourceCreateCounter           metric.Int64Counter
+	RESTResourceGetCounter              metric.Int64Counter
+	EvidenceQueryCounter                metric.Int64Counter
+	EvidenceQueryLatency                metric.Float64Histogram
+	AlertEventIngestCounter             metric.Int64Counter
+	AlertEventIngestLatency             metric.Float64Histogram
+	AIJobQueuePullCounter               metric.Int64Counter
+	AIJobQueuePullLatency               metric.Float64Histogram
+	NoticeDeliveryDispatchTotal         metric.Int64Counter
+	NoticeDeliverySendTotal             metric.Int64Counter
+	NoticeDeliverySendLatencyMS         metric.Float64Histogram
+	NoticeDeliveryFailedTotal           metric.Int64Counter
+	NoticeDeliverySnapshotMismatchTotal metric.Int64Counter
+	NoticeDeliveryReplayTotal           metric.Int64Counter
+	NoticeDeliveryCancelTotal           metric.Int64Counter
 }
 
 var (
@@ -102,6 +103,11 @@ func Init(scope string) error {
 			metric.WithDescription("Total number of notice deliveries ended in failed status"),
 		)
 
+		noticeSnapshotMismatchTotal, _ := meter.Int64Counter(
+			"notice_delivery_snapshot_mismatch_total",
+			metric.WithDescription("Total number of notice deliveries failed by snapshot secret fingerprint mismatch"),
+		)
+
 		noticeReplayTotal, _ := meter.Int64Counter(
 			"notice_delivery_replay_total",
 			metric.WithDescription("Total number of notice delivery replay operations"),
@@ -114,21 +120,22 @@ func Init(scope string) error {
 
 		// Assign the global singleton.
 		M = &Metrics{
-			Meter:                       meter,
-			RESTResourceCreateCounter:   createCounter,
-			RESTResourceGetCounter:      getCount,
-			EvidenceQueryCounter:        evidenceQueryCounter,
-			EvidenceQueryLatency:        evidenceQueryLatency,
-			AlertEventIngestCounter:     alertEventIngestCounter,
-			AlertEventIngestLatency:     alertEventIngestLatency,
-			AIJobQueuePullCounter:       aiJobQueuePullCounter,
-			AIJobQueuePullLatency:       aiJobQueuePullLatency,
-			NoticeDeliveryDispatchTotal: noticeDispatchTotal,
-			NoticeDeliverySendTotal:     noticeSendTotal,
-			NoticeDeliverySendLatencyMS: noticeSendLatency,
-			NoticeDeliveryFailedTotal:   noticeFailedTotal,
-			NoticeDeliveryReplayTotal:   noticeReplayTotal,
-			NoticeDeliveryCancelTotal:   noticeCancelTotal,
+			Meter:                               meter,
+			RESTResourceCreateCounter:           createCounter,
+			RESTResourceGetCounter:              getCount,
+			EvidenceQueryCounter:                evidenceQueryCounter,
+			EvidenceQueryLatency:                evidenceQueryLatency,
+			AlertEventIngestCounter:             alertEventIngestCounter,
+			AlertEventIngestLatency:             alertEventIngestLatency,
+			AIJobQueuePullCounter:               aiJobQueuePullCounter,
+			AIJobQueuePullLatency:               aiJobQueuePullLatency,
+			NoticeDeliveryDispatchTotal:         noticeDispatchTotal,
+			NoticeDeliverySendTotal:             noticeSendTotal,
+			NoticeDeliverySendLatencyMS:         noticeSendLatency,
+			NoticeDeliveryFailedTotal:           noticeFailedTotal,
+			NoticeDeliverySnapshotMismatchTotal: noticeSnapshotMismatchTotal,
+			NoticeDeliveryReplayTotal:           noticeReplayTotal,
+			NoticeDeliveryCancelTotal:           noticeCancelTotal,
 		}
 	})
 
@@ -228,6 +235,17 @@ func (m *Metrics) RecordNoticeDeliveryFailed(ctx context.Context, eventType stri
 		attribute.String("event_type", eventType),
 	}
 	m.NoticeDeliveryFailedTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordNoticeDeliverySnapshotMismatch records one snapshot secret fingerprint mismatch failure.
+func (m *Metrics) RecordNoticeDeliverySnapshotMismatch(ctx context.Context, eventType string) {
+	if eventType == "" {
+		eventType = "unknown"
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("event_type", eventType),
+	}
+	m.NoticeDeliverySnapshotMismatchTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordNoticeDeliveryReplay records one replay operation.

@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -111,4 +113,29 @@ func TestParseUseLatestChannel(t *testing.T) {
 			require.Equal(t, tt.wantValue, got)
 		})
 	}
+}
+
+func TestParseUseLatestChannelFromQuery(t *testing.T) {
+	t.Run("snake_case", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/v1/notice-deliveries/d1:replay?use_latest_channel=1", nil)
+		got, err := parseUseLatestChannelFromQuery(c)
+		require.NoError(t, err)
+		require.True(t, got)
+	})
+
+	t.Run("camel_case", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/v1/notice-deliveries/d1:replay?useLatestChannel=1", nil)
+		got, err := parseUseLatestChannelFromQuery(c)
+		require.NoError(t, err)
+		require.True(t, got)
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest("POST", "/v1/notice-deliveries/d1:replay?useLatestChannel=true", nil)
+		_, err := parseUseLatestChannelFromQuery(c)
+		require.Error(t, err)
+	})
 }

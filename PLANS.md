@@ -556,3 +556,22 @@ python -m orchestrator.main
    - PASS/FAIL step 诊断风格一致
 6) make protoc / make test / make lint-new 通过
 
+---
+
+## P1-8 Notice（SecretFingerprint 失配策略：Fail-Fast + L9 回归）
+
+### Spec
+- docs/devel/zh-CN/附录P1-8_Notice_SecretFingerprint一致性与失配策略.md
+
+### Done Definition（验收口径）
+1) notice-worker 发送前做 secret fingerprint 一致性校验：
+   - 若 delivery.snapshot.secretFingerprint 非空且与当前 channel.secretFingerprint 不一致：
+     - delivery 直接置 failed（DLQ），error 必含 `secret_fingerprint_mismatch` 与 `replay?useLatestChannel=1`
+     - 不再进入重试回退
+2) 新增指标：notice_delivery_snapshot_mismatch_total（至少带 event_type 维度）
+3) 结构化日志补齐：mismatch 标记、snap_fp/channel_fp 前缀、delivery_id/channel_id/event_type/incident_id
+4) 新增回归脚本：scripts/test_p1_L9_notice_secret_mismatch.sh
+   - S1 成功；S1->S2 后 fail-fast；replay(useLatestChannel=1) 后成功
+   - PASS/FAIL 输出格式与 L 系列一致
+5) make protoc / make test / make lint-new 通过
+
