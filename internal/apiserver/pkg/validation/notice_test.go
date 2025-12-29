@@ -25,6 +25,13 @@ func TestValidateCreateNoticeChannelRequest_Guardrails(t *testing.T) {
 	})
 	require.Error(t, err)
 
+	err = val.ValidateCreateNoticeChannelRequest(context.Background(), &v1.CreateNoticeChannelRequest{
+		Name:        "webhook-1",
+		EndpointURL: "https://example.com/hook",
+		PayloadMode: v1.NoticePayloadMode(99),
+	})
+	require.Error(t, err)
+
 	req := &v1.CreateNoticeChannelRequest{
 		Name:        "webhook-1",
 		EndpointURL: "https://example.com/hook",
@@ -46,6 +53,14 @@ func TestValidateCreateNoticeChannelRequest_Guardrails(t *testing.T) {
 	require.Equal(t, []string{"warning", "critical"}, req.GetSelectors().GetSeverities())
 	require.Equal(t, []string{"default"}, req.GetSelectors().GetNamespaces())
 	require.Equal(t, []string{"checkout"}, req.GetSelectors().GetServices())
+
+	req = &v1.CreateNoticeChannelRequest{
+		Name:        "webhook-full",
+		EndpointURL: "https://example.com/hook",
+		PayloadMode: v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL,
+	}
+	err = val.ValidateCreateNoticeChannelRequest(context.Background(), req)
+	require.NoError(t, err)
 }
 
 func TestValidatePatchNoticeChannelRequest_RequireFieldsAndClamp(t *testing.T) {
@@ -69,6 +84,20 @@ func TestValidatePatchNoticeChannelRequest_RequireFieldsAndClamp(t *testing.T) {
 	require.Equal(t, int64(10000), req.GetTimeoutMs())
 	require.Equal(t, []string{"diagnosis_written"}, req.GetSelectors().GetEventTypes())
 	require.Equal(t, []string{"info"}, req.GetSelectors().GetSeverities())
+
+	req = &v1.PatchNoticeChannelRequest{
+		ChannelID:   "notice-channel-1",
+		PayloadMode: noticePayloadModePtrValidation(v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL),
+	}
+	err = val.ValidatePatchNoticeChannelRequest(context.Background(), req)
+	require.NoError(t, err)
+
+	req = &v1.PatchNoticeChannelRequest{
+		ChannelID:   "notice-channel-1",
+		PayloadMode: noticePayloadModePtrValidation(v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_UNSPECIFIED),
+	}
+	err = val.ValidatePatchNoticeChannelRequest(context.Background(), req)
+	require.Error(t, err)
 
 	err = val.ValidatePatchNoticeChannelRequest(context.Background(), &v1.PatchNoticeChannelRequest{
 		ChannelID: "notice-channel-1",
@@ -136,3 +165,5 @@ func TestValidateReplayAndCancelNoticeDeliveryRequest(t *testing.T) {
 func int64PtrValidationNotice(v int64) *int64 { return &v }
 
 func strPtrValidationNotice(v string) *string { return &v }
+
+func noticePayloadModePtrValidation(v v1.NoticePayloadMode) *v1.NoticePayloadMode { return &v }

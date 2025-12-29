@@ -55,6 +55,11 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.Equal(t, "abc", getResp.GetNoticeChannel().GetHeaders()["X-Token"])
 	require.Equal(t, []string{"incident_created"}, getResp.GetNoticeChannel().GetSelectors().GetEventTypes())
 	require.Equal(t, []string{"checkout"}, getResp.GetNoticeChannel().GetSelectors().GetServices())
+	require.Equal(t, v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_COMPACT, getResp.GetNoticeChannel().GetPayloadMode())
+	require.False(t, getResp.GetNoticeChannel().GetIncludeDiagnosis())
+	require.False(t, getResp.GetNoticeChannel().GetIncludeEvidenceIds())
+	require.False(t, getResp.GetNoticeChannel().GetIncludeRootCause())
+	require.False(t, getResp.GetNoticeChannel().GetIncludeLinks())
 
 	listResp, err := biz.ListChannels(ctx, &v1.ListNoticeChannelsRequest{
 		Enabled: boolPtrNoticeBiz(true),
@@ -65,11 +70,13 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.Equal(t, int64(1), listResp.GetTotalCount())
 
 	_, err = biz.PatchChannel(ctx, &v1.PatchNoticeChannelRequest{
-		ChannelID:   channelID,
-		Enabled:     boolPtrNoticeBiz(false),
-		EndpointURL: strPtrNoticeBiz("https://example.org/new"),
-		Headers:     map[string]string{},
-		TimeoutMs:   int64PtrNoticeBiz(5000),
+		ChannelID:    channelID,
+		Enabled:      boolPtrNoticeBiz(false),
+		EndpointURL:  strPtrNoticeBiz("https://example.org/new"),
+		Headers:      map[string]string{},
+		TimeoutMs:    int64PtrNoticeBiz(5000),
+		PayloadMode:  noticePayloadModePtrNoticeBiz(v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL),
+		IncludeLinks: boolPtrNoticeBiz(false),
 		Selectors: &v1.NoticeSelectors{
 			EventTypes: []string{"diagnosis_written"},
 			Severities: []string{"warning"},
@@ -84,6 +91,11 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.Empty(t, getAfterPatch.GetNoticeChannel().GetHeaders())
 	require.Equal(t, []string{"diagnosis_written"}, getAfterPatch.GetNoticeChannel().GetSelectors().GetEventTypes())
 	require.Equal(t, []string{"warning"}, getAfterPatch.GetNoticeChannel().GetSelectors().GetSeverities())
+	require.Equal(t, v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL, getAfterPatch.GetNoticeChannel().GetPayloadMode())
+	require.True(t, getAfterPatch.GetNoticeChannel().GetIncludeDiagnosis())
+	require.True(t, getAfterPatch.GetNoticeChannel().GetIncludeEvidenceIds())
+	require.True(t, getAfterPatch.GetNoticeChannel().GetIncludeRootCause())
+	require.False(t, getAfterPatch.GetNoticeChannel().GetIncludeLinks())
 
 	_, err = biz.DeleteChannel(ctx, &v1.DeleteNoticeChannelRequest{ChannelID: channelID})
 	require.NoError(t, err)
@@ -330,3 +342,5 @@ func int64PtrNoticeBiz(v int64) *int64 { return &v }
 func strPtrNoticeBiz(v string) *string { return &v }
 
 func int32PtrNoticeBiz(v int32) *int32 { return &v }
+
+func noticePayloadModePtrNoticeBiz(v v1.NoticePayloadMode) *v1.NoticePayloadMode { return &v }

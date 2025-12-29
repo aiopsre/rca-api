@@ -3,6 +3,7 @@ package notice
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,12 +64,129 @@ func TestDispatchBestEffort_EnqueuePending(t *testing.T) {
 	require.Equal(t, int64(0), list[0].Attempts)
 	require.Equal(t, int64(3), list[0].MaxAttempts)
 	require.NotEmpty(t, list[0].IdempotencyKey)
-	require.Len(t, list[0].RequestBody, RequestBodyMaxBytes)
+	require.Greater(t, len(list[0].RequestBody), 0)
+	require.LessOrEqual(t, len(list[0].RequestBody), RequestBodyMaxBytes)
 	require.NotNil(t, list[0].SnapshotEndpointURL)
 	require.Equal(t, mockSrv.URL, *list[0].SnapshotEndpointURL)
 	require.NotNil(t, list[0].SnapshotTimeoutMs)
 	require.Equal(t, int64(1500), *list[0].SnapshotTimeoutMs)
 	require.Nil(t, list[0].SnapshotHeadersJSON)
+}
+
+func TestBuildPayloadForChannel_TemplateCompactAndFull(t *testing.T) {
+	now := time.Date(2026, 2, 9, 12, 0, 0, 0, time.UTC)
+	diagnosisJSON := `{"root_cause":{"type":"database","summary":"db pool exhausted","confidence":0.91,"evidence_ids":["evidence-1","evidence-2"]},"missing_evidence":["missing-a"],"hypotheses":[{"supporting_evidence_ids":["evidence-3"],"missing_evidence":["missing-b"]}]}`
+	incident := &model.IncidentM{
+		IncidentID:       "incident-template-1",
+		Namespace:        "default",
+		Service:          "checkout",
+		Severity:         "warning",
+		RCAStatus:        "done",
+		RootCauseType:    strPtrNoticeTest("database"),
+		RootCauseSummary: strPtrNoticeTest("db pool exhausted"),
+		DiagnosisJSON:    &diagnosisJSON,
+	}
+
+	rq := DispatchRequest{
+		EventType:           EventTypeDiagnosisWritten,
+		Incident:            incident,
+		JobID:               "ai-job-template-1",
+		DiagnosisConfidence: 0.7,
+		DiagnosisEvidenceID: []string{"evidence-rq-1"},
+		OccurredAt:          now,
+	}
+
+	compactPayloadRaw, err := buildPayloadForChannel(rq, &model.NoticeChannelM{
+		ChannelID:          "notice-channel-compact",
+		PayloadMode:        NoticePayloadModeCompact,
+		IncludeDiagnosis:   true,
+		IncludeEvidenceIDs: true,
+		IncludeRootCause:   true,
+		IncludeLinks:       true,
+	})
+	require.NoError(t, err)
+	var compactPayload map[string]any
+	require.NoError(t, json.Unmarshal(compactPayloadRaw, &compactPayload))
+	require.Contains(t, compactPayload, "diagnosis_min")
+	require.NotContains(t, compactPayload, "diagnosis")
+	require.NotContains(t, compactPayload, "evidence_ids")
+	require.Contains(t, compactPayload, "root_cause_summary")
+	require.Contains(t, compactPayload, "links")
+	require.NotContains(t, compactPayload, "secret")
+	require.NotContains(t, compactPayload, "headers")
+
+	noticeRaw, ok := compactPayload["notice"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "notice-channel-compact", strings.TrimSpace(asString(noticeRaw["channel_id"])))
+
+	fullPayloadRaw, err := buildPayloadForChannel(rq, &model.NoticeChannelM{
+		ChannelID:          "notice-channel-full",
+		PayloadMode:        NoticePayloadModeFull,
+		IncludeDiagnosis:   true,
+		IncludeEvidenceIDs: true,
+		IncludeRootCause:   true,
+		IncludeLinks:       true,
+	})
+	require.NoError(t, err)
+	var fullPayload map[string]any
+	require.NoError(t, json.Unmarshal(fullPayloadRaw, &fullPayload))
+	require.Contains(t, fullPayload, "diagnosis")
+	require.Contains(t, fullPayload, "evidence_ids")
+	require.Contains(t, fullPayload, "root_cause")
+	require.Contains(t, fullPayload, "links")
+
+	diagnosisRaw, ok := fullPayload["diagnosis"].(map[string]any)
+	require.True(t, ok)
+	require.Contains(t, diagnosisRaw, "confidence")
+	require.Contains(t, diagnosisRaw, "root_cause")
+	require.Contains(t, diagnosisRaw, "evidence_ids")
+}
+
+func TestBuildPayloadForChannel_FullTemplateTruncatedBySizeGuardrail(t *testing.T) {
+	longToken := strings.Repeat("x", NoticePayloadStringMax+256)
+	evidenceIDs := make([]string, 0, NoticePayloadEvidenceIDsMax+20)
+	for i := 0; i < NoticePayloadEvidenceIDsMax+20; i++ {
+		evidenceIDs = append(evidenceIDs, fmt.Sprintf("evidence-%03d-%s", i, longToken))
+	}
+
+	diagnosisJSON := `{"root_cause":{"type":"database","summary":"db pool exhausted","confidence":0.95}}`
+	rq := DispatchRequest{
+		EventType: EventTypeDiagnosisWritten,
+		Incident: &model.IncidentM{
+			IncidentID:       "incident-template-truncated",
+			Namespace:        "default",
+			Service:          "checkout",
+			Severity:         "critical",
+			RCAStatus:        "done",
+			DiagnosisJSON:    &diagnosisJSON,
+			RootCauseType:    strPtrNoticeTest("database"),
+			RootCauseSummary: strPtrNoticeTest("db pool exhausted"),
+		},
+		JobID:               "ai-job-template-truncated",
+		DiagnosisConfidence: 0.95,
+		DiagnosisEvidenceID: evidenceIDs,
+		OccurredAt:          time.Now().UTC(),
+	}
+
+	payloadRaw, err := buildPayloadForChannel(rq, &model.NoticeChannelM{
+		ChannelID:          "notice-channel-full-truncated",
+		PayloadMode:        NoticePayloadModeFull,
+		IncludeDiagnosis:   true,
+		IncludeEvidenceIDs: true,
+		IncludeRootCause:   true,
+		IncludeLinks:       true,
+	})
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(payloadRaw), NoticePayloadMaxBytes)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(payloadRaw, &payload))
+	require.Equal(t, true, payload["truncated"])
+
+	if diagnosisRaw, ok := payload["diagnosis"].(map[string]any); ok {
+		require.LessOrEqual(t, len(stringSliceFromAny(diagnosisRaw["evidence_ids"])), NoticePayloadEvidenceIDsMax)
+		require.LessOrEqual(t, len(stringSliceFromAny(diagnosisRaw["missing_evidence"])), NoticePayloadMissingEvidenceMax)
+	}
 }
 
 func TestDispatchBestEffort_SelectorsRouting(t *testing.T) {

@@ -7,6 +7,13 @@ import "google/protobuf/timestamp.proto";
 
 option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
 
+// NoticePayloadMode configures channel payload density template.
+enum NoticePayloadMode {
+  NOTICE_PAYLOAD_MODE_UNSPECIFIED = 0;
+  NOTICE_PAYLOAD_MODE_COMPACT = 1;
+  NOTICE_PAYLOAD_MODE_FULL = 2;
+}
+
 // NoticeSelectors defines channel-level allow-list subscriptions.
 message NoticeSelectors {
   repeated string eventTypes = 1;
@@ -31,6 +38,11 @@ message NoticeChannel {
   google.protobuf.Timestamp createdAt = 10;
   google.protobuf.Timestamp updatedAt = 11;
   NoticeSelectors selectors = 12;
+  NoticePayloadMode payloadMode = 13;
+  bool includeDiagnosis = 14;
+  bool includeEvidenceIds = 15;
+  bool includeRootCause = 16;
+  bool includeLinks = 17;
 }
 
 // CreateNoticeChannelRequest creates a notice channel.
@@ -44,6 +56,11 @@ message CreateNoticeChannelRequest {
   optional int64 timeoutMs = 7;
   optional int64 maxRetries = 8;
   NoticeSelectors selectors = 9;
+  NoticePayloadMode payloadMode = 10;
+  optional bool includeDiagnosis = 11;
+  optional bool includeEvidenceIds = 12;
+  optional bool includeRootCause = 13;
+  optional bool includeLinks = 14;
 }
 
 // CreateNoticeChannelResponse returns created channel.
@@ -89,6 +106,11 @@ message PatchNoticeChannelRequest {
   optional int64 maxRetries = 6;
   optional string secret = 7;
   NoticeSelectors selectors = 8;
+  optional NoticePayloadMode payloadMode = 9;
+  optional bool includeDiagnosis = 10;
+  optional bool includeEvidenceIds = 11;
+  optional bool includeRootCause = 12;
+  optional bool includeLinks = 13;
 }
 
 // PatchNoticeChannelResponse indicates update result.

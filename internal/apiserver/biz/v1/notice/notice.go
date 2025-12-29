@@ -88,17 +88,23 @@ func (b *noticeBiz) CreateChannel(ctx context.Context, rq *v1.CreateNoticeChanne
 	if rq.MaxRetries != nil {
 		maxRetries = rq.GetMaxRetries()
 	}
+	payloadMode := noticePayloadModeFromV1(rq.GetPayloadMode())
 
 	obj := &model.NoticeChannelM{
-		Name:          strings.TrimSpace(rq.GetName()),
-		Type:          chType,
-		Enabled:       enabled,
-		EndpointURL:   strings.TrimSpace(rq.GetEndpointURL()),
-		Secret:        normalizeOptionalString(rq.Secret),
-		HeadersJSON:   conversion.EncodeStringMap(rq.GetHeaders()),
-		SelectorsJSON: conversion.EncodeNoticeSelectors(rq.GetSelectors()),
-		TimeoutMs:     timeoutMs,
-		MaxRetries:    maxRetries,
+		Name:               strings.TrimSpace(rq.GetName()),
+		Type:               chType,
+		Enabled:            enabled,
+		EndpointURL:        strings.TrimSpace(rq.GetEndpointURL()),
+		Secret:             normalizeOptionalString(rq.Secret),
+		HeadersJSON:        conversion.EncodeStringMap(rq.GetHeaders()),
+		SelectorsJSON:      conversion.EncodeNoticeSelectors(rq.GetSelectors()),
+		TimeoutMs:          timeoutMs,
+		MaxRetries:         maxRetries,
+		PayloadMode:        payloadMode,
+		IncludeDiagnosis:   resolveNoticeTemplateInclude(rq.IncludeDiagnosis, payloadMode),
+		IncludeEvidenceIDs: resolveNoticeTemplateInclude(rq.IncludeEvidenceIds, payloadMode),
+		IncludeRootCause:   resolveNoticeTemplateInclude(rq.IncludeRootCause, payloadMode),
+		IncludeLinks:       resolveNoticeTemplateInclude(rq.IncludeLinks, payloadMode),
 	}
 	if err := b.store.NoticeChannel().Create(ctx, obj); err != nil {
 		return nil, errno.ErrNoticeChannelCreateFailed
@@ -141,6 +147,7 @@ func (b *noticeBiz) ListChannels(ctx context.Context, rq *v1.ListNoticeChannelsR
 	}, nil
 }
 
+//nolint:gocognit,gocyclo // Patch keeps explicit field-by-field behavior for auditability.
 func (b *noticeBiz) PatchChannel(ctx context.Context, rq *v1.PatchNoticeChannelRequest) (*v1.PatchNoticeChannelResponse, error) {
 	obj, err := b.store.NoticeChannel().Get(ctx, where.T(ctx).F("channel_id", strings.TrimSpace(rq.GetChannelID())))
 	if err != nil {
@@ -167,6 +174,34 @@ func (b *noticeBiz) PatchChannel(ctx context.Context, rq *v1.PatchNoticeChannelR
 	}
 	if rq.GetSelectors() != nil {
 		obj.SelectorsJSON = conversion.EncodeNoticeSelectors(rq.GetSelectors())
+	}
+	currentPayloadMode := normalizeNoticePayloadMode(obj.PayloadMode)
+	targetPayloadMode := currentPayloadMode
+	payloadModeChanged := false
+	if rq.PayloadMode != nil {
+		targetPayloadMode = noticePayloadModeFromV1(rq.GetPayloadMode())
+		payloadModeChanged = targetPayloadMode != currentPayloadMode
+		obj.PayloadMode = targetPayloadMode
+	}
+	if rq.IncludeDiagnosis != nil {
+		obj.IncludeDiagnosis = rq.GetIncludeDiagnosis()
+	} else if payloadModeChanged {
+		obj.IncludeDiagnosis = noticePayloadModeDefaultInclude(targetPayloadMode)
+	}
+	if rq.IncludeEvidenceIds != nil {
+		obj.IncludeEvidenceIDs = rq.GetIncludeEvidenceIds()
+	} else if payloadModeChanged {
+		obj.IncludeEvidenceIDs = noticePayloadModeDefaultInclude(targetPayloadMode)
+	}
+	if rq.IncludeRootCause != nil {
+		obj.IncludeRootCause = rq.GetIncludeRootCause()
+	} else if payloadModeChanged {
+		obj.IncludeRootCause = noticePayloadModeDefaultInclude(targetPayloadMode)
+	}
+	if rq.IncludeLinks != nil {
+		obj.IncludeLinks = rq.GetIncludeLinks()
+	} else if payloadModeChanged {
+		obj.IncludeLinks = noticePayloadModeDefaultInclude(targetPayloadMode)
 	}
 	if err := b.store.NoticeChannel().Update(ctx, obj); err != nil {
 		return nil, errno.ErrNoticeChannelUpdateFailed
@@ -371,6 +406,39 @@ func (b *noticeBiz) operateDelivery(
 		"request_id", contextx.RequestID(ctx),
 	)
 	return conversion.NoticeDeliveryMToNoticeDeliveryV1(out), nil
+}
+
+func noticePayloadModeFromV1(mode v1.NoticePayloadMode) string {
+	switch mode {
+	case v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL:
+		return noticepkg.NoticePayloadModeFull
+	case v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_COMPACT, v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_UNSPECIFIED:
+		return noticepkg.NoticePayloadModeCompact
+	default:
+		return noticepkg.NoticePayloadModeCompact
+	}
+}
+
+func normalizeNoticePayloadMode(mode string) string {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case noticepkg.NoticePayloadModeFull:
+		return noticepkg.NoticePayloadModeFull
+	case noticepkg.NoticePayloadModeCompact:
+		return noticepkg.NoticePayloadModeCompact
+	default:
+		return noticepkg.NoticePayloadModeCompact
+	}
+}
+
+func noticePayloadModeDefaultInclude(mode string) bool {
+	return normalizeNoticePayloadMode(mode) == noticepkg.NoticePayloadModeFull
+}
+
+func resolveNoticeTemplateInclude(v *bool, mode string) bool {
+	if v != nil {
+		return *v
+	}
+	return noticePayloadModeDefaultInclude(mode)
 }
 
 func normalizeOptionalString(v *string) *string {

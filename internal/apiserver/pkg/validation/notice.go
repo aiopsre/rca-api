@@ -57,6 +57,9 @@ func (v *Validator) ValidateCreateNoticeChannelRequest(ctx context.Context, rq *
 			return errorsx.ErrInvalidArgument
 		}
 	}
+	if !isAllowedNoticePayloadMode(rq.GetPayloadMode(), true) {
+		return errorsx.ErrInvalidArgument
+	}
 	if rq.Secret != nil && len(strings.TrimSpace(rq.GetSecret())) > maxNoticeSecretLength {
 		return errorsx.ErrInvalidArgument
 	}
@@ -118,7 +121,12 @@ func (v *Validator) ValidatePatchNoticeChannelRequest(ctx context.Context, rq *v
 		rq.TimeoutMs == nil &&
 		rq.MaxRetries == nil &&
 		rq.Secret == nil &&
-		rq.GetSelectors() == nil
+		rq.GetSelectors() == nil &&
+		rq.PayloadMode == nil &&
+		rq.IncludeDiagnosis == nil &&
+		rq.IncludeEvidenceIds == nil &&
+		rq.IncludeRootCause == nil &&
+		rq.IncludeLinks == nil
 	if patchEmpty {
 		return errorsx.ErrInvalidArgument
 	}
@@ -142,6 +150,9 @@ func (v *Validator) ValidatePatchNoticeChannelRequest(ctx context.Context, rq *v
 		}
 	}
 	if rq.Secret != nil && len(strings.TrimSpace(rq.GetSecret())) > maxNoticeSecretLength {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.PayloadMode != nil && !isAllowedNoticePayloadMode(rq.GetPayloadMode(), false) {
 		return errorsx.ErrInvalidArgument
 	}
 	if rq.GetSelectors() != nil {
@@ -262,6 +273,17 @@ func validateHeaders(headers map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func isAllowedNoticePayloadMode(mode v1.NoticePayloadMode, allowUnspecified bool) bool {
+	switch mode {
+	case v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_COMPACT, v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL:
+		return true
+	case v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_UNSPECIFIED:
+		return allowUnspecified
+	default:
+		return false
+	}
 }
 
 func isValidResourceID(v string) bool {

@@ -575,3 +575,22 @@ python -m orchestrator.main
    - PASS/FAIL 输出格式与 L 系列一致
 5) make protoc / make test / make lint-new 通过
 
+---
+
+## P2-1 Notice（通知模板：COMPACT/FULL + 字段裁剪）
+
+### Spec
+- docs/devel/zh-CN/附录P2-1_Notice_通知模板与字段裁剪规范.md
+
+### Done Definition（验收口径）
+1) NoticeChannel 增加模板配置：
+   - payload_mode=COMPACT|FULL（默认 COMPACT）
+   - include_diagnosis/include_evidence_ids/include_root_cause/include_links（可选开关）
+2) Outbox 生成 delivery.request 时按模板构造 payload：
+   - COMPACT 仅允许摘要与 diagnosis_min（不得包含完整 diagnosis_json）
+   - FULL 允许裁剪版 diagnosis + evidence_ids（均有上限与截断）
+3) Guardrails：payload 总大小上限（建议 16KB）+ missing_evidence/evidence_ids/字符串长度上限；超限时 truncated=true
+4) 回归脚本：新增 scripts/test_p2_L10_notice_template.sh
+   - 两个 channel（compact/full）对同一事件产生不同 payload，并断言关键字段/不包含项
+5) make protoc / make test / make lint-new 通过
+

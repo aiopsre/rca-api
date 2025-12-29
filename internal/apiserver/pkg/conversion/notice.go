@@ -18,18 +18,23 @@ func NoticeChannelMToNoticeChannelV1(m *model.NoticeChannelM) *v1.NoticeChannel 
 	}
 
 	return &v1.NoticeChannel{
-		ChannelID:   m.ChannelID,
-		Name:        m.Name,
-		Type:        m.Type,
-		Enabled:     m.Enabled,
-		EndpointURL: m.EndpointURL,
-		Secret:      cloneOptionalString(m.Secret),
-		Headers:     decodeStringMap(m.HeadersJSON),
-		Selectors:   DecodeNoticeSelectors(m.SelectorsJSON),
-		TimeoutMs:   m.TimeoutMs,
-		MaxRetries:  m.MaxRetries,
-		CreatedAt:   timestamppb.New(m.CreatedAt.UTC()),
-		UpdatedAt:   timestamppb.New(m.UpdatedAt.UTC()),
+		ChannelID:          m.ChannelID,
+		Name:               m.Name,
+		Type:               m.Type,
+		Enabled:            m.Enabled,
+		EndpointURL:        m.EndpointURL,
+		Secret:             cloneOptionalString(m.Secret),
+		Headers:            decodeStringMap(m.HeadersJSON),
+		Selectors:          DecodeNoticeSelectors(m.SelectorsJSON),
+		TimeoutMs:          m.TimeoutMs,
+		MaxRetries:         m.MaxRetries,
+		PayloadMode:        noticePayloadModeModelToV1(m.PayloadMode),
+		IncludeDiagnosis:   m.IncludeDiagnosis,
+		IncludeEvidenceIds: m.IncludeEvidenceIDs,
+		IncludeRootCause:   m.IncludeRootCause,
+		IncludeLinks:       m.IncludeLinks,
+		CreatedAt:          timestamppb.New(m.CreatedAt.UTC()),
+		UpdatedAt:          timestamppb.New(m.UpdatedAt.UTC()),
 	}
 }
 
@@ -205,4 +210,15 @@ func cloneOptionalInt64(v *int64) *int64 {
 	}
 	out := *v
 	return &out
+}
+
+func noticePayloadModeModelToV1(mode string) v1.NoticePayloadMode {
+	switch strings.ToUpper(strings.TrimSpace(mode)) {
+	case "FULL":
+		return v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL
+	case "COMPACT":
+		return v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_COMPACT
+	default:
+		return v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_COMPACT
+	}
 }
