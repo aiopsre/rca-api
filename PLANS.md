@@ -613,3 +613,22 @@ python -m orchestrator.main
    - PASS/FAIL step 诊断风格一致
 5) make protoc / make test / make lint-new 通过
 
+---
+
+## P2-3 Notice（Webhook 签名与重放防护：HMAC + Timestamp + Nonce）
+
+### Spec
+- docs/devel/zh-CN/附录P2-3_Notice_Webhook签名与重放防护规范.md
+
+### Done Definition（验收口径）
+1) notice-worker 发送 webhook 时增加头：
+   - X-Rca-Signature / X-Rca-Timestamp / X-Rca-Nonce / X-Rca-Delivery-Id / X-Rca-Event-Type
+2) 签名算法固定为 v1 signing_string（body_sha256 + ts + nonce + method + path），HMAC-SHA256(secret)
+3) nonce 每次 HTTP attempt 必须变化；replay 后再次发送也必须是新 nonce/签名
+4) Guardrails：nonce<=128；timestamp 为整数；secret 为空时行为需明确（兼容允许但在文档标注不安全）
+5) 新增回归脚本 scripts/test_p2_L12_notice_webhook_signature.sh：
+   - mock 收到签名头
+   - 脚本本地计算 expected_sig 并断言一致
+   - replay/重试后 nonce/签名变化
+6) make protoc / make test / make lint-new 通过
+

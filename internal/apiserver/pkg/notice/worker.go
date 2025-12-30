@@ -185,6 +185,7 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 		ctx,
 		sendCfg,
 		delivery.EventType,
+		delivery.DeliveryID,
 		delivery.IdempotencyKey,
 		[]byte(delivery.RequestBody),
 	)
