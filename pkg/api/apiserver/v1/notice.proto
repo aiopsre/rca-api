@@ -43,6 +43,8 @@ message NoticeChannel {
   bool includeEvidenceIds = 15;
   bool includeRootCause = 16;
   bool includeLinks = 17;
+  optional string baseURL = 18;
+  optional string summaryTemplate = 19;
 }
 
 // CreateNoticeChannelRequest creates a notice channel.
@@ -61,6 +63,8 @@ message CreateNoticeChannelRequest {
   optional bool includeEvidenceIds = 12;
   optional bool includeRootCause = 13;
   optional bool includeLinks = 14;
+  optional string baseURL = 15;
+  optional string summaryTemplate = 16;
 }
 
 // CreateNoticeChannelResponse returns created channel.
@@ -111,6 +115,8 @@ message PatchNoticeChannelRequest {
   optional bool includeEvidenceIds = 11;
   optional bool includeRootCause = 12;
   optional bool includeLinks = 13;
+  optional string baseURL = 14;
+  optional string summaryTemplate = 15;
 }
 
 // PatchNoticeChannelResponse indicates update result.

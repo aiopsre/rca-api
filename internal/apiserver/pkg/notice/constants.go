@@ -22,10 +22,13 @@ const (
 	SnapshotHeaderKeyMax = 256
 	SnapshotHeaderValMax = 4096
 
-	NoticePayloadMaxBytes            = 16 * 1024
-	NoticePayloadStringMax           = 512
-	NoticePayloadMissingEvidenceMax  = 20
-	NoticePayloadEvidenceIDsMax      = 50
+	NoticePayloadMaxBytes               = 16 * 1024
+	NoticePayloadStringMax              = 512
+	NoticePayloadMissingEvidenceMax     = 20
+	NoticePayloadEvidenceIDsMax         = 50
+	NoticePayloadTemplateReplacementMax = 50
+
+	NoticeBaseURLEnvName = "NOTICE_BASE_URL"
 
 	timeoutMsMin     = int64(500)
 	timeoutMsMax     = int64(10000)

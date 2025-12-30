@@ -172,6 +172,8 @@ type NoticeChannel struct {
 	IncludeEvidenceIds bool                   `protobuf:"varint,15,opt,name=includeEvidenceIds,proto3" json:"includeEvidenceIds,omitempty"`
 	IncludeRootCause   bool                   `protobuf:"varint,16,opt,name=includeRootCause,proto3" json:"includeRootCause,omitempty"`
 	IncludeLinks       bool                   `protobuf:"varint,17,opt,name=includeLinks,proto3" json:"includeLinks,omitempty"`
+	BaseURL            *string                `protobuf:"bytes,18,opt,name=baseURL,proto3,oneof" json:"baseURL,omitempty"`
+	SummaryTemplate    *string                `protobuf:"bytes,19,opt,name=summaryTemplate,proto3,oneof" json:"summaryTemplate,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -325,6 +327,20 @@ func (x *NoticeChannel) GetIncludeLinks() bool {
 	return false
 }
 
+func (x *NoticeChannel) GetBaseURL() string {
+	if x != nil && x.BaseURL != nil {
+		return *x.BaseURL
+	}
+	return ""
+}
+
+func (x *NoticeChannel) GetSummaryTemplate() string {
+	if x != nil && x.SummaryTemplate != nil {
+		return *x.SummaryTemplate
+	}
+	return ""
+}
+
 // CreateNoticeChannelRequest creates a notice channel.
 type CreateNoticeChannelRequest struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
@@ -342,6 +358,8 @@ type CreateNoticeChannelRequest struct {
 	IncludeEvidenceIds *bool                  `protobuf:"varint,12,opt,name=includeEvidenceIds,proto3,oneof" json:"includeEvidenceIds,omitempty"`
 	IncludeRootCause   *bool                  `protobuf:"varint,13,opt,name=includeRootCause,proto3,oneof" json:"includeRootCause,omitempty"`
 	IncludeLinks       *bool                  `protobuf:"varint,14,opt,name=includeLinks,proto3,oneof" json:"includeLinks,omitempty"`
+	BaseURL            *string                `protobuf:"bytes,15,opt,name=baseURL,proto3,oneof" json:"baseURL,omitempty"`
+	SummaryTemplate    *string                `protobuf:"bytes,16,opt,name=summaryTemplate,proto3,oneof" json:"summaryTemplate,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -472,6 +490,20 @@ func (x *CreateNoticeChannelRequest) GetIncludeLinks() bool {
 		return *x.IncludeLinks
 	}
 	return false
+}
+
+func (x *CreateNoticeChannelRequest) GetBaseURL() string {
+	if x != nil && x.BaseURL != nil {
+		return *x.BaseURL
+	}
+	return ""
+}
+
+func (x *CreateNoticeChannelRequest) GetSummaryTemplate() string {
+	if x != nil && x.SummaryTemplate != nil {
+		return *x.SummaryTemplate
+	}
+	return ""
 }
 
 // CreateNoticeChannelResponse returns created channel.
@@ -744,6 +776,8 @@ type PatchNoticeChannelRequest struct {
 	IncludeEvidenceIds *bool              `protobuf:"varint,11,opt,name=includeEvidenceIds,proto3,oneof" json:"includeEvidenceIds,omitempty"`
 	IncludeRootCause   *bool              `protobuf:"varint,12,opt,name=includeRootCause,proto3,oneof" json:"includeRootCause,omitempty"`
 	IncludeLinks       *bool              `protobuf:"varint,13,opt,name=includeLinks,proto3,oneof" json:"includeLinks,omitempty"`
+	BaseURL            *string            `protobuf:"bytes,14,opt,name=baseURL,proto3,oneof" json:"baseURL,omitempty"`
+	SummaryTemplate    *string            `protobuf:"bytes,15,opt,name=summaryTemplate,proto3,oneof" json:"summaryTemplate,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -867,6 +901,20 @@ func (x *PatchNoticeChannelRequest) GetIncludeLinks() bool {
 		return *x.IncludeLinks
 	}
 	return false
+}
+
+func (x *PatchNoticeChannelRequest) GetBaseURL() string {
+	if x != nil && x.BaseURL != nil {
+		return *x.BaseURL
+	}
+	return ""
+}
+
+func (x *PatchNoticeChannelRequest) GetSummaryTemplate() string {
+	if x != nil && x.SummaryTemplate != nil {
+		return *x.SummaryTemplate
+	}
+	return ""
 }
 
 // PatchNoticeChannelResponse indicates update result.
@@ -1698,7 +1746,7 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\n" +
 	"severities\x18\x04 \x03(\tR\n" +
 	"severities\x12&\n" +
-	"\x0erootCauseTypes\x18\x05 \x03(\tR\x0erootCauseTypes\"\x97\x06\n" +
+	"\x0erootCauseTypes\x18\x05 \x03(\tR\x0erootCauseTypes\"\x85\a\n" +
 	"\rNoticeChannel\x12\x1c\n" +
 	"\tchannelID\x18\x01 \x01(\tR\tchannelID\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -1719,11 +1767,16 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x10includeDiagnosis\x18\x0e \x01(\bR\x10includeDiagnosis\x12.\n" +
 	"\x12includeEvidenceIds\x18\x0f \x01(\bR\x12includeEvidenceIds\x12*\n" +
 	"\x10includeRootCause\x18\x10 \x01(\bR\x10includeRootCause\x12\"\n" +
-	"\fincludeLinks\x18\x11 \x01(\bR\fincludeLinks\x1a:\n" +
+	"\fincludeLinks\x18\x11 \x01(\bR\fincludeLinks\x12\x1d\n" +
+	"\abaseURL\x18\x12 \x01(\tH\x01R\abaseURL\x88\x01\x01\x12-\n" +
+	"\x0fsummaryTemplate\x18\x13 \x01(\tH\x02R\x0fsummaryTemplate\x88\x01\x01\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\t\n" +
-	"\a_secret\"\xcb\x06\n" +
+	"\a_secretB\n" +
+	"\n" +
+	"\b_baseURLB\x12\n" +
+	"\x10_summaryTemplate\"\xb9\a\n" +
 	"\x1aCreateNoticeChannelRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x17\n" +
 	"\x04type\x18\x02 \x01(\tH\x00R\x04type\x88\x01\x01\x12\x1d\n" +
@@ -1741,7 +1794,10 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x10includeDiagnosis\x18\v \x01(\bH\x05R\x10includeDiagnosis\x88\x01\x01\x123\n" +
 	"\x12includeEvidenceIds\x18\f \x01(\bH\x06R\x12includeEvidenceIds\x88\x01\x01\x12/\n" +
 	"\x10includeRootCause\x18\r \x01(\bH\aR\x10includeRootCause\x88\x01\x01\x12'\n" +
-	"\fincludeLinks\x18\x0e \x01(\bH\bR\fincludeLinks\x88\x01\x01\x1a:\n" +
+	"\fincludeLinks\x18\x0e \x01(\bH\bR\fincludeLinks\x88\x01\x01\x12\x1d\n" +
+	"\abaseURL\x18\x0f \x01(\tH\tR\abaseURL\x88\x01\x01\x12-\n" +
+	"\x0fsummaryTemplate\x18\x10 \x01(\tH\n" +
+	"R\x0fsummaryTemplate\x88\x01\x01\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\a\n" +
@@ -1755,7 +1811,10 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x11_includeDiagnosisB\x15\n" +
 	"\x13_includeEvidenceIdsB\x13\n" +
 	"\x11_includeRootCauseB\x0f\n" +
-	"\r_includeLinks\"`\n" +
+	"\r_includeLinksB\n" +
+	"\n" +
+	"\b_baseURLB\x12\n" +
+	"\x10_summaryTemplate\"`\n" +
 	"\x1bCreateNoticeChannelResponse\x12A\n" +
 	"\rnoticeChannel\x18\x01 \x01(\v2\x1b.apiserver.v1.NoticeChannelR\rnoticeChannel\"7\n" +
 	"\x17GetNoticeChannelRequest\x12\x1c\n" +
@@ -1772,7 +1831,7 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\n" +
 	"totalCount\x18\x01 \x01(\x03R\n" +
 	"totalCount\x12C\n" +
-	"\x0enoticeChannels\x18\x02 \x03(\v2\x1b.apiserver.v1.NoticeChannelR\x0enoticeChannels\"\xdb\x06\n" +
+	"\x0enoticeChannels\x18\x02 \x03(\v2\x1b.apiserver.v1.NoticeChannelR\x0enoticeChannels\"\xc9\a\n" +
 	"\x19PatchNoticeChannelRequest\x12\x1c\n" +
 	"\tchannelID\x18\x01 \x01(\tR\tchannelID\x12\x1d\n" +
 	"\aenabled\x18\x02 \x01(\bH\x00R\aenabled\x88\x01\x01\x12%\n" +
@@ -1789,7 +1848,10 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	" \x01(\bH\x06R\x10includeDiagnosis\x88\x01\x01\x123\n" +
 	"\x12includeEvidenceIds\x18\v \x01(\bH\aR\x12includeEvidenceIds\x88\x01\x01\x12/\n" +
 	"\x10includeRootCause\x18\f \x01(\bH\bR\x10includeRootCause\x88\x01\x01\x12'\n" +
-	"\fincludeLinks\x18\r \x01(\bH\tR\fincludeLinks\x88\x01\x01\x1a:\n" +
+	"\fincludeLinks\x18\r \x01(\bH\tR\fincludeLinks\x88\x01\x01\x12\x1d\n" +
+	"\abaseURL\x18\x0e \x01(\tH\n" +
+	"R\abaseURL\x88\x01\x01\x12-\n" +
+	"\x0fsummaryTemplate\x18\x0f \x01(\tH\vR\x0fsummaryTemplate\x88\x01\x01\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\n" +
@@ -1804,7 +1866,10 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x11_includeDiagnosisB\x15\n" +
 	"\x13_includeEvidenceIdsB\x13\n" +
 	"\x11_includeRootCauseB\x0f\n" +
-	"\r_includeLinks\"\x1c\n" +
+	"\r_includeLinksB\n" +
+	"\n" +
+	"\b_baseURLB\x12\n" +
+	"\x10_summaryTemplate\"\x1c\n" +
 	"\x1aPatchNoticeChannelResponse\":\n" +
 	"\x1aDeleteNoticeChannelRequest\x12\x1c\n" +
 	"\tchannelID\x18\x01 \x01(\tR\tchannelID\"\x1d\n" +

@@ -21,6 +21,7 @@ const (
 	maxNoticeNameLength     = 128
 	maxNoticeURLLength      = 2048
 	maxNoticeSecretLength   = 4096
+	maxNoticeSummaryTPLLen  = 512
 	maxNoticeHeaderKeyLen   = 256
 	maxNoticeHeaderValueLen = 4096
 	maxNoticeEventTypeLen   = 64
@@ -59,6 +60,22 @@ func (v *Validator) ValidateCreateNoticeChannelRequest(ctx context.Context, rq *
 	}
 	if !isAllowedNoticePayloadMode(rq.GetPayloadMode(), true) {
 		return errorsx.ErrInvalidArgument
+	}
+	if rq.BaseURL != nil {
+		baseURL := strings.TrimSpace(rq.GetBaseURL())
+		if baseURL != "" {
+			if err := validateEndpointURL(baseURL); err != nil {
+				return err
+			}
+		}
+		rq.BaseURL = &baseURL
+	}
+	if rq.SummaryTemplate != nil {
+		tpl := strings.TrimSpace(rq.GetSummaryTemplate())
+		if len(tpl) > maxNoticeSummaryTPLLen {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.SummaryTemplate = &tpl
 	}
 	if rq.Secret != nil && len(strings.TrimSpace(rq.GetSecret())) > maxNoticeSecretLength {
 		return errorsx.ErrInvalidArgument
@@ -126,7 +143,9 @@ func (v *Validator) ValidatePatchNoticeChannelRequest(ctx context.Context, rq *v
 		rq.IncludeDiagnosis == nil &&
 		rq.IncludeEvidenceIds == nil &&
 		rq.IncludeRootCause == nil &&
-		rq.IncludeLinks == nil
+		rq.IncludeLinks == nil &&
+		rq.BaseURL == nil &&
+		rq.SummaryTemplate == nil
 	if patchEmpty {
 		return errorsx.ErrInvalidArgument
 	}
@@ -154,6 +173,22 @@ func (v *Validator) ValidatePatchNoticeChannelRequest(ctx context.Context, rq *v
 	}
 	if rq.PayloadMode != nil && !isAllowedNoticePayloadMode(rq.GetPayloadMode(), false) {
 		return errorsx.ErrInvalidArgument
+	}
+	if rq.BaseURL != nil {
+		baseURL := strings.TrimSpace(rq.GetBaseURL())
+		if baseURL != "" {
+			if err := validateEndpointURL(baseURL); err != nil {
+				return err
+			}
+		}
+		rq.BaseURL = &baseURL
+	}
+	if rq.SummaryTemplate != nil {
+		tpl := strings.TrimSpace(rq.GetSummaryTemplate())
+		if len(tpl) > maxNoticeSummaryTPLLen {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.SummaryTemplate = &tpl
 	}
 	if rq.GetSelectors() != nil {
 		if err := validateNoticeSelectors(rq.GetSelectors()); err != nil {

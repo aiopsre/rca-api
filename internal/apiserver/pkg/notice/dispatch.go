@@ -113,8 +113,53 @@ func enqueueDeliveryForChannel(ctx context.Context, st store.IStore, plan *dispa
 		)
 		return
 	}
+
+	rebuildDeliveryPayloadWithID(ctx, st, rq, channel, delivery)
+
 	if metrics.M != nil {
 		metrics.M.RecordNoticeDeliveryDispatch(ctx, plan.eventType)
+	}
+}
+
+func rebuildDeliveryPayloadWithID(
+	ctx context.Context,
+	st store.IStore,
+	rq DispatchRequest,
+	channel *model.NoticeChannelM,
+	delivery *model.NoticeDeliveryM,
+) {
+
+	if st == nil || channel == nil || delivery == nil {
+		return
+	}
+	deliveryID := strings.TrimSpace(delivery.DeliveryID)
+	if deliveryID == "" {
+		return
+	}
+
+	payloadRaw, err := buildPayloadForChannelWithMetadata(rq, channel, payloadRenderMetadata{deliveryID: deliveryID})
+	if err != nil {
+		slog.WarnContext(ctx, "notice payload rebuild with delivery_id failed",
+			"error", err,
+			"event_type", rq.EventType,
+			"incident_id", rq.Incident.IncidentID,
+			"channel_id", channel.ChannelID,
+			"delivery_id", deliveryID,
+		)
+		return
+	}
+	requestBody := truncateString(string(payloadRaw), RequestBodyMaxBytes)
+	if requestBody == delivery.RequestBody {
+		return
+	}
+	if err := st.NoticeDelivery().UpdateRequestBody(ctx, deliveryID, requestBody); err != nil {
+		slog.WarnContext(ctx, "notice payload update with delivery_id failed",
+			"error", err,
+			"event_type", rq.EventType,
+			"incident_id", rq.Incident.IncidentID,
+			"channel_id", channel.ChannelID,
+			"delivery_id", deliveryID,
+		)
 	}
 }
 

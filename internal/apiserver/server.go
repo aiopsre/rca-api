@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"zk8s.com/rca-api/internal/apiserver/handler"
 	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
 )
 
 const serviceName = "rca-apiserver"
@@ -21,9 +22,10 @@ type Dependencies struct{}
 
 // Config contains application-related configurations.
 type Config struct {
-	TLSOptions   *genericoptions.TLSOptions
-	HTTPOptions  *genericoptions.HTTPOptions
-	MySQLOptions *genericoptions.MySQLOptions
+	TLSOptions    *genericoptions.TLSOptions
+	HTTPOptions   *genericoptions.HTTPOptions
+	MySQLOptions  *genericoptions.MySQLOptions
+	NoticeBaseURL string
 }
 
 // Server represents the web server and its background workers.
@@ -35,12 +37,15 @@ type Server struct {
 // ServerConfig contains the core dependencies and configurations of the server.
 type ServerConfig struct {
 	*Config
+
 	Dependencies *Dependencies
 	Handler      *handler.Handler
 }
 
 // New creates and returns a new Server instance.
 func (cfg *Config) New(ctx context.Context) (*Server, error) {
+	noticepkg.SetConfiguredNoticeBaseURL(cfg.NoticeBaseURL)
+
 	// Create the core server instance using dependency injection.
 	// This relies on the wire-generated NewServer function.
 	s, err := NewServer(ctx, cfg)
@@ -69,7 +74,7 @@ func (s *Server) Run(ctx context.Context) error {
 	slog.Info("shutting down server...")
 
 	// Create a new context with a timeout to ensure graceful shutdown doesn't hang indefinitely.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 
 	// Trigger graceful shutdown for all components.

@@ -15,6 +15,7 @@ import (
 //nolint:interfacebloat // Store interface follows repo pattern (CRUD + list + expansion).
 type NoticeDeliveryStore interface {
 	Create(ctx context.Context, obj *model.NoticeDeliveryM) error
+	UpdateRequestBody(ctx context.Context, deliveryID string, requestBody string) error
 	Get(ctx context.Context, opts *where.Options) (*model.NoticeDeliveryM, error)
 	GetClaimedPending(ctx context.Context, deliveryID string, workerID string) (*model.NoticeDeliveryM, error)
 	List(ctx context.Context, opts *where.Options) (int64, []*model.NoticeDeliveryM, error)
@@ -68,6 +69,20 @@ func newNoticeDeliveryStore(s *store) *noticeDeliveryStore { return &noticeDeliv
 
 func (n *noticeDeliveryStore) Create(ctx context.Context, obj *model.NoticeDeliveryM) error {
 	return n.s.DB(ctx).Create(obj).Error
+}
+
+func (n *noticeDeliveryStore) UpdateRequestBody(ctx context.Context, deliveryID string, requestBody string) error {
+	res := n.s.DB(ctx).
+		Model(&model.NoticeDeliveryM{}).
+		Where("delivery_id = ?", deliveryID).
+		Update("request_body", requestBody)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 func (n *noticeDeliveryStore) Get(ctx context.Context, opts *where.Options) (*model.NoticeDeliveryM, error) {

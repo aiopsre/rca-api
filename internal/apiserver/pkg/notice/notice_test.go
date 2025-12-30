@@ -103,6 +103,7 @@ func TestBuildPayloadForChannel_TemplateCompactAndFull(t *testing.T) {
 		IncludeEvidenceIDs: true,
 		IncludeRootCause:   true,
 		IncludeLinks:       true,
+		BaseURL:            strPtrNoticeTest("https://rca.example.test"),
 	})
 	require.NoError(t, err)
 	var compactPayload map[string]any
@@ -118,6 +119,12 @@ func TestBuildPayloadForChannel_TemplateCompactAndFull(t *testing.T) {
 	noticeRaw, ok := compactPayload["notice"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, "notice-channel-compact", strings.TrimSpace(asString(noticeRaw["channel_id"])))
+	linksRaw, ok := compactPayload["links"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "v1", strings.TrimSpace(asString(linksRaw["version"])))
+	require.Equal(t, "https://rca.example.test", strings.TrimSpace(asString(linksRaw["base_url"])))
+	require.Contains(t, strings.TrimSpace(asString(linksRaw["incident_url"])), "/v1/incidents/")
+	require.Contains(t, strings.TrimSpace(asString(linksRaw["channel_url"])), "/v1/notice-channels/")
 
 	fullPayloadRaw, err := buildPayloadForChannel(rq, &model.NoticeChannelM{
 		ChannelID:          "notice-channel-full",
@@ -126,6 +133,7 @@ func TestBuildPayloadForChannel_TemplateCompactAndFull(t *testing.T) {
 		IncludeEvidenceIDs: true,
 		IncludeRootCause:   true,
 		IncludeLinks:       true,
+		BaseURL:            strPtrNoticeTest("https://rca.example.test"),
 	})
 	require.NoError(t, err)
 	var fullPayload map[string]any
@@ -134,12 +142,17 @@ func TestBuildPayloadForChannel_TemplateCompactAndFull(t *testing.T) {
 	require.Contains(t, fullPayload, "evidence_ids")
 	require.Contains(t, fullPayload, "root_cause")
 	require.Contains(t, fullPayload, "links")
+	require.NotContains(t, fullPayload, "links_omitted")
 
 	diagnosisRaw, ok := fullPayload["diagnosis"].(map[string]any)
 	require.True(t, ok)
 	require.Contains(t, diagnosisRaw, "confidence")
 	require.Contains(t, diagnosisRaw, "root_cause")
 	require.Contains(t, diagnosisRaw, "evidence_ids")
+	linksRaw, ok = fullPayload["links"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "v1", strings.TrimSpace(asString(linksRaw["version"])))
+	require.Contains(t, strings.TrimSpace(asString(linksRaw["job_url"])), "/v1/ai/jobs/")
 }
 
 func TestBuildPayloadForChannel_FullTemplateTruncatedBySizeGuardrail(t *testing.T) {
@@ -187,6 +200,145 @@ func TestBuildPayloadForChannel_FullTemplateTruncatedBySizeGuardrail(t *testing.
 		require.LessOrEqual(t, len(stringSliceFromAny(diagnosisRaw["evidence_ids"])), NoticePayloadEvidenceIDsMax)
 		require.LessOrEqual(t, len(stringSliceFromAny(diagnosisRaw["missing_evidence"])), NoticePayloadMissingEvidenceMax)
 	}
+}
+
+func TestBuildPayloadForChannel_SummaryTemplateVarsAndGuardrails(t *testing.T) {
+	now := time.Date(2026, 2, 9, 12, 0, 0, 0, time.UTC)
+	rq := DispatchRequest{
+		EventType: EventTypeDiagnosisWritten,
+		Incident: &model.IncidentM{
+			IncidentID:       "incident-template-summary",
+			Namespace:        "default",
+			Service:          "checkout",
+			Severity:         "critical",
+			RCAStatus:        "done",
+			RootCauseType:    strPtrNoticeTest("database"),
+			RootCauseSummary: strPtrNoticeTest("db exhausted"),
+		},
+		JobID:               "ai-job-template-summary",
+		DiagnosisConfidence: 0.91,
+		OccurredAt:          now,
+	}
+
+	payloadRaw, err := buildPayloadForChannelWithMetadata(rq, &model.NoticeChannelM{
+		ChannelID:       "notice-channel-summary",
+		PayloadMode:     NoticePayloadModeFull,
+		IncludeLinks:    true,
+		BaseURL:         strPtrNoticeTest("https://rca.example.test"),
+		SummaryTemplate: strPtrNoticeTest("[${severity}] ${service} ${event_type} incident=${incident_id} delivery=${delivery_id} channel=${channel_id} root=${root_cause_type} confidence=${confidence} unknown=${unknown}"),
+	}, payloadRenderMetadata{deliveryID: "notice-delivery-template-1"})
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(payloadRaw, &payload))
+
+	summary := strings.TrimSpace(asString(payload["summary"]))
+	require.Equal(
+		t,
+		"[critical] checkout diagnosis_written incident=incident-template-summary delivery=notice-delivery-template-1 channel=notice-channel-summary root=database confidence=0.91 unknown=${unknown}",
+		summary,
+	)
+	require.LessOrEqual(t, len(summary), NoticePayloadStringMax)
+	require.NotContains(t, summary, "${severity}")
+}
+
+func TestReplaceSummaryTemplateVars_ReplacementCapAndPattern(t *testing.T) {
+	parts := make([]string, 0, NoticePayloadTemplateReplacementMax+10)
+	for i := 0; i < NoticePayloadTemplateReplacementMax+10; i++ {
+		parts = append(parts, "${service}")
+	}
+	template := strings.Join(parts, "|") + "|${service-name}|${service}"
+	out := replaceSummaryTemplateVars(template, map[string]string{
+		"service": "checkout",
+	})
+
+	replacedSegments := strings.Split(out, "|")
+	require.Greater(t, len(replacedSegments), NoticePayloadTemplateReplacementMax+1)
+	for i := 0; i < NoticePayloadTemplateReplacementMax; i++ {
+		require.Equal(t, "checkout", replacedSegments[i])
+	}
+	require.Equal(t, "${service}", replacedSegments[NoticePayloadTemplateReplacementMax])
+	require.Equal(t, "${service-name}", replacedSegments[len(replacedSegments)-2])
+	require.Equal(t, "${service}", replacedSegments[len(replacedSegments)-1])
+}
+
+func TestBuildPayloadForChannel_LinksOmittedWithoutBaseURL(t *testing.T) {
+	t.Setenv(NoticeBaseURLEnvName, "")
+	SetConfiguredNoticeBaseURL("")
+	t.Cleanup(func() { SetConfiguredNoticeBaseURL("") })
+
+	payloadRaw, err := buildPayloadForChannel(DispatchRequest{
+		EventType: EventTypeIncidentCreated,
+		Incident: &model.IncidentM{
+			IncidentID: "incident-links-omit-1",
+			Namespace:  "default",
+			Service:    "checkout",
+			Severity:   "warning",
+			RCAStatus:  "pending",
+		},
+		OccurredAt: time.Now().UTC(),
+	}, &model.NoticeChannelM{
+		ChannelID:    "notice-channel-links-omit",
+		PayloadMode:  NoticePayloadModeCompact,
+		IncludeLinks: true,
+	})
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(payloadRaw, &payload))
+	require.Equal(t, true, payload["links_omitted"])
+	require.NotContains(t, payload, "links")
+}
+
+func TestDispatchBestEffort_RebuildsPayloadWithDeliveryID(t *testing.T) {
+	s := newNoticeTestStore(t)
+	ctx := context.Background()
+	require.NoError(t, s.NoticeChannel().Create(ctx, &model.NoticeChannelM{
+		Name:            "hook-links-summary",
+		Type:            "webhook",
+		Enabled:         true,
+		EndpointURL:     "http://127.0.0.1:18081/links-summary",
+		TimeoutMs:       1000,
+		MaxRetries:      3,
+		PayloadMode:     NoticePayloadModeFull,
+		IncludeLinks:    true,
+		BaseURL:         strPtrNoticeTest("https://rca.example.test"),
+		SummaryTemplate: strPtrNoticeTest("[${severity}] ${service} ${event_type} incident=${incident_id} delivery=${delivery_id}"),
+	}))
+
+	DispatchBestEffort(ctx, s, DispatchRequest{
+		EventType: EventTypeIncidentCreated,
+		Incident: &model.IncidentM{
+			IncidentID: "incident-links-summary-1",
+			Namespace:  "default",
+			Service:    "checkout",
+			Severity:   "warning",
+			RCAStatus:  "pending",
+		},
+		OccurredAt: time.Now().UTC(),
+	})
+
+	_, deliveries, err := s.NoticeDelivery().List(ctx, where.T(ctx).P(0, 20).F("incident_id", "incident-links-summary-1"))
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	require.NotEmpty(t, deliveries[0].DeliveryID)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(deliveries[0].RequestBody), &payload))
+	noticeRaw, ok := payload["notice"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, deliveries[0].DeliveryID, strings.TrimSpace(asString(noticeRaw["delivery_id"])))
+
+	linksRaw, ok := payload["links"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "v1", strings.TrimSpace(asString(linksRaw["version"])))
+	require.Equal(
+		t,
+		"https://rca.example.test/v1/notice-deliveries/"+deliveries[0].DeliveryID,
+		strings.TrimSpace(asString(linksRaw["delivery_url"])),
+	)
+	summary := strings.TrimSpace(asString(payload["summary"]))
+	require.Contains(t, summary, "delivery="+deliveries[0].DeliveryID)
 }
 
 func TestDispatchBestEffort_SelectorsRouting(t *testing.T) {

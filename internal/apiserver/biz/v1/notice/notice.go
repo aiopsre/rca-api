@@ -105,6 +105,8 @@ func (b *noticeBiz) CreateChannel(ctx context.Context, rq *v1.CreateNoticeChanne
 		IncludeEvidenceIDs: resolveNoticeTemplateInclude(rq.IncludeEvidenceIds, payloadMode),
 		IncludeRootCause:   resolveNoticeTemplateInclude(rq.IncludeRootCause, payloadMode),
 		IncludeLinks:       resolveNoticeTemplateInclude(rq.IncludeLinks, payloadMode),
+		BaseURL:            normalizeOptionalString(rq.BaseURL),
+		SummaryTemplate:    normalizeOptionalString(rq.SummaryTemplate),
 	}
 	if err := b.store.NoticeChannel().Create(ctx, obj); err != nil {
 		return nil, errno.ErrNoticeChannelCreateFailed
@@ -202,6 +204,12 @@ func (b *noticeBiz) PatchChannel(ctx context.Context, rq *v1.PatchNoticeChannelR
 		obj.IncludeLinks = rq.GetIncludeLinks()
 	} else if payloadModeChanged {
 		obj.IncludeLinks = noticePayloadModeDefaultInclude(targetPayloadMode)
+	}
+	if rq.BaseURL != nil {
+		obj.BaseURL = normalizeOptionalString(rq.BaseURL)
+	}
+	if rq.SummaryTemplate != nil {
+		obj.SummaryTemplate = normalizeOptionalString(rq.SummaryTemplate)
 	}
 	if err := b.store.NoticeChannel().Update(ctx, obj); err != nil {
 		return nil, errno.ErrNoticeChannelUpdateFailed

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,10 @@ type payloadTemplateConfig struct {
 	includeLinks       bool
 }
 
+type payloadRenderMetadata struct {
+	deliveryID string
+}
+
 type diagnosisSnapshot struct {
 	confidence       float64
 	rootCauseType    string
@@ -30,6 +36,16 @@ type diagnosisSnapshot struct {
 var errNoticePayloadInvalid = errors.New("invalid notice payload input")
 
 func buildPayloadForChannel(rq DispatchRequest, channel *model.NoticeChannelM) ([]byte, error) {
+	return buildPayloadForChannelWithMetadata(rq, channel, payloadRenderMetadata{})
+}
+
+//nolint:gocognit // Payload assembly branches stay explicit for policy auditability.
+func buildPayloadForChannelWithMetadata(
+	rq DispatchRequest,
+	channel *model.NoticeChannelM,
+	metadata payloadRenderMetadata,
+) ([]byte, error) {
+
 	if rq.Incident == nil {
 		return nil, fmt.Errorf("%w: nil incident", errNoticePayloadInvalid)
 	}
@@ -44,6 +60,7 @@ func buildPayloadForChannel(rq DispatchRequest, channel *model.NoticeChannelM) (
 	}
 
 	incident := rq.Incident
+	diagnosis := buildDiagnosisSnapshot(rq)
 	payload := map[string]any{
 		"event_type":  eventType,
 		"timestamp":   occurredAt.UTC().Format(time.RFC3339),
@@ -56,12 +73,12 @@ func buildPayloadForChannel(rq DispatchRequest, channel *model.NoticeChannelM) (
 			"rca_status":  incident.RCAStatus,
 		},
 		"notice": map[string]any{
-			"channel_id":  channel.ChannelID,
-			"delivery_id": "",
+			"channel_id":  strings.TrimSpace(channel.ChannelID),
+			"delivery_id": strings.TrimSpace(metadata.deliveryID),
 			"attempt":     0,
 			"status":      DeliveryStatusPending,
 		},
-		"summary": buildPayloadSummary(eventType, incident),
+		"summary": buildPayloadSummaryWithTemplate(eventType, incident, channel, rq, diagnosis, metadata),
 	}
 
 	if eventType == EventTypeDiagnosisWritten {
@@ -74,10 +91,15 @@ func buildPayloadForChannel(rq DispatchRequest, channel *model.NoticeChannelM) (
 	}
 
 	template := buildPayloadTemplateConfig(channel)
-	diagnosis := buildDiagnosisSnapshot(rq)
 	applyPayloadTemplate(payload, rq, template, diagnosis)
 	if template.includeLinks {
-		payload["links"] = buildPayloadLinks(rq)
+		links, linksOmitted := buildPayloadLinks(rq, channel, metadata)
+		if len(links) > 0 {
+			payload["links"] = links
+		}
+		if linksOmitted {
+			payload["links_omitted"] = true
+		}
 	}
 
 	return marshalPayloadWithGuardrails(payload)
@@ -119,6 +141,121 @@ func buildPayloadSummary(eventType string, incident *model.IncidentM) string {
 		strings.TrimSpace(incident.Service),
 	)
 	return truncateString(strings.TrimSpace(summary), NoticePayloadStringMax)
+}
+
+func buildPayloadSummaryWithTemplate(
+	eventType string,
+	incident *model.IncidentM,
+	channel *model.NoticeChannelM,
+	rq DispatchRequest,
+	diagnosis diagnosisSnapshot,
+	metadata payloadRenderMetadata,
+) string {
+
+	defaultSummary := buildPayloadSummary(eventType, incident)
+	if channel == nil {
+		return defaultSummary
+	}
+	template := strings.TrimSpace(derefString(channel.SummaryTemplate))
+	if template == "" {
+		return defaultSummary
+	}
+	template = truncateString(template, NoticePayloadStringMax)
+	values := map[string]string{
+		"event_type":         strings.ToLower(strings.TrimSpace(eventType)),
+		"incident_id":        strings.TrimSpace(incident.IncidentID),
+		"namespace":          strings.TrimSpace(incident.Namespace),
+		"service":            strings.TrimSpace(incident.Service),
+		"severity":           strings.TrimSpace(incident.Severity),
+		"rca_status":         strings.TrimSpace(incident.RCAStatus),
+		"root_cause_type":    strings.TrimSpace(diagnosis.rootCauseType),
+		"root_cause_summary": strings.TrimSpace(diagnosis.rootCauseSummary),
+		"confidence":         formatSummaryTemplateConfidence(diagnosis.confidence),
+		"delivery_id":        strings.TrimSpace(metadata.deliveryID),
+		"channel_id":         strings.TrimSpace(channel.ChannelID),
+		"job_id":             strings.TrimSpace(rq.JobID),
+	}
+
+	out := replaceSummaryTemplateVars(template, values)
+	return truncateString(strings.TrimSpace(out), NoticePayloadStringMax)
+}
+
+func formatSummaryTemplateConfidence(v float64) string {
+	return strconv.FormatFloat(clampConfidence(v), 'f', -1, 64)
+}
+
+//nolint:gocognit,gocyclo // Placeholder parsing is intentionally explicit for guardrails.
+func replaceSummaryTemplateVars(template string, variables map[string]string) string {
+	if template == "" {
+		return ""
+	}
+
+	var out strings.Builder
+	out.Grow(len(template))
+	replacements := 0
+
+	for idx := 0; idx < len(template); {
+		if template[idx] != '$' || idx+1 >= len(template) || template[idx+1] != '{' {
+			out.WriteByte(template[idx])
+			idx++
+			continue
+		}
+
+		end := idx + 2
+		for end < len(template) && template[end] != '}' {
+			end++
+		}
+		if end >= len(template) {
+			out.WriteByte(template[idx])
+			idx++
+			continue
+		}
+
+		key := template[idx+2 : end]
+		token := template[idx : end+1]
+		if !isSummaryTemplateVarName(key) {
+			out.WriteString(token)
+			idx = end + 1
+			continue
+		}
+
+		if replacements >= NoticePayloadTemplateReplacementMax {
+			out.WriteString(template[idx:])
+			break
+		}
+
+		if value, ok := variables[key]; ok {
+			out.WriteString(value)
+		} else {
+			// Keep unknown placeholder unchanged for easier template debugging.
+			out.WriteString(token)
+		}
+		replacements++
+		idx = end + 1
+	}
+
+	return out.String()
+}
+
+func isSummaryTemplateVarName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if isSummaryTemplateAlphaNumUnderscore(c) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isSummaryTemplateAlphaNumUnderscore(c byte) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_'
 }
 
 func buildDiagnosisSnapshot(rq DispatchRequest) diagnosisSnapshot {
@@ -276,17 +413,75 @@ func compactRootCause(d diagnosisSnapshot) map[string]any {
 	return rootCause
 }
 
-func buildPayloadLinks(rq DispatchRequest) map[string]any {
-	links := map[string]any{
-		"incident": "/v1/incidents/" + strings.TrimSpace(rq.Incident.IncidentID),
+func buildPayloadLinks(
+	rq DispatchRequest,
+	channel *model.NoticeChannelM,
+	metadata payloadRenderMetadata,
+) (map[string]any, bool) {
+
+	baseURL := resolvePayloadLinksBaseURL(channel)
+	if baseURL == "" {
+		return nil, true
 	}
-	if strings.EqualFold(strings.TrimSpace(rq.EventType), EventTypeDiagnosisWritten) {
-		jobID := strings.TrimSpace(rq.JobID)
-		if jobID != "" {
-			links["job"] = "/v1/ai/jobs/" + jobID
+
+	links := map[string]any{
+		"version":  "v1",
+		"base_url": baseURL,
+	}
+
+	incidentID := strings.TrimSpace(rq.Incident.IncidentID)
+	if incidentID != "" {
+		pathIncidentID := url.PathEscape(incidentID)
+		links["incident_url"] = joinPayloadLinksURL(baseURL, "/v1/incidents/"+pathIncidentID)
+		links["evidence_list_url"] = joinPayloadLinksURL(baseURL, "/v1/incidents/"+pathIncidentID+"/evidence")
+	}
+	if deliveryID := strings.TrimSpace(metadata.deliveryID); deliveryID != "" {
+		links["delivery_url"] = joinPayloadLinksURL(baseURL, "/v1/notice-deliveries/"+url.PathEscape(deliveryID))
+	}
+	if channelID := strings.TrimSpace(channel.ChannelID); channelID != "" {
+		links["channel_url"] = joinPayloadLinksURL(baseURL, "/v1/notice-channels/"+url.PathEscape(channelID))
+	}
+	if jobID := strings.TrimSpace(rq.JobID); jobID != "" {
+		links["job_url"] = joinPayloadLinksURL(baseURL, "/v1/ai/jobs/"+url.PathEscape(jobID))
+	}
+	return links, false
+}
+
+func resolvePayloadLinksBaseURL(channel *model.NoticeChannelM) string {
+	if channel != nil {
+		if baseURL := normalizePayloadLinksBaseURL(derefString(channel.BaseURL)); baseURL != "" {
+			return baseURL
 		}
 	}
-	return links
+	return normalizePayloadLinksBaseURL(configuredNoticeBaseURL())
+}
+
+func normalizePayloadLinksBaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if (scheme != "http" && scheme != "https") || strings.TrimSpace(parsed.Host) == "" {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func joinPayloadLinksURL(baseURL string, path string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	path = strings.TrimSpace(path)
+	if baseURL == "" {
+		return path
+	}
+	return baseURL + path
 }
 
 //nolint:gocognit // Guardrail fallback sequence is intentionally explicit.

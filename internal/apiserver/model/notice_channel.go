@@ -24,6 +24,8 @@ type NoticeChannelM struct {
 	IncludeEvidenceIDs bool      `gorm:"column:include_evidence_ids;not null;default:false" json:"include_evidence_ids"`
 	IncludeRootCause   bool      `gorm:"column:include_root_cause;not null;default:false" json:"include_root_cause"`
 	IncludeLinks       bool      `gorm:"column:include_links;not null;default:false" json:"include_links"`
+	BaseURL            *string   `gorm:"column:base_url;type:varchar(2048)" json:"base_url"`
+	SummaryTemplate    *string   `gorm:"column:summary_template;type:varchar(512)" json:"summary_template"`
 	CreatedAt          time.Time `gorm:"column:created_at;not null;default:current_timestamp" json:"created_at"`
 	UpdatedAt          time.Time `gorm:"column:updated_at;not null;default:current_timestamp" json:"updated_at"`
 }

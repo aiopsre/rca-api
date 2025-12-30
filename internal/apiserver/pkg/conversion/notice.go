@@ -33,6 +33,8 @@ func NoticeChannelMToNoticeChannelV1(m *model.NoticeChannelM) *v1.NoticeChannel 
 		IncludeEvidenceIds: m.IncludeEvidenceIDs,
 		IncludeRootCause:   m.IncludeRootCause,
 		IncludeLinks:       m.IncludeLinks,
+		BaseURL:            cloneOptionalString(m.BaseURL),
+		SummaryTemplate:    cloneOptionalString(m.SummaryTemplate),
 		CreatedAt:          timestamppb.New(m.CreatedAt.UTC()),
 		UpdatedAt:          timestamppb.New(m.UpdatedAt.UTC()),
 	}

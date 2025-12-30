@@ -2,6 +2,8 @@ package options
 
 import (
 	"errors"
+	"net/url"
+	"strings"
 	"time"
 
 	genericoptions "github.com/onexstack/onexstack/pkg/options"
@@ -15,6 +17,7 @@ var (
 	errInvalidNoticeWorkerPollInterval = errors.New("noticeWorkerPollInterval must be > 0")
 	errInvalidNoticeWorkerBatchSize    = errors.New("noticeWorkerBatchSize must be > 0")
 	errInvalidNoticeWorkerLockTimeout  = errors.New("noticeWorkerLockTimeout must be > 0")
+	errInvalidNoticeBaseURL            = errors.New("noticeBaseURL must be valid http(s) url")
 )
 
 // ServerOptions contains the configuration options for the server.
@@ -35,6 +38,8 @@ type ServerOptions struct {
 	NoticeWorkerLockTimeout time.Duration `json:"noticeWorkerLockTimeout" mapstructure:"noticeWorkerLockTimeout"`
 	// NoticeWorkerID identifies the worker instance in lock records.
 	NoticeWorkerID string `json:"noticeWorkerID" mapstructure:"noticeWorkerID"`
+	// NoticeBaseURL is default links base_url when channel.baseURL is unset.
+	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
 }
 
 // NewServerOptions creates a ServerOptions instance with default values.
@@ -64,6 +69,7 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.NoticeWorkerBatchSize, "notice-worker-batch-size", o.NoticeWorkerBatchSize, "Batch size per notice worker claim.")
 	fs.DurationVar(&o.NoticeWorkerLockTimeout, "notice-worker-lock-timeout", o.NoticeWorkerLockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
 	fs.StringVar(&o.NoticeWorkerID, "notice-worker-id", o.NoticeWorkerID, "Worker instance id for notice worker lock ownership.")
+	fs.StringVar(&o.NoticeBaseURL, "notice-base-url", o.NoticeBaseURL, "Default base URL for notice links when channel.baseURL is empty.")
 }
 
 // Complete completes all the required options.
@@ -90,6 +96,9 @@ func (o *ServerOptions) Validate() error {
 	if o.NoticeWorkerLockTimeout <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerLockTimeout)
 	}
+	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
+		errs = append(errs, errInvalidNoticeBaseURL)
+	}
 
 	// Aggregate all errors and return them.
 	return utilerrors.NewAggregate(errs)
@@ -98,8 +107,22 @@ func (o *ServerOptions) Validate() error {
 // Config builds an apiserver.Config based on ServerOptions.
 func (o *ServerOptions) Config() (*apiserver.Config, error) {
 	return &apiserver.Config{
-		TLSOptions:   o.TLSOptions,
-		HTTPOptions:  o.HTTPOptions,
-		MySQLOptions: o.MySQLOptions,
+		TLSOptions:    o.TLSOptions,
+		HTTPOptions:   o.HTTPOptions,
+		MySQLOptions:  o.MySQLOptions,
+		NoticeBaseURL: strings.TrimSpace(o.NoticeBaseURL),
 	}, nil
+}
+
+func isValidNoticeBaseURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return true
+	}
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	return (scheme == "http" || scheme == "https") && strings.TrimSpace(parsed.Host) != ""
 }

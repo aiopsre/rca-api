@@ -2,6 +2,7 @@ package validation
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -32,10 +33,28 @@ func TestValidateCreateNoticeChannelRequest_Guardrails(t *testing.T) {
 	})
 	require.Error(t, err)
 
+	err = val.ValidateCreateNoticeChannelRequest(context.Background(), &v1.CreateNoticeChannelRequest{
+		Name:        "webhook-1",
+		EndpointURL: "https://example.com/hook",
+		BaseURL:     strPtrValidationNotice("javascript:alert(1)"),
+	})
+	require.Error(t, err)
+
+	err = val.ValidateCreateNoticeChannelRequest(context.Background(), &v1.CreateNoticeChannelRequest{
+		Name:            "webhook-1",
+		EndpointURL:     "https://example.com/hook",
+		SummaryTemplate: strPtrValidationNotice(strings.Repeat("x", 513)),
+	})
+	require.Error(t, err)
+
 	req := &v1.CreateNoticeChannelRequest{
 		Name:        "webhook-1",
 		EndpointURL: "https://example.com/hook",
-		TimeoutMs:   int64PtrValidationNotice(100),
+		BaseURL:     strPtrValidationNotice(" https://rca.example.test "),
+		SummaryTemplate: strPtrValidationNotice(
+			" [${severity}] ${service} ${event_type} incident=${incident_id} ",
+		),
+		TimeoutMs: int64PtrValidationNotice(100),
 		Headers: map[string]string{
 			"Authorization": "Bearer token",
 		},
@@ -53,6 +72,8 @@ func TestValidateCreateNoticeChannelRequest_Guardrails(t *testing.T) {
 	require.Equal(t, []string{"warning", "critical"}, req.GetSelectors().GetSeverities())
 	require.Equal(t, []string{"default"}, req.GetSelectors().GetNamespaces())
 	require.Equal(t, []string{"checkout"}, req.GetSelectors().GetServices())
+	require.Equal(t, "https://rca.example.test", req.GetBaseURL())
+	require.Equal(t, "[${severity}] ${service} ${event_type} incident=${incident_id}", req.GetSummaryTemplate())
 
 	req = &v1.CreateNoticeChannelRequest{
 		Name:        "webhook-full",
@@ -91,6 +112,16 @@ func TestValidatePatchNoticeChannelRequest_RequireFieldsAndClamp(t *testing.T) {
 	}
 	err = val.ValidatePatchNoticeChannelRequest(context.Background(), req)
 	require.NoError(t, err)
+
+	req = &v1.PatchNoticeChannelRequest{
+		ChannelID:       "notice-channel-1",
+		BaseURL:         strPtrValidationNotice(" https://rca.example.test/v2 "),
+		SummaryTemplate: strPtrValidationNotice(" [${severity}] ${service} "),
+	}
+	err = val.ValidatePatchNoticeChannelRequest(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, "https://rca.example.test/v2", req.GetBaseURL())
+	require.Equal(t, "[${severity}] ${service}", req.GetSummaryTemplate())
 
 	req = &v1.PatchNoticeChannelRequest{
 		ChannelID:   "notice-channel-1",

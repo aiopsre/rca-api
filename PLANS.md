@@ -594,3 +594,22 @@ python -m orchestrator.main
    - 两个 channel（compact/full）对同一事件产生不同 payload，并断言关键字段/不包含项
 5) make protoc / make test / make lint-new 通过
 
+---
+
+## P2-2 Notice（模板变量与链接规范：Safe Summary + Versioned Links v1）
+
+### Spec
+- docs/devel/zh-CN/附录P2-2_Notice_模板变量与链接规范.md
+
+### Done Definition（验收口径）
+1) NoticeChannel 增加 summary_template（可选），支持 ${var} 安全替换（allow-list 变量，无表达式/正则）。
+2) include_links=true 时输出 links.version="v1" 的稳定结构，并按 base_url 规则生成 incident_url/delivery_url 等。
+3) Guardrails：
+   - summary_template<=512；替换后 summary<=512；替换次数<=50；仅处理 ${[a-zA-Z0-9_]+}
+   - links 不包含 token，不外发 secret/headers
+4) 新增回归脚本 scripts/test_p2_L11_notice_links_and_summary_template.sh：
+   - 验证 links.v1 结构与 URL
+   - 验证 summary_template 变量替换生效
+   - PASS/FAIL step 诊断风格一致
+5) make protoc / make test / make lint-new 通过
+

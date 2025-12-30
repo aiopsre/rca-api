@@ -31,6 +31,10 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	createResp, err := biz.CreateChannel(ctx, &v1.CreateNoticeChannelRequest{
 		Name:        "ops-webhook",
 		EndpointURL: "http://127.0.0.1:18080/hook",
+		BaseURL:     strPtrNoticeBiz("https://rca.example.test"),
+		SummaryTemplate: strPtrNoticeBiz(
+			"[${severity}] ${service} ${event_type} incident=${incident_id}",
+		),
 		Headers: map[string]string{
 			"X-Token": "abc",
 		},
@@ -60,6 +64,8 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.False(t, getResp.GetNoticeChannel().GetIncludeEvidenceIds())
 	require.False(t, getResp.GetNoticeChannel().GetIncludeRootCause())
 	require.False(t, getResp.GetNoticeChannel().GetIncludeLinks())
+	require.Equal(t, "https://rca.example.test", getResp.GetNoticeChannel().GetBaseURL())
+	require.Equal(t, "[${severity}] ${service} ${event_type} incident=${incident_id}", getResp.GetNoticeChannel().GetSummaryTemplate())
 
 	listResp, err := biz.ListChannels(ctx, &v1.ListNoticeChannelsRequest{
 		Enabled: boolPtrNoticeBiz(true),
@@ -77,6 +83,10 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 		TimeoutMs:    int64PtrNoticeBiz(5000),
 		PayloadMode:  noticePayloadModePtrNoticeBiz(v1.NoticePayloadMode_NOTICE_PAYLOAD_MODE_FULL),
 		IncludeLinks: boolPtrNoticeBiz(false),
+		BaseURL:      strPtrNoticeBiz("https://rca.example.test/v2"),
+		SummaryTemplate: strPtrNoticeBiz(
+			"[${severity}] ${service} ${event_type} incident=${incident_id} delivery=${delivery_id}",
+		),
 		Selectors: &v1.NoticeSelectors{
 			EventTypes: []string{"diagnosis_written"},
 			Severities: []string{"warning"},
@@ -96,6 +106,8 @@ func TestNoticeBiz_ChannelCRUDAndDeliveryQuery(t *testing.T) {
 	require.True(t, getAfterPatch.GetNoticeChannel().GetIncludeEvidenceIds())
 	require.True(t, getAfterPatch.GetNoticeChannel().GetIncludeRootCause())
 	require.False(t, getAfterPatch.GetNoticeChannel().GetIncludeLinks())
+	require.Equal(t, "https://rca.example.test/v2", getAfterPatch.GetNoticeChannel().GetBaseURL())
+	require.Equal(t, "[${severity}] ${service} ${event_type} incident=${incident_id} delivery=${delivery_id}", getAfterPatch.GetNoticeChannel().GetSummaryTemplate())
 
 	_, err = biz.DeleteChannel(ctx, &v1.DeleteNoticeChannelRequest{ChannelID: channelID})
 	require.NoError(t, err)
