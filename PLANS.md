@@ -632,3 +632,22 @@ python -m orchestrator.main
    - replay/重试后 nonce/签名变化
 6) make protoc / make test / make lint-new 通过
 
+---
+
+## P0-9 回归：L3 证据冲突/不一致（conflict_evidence）
+
+### Spec
+- docs/devel/zh-CN/附录L3-1_回归_证据冲突与不一致.md
+- docs/devel/zh-CN/附录M1_LangGraph_Orchestrator_接口规范.md（6.2.4：新增 conflict_evidence 最小模板；硬性校验要点补充）
+
+### Done Definition
+1) orchestrator 支持 FORCE_CONFLICT=1（不依赖真实 datasource），仍保存 evidence/toolcalls，并在 finalize 输出 conflict_evidence 诊断。
+2) 写回 diagnosis_json 必须满足：
+   - root_cause.type="conflict_evidence"
+   - root_cause.confidence<=0.30
+   - missing_evidence 非空（>=1，<=20）
+   - evidence_ids（若非空）必须引用已存在 evidence_id
+3) 后端增加最小校验/归一化：conflict_evidence 强制低置信度 + 缺失项非空（与文档硬性校验要点一致）。
+4) 新增回归脚本 scripts/test_p0_L3_conflict_evidence.sh（PASS/FAIL step 诊断风格一致）。
+5) make test / make lint-new 通过。
+

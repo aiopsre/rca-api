@@ -3,6 +3,7 @@ package ai_job
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -283,6 +284,246 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithHighConfidence(t *testing.T) {
 	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
 }
 
+func TestAIJobFinalize_ConflictEvidenceTemplate(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceIDMetrics := createTestEvidence(t, s, incident.IncidentID, "metrics", "metrics spike")
+	evidenceIDLogs := createTestEvidence(t, s, incident.IncidentID, "logs", "logs do not corroborate")
+
+	diagnosis := fmt.Sprintf(`{
+		"schema_version":"1.0",
+		"generated_at":"2026-02-07T00:00:00Z",
+		"incident_id":"%s",
+		"summary":"Evidence signals conflict: metrics indicate degradation while logs/traces do not corroborate within the same window.",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs/traces conflict within aligned time window",
+			"statement":"",
+			"confidence":0.25,
+			"evidence_ids":["%s","%s"]
+		},
+		"missing_evidence":[
+			"align metrics/logs/traces time window and re-query within the same interval",
+			"collect upstream/downstream traces or confirm tracing sampling/drop"
+		],
+		"hypotheses":[
+			{
+				"statement":"Current evidence is conflicting and insufficient for a decisive root cause.",
+				"confidence":0.25,
+				"supporting_evidence_ids":["%s","%s"],
+				"missing_evidence":[
+					"align metrics/logs/traces time window and re-query within the same interval"
+				]
+			}
+		],
+		"recommendations":[{"type":"readonly_check","action":"collect more evidence","risk":"low"}],
+		"unknowns":["root cause remains uncertain due to conflicting evidence"],
+		"next_steps":["re-run after aligned window evidence collection"]
+	}`, incident.IncidentID, evidenceIDMetrics, evidenceIDLogs, evidenceIDMetrics, evidenceIDLogs)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.NoError(t, err)
+
+	updatedIncident, err := s.Incident().Get(context.Background(), where.T(context.Background()).F("incident_id", incident.IncidentID))
+	require.NoError(t, err)
+	require.Equal(t, incidentRCAStatusDone, updatedIncident.RCAStatus)
+	require.NotNil(t, updatedIncident.RootCauseType)
+	require.Equal(t, "conflict_evidence", *updatedIncident.RootCauseType)
+	require.NotNil(t, updatedIncident.DiagnosisJSON)
+	require.NotNil(t, updatedIncident.EvidenceRefsJSON)
+
+	var diagnosisObj map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.DiagnosisJSON), &diagnosisObj))
+	root, ok := diagnosisObj["root_cause"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "conflict_evidence", root["type"])
+	require.Equal(t, 0.25, root["confidence"])
+	topMissing, ok := diagnosisObj["missing_evidence"].([]any)
+	require.True(t, ok)
+	require.Len(t, topMissing, 2)
+
+	var refs map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.EvidenceRefsJSON), &refs))
+	refsIDsAny, ok := refs["evidence_ids"].([]any)
+	require.True(t, ok)
+	refsIDs := make([]string, 0, len(refsIDsAny))
+	for _, item := range refsIDsAny {
+		if value, ok := item.(string); ok {
+			refsIDs = append(refsIDs, value)
+		}
+	}
+	require.Contains(t, refsIDs, evidenceIDMetrics)
+	require.Contains(t, refsIDs, evidenceIDLogs)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithHighConfidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "metrics spike")
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid conflict diagnosis",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs conflict",
+			"statement":"definitive root cause",
+			"confidence":0.5,
+			"evidence_ids":["%s"]
+		},
+		"missing_evidence":["collect traces in same time window"],
+		"hypotheses":[
+			{
+				"statement":"evidence conflicts",
+				"confidence":0.2,
+				"supporting_evidence_ids":["%s"],
+				"missing_evidence":["collect traces in same time window"]
+			}
+		]
+	}`, evidenceID, evidenceID)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithoutMissingEvidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "logs", "logs sample")
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid conflict diagnosis",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs conflict",
+			"statement":"",
+			"confidence":0.2,
+			"evidence_ids":["%s"]
+		},
+		"missing_evidence":[],
+		"hypotheses":[
+			{
+				"statement":"evidence conflicts",
+				"confidence":0.2,
+				"supporting_evidence_ids":["%s"],
+				"missing_evidence":[]
+			}
+		]
+	}`, evidenceID, evidenceID)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithUnknownEvidenceID(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"invalid conflict diagnosis",
+			"root_cause":{
+				"type":"conflict_evidence",
+				"category":"unknown",
+				"summary":"metrics vs logs conflict",
+				"statement":"",
+				"confidence":0.2,
+				"evidence_ids":["evidence-not-found"]
+			},
+			"missing_evidence":["collect traces in same time window"],
+			"hypotheses":[
+				{
+					"statement":"evidence conflicts",
+					"confidence":0.2,
+					"supporting_evidence_ids":["evidence-not-found"],
+					"missing_evidence":["collect traces in same time window"]
+				}
+			]
+		}`),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
 func TestAIJobList_QueuedOrderAndPagination(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -458,7 +699,7 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIToolCallM{}))
+	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIToolCallM{}, &model.EvidenceM{}))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }
@@ -482,6 +723,29 @@ func createTestIncident(t *testing.T, s store.IStore) *model.IncidentM {
 	require.NoError(t, s.Incident().Create(context.Background(), incident))
 	require.NotEmpty(t, incident.IncidentID)
 	return incident
+}
+
+func createTestEvidence(t *testing.T, s store.IStore, incidentID string, evidenceType string, summary string) string {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	resultJSON := `{"source":"unit-test"}`
+	evidence := &model.EvidenceM{
+		IncidentID:      incidentID,
+		Type:            evidenceType,
+		QueryText:       "mock://unit-test",
+		QueryHash:       "unit-test-query-hash",
+		TimeRangeStart:  now.Add(-5 * time.Minute),
+		TimeRangeEnd:    now,
+		ResultJSON:      resultJSON,
+		ResultSizeBytes: int64(len(resultJSON)),
+		CreatedBy:       "system",
+	}
+	if strings.TrimSpace(summary) != "" {
+		evidence.Summary = &summary
+	}
+	require.NoError(t, s.Evidence().Create(context.Background(), evidence))
+	require.NotEmpty(t, evidence.EvidenceID)
+	return evidence.EvidenceID
 }
 
 func ptrAIString(v string) *string { return &v }

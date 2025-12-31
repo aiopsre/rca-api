@@ -15,6 +15,7 @@ from .tools_rca_api import RCAApiClient
 class OrchestratorConfig:
     run_query: bool = False
     force_no_evidence: bool = False
+    force_conflict: bool = False
     ds_base_url: str = ""
     auto_create_datasource: bool = True
 
@@ -43,29 +44,69 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
         raise RuntimeError("incident_id is required before collect_evidence")
 
     state.force_no_evidence = cfg.force_no_evidence
-    if cfg.force_no_evidence:
+    state.force_conflict = cfg.force_conflict
+    collected_evidence_ids: list[str] = []
+    if cfg.force_conflict:
+        state.missing_evidence = [
+            "align metrics/logs/traces time window and re-query within the same interval",
+            "collect error logs (5xx/timeout/panic/OOM) during the metric spike",
+            "collect upstream/downstream traces or confirm tracing sampling/drop (RUN_QUERY=0 uses placeholders)",
+        ]
+        collected_evidence_ids.append(
+            client.save_mock_evidence(
+                incident_id=state.incident_id,
+                summary="FORCE_CONFLICT metrics placeholder: error rate spike observed.",
+                raw={
+                    "source": "orchestrator",
+                    "mode": "forced_conflict",
+                    "dimension": "metrics",
+                    "kind": "mock_conflict_signal",
+                    "observed": "5xx and latency increased in the same time window",
+                    "reason": "FORCE_CONFLICT=1",
+                },
+            )
+        )
+        collected_evidence_ids.append(
+            client.save_mock_evidence(
+                incident_id=state.incident_id,
+                summary="FORCE_CONFLICT logs/trace placeholder: no corroborating error evidence.",
+                raw={
+                    "source": "orchestrator",
+                    "mode": "forced_conflict",
+                    "dimension": "logs_traces",
+                    "kind": "no_data",
+                    "observed": "logs/traces do not corroborate metric anomaly in this window",
+                    "reason": "FORCE_CONFLICT=1; datasource query skipped and placeholders persisted",
+                },
+            )
+        )
+    elif cfg.force_no_evidence:
         state.missing_evidence = ["logs", "traces"]
-        evidence_id = client.save_mock_evidence(
-            incident_id=state.incident_id,
-            summary="no evidence found (forced)",
-            raw={
-                "source": "orchestrator",
-                "mode": "forced_missing_evidence",
-                "kind": "no_data",
-                "missing": state.missing_evidence,
-                "reason": "FORCE_NO_EVIDENCE=1",
-            },
+        collected_evidence_ids.append(
+            client.save_mock_evidence(
+                incident_id=state.incident_id,
+                summary="no evidence found (forced)",
+                raw={
+                    "source": "orchestrator",
+                    "mode": "forced_missing_evidence",
+                    "kind": "no_data",
+                    "missing": state.missing_evidence,
+                    "reason": "FORCE_NO_EVIDENCE=1",
+                },
+            )
         )
     elif not cfg.run_query:
         state.missing_evidence = []
-        evidence_id = client.save_mock_evidence(
-            incident_id=state.incident_id,
-            summary="P0 mock evidence saved by orchestrator (RUN_QUERY=0).",
-            raw={
-                "source": "orchestrator",
-                "mode": "mock",
-                "note": "RUN_QUERY=0 synthetic evidence",
-            },
+        collected_evidence_ids.append(
+            client.save_mock_evidence(
+                incident_id=state.incident_id,
+                summary="P0 mock evidence saved by orchestrator (RUN_QUERY=0).",
+                raw={
+                    "source": "orchestrator",
+                    "mode": "mock",
+                    "note": "RUN_QUERY=0 synthetic evidence",
+                },
+            )
         )
     else:
         if not cfg.ds_base_url.strip():
@@ -90,15 +131,18 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
             end_ts=now_s,
             step_s=30,
         )
-        evidence_id = client.save_evidence_from_query(
-            incident_id=state.incident_id,
-            kind="metrics",
-            query=query_request,
-            result=query_result,
+        collected_evidence_ids.append(
+            client.save_evidence_from_query(
+                incident_id=state.incident_id,
+                kind="metrics",
+                query=query_request,
+                result=query_result,
+            )
         )
 
-    if evidence_id not in state.evidence_ids:
-        state.evidence_ids.append(evidence_id)
+    for evidence_id in collected_evidence_ids:
+        if evidence_id not in state.evidence_ids:
+            state.evidence_ids.append(evidence_id)
     return state
 
 
@@ -110,10 +154,32 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
 
     primary_evidence = state.evidence_ids[0]
     missing_evidence = state.missing_evidence or ["logs", "traces"]
-    if state.force_no_evidence:
+    if state.force_conflict:
+        collect_tool_name = "evidence.collectConflictPlaceholder"
+    elif state.force_no_evidence:
         collect_tool_name = "evidence.collectPlaceholder"
     else:
         collect_tool_name = "evidence.queryMetrics" if state.datasource_id else "evidence.saveMock"
+    if state.force_conflict:
+        collect_response = {
+            "evidence_ids": state.evidence_ids,
+            "status": "conflict_signals",
+            "reason": "FORCE_CONFLICT=1",
+            "conflict_dimension": ["metrics_vs_logs", "logs_vs_traces"],
+            "missing_evidence": missing_evidence,
+        }
+    elif state.force_no_evidence:
+        collect_response = {
+            "evidence_ids": [primary_evidence],
+            "status": "no_data",
+            "reason": "FORCE_NO_EVIDENCE=1",
+            "missing_evidence": missing_evidence,
+        }
+    else:
+        collect_response = {
+            "evidence_ids": [primary_evidence],
+            "status": "ok",
+        }
 
     started_ms = int(time.time() * 1000)
     client.add_tool_call(
@@ -125,20 +191,9 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
             "incident_id": state.incident_id,
             "datasource_id": state.datasource_id,
             "force_no_evidence": state.force_no_evidence,
+            "force_conflict": state.force_conflict,
         },
-        response_json=(
-            {
-                "evidence_ids": [primary_evidence],
-                "status": "no_data",
-                "reason": "FORCE_NO_EVIDENCE=1",
-                "missing_evidence": missing_evidence,
-            }
-            if state.force_no_evidence
-            else {
-                "evidence_ids": [primary_evidence],
-                "status": "ok",
-            }
-        ),
+        response_json=collect_response,
         latency_ms=max(1, int(time.time() * 1000) - started_ms),
         status="ok",
     )
@@ -150,6 +205,35 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
     }
     if state.force_no_evidence:
         synthesize_request["target_confidence_max"] = 0.3
+    if state.force_conflict:
+        synthesize_request["target_confidence_max"] = 0.3
+        synthesize_request["mode"] = "conflict_evidence"
+    if state.force_conflict:
+        synthesize_response = {
+            "status": "ok",
+            "result": "conflict_evidence_low_confidence",
+            "root_cause": {
+                "type": "conflict_evidence",
+                "confidence": 0.25,
+            },
+            "missing_evidence": missing_evidence,
+            "evidence_ids": state.evidence_ids,
+        }
+    elif state.force_no_evidence:
+        synthesize_response = {
+            "status": "ok",
+            "result": "missing_evidence_low_confidence",
+            "root_cause": {
+                "type": "missing_evidence",
+                "confidence": 0.15,
+            },
+            "missing_evidence": missing_evidence,
+        }
+    else:
+        synthesize_response = {
+            "status": "ok",
+            "result": "diagnosis_json_ready",
+        }
 
     started_ms = int(time.time() * 1000)
     client.add_tool_call(
@@ -158,22 +242,7 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
         node_name="synthesize",
         tool_name="diagnosis.generate",
         request_json=synthesize_request,
-        response_json=(
-            {
-                "status": "ok",
-                "result": "missing_evidence_low_confidence",
-                "root_cause": {
-                    "type": "missing_evidence",
-                    "confidence": 0.15,
-                },
-                "missing_evidence": missing_evidence,
-            }
-            if state.force_no_evidence
-            else {
-                "status": "ok",
-                "result": "diagnosis_json_ready",
-            }
-        ),
+        response_json=synthesize_response,
         latency_ms=max(1, int(time.time() * 1000) - started_ms),
         status="ok",
     )
@@ -276,6 +345,61 @@ def _build_missing_evidence_diagnosis(state: GraphState) -> dict:
     }
 
 
+def _build_conflict_evidence_diagnosis(state: GraphState) -> dict:
+    evidence_ids = state.evidence_ids[:]
+    if len(evidence_ids) > 2:
+        evidence_ids = evidence_ids[:2]
+
+    missing_evidence = state.missing_evidence or [
+        "align metrics/logs/traces time window and re-query within the same interval",
+    ]
+    return {
+        "schema_version": "1.0",
+        "generated_at": _diagnosis_timestamp(),
+        "incident_id": state.incident_id,
+        "summary": "Evidence signals conflict: metrics indicate degradation while logs/traces do not corroborate within the same window. RUN_QUERY=0 placeholders were saved.",
+        "root_cause": {
+            "type": "conflict_evidence",
+            "category": "unknown",
+            "summary": "metrics vs logs/traces conflict within the same window",
+            "statement": "",
+            "confidence": 0.25,
+            "evidence_ids": evidence_ids,
+        },
+        "missing_evidence": missing_evidence,
+        "timeline": [
+            {
+                "t": _diagnosis_timestamp(),
+                "event": "conflict_evidence_detected",
+                "ref": evidence_ids[0] if evidence_ids else "",
+            }
+        ],
+        "observations": [
+            {
+                "title": "Conflicting signals",
+                "detail": "Metrics and logs/traces are inconsistent; avoid high-confidence conclusion.",
+            }
+        ],
+        "hypotheses": [
+            {
+                "statement": "Current evidence is conflicting and insufficient for a decisive root cause.",
+                "confidence": 0.25,
+                "supporting_evidence_ids": evidence_ids,
+                "missing_evidence": missing_evidence,
+            }
+        ],
+        "recommendations": [
+            {
+                "type": "readonly_check",
+                "action": "Re-run collection with aligned time windows and add trace/log datasource coverage.",
+                "risk": "low",
+            }
+        ],
+        "unknowns": ["Root cause remains uncertain due to evidence conflict and placeholder-only collection mode."],
+        "next_steps": ["Collect corroborating logs/traces in the same interval as metric anomalies."],
+    }
+
+
 def _guard(node_name: str, fn: Callable[[GraphState], GraphState]) -> Callable[[GraphState], GraphState]:
     def wrapped(state: GraphState) -> GraphState:
         if state.last_error:
@@ -302,7 +426,9 @@ def finalize_job(state: GraphState, client: RCAApiClient) -> GraphState:
             state.finalized = True
             return state
 
-        if state.force_no_evidence:
+        if state.force_conflict:
+            diagnosis_json = _build_conflict_evidence_diagnosis(state)
+        elif state.force_no_evidence:
             diagnosis_json = _build_missing_evidence_diagnosis(state)
         else:
             diagnosis_json = _build_success_diagnosis(state)

@@ -18,5 +18,6 @@ class GraphState(BaseModel):
     last_error: Optional[str] = None
 
     force_no_evidence: bool = False
+    force_conflict: bool = False
     started: bool = False
     finalized: bool = False

@@ -42,6 +42,10 @@ const (
 
 	maxToolCallResponseBytes = 256 * 1024
 	toolCallPreviewBytes     = 4096
+
+	rootCauseTypeMissingEvidence  = "missing_evidence"
+	rootCauseTypeConflictEvidence = "conflict_evidence"
+	maxMissingEvidenceItems       = 20
 )
 
 var (
@@ -387,6 +391,11 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 
 			derivedEvidenceIDs := collectDiagnosisEvidenceIDs(diagnosis)
 			evidenceIDs = mergeStringSlices(evidenceIDs, derivedEvidenceIDs)
+			if diagnosis.RootCause != nil && diagnosis.RootCause.Type == rootCauseTypeConflictEvidence {
+				if err := b.ensureIncidentEvidenceExists(txCtx, incident.IncidentID, evidenceIDs); err != nil {
+					return err
+				}
+			}
 
 			updates["output_json"] = diagnosisJSON
 			if rq.OutputSummary == nil {
@@ -687,6 +696,26 @@ func mustMarshalStringSlice(in []string) string {
 	return string(raw)
 }
 
+func (b *aiJobBiz) ensureIncidentEvidenceExists(ctx context.Context, incidentID string, evidenceIDs []string) error {
+	normalized := normalizeStringSlice(evidenceIDs)
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	total, _, err := b.store.Evidence().List(ctx, where.T(ctx).
+		O(0).
+		L(len(normalized)).
+		F("incident_id", incidentID).
+		Q("evidence_id IN ?", normalized))
+	if err != nil {
+		return errno.ErrAIJobInvalidDiagnosis
+	}
+	if total != int64(len(normalized)) {
+		return errno.ErrAIJobInvalidDiagnosis
+	}
+	return nil
+}
+
 func normalizeToolCallResponse(raw string, responseRef string) (*string, int64) {
 	if raw == "" {
 		return nil, 0
@@ -814,8 +843,16 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 				return nil, "", errno.ErrAIJobInvalidDiagnosis
 			}
 		}
-		if diagnosis.RootCause.Type == "missing_evidence" && diagnosis.RootCause.Confidence > 0.3 {
+		if diagnosis.RootCause.Type == rootCauseTypeMissingEvidence && diagnosis.RootCause.Confidence > 0.3 {
 			return nil, "", errno.ErrAIJobInvalidDiagnosis
+		}
+		if diagnosis.RootCause.Type == rootCauseTypeConflictEvidence && diagnosis.RootCause.Confidence > 0.3 {
+			return nil, "", errno.ErrAIJobInvalidDiagnosis
+		}
+		if diagnosis.RootCause.Type == rootCauseTypeConflictEvidence {
+			if len(diagnosis.MissingEvidence) == 0 || len(diagnosis.MissingEvidence) > maxMissingEvidenceItems {
+				return nil, "", errno.ErrAIJobInvalidDiagnosis
+			}
 		}
 	}
 
@@ -841,7 +878,7 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 			}
 		}
 	}
-	if diagnosis.RootCause != nil && diagnosis.RootCause.Type == "missing_evidence" && missingEvidenceCount == 0 {
+	if diagnosis.RootCause != nil && diagnosis.RootCause.Type == rootCauseTypeMissingEvidence && missingEvidenceCount == 0 {
 		return nil, "", errno.ErrAIJobInvalidDiagnosis
 	}
 
