@@ -808,7 +808,6 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 	}
 
 	diagnosis.MissingEvidence = normalizeStringSlice(diagnosis.MissingEvidence)
-	missingEvidenceCount := len(diagnosis.MissingEvidence)
 
 	if diagnosis.RootCause != nil {
 		diagnosis.RootCause.Type = strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Type))
@@ -843,13 +842,10 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 				return nil, "", errno.ErrAIJobInvalidDiagnosis
 			}
 		}
-		if diagnosis.RootCause.Type == rootCauseTypeMissingEvidence && diagnosis.RootCause.Confidence > 0.3 {
-			return nil, "", errno.ErrAIJobInvalidDiagnosis
-		}
-		if diagnosis.RootCause.Type == rootCauseTypeConflictEvidence && diagnosis.RootCause.Confidence > 0.3 {
-			return nil, "", errno.ErrAIJobInvalidDiagnosis
-		}
-		if diagnosis.RootCause.Type == rootCauseTypeConflictEvidence {
+		if diagnosis.RootCause.Type == rootCauseTypeMissingEvidence || diagnosis.RootCause.Type == rootCauseTypeConflictEvidence {
+			if diagnosis.RootCause.Confidence > 0.3 {
+				return nil, "", errno.ErrAIJobInvalidDiagnosis
+			}
 			if len(diagnosis.MissingEvidence) == 0 || len(diagnosis.MissingEvidence) > maxMissingEvidenceItems {
 				return nil, "", errno.ErrAIJobInvalidDiagnosis
 			}
@@ -863,7 +859,6 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 		}
 		h.SupportingEvidenceID = normalizeStringSlice(h.SupportingEvidenceID)
 		h.MissingEvidence = normalizeStringSlice(h.MissingEvidence)
-		missingEvidenceCount += len(h.MissingEvidence)
 		if len(h.SupportingEvidenceID) == 0 && len(h.MissingEvidence) == 0 {
 			return nil, "", errno.ErrAIJobInvalidDiagnosis
 		}
@@ -878,10 +873,6 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 			}
 		}
 	}
-	if diagnosis.RootCause != nil && diagnosis.RootCause.Type == rootCauseTypeMissingEvidence && missingEvidenceCount == 0 {
-		return nil, "", errno.ErrAIJobInvalidDiagnosis
-	}
-
 	normalized, err := json.Marshal(diagnosis)
 	if err != nil {
 		return nil, "", errno.ErrAIJobInvalidDiagnosis

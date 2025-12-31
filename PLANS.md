@@ -651,3 +651,24 @@ python -m orchestrator.main
 4) 新增回归脚本 scripts/test_p0_L3_conflict_evidence.sh（PASS/FAIL step 诊断风格一致）。
 5) make test / make lint-new 通过。
 
+---
+
+## P0-10 证据质量门控（A2 Evidence Quality Gate）
+
+### Spec
+- docs/devel/zh-CN/附录A2_证据质量门控_EvidenceQualityGate.md
+- docs/devel/zh-CN/附录M1_LangGraph_Orchestrator_接口规范.md（6.2.4：missing/conflict 模板与硬性校验要点）
+
+### Done Definition
+1) orchestrator 在 finalize_job 前实现 Evidence Quality Gate：
+   - FORCE_NO_EVIDENCE=1 -> missing_evidence
+   - FORCE_CONFLICT=1 -> conflict_evidence（优先级固定：conflict 优先）
+   - 仅在证据充分且一致时允许 confidence>0.60
+2) toolcall 审计必须包含 gate_decision（写入 toolcall.output JSON）：
+   - quality_gate.decision=pass|missing|conflict
+   - reasons 非空，含 evidence_summary（数量/来源/no_data 统计）
+3) 后端 finalize 强制约束：
+   - missing/conflict -> confidence<=0.30 且 missing_evidence 非空且<=20
+   - 禁止 missing/conflict 与 confidence>0.60 同时出现
+4) 新增回归脚本 scripts/test_p0_L5_quality_gate.sh 覆盖 missing/conflict（必选）与 pass（可选），并断言 toolcalls 中 gate_decision 存在
+5) make test / make lint-new 通过

@@ -284,6 +284,101 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithHighConfidence(t *testing.T) {
 	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
 }
 
+func TestAIJobFinalize_RejectsMissingEvidenceWithoutTopLevelMissingEvidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"invalid missing evidence diagnosis",
+			"root_cause":{
+				"type":"missing_evidence",
+				"category":"unknown",
+				"summary":"insufficient evidence",
+				"statement":"",
+				"confidence":0.2,
+				"evidence_ids":["evidence-1"]
+			},
+			"missing_evidence":[],
+			"hypotheses":[
+				{
+					"statement":"need more logs",
+					"confidence":0.2,
+					"supporting_evidence_ids":["evidence-1"],
+					"missing_evidence":["logs"]
+				}
+			]
+		}`),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsMissingEvidenceWithTooManyMissingEvidenceItems(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	missing := make([]string, 0, maxMissingEvidenceItems+1)
+	for i := 0; i < maxMissingEvidenceItems+1; i++ {
+		missing = append(missing, fmt.Sprintf("missing-%d", i))
+	}
+	missingJSON, err := json.Marshal(missing)
+	require.NoError(t, err)
+
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid missing evidence diagnosis",
+		"root_cause":{
+			"type":"missing_evidence",
+			"category":"unknown",
+			"summary":"insufficient evidence",
+			"statement":"",
+			"confidence":0.2,
+			"evidence_ids":["evidence-1"]
+		},
+		"missing_evidence":%s
+	}`, string(missingJSON))
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
 func TestAIJobFinalize_ConflictEvidenceTemplate(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -467,6 +562,54 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithoutMissingEvidence(t *testing.
 			}
 		]
 	}`, evidenceID, evidenceID)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithTooManyMissingEvidenceItems(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	missing := make([]string, 0, maxMissingEvidenceItems+1)
+	for i := 0; i < maxMissingEvidenceItems+1; i++ {
+		missing = append(missing, fmt.Sprintf("missing-%d", i))
+	}
+	missingJSON, err := json.Marshal(missing)
+	require.NoError(t, err)
+
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid conflict diagnosis",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs conflict",
+			"statement":"",
+			"confidence":0.2,
+			"evidence_ids":["evidence-1"]
+		},
+		"missing_evidence":%s
+	}`, string(missingJSON))
 
 	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp.JobID,
