@@ -2,15 +2,15 @@ package biz
 
 import (
 	"github.com/google/wire"
-	aijobv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/ai_job"
-	alerteventv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/alert_event"
-	datasourcev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/datasource"
-	evidencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/evidence"
-	incidentv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/incident"
-	noticev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/notice"
-	silencev1 "zk8s.com/rca-api/internal/apiserver/biz/v1/silence"
+	aijobv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	alerteventv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alert_event"
+	datasourcev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/datasource"
+	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
+	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
+	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
+	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
 
-	"zk8s.com/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
 // ProviderSet declares dependency injection rules for the business logic layer.

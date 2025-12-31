@@ -12,11 +12,11 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
-	incidentv1 "zk8s.com/rca-api/internal/apiserver/biz/v1/incident"
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 func TestAlertEventBiz_P0Policies(t *testing.T) {

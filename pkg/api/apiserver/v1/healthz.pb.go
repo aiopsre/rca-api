@@ -148,7 +148,7 @@ const file_apiserver_v1_healthz_proto_rawDesc = "" +
 	"\amessage\x18\x03 \x01(\tR\amessage*+\n" +
 	"\rServiceStatus\x12\v\n" +
 	"\aHealthy\x10\x00\x12\r\n" +
-	"\tUnhealthy\x10\x01B*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\tUnhealthy\x10\x01B4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_healthz_proto_rawDescOnce sync.Once

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"zk8s.com/rca-api/cmd/rca-apiserver/app"
+	"github.com/aiopsre/rca-api/cmd/rca-apiserver/app"
 )
 
 // The default entry point of a Go program. Serves as the starting point

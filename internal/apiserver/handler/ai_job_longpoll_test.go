@@ -17,10 +17,10 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/apiserver/biz"
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/validation"
-	"zk8s.com/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/apiserver/biz"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
 func TestListAIJobs_LongPollTimeoutReturnsEmpty(t *testing.T) {

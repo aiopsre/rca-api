@@ -1,4 +1,4 @@
-module zk8s.com/rca-api
+module github.com/aiopsre/rca-api
 
 go 1.25.6
 

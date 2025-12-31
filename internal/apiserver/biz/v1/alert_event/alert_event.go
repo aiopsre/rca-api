@@ -1,7 +1,7 @@
 //nolint:gocognit,gocyclo,nestif,nilerr,nilnil,protogetter,modernize,whitespace
 package alert_event
 
-//go:generate mockgen -destination mock_alert_event.go -package alert_event zk8s.com/rca-api/internal/apiserver/biz/v1/alert_event AlertEventBiz
+//go:generate mockgen -destination mock_alert_event.go -package alert_event github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alert_event AlertEventBiz
 
 import (
 	"context"
@@ -18,17 +18,17 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
-	"zk8s.com/rca-api/internal/apiserver/pkg/silenceutil"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/contextx"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/silenceutil"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 const (

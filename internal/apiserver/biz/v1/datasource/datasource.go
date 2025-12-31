@@ -1,6 +1,6 @@
 package datasource
 
-//go:generate mockgen -destination mock_datasource.go -package datasource zk8s.com/rca-api/internal/apiserver/biz/v1/datasource DatasourceBiz
+//go:generate mockgen -destination mock_datasource.go -package datasource github.com/aiopsre/rca-api/internal/apiserver/biz/v1/datasource DatasourceBiz
 
 import (
 	"context"
@@ -10,12 +10,12 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 // DatasourceBiz defines datasource domain use-cases.

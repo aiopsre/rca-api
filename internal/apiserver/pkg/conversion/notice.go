@@ -7,8 +7,8 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 // NoticeChannelMToNoticeChannelV1 converts model notice channel to API notice channel.

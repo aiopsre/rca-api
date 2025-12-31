@@ -4,7 +4,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 
-	"zk8s.com/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 )
 
 func (h *Handler) CreateDatasource(c *gin.Context) {

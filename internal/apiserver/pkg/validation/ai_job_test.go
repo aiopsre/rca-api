@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 func TestValidateRunAIJobRequest_InvalidTrigger(t *testing.T) {

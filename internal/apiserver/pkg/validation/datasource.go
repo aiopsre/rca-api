@@ -8,7 +8,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	genericvalidation "github.com/onexstack/onexstack/pkg/validation"
 
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const (

@@ -3,7 +3,7 @@ package rid_test
 import (
 	"fmt"
 
-	"zk8s.com/rca-api/internal/pkg/rid"
+	"github.com/aiopsre/rca-api/internal/pkg/rid"
 )
 
 func ExampleResourceID_String() {

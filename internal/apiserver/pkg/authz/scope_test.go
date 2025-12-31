@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
-	"zk8s.com/rca-api/internal/pkg/errno"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
 func TestRequireAnyScope_AllowsAIRead(t *testing.T) {

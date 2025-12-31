@@ -1032,7 +1032,7 @@ const file_apiserver_v1_evidence_proto_rawDesc = "" +
 	"\n" +
 	"totalCount\x18\x01 \x01(\x03R\n" +
 	"totalCount\x122\n" +
-	"\bevidence\x18\x02 \x03(\v2\x16.apiserver.v1.EvidenceR\bevidenceB*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\bevidence\x18\x02 \x03(\v2\x16.apiserver.v1.EvidenceR\bevidenceB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_evidence_proto_rawDescOnce sync.Once

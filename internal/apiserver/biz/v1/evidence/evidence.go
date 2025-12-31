@@ -1,6 +1,6 @@
 package evidence
 
-//go:generate mockgen -destination mock_evidence.go -package evidence zk8s.com/rca-api/internal/apiserver/biz/v1/evidence EvidenceBiz
+//go:generate mockgen -destination mock_evidence.go -package evidence github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence EvidenceBiz
 
 import (
 	"context"
@@ -18,16 +18,16 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/clients"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	"zk8s.com/rca-api/internal/apiserver/pkg/policy"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/contextx"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/clients"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 const (

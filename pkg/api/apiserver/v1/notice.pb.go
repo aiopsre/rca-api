@@ -1963,7 +1963,7 @@ const file_apiserver_v1_notice_proto_rawDesc = "" +
 	"\x11NoticePayloadMode\x12#\n" +
 	"\x1fNOTICE_PAYLOAD_MODE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bNOTICE_PAYLOAD_MODE_COMPACT\x10\x01\x12\x1c\n" +
-	"\x18NOTICE_PAYLOAD_MODE_FULL\x10\x02B*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\x18NOTICE_PAYLOAD_MODE_FULL\x10\x02B4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_notice_proto_rawDescOnce sync.Once

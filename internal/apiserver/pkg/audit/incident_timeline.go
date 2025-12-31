@@ -9,7 +9,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 )
 
 // AppendIncidentTimelineIfExists writes one incident timeline event only when table/columns are present.

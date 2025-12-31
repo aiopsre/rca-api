@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
 )
 
 type payloadTemplateConfig struct {

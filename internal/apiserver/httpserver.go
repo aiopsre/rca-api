@@ -13,8 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
-	"zk8s.com/rca-api/internal/pkg/errno"
-	mw "zk8s.com/rca-api/internal/pkg/middleware/gin"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	mw "github.com/aiopsre/rca-api/internal/pkg/middleware/gin"
 )
 
 // ginServer implements the server.Server interface using the Gin framework.

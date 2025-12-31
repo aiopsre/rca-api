@@ -229,7 +229,7 @@ const file_apiserver_v1_example_proto_rawDesc = "" +
 	"\x06Active\x10\x00\x12\f\n" +
 	"\bInactive\x10\x01\x12\n" +
 	"\n" +
-	"\x06Banned\x10\x02B*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\x06Banned\x10\x02B4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_example_proto_rawDescOnce sync.Once

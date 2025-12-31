@@ -7,10 +7,10 @@ import (
 	"context"
 
 	"github.com/google/wire"
-	"zk8s.com/rca-api/internal/apiserver/biz"
-	"zk8s.com/rca-api/internal/apiserver/handler"
-	"zk8s.com/rca-api/internal/apiserver/pkg/validation"
-	"zk8s.com/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/apiserver/biz"
+	"github.com/aiopsre/rca-api/internal/apiserver/handler"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
 // infrastructureSet groups all infrastructure-related providers.

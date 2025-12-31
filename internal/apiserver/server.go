@@ -9,9 +9,9 @@ import (
 	"github.com/onexstack/onexstack/pkg/server"
 	"github.com/onexstack/onexstack/pkg/store/registry"
 	"gorm.io/gorm"
-	"zk8s.com/rca-api/internal/apiserver/handler"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/handler"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 )
 
 const serviceName = "rca-apiserver"

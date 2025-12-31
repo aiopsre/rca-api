@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	"zk8s.com/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
 // DispatchRequest describes one notice event to enqueue.

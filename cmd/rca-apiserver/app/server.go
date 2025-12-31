@@ -12,10 +12,10 @@ import (
 	"github.com/spf13/viper"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 
-	"zk8s.com/rca-api/cmd/rca-apiserver/app/options"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
-	"zk8s.com/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/cmd/rca-apiserver/app/options"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
 const (

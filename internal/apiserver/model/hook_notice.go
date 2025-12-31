@@ -5,7 +5,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/store/registry"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/pkg/rid"
+	"github.com/aiopsre/rca-api/internal/pkg/rid"
 )
 
 // AfterCreate generates notice channel business ID.

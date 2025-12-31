@@ -4,8 +4,8 @@ package store
 import (
 	"context"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 //nolint:interfacebloat // Store interface follows repo pattern (CRUD + list + expansion).

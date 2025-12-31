@@ -8,7 +8,7 @@ PROJ_ROOT_DIR := $(strip $(abspath $(shell cd $(COMMON_SELF_DIR)/ && pwd -P)))
 OUTPUT_DIR := $(PROJ_ROOT_DIR)/_output
 # Path to Protobuf files
 APIROOT=$(PROJ_ROOT_DIR)/pkg/api
-ROOT_PACKAGE=zk8s.com/rca-api
+ROOT_PACKAGE=github.com/aiopsre/rca-api
 DOCKERFILE_DIR=$(PROJ_ROOT_DIR)/build/docker
 REGISTRY_PREFIX ?= hub.17ker.top/rca
 CGO_ENABLED ?= 0

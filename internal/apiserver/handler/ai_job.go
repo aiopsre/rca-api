@@ -11,9 +11,9 @@ import (
 	"github.com/onexstack/onexstack/pkg/core"
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
-	"zk8s.com/rca-api/internal/apiserver/pkg/authz"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 func (h *Handler) RunIncidentAIJob(c *gin.Context) {

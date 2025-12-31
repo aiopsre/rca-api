@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"gorm.io/gorm"
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 // WorkerOptions contains notice-worker runtime options.

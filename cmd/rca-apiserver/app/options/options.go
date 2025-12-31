@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/pflag"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 
-	"zk8s.com/rca-api/internal/apiserver"
+	"github.com/aiopsre/rca-api/internal/apiserver"
 )
 
 var (

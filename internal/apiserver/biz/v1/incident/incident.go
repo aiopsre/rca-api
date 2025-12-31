@@ -1,6 +1,6 @@
 package incident
 
-//go:generate mockgen -destination mock_incident.go -package incident zk8s.com/rca-api/internal/apiserver/biz/v1/incident IncidentBiz
+//go:generate mockgen -destination mock_incident.go -package incident github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident IncidentBiz
 
 import (
 	"context"
@@ -9,13 +9,13 @@ import (
 
 	"github.com/jinzhu/copier"
 	"gorm.io/gorm/clause"
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/contextx"
-	apiv1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	apiv1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 // IncidentBiz 定义 incident 相关业务能力（先最小：Create）

@@ -1138,7 +1138,7 @@ const file_apiserver_v1_incident_proto_rawDesc = "" +
 	"\x14ListIncidentResponse\x12\x1f\n" +
 	"\vtotal_count\x18\x01 \x01(\x03R\n" +
 	"totalCount\x124\n" +
-	"\tincidents\x18\x02 \x03(\v2\x16.apiserver.v1.IncidentR\tincidentsB*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\tincidents\x18\x02 \x03(\v2\x16.apiserver.v1.IncidentR\tincidentsB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_incident_proto_rawDescOnce sync.Once

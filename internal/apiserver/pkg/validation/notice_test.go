@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 func TestValidateCreateNoticeChannelRequest_Guardrails(t *testing.T) {

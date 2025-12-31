@@ -180,8 +180,6 @@ $ RUN_E2E=1 SCOPES='*' RUN_QUERY=0 BASE_URL='http://127.0.0.1:5555' ./scripts/ci
 $ SCOPES='*' BASE_URL='http://127.0.0.1:5555' ./scripts/ci_nightly_gate.sh
 ```
 
-测试稳定性与隔离约定见：`docs/devel/zh-CN/附录T1_测试稳定性与隔离约定.md`。
-
 ## Versioning
 
 本项目遵循 [语义版本控制](https://semver.org/lang/zh-CN/) 规范。
@@ -200,8 +198,8 @@ $ SCOPES='*' BASE_URL='http://127.0.0.1:5555' ./scripts/ci_nightly_gate.sh
 感谢所有为本项目做出贡献的开发者们！
 
 <!-- 这里会自动显示贡献者头像 -->
-<a href="zk8s.com/rca-api/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=zk8s.com/rca-api" />
+<a href="github.com/aiopsre/rca-api/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=github.com/aiopsre/rca-api" />
 </a>
 
 *贡献者列表由 [contrib.rocks](https://contrib.rocks) 生成*
@@ -241,13 +239,8 @@ rca-api/
 ### 相关链接
 
 - [项目文档](docs/)
-- [问题追踪](zk8s.com/rca-api/issues)
-- [讨论区](zk8s.com/rca-api/discussions)
-- [项目看板](zk8s.com/rca-api/projects)
-- [发布页面](zk8s.com/rca-api/releases)
+- [问题追踪](github.com/aiopsre/rca-api/issues)
+- [讨论区](github.com/aiopsre/rca-api/discussions)
+- [项目看板](github.com/aiopsre/rca-api/projects)
+- [发布页面](github.com/aiopsre/rca-api/releases)
 
-### 支持
-
-如果这个项目对您有帮助，请考虑给我们一个 ⭐️ 来支持项目发展！
-
-[![Star History Chart](https://api.star-history.com/svg?repos=zk8s.com/rca-api&type=Date)](https://star-history.com/#zk8s.com/rca-api&Date)

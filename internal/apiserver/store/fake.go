@@ -11,7 +11,7 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/store/where"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
 )
 
 var (

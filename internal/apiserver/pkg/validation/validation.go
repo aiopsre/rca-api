@@ -3,7 +3,7 @@ package validation
 import (
 	"github.com/google/wire"
 
-	"zk8s.com/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
 // Validator handles custom business validation logic.

@@ -5,7 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zk8s.com/rca-api/internal/pkg/errno"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
 const (

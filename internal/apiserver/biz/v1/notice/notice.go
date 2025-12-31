@@ -1,6 +1,6 @@
 package notice
 
-//go:generate mockgen -destination mock_notice.go -package notice zk8s.com/rca-api/internal/apiserver/biz/v1/notice NoticeBiz
+//go:generate mockgen -destination mock_notice.go -package notice github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice NoticeBiz
 
 import (
 	"context"
@@ -11,15 +11,15 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/contextx"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 const (

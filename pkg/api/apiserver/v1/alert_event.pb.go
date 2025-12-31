@@ -1257,7 +1257,7 @@ const file_apiserver_v1_alert_event_proto_rawDesc = "" +
 	"incidentID\x88\x01\x01\x124\n" +
 	"\aackedAt\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\aackedAt\x12\x18\n" +
 	"\aackedBy\x18\x04 \x01(\tR\aackedByB\r\n" +
-	"\v_incidentIDB*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\v_incidentIDB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_alert_event_proto_rawDescOnce sync.Once

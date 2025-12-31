@@ -7,7 +7,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/core"
 	"go.opentelemetry.io/otel"
 
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 )
 
 // CreateIncident handles the HTTP request to create a new incident.

@@ -7,8 +7,8 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
-	noticepkg "zk8s.com/rca-api/internal/apiserver/pkg/notice"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const (

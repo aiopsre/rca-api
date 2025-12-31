@@ -3,8 +3,8 @@ package store
 import (
 	"context"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 type AIToolCallStore interface {

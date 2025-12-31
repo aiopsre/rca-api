@@ -831,7 +831,7 @@ const file_apiserver_v1_silence_proto_rawDesc = "" +
 	"\x14PatchSilenceResponse\"4\n" +
 	"\x14DeleteSilenceRequest\x12\x1c\n" +
 	"\tsilenceID\x18\x01 \x01(\tR\tsilenceID\"\x17\n" +
-	"\x15DeleteSilenceResponseB*Z(zk8s.com/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\x15DeleteSilenceResponseB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_silence_proto_rawDescOnce sync.Once

@@ -5,9 +5,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zk8s.com/rca-api/internal/apiserver/biz"
-	"zk8s.com/rca-api/internal/apiserver/pkg/queue"
-	"zk8s.com/rca-api/internal/apiserver/pkg/validation"
+	"github.com/aiopsre/rca-api/internal/apiserver/biz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
 )
 
 // Handler manages the business logic for API requests and event processing.
