@@ -5,13 +5,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/aiopsre/rca-api/internal/apiserver/handler"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	genericoptions "github.com/onexstack/onexstack/pkg/options"
 	"github.com/onexstack/onexstack/pkg/server"
 	"github.com/onexstack/onexstack/pkg/store/registry"
 	"gorm.io/gorm"
-	"github.com/aiopsre/rca-api/internal/apiserver/handler"
-	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
-	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 )
 
 const serviceName = "rca-apiserver"
@@ -26,6 +27,7 @@ type Config struct {
 	HTTPOptions   *genericoptions.HTTPOptions
 	MySQLOptions  *genericoptions.MySQLOptions
 	NoticeBaseURL string
+	MCPPolicy     policy.MCPPolicyConfig
 }
 
 // Server represents the web server and its background workers.
@@ -51,6 +53,9 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	s, err := NewServer(ctx, cfg)
 	if err != nil {
 		return nil, err
+	}
+	if s != nil && s.cfg != nil && s.cfg.Handler != nil {
+		s.cfg.Handler.ConfigureMCPPolicy(cfg.MCPPolicy)
 	}
 
 	return s.Prepare(ctx)

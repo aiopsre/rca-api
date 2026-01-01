@@ -42,3 +42,20 @@ coredb:
   max-connection-life-time: 10s # 单个数据库连接的最大存活时间，超过这个时间，连接会被关闭并重建
   max-idle-connections: 100 # 连接池中允许空闲连接的最大数量
   max-open-connections: 100 # 连接池中允许同时打开的最大连接数（包括正在用的和空闲的）
+
+# MCP 治理策略（C5）：按 tool 维度覆盖 enabled/riskLevel/limits
+# mcp:
+#   tools:
+#     search_incidents:
+#       enabled: true
+#       riskLevel: readonly
+#       limits:
+#         maxLimit: 100
+#         maxTimeRangeSeconds: 86400
+#         maxResponseBytes: 8192
+
+mcp:
+  tools:
+    query_logs:
+      enabled: false
+      riskLevel: readonly

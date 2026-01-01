@@ -15,6 +15,7 @@ type Handler struct {
 	biz              biz.IBiz
 	val              *validation.Validator
 	jobQueueNotifier *queue.Notifier
+	mcpPolicies      mcpPolicyRegistry
 }
 
 // Registrar defines a function signature for registering HTTP routes.
@@ -28,6 +29,7 @@ func NewHandler(biz biz.IBiz, val *validation.Validator) *Handler {
 		biz:              biz,
 		val:              val,
 		jobQueueNotifier: queue.NewNotifier(),
+		mcpPolicies:      newMCPPolicyRegistry(),
 	}
 }
 

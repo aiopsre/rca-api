@@ -2,9 +2,12 @@ package metrics
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -28,6 +31,11 @@ type Metrics struct {
 	NoticeDeliverySnapshotMismatchTotal metric.Int64Counter
 	NoticeDeliveryReplayTotal           metric.Int64Counter
 	NoticeDeliveryCancelTotal           metric.Int64Counter
+	MCPCallsTotal                       *prometheus.CounterVec
+	MCPCallLatencyMS                    *prometheus.HistogramVec
+	MCPTruncatedTotal                   *prometheus.CounterVec
+	MCPScopeDeniedTotal                 *prometheus.CounterVec
+	MCPRateLimitedTotal                 *prometheus.CounterVec
 }
 
 var (
@@ -118,6 +126,33 @@ func Init(scope string) error {
 			metric.WithDescription("Total number of notice delivery cancel operations"),
 		)
 
+		mcpCallsTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_calls_total",
+			Help: "Total MCP tool calls by tool/error_code.",
+		}, []string{"tool", "code"})
+
+		//nolint:promlinter // Name is fixed by MCP C5 contract.
+		mcpCallLatencyMS := promauto.With(prometheus.DefaultRegisterer).NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "mcp_call_latency_ms",
+			Help:    "MCP tool call latency in milliseconds by tool.",
+			Buckets: []float64{5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000},
+		}, []string{"tool"})
+
+		mcpTruncatedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_truncated_total",
+			Help: "Total truncated MCP responses by tool.",
+		}, []string{"tool"})
+
+		mcpScopeDeniedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_scope_denied_total",
+			Help: "Total MCP scope denied errors by tool.",
+		}, []string{"tool"})
+
+		mcpRateLimitedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_rate_limited_total",
+			Help: "Total MCP rate-limited errors by tool.",
+		}, []string{"tool"})
+
 		// Assign the global singleton.
 		M = &Metrics{
 			Meter:                               meter,
@@ -136,7 +171,19 @@ func Init(scope string) error {
 			NoticeDeliverySnapshotMismatchTotal: noticeSnapshotMismatchTotal,
 			NoticeDeliveryReplayTotal:           noticeReplayTotal,
 			NoticeDeliveryCancelTotal:           noticeCancelTotal,
+			MCPCallsTotal:                       mcpCallsTotal,
+			MCPCallLatencyMS:                    mcpCallLatencyMS,
+			MCPTruncatedTotal:                   mcpTruncatedTotal,
+			MCPScopeDeniedTotal:                 mcpScopeDeniedTotal,
+			MCPRateLimitedTotal:                 mcpRateLimitedTotal,
 		}
+
+		// Pre-create baseline series so /metrics always exposes MCP metric families.
+		mcpCallsTotal.WithLabelValues("unknown", "OK").Add(0)
+		mcpCallLatencyMS.WithLabelValues("unknown").Observe(0)
+		mcpTruncatedTotal.WithLabelValues("unknown").Add(0)
+		mcpScopeDeniedTotal.WithLabelValues("unknown").Add(0)
+		mcpRateLimitedTotal.WithLabelValues("unknown").Add(0)
 	})
 
 	return nil
@@ -272,4 +319,58 @@ func (m *Metrics) RecordNoticeDeliveryCancel(ctx context.Context, status string)
 		attribute.String("status", status),
 	}
 	m.NoticeDeliveryCancelTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordMCPToolCall records MCP call totals grouped by tool and MCP error code.
+func (m *Metrics) RecordMCPToolCall(_ context.Context, tool string, code string) {
+	if m == nil || m.MCPCallsTotal == nil {
+		return
+	}
+	m.MCPCallsTotal.WithLabelValues(normalizeMCPToolLabel(tool), normalizeMCPCodeLabel(code)).Inc()
+}
+
+// RecordMCPToolLatency records MCP call latency histogram by tool.
+func (m *Metrics) RecordMCPToolLatency(_ context.Context, tool string, duration time.Duration) {
+	if m == nil || m.MCPCallLatencyMS == nil {
+		return
+	}
+	m.MCPCallLatencyMS.WithLabelValues(normalizeMCPToolLabel(tool)).Observe(float64(duration.Milliseconds()))
+}
+
+// RecordMCPTruncated records one truncated MCP response event.
+func (m *Metrics) RecordMCPTruncated(_ context.Context, tool string) {
+	if m == nil || m.MCPTruncatedTotal == nil {
+		return
+	}
+	m.MCPTruncatedTotal.WithLabelValues(normalizeMCPToolLabel(tool)).Inc()
+}
+
+// RecordMCPScopeDenied records one MCP scope-denied event.
+func (m *Metrics) RecordMCPScopeDenied(_ context.Context, tool string) {
+	if m == nil || m.MCPScopeDeniedTotal == nil {
+		return
+	}
+	m.MCPScopeDeniedTotal.WithLabelValues(normalizeMCPToolLabel(tool)).Inc()
+}
+
+// RecordMCPRateLimited records one MCP rate-limited event.
+func (m *Metrics) RecordMCPRateLimited(_ context.Context, tool string) {
+	if m == nil || m.MCPRateLimitedTotal == nil {
+		return
+	}
+	m.MCPRateLimitedTotal.WithLabelValues(normalizeMCPToolLabel(tool)).Inc()
+}
+
+func normalizeMCPToolLabel(tool string) string {
+	if normalized := strings.ToLower(strings.TrimSpace(tool)); normalized != "" {
+		return normalized
+	}
+	return "unknown"
+}
+
+func normalizeMCPCodeLabel(code string) string {
+	if normalized := strings.ToUpper(strings.TrimSpace(code)); normalized != "" {
+		return normalized
+	}
+	return "OK"
 }

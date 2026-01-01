@@ -737,3 +737,44 @@ python -m orchestrator.main
   * 每次调用写 ToolCall 审计（tool_name=mcp.*）
 * 新增回归脚本 `scripts/test_c4_L1_mcp_advanced_views.sh` 覆盖 allow/deny/截断/审计并通过；
 * `make test` 与 `make lint-new` 均通过。
+
+---
+
+## C5 MCP Governance + Isolation + Observability（Done Definition）
+
+* 为 MCP tools 引入 Tool Policy：
+
+  * enable/disable
+  * per-tool limits（max_limit/max_time_range_seconds/max_response_bytes）
+  * `/v1/mcp/tools` 返回 metadata 中包含 `policy`
+  * 调用时强制 enforcement（disabled -> 拒绝；超限 -> INVALID_ARGUMENT；response bytes -> 截断）
+* 引入 Isolation headers：
+
+  * `X-Allowed-Namespaces`、`X-Allowed-Services`
+  * 对所有相关 tools 强制资源范围隔离（不满足 -> 403 + SCOPE_DENIED；list/search 结果过滤）
+* 增加 MCP 指标：
+
+  * `mcp_calls_total{tool,code}`
+  * `mcp_call_latency_ms{tool}`
+  * `mcp_truncated_total{tool}`
+  * `mcp_scope_denied_total{tool}`
+  * `mcp_rate_limited_total{tool}`
+* 新增回归脚本 `scripts/test_c5_L1_mcp_policy_isolation_metrics.sh` 覆盖 policy/隔离/指标/审计并通过；
+* `make test` 与 `make lint-new` 均通过。
+
+### C5 实现更新（2026-02-10）
+
+* 已在 `GET /v1/mcp/tools` 的 `metadata.policy` 返回 per-tool `enabled/risk_level/limits`；
+* 已在 `POST /v1/mcp/tools/call` 增加 policy enforcement：
+  * disabled -> `403 + SCOPE_DENIED`
+  * `limit` 超限 -> `400 + INVALID_ARGUMENT`
+  * 时间窗超限 -> `400 + INVALID_ARGUMENT`
+  * 响应按 `min(16KB, policy.max_response_bytes)` 截断并返回 `TRUNCATED_OUTPUT`
+* 已增加隔离头 `X-Allowed-Namespaces` / `X-Allowed-Services`：
+  * get 类越界拒绝，list/search 结果过滤（并对显式越界输入拒绝）；
+* 已在 MCP handler 统一导出 Prometheus 指标：
+  * `mcp_calls_total{tool,code}`
+  * `mcp_call_latency_ms{tool}`
+  * `mcp_truncated_total{tool}`
+  * `mcp_scope_denied_total{tool}`
+  * `mcp_rate_limited_total{tool}`

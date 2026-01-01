@@ -19,6 +19,8 @@ import (
 	incidentbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	noticebiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
@@ -42,6 +44,11 @@ const (
 	mcpPreviewBytes          = 1024
 	mcpMinimumPreviewBytes   = 64
 	mcpMaxJSONPreviewRetries = 8
+	mcpRiskLevelReadonly     = "readonly"
+	mcpMetricCodeOK          = "OK"
+
+	mcpHeaderAllowedNamespaces = "X-Allowed-Namespaces"
+	mcpHeaderAllowedServices   = "X-Allowed-Services"
 )
 
 var mcpToolCallSeq atomic.Int64
@@ -64,6 +71,40 @@ type mcpToolDefinition struct {
 	OutputSchema   map[string]any
 	Execute        func(h *Handler, c *gin.Context, input map[string]any) (any, bool, error)
 }
+
+type mcpResolvedToolPolicy struct {
+	Enabled   bool
+	RiskLevel string
+	Limits    mcpResolvedToolPolicyLimits
+}
+
+type mcpResolvedToolPolicyLimits struct {
+	MaxLimit            int64
+	MaxTimeRangeSeconds int64
+	MaxResponseBytes    int
+}
+
+type mcpPolicyRegistry struct {
+	byTool map[string]mcpResolvedToolPolicy
+}
+
+type mcpIsolationConstraints struct {
+	allowedNamespaces map[string]struct{}
+	allowedServices   map[string]struct{}
+}
+
+type mcpIsolationFieldRule struct {
+	Namespace bool
+	Service   bool
+}
+
+type mcpIsolationMode int
+
+const (
+	mcpIsolationModeNone mcpIsolationMode = iota
+	mcpIsolationModeGet
+	mcpIsolationModeList
+)
 
 type mcpToolCallRequest struct {
 	Tool           string         `json:"tool"`
@@ -544,15 +585,158 @@ var mcpScopeAliases = map[string][]string{
 	authz.ScopeToolCallRead:   {authz.ScopeAIRead},
 }
 
+var mcpIsolationModes = map[string]mcpIsolationMode{
+	"get_incident":              mcpIsolationModeGet,
+	"get_incident_timeline":     mcpIsolationModeGet,
+	"list_incidents":            mcpIsolationModeList,
+	"search_incidents":          mcpIsolationModeList,
+	"list_alert_events_current": mcpIsolationModeList,
+	"list_alert_events_history": mcpIsolationModeList,
+	"list_silences":             mcpIsolationModeList,
+}
+
+var mcpIsolationOutputCollections = map[string]string{
+	"list_incidents":            "incidents",
+	"search_incidents":          "incidents",
+	"list_alert_events_current": "events",
+	"list_alert_events_history": "events",
+	"list_silences":             "silences",
+}
+
+var mcpIsolationFieldRules = map[string]mcpIsolationFieldRule{
+	"get_incident":              {Namespace: true, Service: true},
+	"get_incident_timeline":     {Namespace: true, Service: true},
+	"list_incidents":            {Namespace: true, Service: true},
+	"search_incidents":          {Namespace: true, Service: true},
+	"list_alert_events_current": {Namespace: true, Service: true},
+	"list_alert_events_history": {Namespace: true, Service: true},
+	"list_silences":             {Namespace: true, Service: false},
+}
+
+func newMCPPolicyRegistry() mcpPolicyRegistry {
+	return buildMCPPolicyRegistry(policy.MCPPolicyConfig{})
+}
+
+func buildMCPPolicyRegistry(cfg policy.MCPPolicyConfig) mcpPolicyRegistry {
+	byTool := make(map[string]mcpResolvedToolPolicy, len(mcpReadonlyTools))
+	for _, tool := range mcpReadonlyTools {
+		p := mcpResolvedToolPolicy{
+			Enabled:   true,
+			RiskLevel: mcpRiskLevelReadonly,
+			Limits: mcpResolvedToolPolicyLimits{
+				MaxResponseBytes: mcpMaxResponseBytes,
+			},
+		}
+		if mcpToolSupportsLimit(tool) {
+			p.Limits.MaxLimit = mcpMaxPageLimit
+		}
+		p.Limits.MaxTimeRangeSeconds = int64(mcpMaxSearchTimeRange / time.Second)
+		byTool[tool.Name] = p
+	}
+
+	for rawName, override := range cfg.Tools {
+		name := strings.ToLower(strings.TrimSpace(rawName))
+		p, ok := byTool[name]
+		if !ok {
+			continue
+		}
+		p = applyMCPPolicyOverride(p, override)
+		byTool[name] = p
+	}
+	return mcpPolicyRegistry{byTool: byTool}
+}
+
+func applyMCPPolicyOverride(base mcpResolvedToolPolicy, override policy.MCPToolPolicy) mcpResolvedToolPolicy {
+	out := base
+	if override.Enabled != nil {
+		out.Enabled = *override.Enabled
+	}
+	if riskLevel := strings.ToLower(strings.TrimSpace(override.RiskLevel)); riskLevel != "" {
+		out.RiskLevel = riskLevel
+	}
+	if override.Limits.MaxLimit != nil {
+		out.Limits.MaxLimit = max(*override.Limits.MaxLimit, 0)
+	}
+	if override.Limits.MaxTimeRangeSeconds != nil {
+		out.Limits.MaxTimeRangeSeconds = max(*override.Limits.MaxTimeRangeSeconds, 0)
+	}
+	if override.Limits.MaxResponseBytes != nil {
+		out.Limits.MaxResponseBytes = max(*override.Limits.MaxResponseBytes, 0)
+	}
+	if out.Limits.MaxResponseBytes == 0 {
+		out.Limits.MaxResponseBytes = mcpMaxResponseBytes
+	}
+	return out
+}
+
+func mcpToolSupportsLimit(tool mcpToolDefinition) bool {
+	properties, ok := tool.InputSchema["properties"].(map[string]any)
+	if !ok {
+		return false
+	}
+	_, ok = properties["limit"]
+	return ok
+}
+
+func (r mcpPolicyRegistry) resolve(tool string) mcpResolvedToolPolicy {
+	name := strings.ToLower(strings.TrimSpace(tool))
+	if r.byTool != nil {
+		if resolved, ok := r.byTool[name]; ok {
+			return resolved
+		}
+	}
+	return mcpResolvedToolPolicy{
+		Enabled:   true,
+		RiskLevel: mcpRiskLevelReadonly,
+		Limits: mcpResolvedToolPolicyLimits{
+			MaxResponseBytes:    mcpMaxResponseBytes,
+			MaxTimeRangeSeconds: int64(mcpMaxSearchTimeRange / time.Second),
+		},
+	}
+}
+
+func (h *Handler) ConfigureMCPPolicy(cfg policy.MCPPolicyConfig) {
+	h.mcpPolicies = buildMCPPolicyRegistry(cfg)
+}
+
+func (p mcpResolvedToolPolicy) effectiveMaxResponseBytes() int {
+	maxBytes := mcpMaxResponseBytes
+	if p.Limits.MaxResponseBytes > 0 && p.Limits.MaxResponseBytes < maxBytes {
+		maxBytes = p.Limits.MaxResponseBytes
+	}
+	return maxBytes
+}
+
+func (p mcpResolvedToolPolicy) toMetadata() map[string]any {
+	limits := map[string]any{
+		"max_response_bytes": p.effectiveMaxResponseBytes(),
+	}
+	if p.Limits.MaxLimit > 0 {
+		limits["max_limit"] = p.Limits.MaxLimit
+	}
+	if p.Limits.MaxTimeRangeSeconds > 0 {
+		limits["max_time_range_seconds"] = p.Limits.MaxTimeRangeSeconds
+	}
+	return map[string]any{
+		"enabled":    p.Enabled,
+		"risk_level": p.RiskLevel,
+		"limits":     limits,
+	}
+}
+
 func (h *Handler) ListMCPTools(c *gin.Context) {
 	items := make([]map[string]any, 0, len(mcpReadonlyTools))
 	for _, tool := range mcpReadonlyTools {
+		toolPolicy := h.mcpPolicies.resolve(tool.Name)
 		items = append(items, map[string]any{
 			"name":            tool.Name,
 			"description":     tool.Description,
 			"input_schema":    tool.InputSchema,
 			"output_schema":   tool.OutputSchema,
 			"required_scopes": tool.RequiredScopes,
+			"metadata": map[string]any{
+				"policy": toolPolicy.toMetadata(),
+			},
 		})
 	}
 	c.JSON(http.StatusOK, map[string]any{
@@ -561,6 +745,7 @@ func (h *Handler) ListMCPTools(c *gin.Context) {
 	})
 }
 
+//nolint:gocognit,gocyclo // MCP call path keeps guardrails/isolation/audit flow explicit.
 func (h *Handler) CallMCPTool(c *gin.Context) {
 	startedAt := time.Now()
 
@@ -589,11 +774,34 @@ func (h *Handler) CallMCPTool(c *gin.Context) {
 		return
 	}
 
+	toolPolicy := h.mcpPolicies.resolve(req.Tool)
+	if !toolPolicy.Enabled {
+		h.writeMCPCallFailure(c, req.Tool, req.Input, req.IdempotencyKey, startedAt, mcpScopeDeniedError("mcp tool disabled by policy"))
+		return
+	}
+	if err := validateMCPToolPolicyInput(req.Input, toolPolicy); err != nil {
+		h.writeMCPCallFailure(c, req.Tool, req.Input, req.IdempotencyKey, startedAt, err)
+		return
+	}
+
+	isolation := parseMCPIsolationConstraints(c)
+	if err := validateMCPIsolationInput(req.Tool, req.Input, isolation); err != nil {
+		h.writeMCPCallFailure(c, req.Tool, req.Input, req.IdempotencyKey, startedAt, err)
+		return
+	}
+
 	output, toolTruncated, err := tool.Execute(h, c, req.Input)
 	if err != nil {
 		h.writeMCPCallFailure(c, req.Tool, req.Input, req.IdempotencyKey, startedAt, err)
 		return
 	}
+
+	output, filteredTruncated, err := applyMCPIsolationOutput(req.Tool, output, isolation)
+	if err != nil {
+		h.writeMCPCallFailure(c, req.Tool, req.Input, req.IdempotencyKey, startedAt, err)
+		return
+	}
+	toolTruncated = toolTruncated || filteredTruncated
 
 	latencyMs := time.Since(startedAt).Milliseconds()
 	warnings := buildMCPWarnings(toolTruncated)
@@ -631,7 +839,16 @@ func (h *Handler) CallMCPTool(c *gin.Context) {
 		"latency_ms":   latencyMs,
 	}
 
-	c.Data(http.StatusOK, "application/json", finalizeMCPCallResponse(resp))
+	respBytes := finalizeMCPCallResponse(resp, toolPolicy.effectiveMaxResponseBytes())
+	finalTruncated, _ := resp["truncated"].(bool)
+	if metrics.M != nil {
+		metrics.M.RecordMCPToolCall(c.Request.Context(), req.Tool, mcpMetricCodeOK)
+		metrics.M.RecordMCPToolLatency(c.Request.Context(), req.Tool, time.Since(startedAt))
+		if finalTruncated || toolTruncated {
+			metrics.M.RecordMCPTruncated(c.Request.Context(), req.Tool)
+		}
+	}
+	c.Data(http.StatusOK, "application/json", respBytes)
 }
 
 func (h *Handler) writeMCPCallFailure(
@@ -643,7 +860,8 @@ func (h *Handler) writeMCPCallFailure(
 	callErr error,
 ) {
 
-	latencyMs := time.Since(startedAt).Milliseconds()
+	duration := time.Since(startedAt)
+	latencyMs := duration.Milliseconds()
 	statusCode, payload := mapMCPCallError(callErr, tool)
 	auditStatus := mcpAuditStatus(callErr)
 
@@ -661,6 +879,17 @@ func (h *Handler) writeMCPCallFailure(
 	)
 	if auditErr != nil {
 		statusCode, payload = mapMCPCallError(auditErr, tool)
+	}
+
+	if metrics.M != nil {
+		metrics.M.RecordMCPToolCall(c.Request.Context(), tool, string(payload.Error.Code))
+		metrics.M.RecordMCPToolLatency(c.Request.Context(), tool, duration)
+		if payload.Error.Code == MCPErrorCodeScopeDenied {
+			metrics.M.RecordMCPScopeDenied(c.Request.Context(), tool)
+		}
+		if payload.Error.Code == MCPErrorCodeRateLimited {
+			metrics.M.RecordMCPRateLimited(c.Request.Context(), tool)
+		}
 	}
 
 	c.JSON(statusCode, payload)
@@ -814,8 +1043,19 @@ func (h *Handler) mcpGetIncidentTimeline(c *gin.Context, input map[string]any) (
 	if err := h.val.ValidateGetIncidentRequest(c.Request.Context(), getReq); err != nil {
 		return nil, false, err
 	}
-	if _, err := h.biz.IncidentV1().Get(c.Request.Context(), getReq); err != nil {
+	getResp, err := h.biz.IncidentV1().Get(c.Request.Context(), getReq)
+	if err != nil {
 		return nil, false, err
+	}
+	if incident := getResp.GetIncident(); incident != nil {
+		if err := validateMCPIsolationResource(
+			parseMCPIsolationConstraints(c),
+			incident.GetNamespace(),
+			incident.GetService(),
+			mcpIsolationFieldRules["get_incident_timeline"],
+		); err != nil {
+			return nil, false, err
+		}
 	}
 
 	resp, err := h.biz.IncidentV1().ListTimeline(c.Request.Context(), &incidentbiz.ListIncidentTimelineRequest{
@@ -1741,9 +1981,232 @@ func mcpAuditStatus(err error) string {
 	return "error"
 }
 
-func finalizeMCPCallResponse(resp map[string]any) []byte {
+func mcpScopeDeniedError(message string) error {
+	return errorsx.New(http.StatusForbidden, "", "%s", strings.TrimSpace(message))
+}
+
+func validateMCPToolPolicyInput(input map[string]any, toolPolicy mcpResolvedToolPolicy) error {
+	if toolPolicy.Limits.MaxLimit > 0 {
+		if limit, has, err := readInputInt64(input, "limit"); err != nil {
+			return err
+		} else if has && limit > toolPolicy.Limits.MaxLimit {
+			return errorsx.ErrInvalidArgument
+		}
+	}
+
+	if toolPolicy.Limits.MaxTimeRangeSeconds <= 0 {
+		return nil
+	}
+
+	maxRange := time.Duration(toolPolicy.Limits.MaxTimeRangeSeconds) * time.Second
+	if err := validateInputTimeRange(input, maxRange, []string{"time_from", "timeFrom"}, []string{"time_to", "timeTo"}); err != nil {
+		return err
+	}
+	if err := validateInputTimeRange(input, maxRange, []string{"time_range_start", "timeRangeStart", "start"}, []string{"time_range_end", "timeRangeEnd", "end"}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateInputTimeRange(input map[string]any, maxRange time.Duration, fromKeys []string, toKeys []string) error {
+	if maxRange <= 0 {
+		return nil
+	}
+	from, hasFrom, err := readOptionalInputTime(input, fromKeys...)
+	if err != nil {
+		return err
+	}
+	to, hasTo, err := readOptionalInputTime(input, toKeys...)
+	if err != nil {
+		return err
+	}
+	if !hasFrom || !hasTo {
+		return nil
+	}
+	if from.After(to) {
+		return errorsx.ErrInvalidArgument
+	}
+	if to.Sub(from) > maxRange {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func parseMCPIsolationConstraints(c *gin.Context) mcpIsolationConstraints {
+	return mcpIsolationConstraints{
+		allowedNamespaces: parseMCPHeaderAllowSet(c.GetHeader(mcpHeaderAllowedNamespaces)),
+		allowedServices:   parseMCPHeaderAllowSet(c.GetHeader(mcpHeaderAllowedServices)),
+	}
+}
+
+func parseMCPHeaderAllowSet(raw string) map[string]struct{} {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	values := strings.Split(trimmed, ",")
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		key := strings.TrimSpace(value)
+		if key == "" {
+			continue
+		}
+		out[key] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (c mcpIsolationConstraints) enabled() bool {
+	return len(c.allowedNamespaces) > 0 || len(c.allowedServices) > 0
+}
+
+func validateMCPIsolationInput(tool string, input map[string]any, constraints mcpIsolationConstraints) error {
+	if !constraints.enabled() {
+		return nil
+	}
+	if mode := mcpIsolationModes[tool]; mode == mcpIsolationModeNone {
+		return nil
+	}
+	rule, ok := mcpIsolationFieldRules[tool]
+	if !ok {
+		return nil
+	}
+
+	namespace := ""
+	service := ""
+	if rule.Namespace {
+		namespace = readInputString(input, "namespace")
+	}
+	if rule.Service {
+		service = readInputString(input, "service")
+	}
+	if namespace == "" && service == "" {
+		return nil
+	}
+	return validateMCPIsolationResource(constraints, namespace, service, rule)
+}
+
+//nolint:gocognit // Namespace/service checks are kept explicit for governance auditability.
+func validateMCPIsolationResource(constraints mcpIsolationConstraints, namespace string, service string, rule mcpIsolationFieldRule) error {
+	if !constraints.enabled() {
+		return nil
+	}
+	if rule.Namespace && len(constraints.allowedNamespaces) > 0 {
+		if strings.TrimSpace(namespace) == "" {
+			return mcpScopeDeniedError("namespace is outside allowed scope")
+		}
+		if _, ok := constraints.allowedNamespaces[strings.TrimSpace(namespace)]; !ok {
+			return mcpScopeDeniedError("namespace is outside allowed scope")
+		}
+	}
+	if rule.Service && len(constraints.allowedServices) > 0 {
+		if strings.TrimSpace(service) == "" {
+			return mcpScopeDeniedError("service is outside allowed scope")
+		}
+		if _, ok := constraints.allowedServices[strings.TrimSpace(service)]; !ok {
+			return mcpScopeDeniedError("service is outside allowed scope")
+		}
+	}
+	return nil
+}
+
+//nolint:gocognit,gocyclo // Tool-specific output filtering keeps explicit branch behavior.
+func applyMCPIsolationOutput(tool string, output any, constraints mcpIsolationConstraints) (any, bool, error) {
+	if !constraints.enabled() {
+		return output, false, nil
+	}
+
+	switch mcpIsolationModes[tool] {
+	case mcpIsolationModeGet:
+		rule, ok := mcpIsolationFieldRules[tool]
+		if !ok {
+			return output, false, nil
+		}
+		item, ok := output.(map[string]any)
+		if !ok {
+			return output, false, nil
+		}
+		if err := validateMCPIsolationResource(
+			constraints,
+			readItemString(item, "namespace"),
+			readItemString(item, "service"),
+			rule,
+		); err != nil {
+			return nil, false, err
+		}
+		return output, false, nil
+
+	case mcpIsolationModeList:
+		rule, ok := mcpIsolationFieldRules[tool]
+		if !ok {
+			return output, false, nil
+		}
+		collectionKey, ok := mcpIsolationOutputCollections[tool]
+		if !ok {
+			return output, false, nil
+		}
+		payload, ok := output.(map[string]any)
+		if !ok {
+			return output, false, nil
+		}
+		rawItems, ok := payload[collectionKey].([]map[string]any)
+		if !ok {
+			anyItems, okAny := payload[collectionKey].([]any)
+			if !okAny {
+				return output, false, nil
+			}
+			converted := make([]map[string]any, 0, len(anyItems))
+			for _, item := range anyItems {
+				entry, okEntry := item.(map[string]any)
+				if !okEntry {
+					continue
+				}
+				converted = append(converted, entry)
+			}
+			rawItems = converted
+		}
+
+		filtered := make([]any, 0, len(rawItems))
+		for _, item := range rawItems {
+			if err := validateMCPIsolationResource(
+				constraints,
+				readItemString(item, "namespace"),
+				readItemString(item, "service"),
+				rule,
+			); err == nil {
+				filtered = append(filtered, item)
+			}
+		}
+		payload[collectionKey] = filtered
+		payload["totalCount"] = int64(len(filtered))
+		return payload, false, nil
+
+	default:
+		return output, false, nil
+	}
+}
+
+func readItemString(item map[string]any, key string) string {
+	if item == nil {
+		return ""
+	}
+	value, ok := item[key]
+	if !ok {
+		return ""
+	}
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func finalizeMCPCallResponse(resp map[string]any, maxResponseBytes int) []byte {
+	if maxResponseBytes <= 0 || maxResponseBytes > mcpMaxResponseBytes {
+		maxResponseBytes = mcpMaxResponseBytes
+	}
 	raw := mustMarshalJSONBytes(resp)
-	if len(raw) <= mcpMaxResponseBytes {
+	if len(raw) <= maxResponseBytes {
 		return raw
 	}
 
@@ -1764,7 +2227,7 @@ func finalizeMCPCallResponse(resp map[string]any) []byte {
 		resp["output"] = truncatedOutput
 
 		raw = mustMarshalJSONBytes(resp)
-		if len(raw) <= mcpMaxResponseBytes {
+		if len(raw) <= maxResponseBytes {
 			return raw
 		}
 		if previewBytes <= mcpMinimumPreviewBytes {

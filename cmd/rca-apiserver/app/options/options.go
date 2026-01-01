@@ -11,6 +11,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/aiopsre/rca-api/internal/apiserver"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 )
 
 var (
@@ -40,6 +41,8 @@ type ServerOptions struct {
 	NoticeWorkerID string `json:"noticeWorkerID" mapstructure:"noticeWorkerID"`
 	// NoticeBaseURL is default links base_url when channel.baseURL is unset.
 	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
+	// MCPPolicy configures per-tool MCP governance limits and enable switches.
+	MCPPolicy policy.MCPPolicyConfig `json:"mcp" mapstructure:"mcp"`
 }
 
 // NewServerOptions creates a ServerOptions instance with default values.
@@ -111,6 +114,7 @@ func (o *ServerOptions) Config() (*apiserver.Config, error) {
 		HTTPOptions:   o.HTTPOptions,
 		MySQLOptions:  o.MySQLOptions,
 		NoticeBaseURL: strings.TrimSpace(o.NoticeBaseURL),
+		MCPPolicy:     o.MCPPolicy,
 	}, nil
 }
 

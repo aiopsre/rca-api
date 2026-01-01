@@ -18,6 +18,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/biz"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -66,6 +67,194 @@ func TestMCPListTools(t *testing.T) {
 	require.Contains(t, names, "get_notice_deliveries_by_incident")
 	require.Contains(t, names, "list_notice_deliveries_by_time")
 	require.Contains(t, names, "get_notice_delivery")
+}
+
+func TestMCPListTools_ContainsPolicyMetadata(t *testing.T) {
+	baseURL, cleanup, _, client := newMCPTestServerWithPolicy(t, policy.MCPPolicyConfig{
+		Tools: map[string]policy.MCPToolPolicy{
+			"search_incidents": {
+				Enabled:   ptrBoolValue(false),
+				RiskLevel: "readonly",
+				Limits: policy.MCPToolPolicyLimits{
+					MaxLimit:            ptrInt64Value(5),
+					MaxTimeRangeSeconds: ptrInt64Value(300),
+					MaxResponseBytes:    ptrIntValue(4096),
+				},
+			},
+		},
+	})
+	defer cleanup()
+
+	status, body, err := doScopedJSONRequest(client, http.MethodGet, baseURL+"/v1/mcp/tools", nil, "")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(body, &payload))
+	tools, ok := payload["tools"].([]any)
+	require.True(t, ok)
+
+	found := false
+	for _, item := range tools {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if asString(obj["name"]) != "search_incidents" {
+			continue
+		}
+		metadata, ok := obj["metadata"].(map[string]any)
+		require.True(t, ok)
+		policyObj, ok := metadata["policy"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, false, policyObj["enabled"])
+		require.Equal(t, "readonly", asString(policyObj["risk_level"]))
+		limits, ok := policyObj["limits"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "5", asString(limits["max_limit"]))
+		require.Equal(t, "300", asString(limits["max_time_range_seconds"]))
+		require.Equal(t, "4096", asString(limits["max_response_bytes"]))
+		found = true
+		break
+	}
+	require.True(t, found)
+}
+
+func TestMCPCallPolicyDisabled_ReturnsScopeDenied(t *testing.T) {
+	baseURL, cleanup, _, client := newMCPTestServerWithPolicy(t, policy.MCPPolicyConfig{
+		Tools: map[string]policy.MCPToolPolicy{
+			"search_incidents": {
+				Enabled: ptrBoolValue(false),
+			},
+		},
+	})
+	defer cleanup()
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "search_incidents",
+		"input": map[string]any{
+			"limit": 1,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "incident.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok := payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
+}
+
+func TestMCPCallPolicyLimitExceeded_ReturnsInvalidArgument(t *testing.T) {
+	baseURL, cleanup, _, client := newMCPTestServerWithPolicy(t, policy.MCPPolicyConfig{
+		Tools: map[string]policy.MCPToolPolicy{
+			"search_incidents": {
+				Limits: policy.MCPToolPolicyLimits{
+					MaxLimit: ptrInt64Value(5),
+				},
+			},
+		},
+	})
+	defer cleanup()
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "search_incidents",
+		"input": map[string]any{
+			"limit": 50,
+			"page":  1,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "incident.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok := payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeInvalidArg), asString(errorObj["code"]))
+}
+
+func TestMCPCallIsolation_ListFilteredAndGetDenied(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServer(t)
+	defer cleanup()
+
+	incidentAllowed := createAIJobLongPollTestIncident(t, s)
+	incidentAllowed.Namespace = "ns-allowed"
+	incidentAllowed.Service = "svc-allowed"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentAllowed))
+
+	incidentDenied := createAIJobLongPollTestIncident(t, s)
+	incidentDenied.Namespace = "ns-denied"
+	incidentDenied.Service = "svc-denied"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentDenied))
+
+	listBody, err := json.Marshal(map[string]any{
+		"tool": "list_incidents",
+		"input": map[string]any{
+			"limit": 20,
+			"page":  1,
+		},
+	})
+	require.NoError(t, err)
+
+	listHeaders := map[string]string{
+		mcpHeaderAllowedNamespaces: "ns-allowed",
+		mcpHeaderAllowedServices:   "svc-allowed",
+	}
+	status, respBody, err := doScopedJSONRequestWithHeaders(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/mcp/tools/call",
+		listBody,
+		"incident.read",
+		listHeaders,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+
+	var listPayload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &listPayload))
+	output, ok := listPayload["output"].(map[string]any)
+	require.True(t, ok)
+	incidents, ok := output["incidents"].([]any)
+	require.True(t, ok)
+	require.Len(t, incidents, 1)
+	item, ok := incidents[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "ns-allowed", asString(item["namespace"]))
+	require.Equal(t, "svc-allowed", asString(item["service"]))
+
+	getBody, err := json.Marshal(map[string]any{
+		"tool": "get_incident",
+		"input": map[string]any{
+			"incident_id": incidentDenied.IncidentID,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err = doScopedJSONRequestWithHeaders(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/mcp/tools/call",
+		getBody,
+		"incident.read",
+		listHeaders,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, status)
+
+	var getPayload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &getPayload))
+	errorObj, ok := getPayload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
 }
 
 func TestMCPCallGetIncident_AllowAndAudit(t *testing.T) {
@@ -579,6 +768,13 @@ func TestMCPCallGetNoticeDelivery_ScopeDenied(t *testing.T) {
 }
 
 func newMCPTestServer(t *testing.T) (baseURL string, cleanup func(), s store.IStore, client *http.Client) {
+	return newMCPTestServerWithPolicy(t, policy.MCPPolicyConfig{})
+}
+
+func newMCPTestServerWithPolicy(
+	t *testing.T,
+	mcpPolicy policy.MCPPolicyConfig,
+) (baseURL string, cleanup func(), s store.IStore, client *http.Client) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -587,6 +783,7 @@ func newMCPTestServer(t *testing.T) (baseURL string, cleanup func(), s store.ISt
 	s = store.NewStore(db)
 	val := validation.New(s)
 	h := NewHandler(biz.NewBiz(s), val)
+	h.ConfigureMCPPolicy(mcpPolicy)
 
 	engine := gin.New()
 	h.ApplyTo(engine.Group("/v1"))
@@ -613,6 +810,17 @@ func newMCPTestDB(t *testing.T) *gorm.DB {
 }
 
 func doScopedJSONRequest(client *http.Client, method string, url string, payload []byte, scopes string) (int, []byte, error) {
+	return doScopedJSONRequestWithHeaders(client, method, url, payload, scopes, nil)
+}
+
+func doScopedJSONRequestWithHeaders(
+	client *http.Client,
+	method string,
+	url string,
+	payload []byte,
+	scopes string,
+	headers map[string]string,
+) (int, []byte, error) {
 	var reqBody io.Reader
 	if payload != nil {
 		reqBody = bytes.NewReader(payload)
@@ -625,6 +833,14 @@ func doScopedJSONRequest(client *http.Client, method string, url string, payload
 	req.Header.Set("Accept", "application/json")
 	if strings.TrimSpace(scopes) != "" {
 		req.Header.Set("X-Scopes", strings.TrimSpace(scopes))
+	}
+	for key, value := range headers {
+		trimmedKey := strings.TrimSpace(key)
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedKey == "" || trimmedValue == "" {
+			continue
+		}
+		req.Header.Set(trimmedKey, trimmedValue)
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -656,6 +872,21 @@ func asString(value any) string {
 }
 
 func ptrStringValue(value string) *string {
+	v := value
+	return &v
+}
+
+func ptrBoolValue(value bool) *bool {
+	v := value
+	return &v
+}
+
+func ptrInt64Value(value int64) *int64 {
+	v := value
+	return &v
+}
+
+func ptrIntValue(value int) *int {
 	v := value
 	return &v
 }
