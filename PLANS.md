@@ -684,3 +684,17 @@ python -m orchestrator.main
 * query_metrics/query_logs 复用 evidence guardrails（时间窗/limit/timeout/max_result_bytes/限流）；
 * 每次调用写入 ToolCall 审计（tool_name=mcp.*，input/output/error/latency，截断一致，严禁泄露 secret/headers/token）；
 * 新增回归脚本 `scripts/test_c1_L1_mcp_tools.sh` 通过；并保证 `make test`、`make lint-new` 通过。
+
+---
+
+## C2 Orchestrator MCP Alignment（Done Definition）
+
+* `tools/ai-orchestrator` 内的只读/低风险工具调用统一通过 rca-api MCP shim：
+
+  * `POST /v1/mcp/tools/call` 调用 `get_incident/list_alert_events_current/get_evidence/list_incident_evidence/query_metrics/query_logs`
+  * 不再直接调用分散 REST；
+* orchestrator 内新增 `MCPClient` 与 `ToolRegistry`（含 tool metadata 与 required_scopes），并支持错误映射；
+* 重试策略：仅对网络错误/超时/5xx/RATE_LIMITED 重试（指数退避+jitter，最大 3 次）；对 SCOPE_DENIED/INVALID_ARGUMENT/NOT_FOUND 不重试；
+* ToolCall 审计贯穿一致：平台侧落库 `tool_name=mcp.*`，回归可查询验证；
+* 新增回归脚本 `scripts/test_c2_L1_orchestrator_mcp.sh` 并通过；
+* `make test` 与 `make lint-new` 均通过。

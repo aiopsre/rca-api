@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from typing import Any, Dict, Optional
 
 import requests
+
+from .mcp_client import MCPClient
 
 
 def _ts(seconds: int) -> Dict[str, int]:
@@ -40,7 +43,15 @@ def _extract_first(payload: Any, *keys: str) -> Optional[Any]:
 
 
 class RCAApiClient:
-    def __init__(self, base_url: str, scopes: str | None, timeout_s: float = 10.0):
+    def __init__(
+        self,
+        base_url: str,
+        scopes: str | None,
+        timeout_s: float = 10.0,
+        mcp_scopes: str | None = None,
+        mcp_timeout_s: float | None = None,
+        mcp_verify_remote_tools: bool = False,
+    ):
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.scopes = (scopes or "").strip()
@@ -48,6 +59,17 @@ class RCAApiClient:
         self.session.headers.update({"Accept": "application/json"})
         if self.scopes:
             self.session.headers.update({"X-Scopes": self.scopes})
+
+        mcp_scopes_value = mcp_scopes
+        if mcp_scopes_value is None:
+            mcp_scopes_value = os.getenv("RCA_API_SCOPES", "")
+        self.mcp_client = MCPClient(
+            base_url=self.base_url,
+            scopes=mcp_scopes_value,
+            timeout_s=self.timeout_s if mcp_timeout_s is None else mcp_timeout_s,
+            max_retries=3,
+            verify_remote_tools=mcp_verify_remote_tools,
+        )
 
     def _request(
         self,
@@ -82,6 +104,55 @@ class RCAApiClient:
         if isinstance(payload, dict):
             return payload
         raise RuntimeError(f"{method.upper()} {path} returned invalid JSON type: {type(payload).__name__}")
+
+    def _mcp_call(
+        self,
+        tool: str,
+        input_payload: Dict[str, Any],
+        idempotency_key: str | None = None,
+    ) -> Dict[str, Any]:
+        return self.mcp_client.call(
+            tool=tool,
+            input_payload=input_payload,
+            idempotency_key=idempotency_key,
+        )
+
+    @staticmethod
+    def _extract_mcp_output(tool: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        output = payload.get("output")
+        if isinstance(output, dict):
+            return output
+        raise RuntimeError(f"invalid MCP output for tool={tool}: {payload}")
+
+    @staticmethod
+    def _normalize_mcp_query_output(tool: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        output = RCAApiClient._extract_mcp_output(tool, payload)
+        raw_result = output.get("queryResultJSON")
+        if isinstance(raw_result, str) and raw_result.strip():
+            return output
+
+        if not bool(payload.get("truncated")):
+            raise RuntimeError(f"invalid {tool} MCP response: {payload}")
+
+        # MCP response may be truncated at envelope level; keep workflow moving with a compact placeholder.
+        preview = str(output.get("preview") or "").strip()
+        fallback_payload: Dict[str, Any] = {
+            "mcp_truncated": True,
+            "reason": str(output.get("reason") or "max_response_bytes_exceeded"),
+        }
+        if preview:
+            fallback_payload["preview"] = preview
+        warnings = payload.get("warnings")
+        if isinstance(warnings, list) and warnings:
+            fallback_payload["warnings"] = warnings
+
+        fallback_result = json.dumps(fallback_payload, ensure_ascii=False, separators=(",", ":"))
+        return {
+            "queryResultJSON": fallback_result,
+            "resultSizeBytes": len(fallback_result.encode("utf-8")),
+            "rowCount": 0,
+            "isTruncated": True,
+        }
 
     # jobs
     def list_jobs(
@@ -163,19 +234,73 @@ class RCAApiClient:
             body["diagnosisJSON"] = json.dumps(diagnosis_json, ensure_ascii=False, separators=(",", ":"))
         if error_message:
             body["errorMessage"] = error_message
-        self._request("POST", f"/v1/ai/jobs/{job_id}/finalize", json_body=body)
+        # Finalization may include DB writes and incident writeback; allow a longer timeout to reduce false negatives.
+        self._request("POST", f"/v1/ai/jobs/{job_id}/finalize", json_body=body, timeout_s=max(self.timeout_s, 30.0))
 
     # incidents
     def get_incident(self, incident_id: str) -> Dict[str, Any]:
-        payload = self._request("GET", f"/v1/incidents/{incident_id}")
-        data = payload.get("data", payload)
-        if not isinstance(data, dict):
-            raise RuntimeError(f"invalid get_incident response for {incident_id}")
-        if "incident" in data and isinstance(data["incident"], dict):
-            return data["incident"]
-        if "incident" in payload and isinstance(payload["incident"], dict):
-            return payload["incident"]
-        return data
+        payload = self._mcp_call(
+            tool="get_incident",
+            input_payload={"incident_id": incident_id},
+            idempotency_key=f"orchestrator-mcp-get-incident-{uuid.uuid4().hex}",
+        )
+        output = self._extract_mcp_output("get_incident", payload)
+        if str(output.get("incidentID") or "").strip():
+            return output
+        raise RuntimeError(f"invalid get_incident MCP response for incident_id={incident_id}: {payload}")
+
+    def list_alert_events_current(
+        self,
+        namespace: str | None = None,
+        service: str | None = None,
+        severity: str | None = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        input_payload: Dict[str, Any] = {
+            "page": int(page),
+            "limit": int(limit),
+        }
+        if namespace:
+            input_payload["namespace"] = str(namespace).strip()
+        if service:
+            input_payload["service"] = str(service).strip()
+        if severity:
+            input_payload["severity"] = str(severity).strip()
+        payload = self._mcp_call(
+            tool="list_alert_events_current",
+            input_payload=input_payload,
+            idempotency_key=f"orchestrator-mcp-list-alerts-{uuid.uuid4().hex}",
+        )
+        return self._extract_mcp_output("list_alert_events_current", payload)
+
+    def get_evidence(self, evidence_id: str) -> Dict[str, Any]:
+        payload = self._mcp_call(
+            tool="get_evidence",
+            input_payload={"evidence_id": evidence_id},
+            idempotency_key=f"orchestrator-mcp-get-evidence-{uuid.uuid4().hex}",
+        )
+        output = self._extract_mcp_output("get_evidence", payload)
+        if str(output.get("evidenceID") or "").strip():
+            return output
+        raise RuntimeError(f"invalid get_evidence MCP response for evidence_id={evidence_id}: {payload}")
+
+    def list_incident_evidence(
+        self,
+        incident_id: str,
+        page: int = 1,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        payload = self._mcp_call(
+            tool="list_incident_evidence",
+            input_payload={
+                "incident_id": incident_id,
+                "page": int(page),
+                "limit": int(limit),
+            },
+            idempotency_key=f"orchestrator-mcp-list-evidence-{uuid.uuid4().hex}",
+        )
+        return self._extract_mcp_output("list_incident_evidence", payload)
 
     # datasource / evidence (P0 minimal)
     def ensure_datasource(self, ds_base_url: str) -> str:
@@ -242,18 +367,18 @@ class RCAApiClient:
         end_ts: int,
         step_s: int,
     ) -> Dict[str, Any]:
-        body = {
-            "datasourceID": datasource_id,
-            "promql": promql,
-            "timeRangeStart": _ts(start_ts),
-            "timeRangeEnd": _ts(end_ts),
-            "stepSeconds": int(step_s),
-        }
-        payload = self._request("POST", "/v1/evidence:queryMetrics", json_body=body)
-        data = payload.get("data", payload)
-        if isinstance(data, dict):
-            return data
-        raise RuntimeError(f"invalid query_metrics response: {payload}")
+        payload = self._mcp_call(
+            tool="query_metrics",
+            input_payload={
+                "datasource_id": datasource_id,
+                "expr": promql,
+                "time_range_start": _ts(start_ts),
+                "time_range_end": _ts(end_ts),
+                "step_seconds": int(step_s),
+            },
+            idempotency_key=f"orchestrator-mcp-query-metrics-{uuid.uuid4().hex}",
+        )
+        return self._normalize_mcp_query_output("query_metrics", payload)
 
     def query_logs(
         self,
@@ -263,19 +388,19 @@ class RCAApiClient:
         end_ts: int,
         limit: int,
     ) -> Dict[str, Any]:
-        body = {
-            "datasourceID": datasource_id,
-            "queryText": query,
-            "queryJSON": "{}",
-            "timeRangeStart": _ts(start_ts),
-            "timeRangeEnd": _ts(end_ts),
-            "limit": int(limit),
-        }
-        payload = self._request("POST", "/v1/evidence:queryLogs", json_body=body)
-        data = payload.get("data", payload)
-        if isinstance(data, dict):
-            return data
-        raise RuntimeError(f"invalid query_logs response: {payload}")
+        payload = self._mcp_call(
+            tool="query_logs",
+            input_payload={
+                "datasource_id": datasource_id,
+                "query": query,
+                "query_json": {},
+                "time_range_start": _ts(start_ts),
+                "time_range_end": _ts(end_ts),
+                "limit": int(limit),
+            },
+            idempotency_key=f"orchestrator-mcp-query-logs-{uuid.uuid4().hex}",
+        )
+        return self._normalize_mcp_query_output("query_logs", payload)
 
     def save_evidence_from_query(self, incident_id: str, kind: str, query: Dict[str, Any], result: Dict[str, Any]) -> str:
         now_s = int(time.time())

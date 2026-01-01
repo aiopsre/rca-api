@@ -316,14 +316,15 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
     state.missing_evidence = []
 
     now_s = int(time.time())
+    query_expr = "sum(up)"
     query_request = {
         "datasourceID": datasource_id,
-        "queryText": "up",
+        "queryText": query_expr,
         "queryJSON": "{}",
     }
     query_result = client.query_metrics(
         datasource_id=datasource_id,
-        promql="up",
+        promql=query_expr,
         start_ts=now_s - 600,
         end_ts=now_s,
         step_s=30,
@@ -353,7 +354,7 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
     elif state.force_no_evidence:
         collect_tool_name = "evidence.collectPlaceholder"
     else:
-        collect_tool_name = "evidence.queryMetrics" if state.datasource_id else "evidence.saveMock"
+        collect_tool_name = "mcp.query_metrics" if state.datasource_id else "evidence.saveMock"
 
     decision = str(quality_gate.get("decision") or "")
     if decision == QUALITY_GATE_CONFLICT:
@@ -661,6 +662,19 @@ def finalize_job(state: GraphState, client: RCAApiClient) -> GraphState:
         return state
     except Exception as exc:  # noqa: BLE001
         fallback = f"finalize_job: {exc}"
+        # Handle uncertain client-side timeout: finalize may have succeeded server-side.
+        error_text = str(exc)
+        if "timed out" in error_text.lower():
+            try:
+                current_job = client.get_job(state.job_id)
+                current_status = str(current_job.get("status") or "").strip().lower()
+            except Exception:  # noqa: BLE001
+                current_status = ""
+            if current_status == "succeeded":
+                state.last_error = None
+                state.finalized = True
+                return state
+
         state.last_error = fallback
         try:
             client.finalize_job(state.job_id, status="failed", diagnosis_json=None, error_message=fallback[:8192])

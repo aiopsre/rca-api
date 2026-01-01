@@ -24,6 +24,8 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 
 - `BASE_URL`：默认 `http://127.0.0.1:5555`
 - `SCOPES`：非空时所有请求附带 `X-Scopes`
+- `RCA_API_SCOPES`：仅用于 MCP shim 调用（`/v1/mcp/tools/call`），注入到 `X-Scopes`；为空默认拒绝（fail-fast）
+- `MCP_VERIFY_REMOTE_TOOLS`：默认 `0`；`1` 时启动拉取 `/v1/mcp/tools` 做 registry 一致性校验
 - `POLL_INTERVAL_MS`：默认 `1000`（仅用于错误重试或禁用 long poll 时的 sleep/backoff）
 - `LONG_POLL_WAIT_SECONDS`：默认 `20`（范围 `0~30`；上次拉取为空时用于 `wait_seconds`）
 - `CONCURRENCY`：默认 `1`

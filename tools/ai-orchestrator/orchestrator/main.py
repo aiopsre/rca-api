@@ -15,6 +15,8 @@ from .tools_rca_api import RCAApiClient
 class Settings:
     base_url: str
     scopes: str
+    mcp_scopes: str
+    mcp_verify_remote_tools: bool
     poll_interval_ms: int
     concurrency: int
     run_query: bool
@@ -50,6 +52,8 @@ def load_settings() -> Settings:
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
+        mcp_scopes=os.getenv("RCA_API_SCOPES", "").strip(),
+        mcp_verify_remote_tools=_env_bool("MCP_VERIFY_REMOTE_TOOLS", False),
         poll_interval_ms=max(100, _env_int("POLL_INTERVAL_MS", 1000)),
         concurrency=max(1, _env_int("CONCURRENCY", 1)),
         run_query=_env_bool("RUN_QUERY", False),
@@ -97,6 +101,8 @@ def main() -> None:
     _log(
         "orchestrator starting "
         f"base_url={settings.base_url} "
+        f"mcp_scopes_set={int(bool(settings.mcp_scopes))} "
+        f"mcp_verify_remote_tools={int(settings.mcp_verify_remote_tools)} "
         f"poll_interval_ms={settings.poll_interval_ms} "
         f"concurrency={settings.concurrency} "
         f"run_query={int(settings.run_query)} "
@@ -105,7 +111,13 @@ def main() -> None:
         f"long_poll_wait_seconds={settings.long_poll_wait_seconds}"
     )
 
-    client = RCAApiClient(settings.base_url, settings.scopes, timeout_s=10.0)
+    client = RCAApiClient(
+        settings.base_url,
+        settings.scopes,
+        timeout_s=10.0,
+        mcp_scopes=settings.mcp_scopes,
+        mcp_verify_remote_tools=settings.mcp_verify_remote_tools,
+    )
     graph_cfg = OrchestratorConfig(
         run_query=settings.run_query,
         force_no_evidence=settings.force_no_evidence,
