@@ -13,9 +13,10 @@ const (
 
 	ScopeIncidentRead = "incident.read"
 
-	ScopeAlertRead   = "alert.read"
-	ScopeAlertIngest = "alert.ingest"
-	ScopeAlertAck    = "alert.ack"
+	ScopeAlertRead      = "alert.read"
+	ScopeAlertEventRead = "alert_event.read"
+	ScopeAlertIngest    = "alert.ingest"
+	ScopeAlertAck       = "alert.ack"
 
 	ScopeDatasourceRead  = "datasource.read"
 	ScopeDatasourceAdmin = "datasource.admin"
@@ -24,6 +25,8 @@ const (
 	ScopeEvidenceRead    = "evidence.read"
 	ScopeAIRun           = "ai.run"
 	ScopeAIRead          = "ai.read"
+	ScopeAIJobRead       = "ai_job.read"
+	ScopeToolCallRead    = "toolcall.read"
 	ScopeAICancel        = "ai.cancel"
 	ScopeSilenceRead     = "silence.read"
 	ScopeSilenceAdmin    = "silence.admin"

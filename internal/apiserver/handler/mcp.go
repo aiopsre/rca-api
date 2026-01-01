@@ -80,7 +80,31 @@ type mcpErrorDetails struct {
 	Tool string `json:"tool,omitempty"`
 }
 
+//nolint:dupl // Tool schemas are kept explicit per MCP contract for readability.
 var mcpReadonlyTools = []mcpToolDefinition{
+	{
+		Name:           "list_incidents",
+		Description:    "List incidents with optional filters and page/limit.",
+		RequiredScopes: []string{authz.ScopeIncidentRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"service":          map[string]any{"type": "string"},
+				"namespace":        map[string]any{"type": "string"},
+				"status":           map[string]any{"type": "string"},
+				"severity":         map[string]any{"type": "string"},
+				"created_at_start": map[string]any{"type": "string"},
+				"created_at_end":   map[string]any{"type": "string"},
+				"page":             map[string]any{"type": "integer"},
+				"offset":           map[string]any{"type": "integer"},
+				"limit":            map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListIncidents,
+	},
 	{
 		Name:           "get_incident",
 		Description:    "Get one incident by incident_id.",
@@ -100,21 +124,105 @@ var mcpReadonlyTools = []mcpToolDefinition{
 	{
 		Name:           "list_alert_events_current",
 		Description:    "List current alert events with optional filters and page/limit.",
-		RequiredScopes: []string{authz.ScopeAlertRead},
+		RequiredScopes: []string{authz.ScopeAlertEventRead},
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"namespace": map[string]any{"type": "string"},
 				"service":   map[string]any{"type": "string"},
+				"cluster":   map[string]any{"type": "string"},
 				"severity":  map[string]any{"type": "string"},
-				"page":      map[string]any{"type": "integer"},
-				"limit":     map[string]any{"type": "integer"},
+				"status":    map[string]any{"type": "string"},
+				"fingerprint": map[string]any{
+					"type": "string",
+				},
+				"last_seen_start": map[string]any{
+					"type": "string",
+				},
+				"last_seen_end": map[string]any{
+					"type": "string",
+				},
+				"page":   map[string]any{"type": "integer"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
 			},
 		},
 		OutputSchema: map[string]any{
 			"type": "object",
 		},
 		Execute: (*Handler).mcpListAlertEventsCurrent,
+	},
+	{
+		Name:           "list_alert_events_history",
+		Description:    "List history alert events with optional filters and page/limit.",
+		RequiredScopes: []string{authz.ScopeAlertEventRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+				"service":   map[string]any{"type": "string"},
+				"cluster":   map[string]any{"type": "string"},
+				"severity":  map[string]any{"type": "string"},
+				"status":    map[string]any{"type": "string"},
+				"fingerprint": map[string]any{
+					"type": "string",
+				},
+				"incident_id": map[string]any{
+					"type": "string",
+				},
+				"last_seen_start": map[string]any{
+					"type": "string",
+				},
+				"last_seen_end": map[string]any{
+					"type": "string",
+				},
+				"page":   map[string]any{"type": "integer"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListAlertEventsHistory,
+	},
+	{
+		Name:           "list_datasources",
+		Description:    "List datasource metadata with optional filters and page/limit.",
+		RequiredScopes: []string{authz.ScopeDatasourceRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"type": map[string]any{"type": "string"},
+				"name": map[string]any{"type": "string"},
+				"is_enabled": map[string]any{
+					"type": "boolean",
+				},
+				"page":   map[string]any{"type": "integer"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListDatasources,
+	},
+	{
+		Name:           "get_datasource",
+		Description:    "Get one datasource metadata by datasource_id.",
+		RequiredScopes: []string{authz.ScopeDatasourceRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"datasource_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"datasource_id"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpGetDatasource,
 	},
 	{
 		Name:           "get_evidence",
@@ -199,6 +307,110 @@ var mcpReadonlyTools = []mcpToolDefinition{
 		},
 		Execute: (*Handler).mcpQueryLogs,
 	},
+	{
+		Name:           "get_ai_job",
+		Description:    "Get one AI job by job_id.",
+		RequiredScopes: []string{authz.ScopeAIJobRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"job_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"job_id"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpGetAIJob,
+	},
+	{
+		Name:           "list_ai_jobs",
+		Description:    "List AI jobs by status or by incident_id with page/limit.",
+		RequiredScopes: []string{authz.ScopeAIJobRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"status": map[string]any{"type": "string"},
+				"incident_id": map[string]any{
+					"type": "string",
+				},
+				"page":   map[string]any{"type": "integer"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListAIJobs,
+	},
+	{
+		Name:           "list_tool_calls",
+		Description:    "List tool call audits by job_id with page/limit.",
+		RequiredScopes: []string{authz.ScopeToolCallRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"job_id": map[string]any{"type": "string"},
+				"seq":    map[string]any{"type": "integer"},
+				"page":   map[string]any{"type": "integer"},
+				"offset": map[string]any{"type": "integer"},
+				"limit":  map[string]any{"type": "integer"},
+			},
+			"required": []string{"job_id"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListToolCalls,
+	},
+	{
+		Name:           "list_silences",
+		Description:    "List silences with optional filters and page/limit.",
+		RequiredScopes: []string{authz.ScopeSilenceRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace": map[string]any{"type": "string"},
+				"enabled":   map[string]any{"type": "boolean"},
+				"active":    map[string]any{"type": "boolean"},
+				"page":      map[string]any{"type": "integer"},
+				"offset":    map[string]any{"type": "integer"},
+				"limit":     map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListSilences,
+	},
+	{
+		Name:           "list_notice_deliveries",
+		Description:    "List notice deliveries with optional filters and page/limit.",
+		RequiredScopes: []string{authz.ScopeNoticeRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel_id":  map[string]any{"type": "string"},
+				"incident_id": map[string]any{"type": "string"},
+				"event_type":  map[string]any{"type": "string"},
+				"status":      map[string]any{"type": "string"},
+				"page":        map[string]any{"type": "integer"},
+				"offset":      map[string]any{"type": "integer"},
+				"limit":       map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListNoticeDeliveries,
+	},
+}
+
+var mcpScopeAliases = map[string][]string{
+	authz.ScopeAlertEventRead: {authz.ScopeAlertRead},
+	authz.ScopeAIJobRead:      {authz.ScopeAIRead},
+	authz.ScopeToolCallRead:   {authz.ScopeAIRead},
 }
 
 func (h *Handler) ListMCPTools(c *gin.Context) {
@@ -323,6 +535,61 @@ func (h *Handler) writeMCPCallFailure(
 	c.JSON(statusCode, payload)
 }
 
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
+func (h *Handler) mcpListIncidents(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListIncidentRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "service"); v != "" {
+		req.Service = &v
+	}
+	if v := readInputString(input, "namespace"); v != "" {
+		req.Namespace = &v
+	}
+	if v := readInputString(input, "status"); v != "" {
+		req.Status = &v
+	}
+	if v := readInputString(input, "severity"); v != "" {
+		req.Severity = &v
+	}
+	if ts, has, err := readInputTimestamp(input, "created_at_start", "createdAtStart"); err != nil {
+		return nil, false, err
+	} else if has {
+		req.CreatedAtStart = ts
+	}
+	if ts, has, err := readInputTimestamp(input, "created_at_end", "createdAtEnd"); err != nil {
+		return nil, false, err
+	} else if has {
+		req.CreatedAtEnd = ts
+	}
+
+	if err := h.val.ValidateListIncidentRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.IncidentV1().List(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	incidents := make([]map[string]any, 0, len(resp.GetIncidents()))
+	for _, item := range resp.GetIncidents() {
+		incidents = append(incidents, buildMCPIncidentOutput(item))
+	}
+	return map[string]any{
+		"totalCount": resp.GetTotalCount(),
+		"offset":     offset,
+		"limit":      limit,
+		"incidents":  incidents,
+	}, false, nil
+}
+
 func (h *Handler) mcpGetIncident(c *gin.Context, input map[string]any) (any, bool, error) {
 	incidentID := readInputString(input, "incident_id", "incidentID")
 	req := &v1.GetIncidentRequest{IncidentID: incidentID}
@@ -338,27 +605,10 @@ func (h *Handler) mcpGetIncident(c *gin.Context, input map[string]any) (any, boo
 	if incident == nil {
 		return nil, false, errno.ErrIncidentNotFound
 	}
-
-	out := map[string]any{
-		"incidentID":   incident.GetIncidentID(),
-		"namespace":    incident.GetNamespace(),
-		"workloadKind": incident.GetWorkloadKind(),
-		"workloadName": incident.GetWorkloadName(),
-		"service":      incident.GetService(),
-		"severity":     incident.GetSeverity(),
-		"status":       incident.GetStatus(),
-		"createdAt":    timestampToRFC3339(incident.GetCreatedAt()),
-		"updatedAt":    timestampToRFC3339(incident.GetUpdatedAt()),
-	}
-	putNonEmpty(out, "rcaStatus", strings.TrimSpace(incident.GetRcaStatus()))
-	putNonEmpty(out, "rootCauseSummary", strings.TrimSpace(incident.GetRootCauseSummary()))
-	if diagnosis := strings.TrimSpace(incident.GetDiagnosisJSON()); diagnosis != "" {
-		putNonEmpty(out, "rootCauseType", extractRootCauseTypeFromDiagnosis(diagnosis))
-		out["diagnosisJSON"] = sanitizeJSONString(diagnosis)
-	}
-	return out, false, nil
+	return buildMCPIncidentOutput(incident), false, nil
 }
 
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
 func (h *Handler) mcpListAlertEventsCurrent(c *gin.Context, input map[string]any) (any, bool, error) {
 	offset, limit, err := parsePageOffset(input)
 	if err != nil {
@@ -375,8 +625,27 @@ func (h *Handler) mcpListAlertEventsCurrent(c *gin.Context, input map[string]any
 	if v := readInputString(input, "service"); v != "" {
 		req.Service = &v
 	}
+	if v := readInputString(input, "cluster"); v != "" {
+		req.Cluster = &v
+	}
 	if v := readInputString(input, "severity"); v != "" {
 		req.Severity = &v
+	}
+	if v := readInputString(input, "status"); v != "" {
+		req.Status = &v
+	}
+	if v := readInputString(input, "fingerprint"); v != "" {
+		req.Fingerprint = &v
+	}
+	if ts, has, err := readInputTimestamp(input, "last_seen_start", "lastSeenStart"); err != nil {
+		return nil, false, err
+	} else if has {
+		req.LastSeenStart = ts
+	}
+	if ts, has, err := readInputTimestamp(input, "last_seen_end", "lastSeenEnd"); err != nil {
+		return nil, false, err
+	} else if has {
+		req.LastSeenEnd = ts
 	}
 
 	if err := h.val.ValidateListCurrentAlertEventsRequest(c.Request.Context(), req); err != nil {
@@ -390,22 +659,7 @@ func (h *Handler) mcpListAlertEventsCurrent(c *gin.Context, input map[string]any
 
 	events := make([]map[string]any, 0, len(resp.GetEvents()))
 	for _, item := range resp.GetEvents() {
-		event := map[string]any{
-			"eventID":     item.GetEventID(),
-			"fingerprint": item.GetFingerprint(),
-			"status":      item.GetStatus(),
-			"severity":    item.GetSeverity(),
-			"service":     item.GetService(),
-			"cluster":     item.GetCluster(),
-			"namespace":   item.GetNamespace(),
-			"workload":    item.GetWorkload(),
-			"isCurrent":   item.GetIsCurrent(),
-			"isSilenced":  item.GetIsSilenced(),
-			"lastSeenAt":  timestampToRFC3339(item.GetLastSeenAt()),
-		}
-		putNonEmpty(event, "incidentID", strings.TrimSpace(item.GetIncidentID()))
-		putNonEmpty(event, "silenceID", strings.TrimSpace(item.GetSilenceID()))
-		events = append(events, event)
+		events = append(events, buildMCPAlertEventOutput(item))
 	}
 
 	out := map[string]any{
@@ -415,6 +669,70 @@ func (h *Handler) mcpListAlertEventsCurrent(c *gin.Context, input map[string]any
 		"events":     events,
 	}
 	return out, false, nil
+}
+
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
+func (h *Handler) mcpListAlertEventsHistory(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListHistoryAlertEventsRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "namespace"); v != "" {
+		req.Namespace = &v
+	}
+	if v := readInputString(input, "service"); v != "" {
+		req.Service = &v
+	}
+	if v := readInputString(input, "cluster"); v != "" {
+		req.Cluster = &v
+	}
+	if v := readInputString(input, "severity"); v != "" {
+		req.Severity = &v
+	}
+	if v := readInputString(input, "status"); v != "" {
+		req.Status = &v
+	}
+	if v := readInputString(input, "fingerprint"); v != "" {
+		req.Fingerprint = &v
+	}
+	if v := readInputString(input, "incident_id", "incidentID"); v != "" {
+		req.IncidentID = &v
+	}
+	if ts, has, err := readInputTimestamp(input, "last_seen_start", "lastSeenStart"); err != nil {
+		return nil, false, err
+	} else if has {
+		req.LastSeenStart = ts
+	}
+	if ts, has, err := readInputTimestamp(input, "last_seen_end", "lastSeenEnd"); err != nil {
+		return nil, false, err
+	} else if has {
+		req.LastSeenEnd = ts
+	}
+
+	if err := h.val.ValidateListHistoryAlertEventsRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.AlertEventV1().ListHistory(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	events := make([]map[string]any, 0, len(resp.GetEvents()))
+	for _, item := range resp.GetEvents() {
+		events = append(events, buildMCPAlertEventOutput(item))
+	}
+	return map[string]any{
+		"totalCount": resp.GetTotalCount(),
+		"offset":     offset,
+		"limit":      limit,
+		"events":     events,
+	}, false, nil
 }
 
 func (h *Handler) mcpGetEvidence(c *gin.Context, input map[string]any) (any, bool, error) {
@@ -508,6 +826,68 @@ func (h *Handler) mcpListIncidentEvidence(c *gin.Context, input map[string]any) 
 	return out, false, nil
 }
 
+func (h *Handler) mcpListDatasources(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListDatasourceRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "type"); v != "" {
+		req.Type = &v
+	}
+	if v := readInputString(input, "name"); v != "" {
+		req.Name = &v
+	}
+	if v, ok, err := readInputBool(input, "is_enabled", "isEnabled"); err != nil {
+		return nil, false, err
+	} else if ok {
+		req.IsEnabled = &v
+	}
+	if err := h.val.ValidateListDatasourceRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.DatasourceV1().List(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	items := make([]map[string]any, 0, len(resp.GetDatasources()))
+	for _, item := range resp.GetDatasources() {
+		items = append(items, buildMCPDatasourceOutput(item))
+	}
+	return map[string]any{
+		"totalCount":  resp.GetTotalCount(),
+		"offset":      offset,
+		"limit":       limit,
+		"datasources": items,
+	}, false, nil
+}
+
+//nolint:dupl // Pattern matches other get-by-id tool branches by design.
+func (h *Handler) mcpGetDatasource(c *gin.Context, input map[string]any) (any, bool, error) {
+	req := &v1.GetDatasourceRequest{
+		DatasourceID: readInputString(input, "datasource_id", "datasourceID"),
+	}
+	if err := h.val.ValidateGetDatasourceRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.DatasourceV1().Get(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	ds := resp.GetDatasource()
+	if ds == nil {
+		return nil, false, errno.ErrDatasourceNotFound
+	}
+	return buildMCPDatasourceOutput(ds), false, nil
+}
+
 func (h *Handler) mcpQueryMetrics(c *gin.Context, input map[string]any) (any, bool, error) {
 	startTS, _, err := readInputTimestamp(input, "time_range_start", "timeRangeStart", "start")
 	if err != nil {
@@ -599,6 +979,210 @@ func (h *Handler) mcpQueryLogs(c *gin.Context, input map[string]any) (any, bool,
 	return out, resp.GetIsTruncated(), nil
 }
 
+//nolint:dupl // Pattern matches other get-by-id tool branches by design.
+func (h *Handler) mcpGetAIJob(c *gin.Context, input map[string]any) (any, bool, error) {
+	req := &v1.GetAIJobRequest{
+		JobID: readInputString(input, "job_id", "jobID"),
+	}
+	if err := h.val.ValidateGetAIJobRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.AIJobV1().Get(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	job := resp.GetJob()
+	if job == nil {
+		return nil, false, errno.ErrAIJobNotFound
+	}
+	return buildMCPAIJobOutput(job), false, nil
+}
+
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
+func (h *Handler) mcpListAIJobs(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+	incidentID := readInputString(input, "incident_id", "incidentID")
+	if incidentID != "" {
+		req := &v1.ListIncidentAIJobsRequest{
+			IncidentID: incidentID,
+			Offset:     offset,
+			Limit:      limit,
+		}
+		if err := h.val.ValidateListIncidentAIJobsRequest(c.Request.Context(), req); err != nil {
+			return nil, false, err
+		}
+		resp, err := h.biz.AIJobV1().ListByIncident(c.Request.Context(), req)
+		if err != nil {
+			return nil, false, err
+		}
+		items := make([]map[string]any, 0, len(resp.GetJobs()))
+		for _, item := range resp.GetJobs() {
+			items = append(items, buildMCPAIJobOutput(item))
+		}
+		return map[string]any{
+			"totalCount": resp.GetTotalCount(),
+			"offset":     offset,
+			"limit":      limit,
+			"jobs":       items,
+		}, false, nil
+	}
+
+	req := &v1.ListAIJobsRequest{
+		Status: readInputString(input, "status"),
+		Offset: offset,
+		Limit:  limit,
+	}
+	if err := h.val.ValidateListAIJobsRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+	resp, err := h.biz.AIJobV1().List(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	items := make([]map[string]any, 0, len(resp.GetJobs()))
+	for _, item := range resp.GetJobs() {
+		items = append(items, buildMCPAIJobOutput(item))
+	}
+	return map[string]any{
+		"status":     req.GetStatus(),
+		"totalCount": resp.GetTotalCount(),
+		"offset":     offset,
+		"limit":      limit,
+		"jobs":       items,
+	}, false, nil
+}
+
+func (h *Handler) mcpListToolCalls(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListAIToolCallsRequest{
+		JobID:  readInputString(input, "job_id", "jobID"),
+		Offset: offset,
+		Limit:  limit,
+	}
+	if seq, hasSeq, err := readInputInt64(input, "seq"); err != nil {
+		return nil, false, err
+	} else if hasSeq {
+		req.Seq = &seq
+	}
+	if err := h.val.ValidateListAIToolCallsRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.AIJobV1().ListToolCalls(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	items := make([]map[string]any, 0, len(resp.GetToolCalls()))
+	for _, item := range resp.GetToolCalls() {
+		items = append(items, buildMCPToolCallOutput(item))
+	}
+	out := map[string]any{
+		"totalCount": resp.GetTotalCount(),
+		"offset":     offset,
+		"limit":      limit,
+		"toolCalls":  items,
+	}
+	putNonEmpty(out, "jobID", req.GetJobID())
+	if req.Seq != nil {
+		out["seq"] = req.GetSeq()
+	}
+	return out, false, nil
+}
+
+func (h *Handler) mcpListSilences(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListSilencesRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "namespace"); v != "" {
+		req.Namespace = &v
+	}
+	if v, ok, err := readInputBool(input, "enabled"); err != nil {
+		return nil, false, err
+	} else if ok {
+		req.Enabled = &v
+	}
+	if v, ok, err := readInputBool(input, "active"); err != nil {
+		return nil, false, err
+	} else if ok {
+		req.Active = &v
+	}
+	if err := h.val.ValidateListSilencesRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.SilenceV1().List(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	items := make([]map[string]any, 0, len(resp.GetSilences()))
+	for _, item := range resp.GetSilences() {
+		items = append(items, buildMCPSilenceOutput(item))
+	}
+	return map[string]any{
+		"totalCount": resp.GetTotalCount(),
+		"offset":     offset,
+		"limit":      limit,
+		"silences":   items,
+	}, false, nil
+}
+
+func (h *Handler) mcpListNoticeDeliveries(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListNoticeDeliveriesRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "channel_id", "channelID"); v != "" {
+		req.ChannelID = &v
+	}
+	if v := readInputString(input, "incident_id", "incidentID"); v != "" {
+		req.IncidentID = &v
+	}
+	if v := readInputString(input, "event_type", "eventType"); v != "" {
+		req.EventType = &v
+	}
+	if v := readInputString(input, "status"); v != "" {
+		req.Status = &v
+	}
+	if err := h.val.ValidateListNoticeDeliveriesRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.NoticeV1().ListDeliveries(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	items := make([]map[string]any, 0, len(resp.GetNoticeDeliveries()))
+	for _, item := range resp.GetNoticeDeliveries() {
+		items = append(items, buildMCPNoticeDeliveryOutput(item))
+	}
+	return map[string]any{
+		"totalCount":       resp.GetTotalCount(),
+		"offset":           offset,
+		"limit":            limit,
+		"noticeDeliveries": items,
+	}, false, nil
+}
+
 func (h *Handler) recordMCPToolCall(
 	c *gin.Context,
 	tool string,
@@ -679,11 +1263,24 @@ func requireAllScopes(c *gin.Context, scopes ...string) error {
 		if scope == "" {
 			continue
 		}
-		if err := authz.RequireAnyScope(c, scope); err != nil {
+		if err := authz.RequireAnyScope(c, expandRequiredScope(scope)...); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func expandRequiredScope(scope string) []string {
+	expanded := []string{scope}
+	if aliases, ok := mcpScopeAliases[scope]; ok {
+		for _, alias := range aliases {
+			alias = strings.TrimSpace(alias)
+			if alias != "" {
+				expanded = append(expanded, alias)
+			}
+		}
+	}
+	return expanded
 }
 
 func mapMCPCallError(err error, tool string) (int, mcpErrorEnvelope) {
@@ -896,6 +1493,18 @@ func readInputInt64(input map[string]any, keys ...string) (int64, bool, error) {
 	return out, true, nil
 }
 
+func readInputBool(input map[string]any, keys ...string) (bool, bool, error) {
+	value, ok := findInputValue(input, keys...)
+	if !ok {
+		return false, false, nil
+	}
+	out, err := castToBool(value)
+	if err != nil {
+		return false, false, errorsx.ErrInvalidArgument
+	}
+	return out, true, nil
+}
+
 //nolint:nilnil // found flag disambiguates missing timestamp input from validation errors.
 func readInputTimestamp(input map[string]any, keys ...string) (*timestamppb.Timestamp, bool, error) {
 	value, ok := findInputValue(input, keys...)
@@ -989,6 +1598,66 @@ func castToInt64(value any) (int64, error) {
 	}
 }
 
+//nolint:gocognit,gocyclo,wsl_v5 // Boolean parsing supports permissive MCP-compatible input types.
+func castToBool(value any) (bool, error) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, nil
+	case string:
+		trimmed := strings.ToLower(strings.TrimSpace(typed))
+		switch trimmed {
+		case "1", "true", "yes", "y":
+			return true, nil
+		case "0", "false", "no", "n":
+			return false, nil
+		default:
+			return false, errorsx.ErrInvalidArgument
+		}
+	case json.Number:
+		out, err := typed.Int64()
+		if err != nil {
+			return false, err
+		}
+		switch out {
+		case 1:
+			return true, nil
+		case 0:
+			return false, nil
+		default:
+			return false, errorsx.ErrInvalidArgument
+		}
+	case float64:
+		switch typed {
+		case 1:
+			return true, nil
+		case 0:
+			return false, nil
+		default:
+			return false, errorsx.ErrInvalidArgument
+		}
+	case int:
+		switch typed {
+		case 1:
+			return true, nil
+		case 0:
+			return false, nil
+		default:
+			return false, errorsx.ErrInvalidArgument
+		}
+	case int64:
+		switch typed {
+		case 1:
+			return true, nil
+		case 0:
+			return false, nil
+		default:
+			return false, errorsx.ErrInvalidArgument
+		}
+	default:
+		return false, errorsx.ErrInvalidArgument
+	}
+}
+
 //nolint:gocognit,gocyclo,wsl_v5 // Time decoding supports multiple MCP-compatible formats.
 func castToTime(value any) (time.Time, error) {
 	switch typed := value.(type) {
@@ -1047,6 +1716,235 @@ func extractDatasourceID(input map[string]any) string {
 	return readInputString(input, "datasource_id", "datasourceID")
 }
 
+func buildMCPIncidentOutput(incident *v1.Incident) map[string]any {
+	out := map[string]any{
+		"incidentID":   incident.GetIncidentID(),
+		"namespace":    incident.GetNamespace(),
+		"workloadKind": incident.GetWorkloadKind(),
+		"workloadName": incident.GetWorkloadName(),
+		"service":      incident.GetService(),
+		"severity":     incident.GetSeverity(),
+		"status":       incident.GetStatus(),
+		"createdAt":    timestampToRFC3339(incident.GetCreatedAt()),
+		"updatedAt":    timestampToRFC3339(incident.GetUpdatedAt()),
+	}
+	putNonEmpty(out, "tenantID", strings.TrimSpace(incident.GetTenantID()))
+	putNonEmpty(out, "cluster", strings.TrimSpace(incident.GetCluster()))
+	putNonEmpty(out, "environment", strings.TrimSpace(incident.GetEnvironment()))
+	putNonEmpty(out, "source", strings.TrimSpace(incident.GetSource()))
+	putNonEmpty(out, "alertName", strings.TrimSpace(incident.GetAlertName()))
+	putNonEmpty(out, "fingerprint", strings.TrimSpace(incident.GetFingerprint()))
+	putNonEmpty(out, "ruleID", strings.TrimSpace(incident.GetRuleID()))
+	putNonEmpty(out, "traceID", strings.TrimSpace(incident.GetTraceID()))
+	putNonEmpty(out, "logTraceKey", strings.TrimSpace(incident.GetLogTraceKey()))
+	putNonEmpty(out, "changeID", strings.TrimSpace(incident.GetChangeID()))
+	if ts := timestampToRFC3339(incident.GetStartAt()); ts != "" {
+		out["startAt"] = ts
+	}
+	if ts := timestampToRFC3339(incident.GetEndAt()); ts != "" {
+		out["endAt"] = ts
+	}
+	putNonEmpty(out, "rcaStatus", strings.TrimSpace(incident.GetRcaStatus()))
+	putNonEmpty(out, "rootCauseSummary", strings.TrimSpace(incident.GetRootCauseSummary()))
+	if diagnosis := strings.TrimSpace(incident.GetDiagnosisJSON()); diagnosis != "" {
+		putNonEmpty(out, "rootCauseType", extractRootCauseTypeFromDiagnosis(diagnosis))
+		out["diagnosisJSON"] = sanitizeJSONString(diagnosis)
+	}
+	if evidenceRefs := strings.TrimSpace(incident.GetEvidenceRefsJSON()); evidenceRefs != "" {
+		out["evidenceRefsJSON"] = sanitizeJSONString(evidenceRefs)
+	}
+	return out
+}
+
+func buildMCPAlertEventOutput(item *v1.AlertEvent) map[string]any {
+	out := map[string]any{
+		"eventID":     item.GetEventID(),
+		"fingerprint": item.GetFingerprint(),
+		"status":      item.GetStatus(),
+		"severity":    item.GetSeverity(),
+		"service":     item.GetService(),
+		"cluster":     item.GetCluster(),
+		"namespace":   item.GetNamespace(),
+		"workload":    item.GetWorkload(),
+		"isCurrent":   item.GetIsCurrent(),
+		"isSilenced":  item.GetIsSilenced(),
+		"lastSeenAt":  timestampToRFC3339(item.GetLastSeenAt()),
+		"createdAt":   timestampToRFC3339(item.GetCreatedAt()),
+		"updatedAt":   timestampToRFC3339(item.GetUpdatedAt()),
+	}
+	putNonEmpty(out, "incidentID", strings.TrimSpace(item.GetIncidentID()))
+	putNonEmpty(out, "dedupKey", strings.TrimSpace(item.GetDedupKey()))
+	putNonEmpty(out, "source", strings.TrimSpace(item.GetSource()))
+	putNonEmpty(out, "alertName", strings.TrimSpace(item.GetAlertName()))
+	putNonEmpty(out, "silenceID", strings.TrimSpace(item.GetSilenceID()))
+	putNonEmpty(out, "ackedBy", strings.TrimSpace(item.GetAckedBy()))
+	if ts := timestampToRFC3339(item.GetStartsAt()); ts != "" {
+		out["startsAt"] = ts
+	}
+	if ts := timestampToRFC3339(item.GetEndsAt()); ts != "" {
+		out["endsAt"] = ts
+	}
+	if ts := timestampToRFC3339(item.GetAckedAt()); ts != "" {
+		out["ackedAt"] = ts
+	}
+	return out
+}
+
+func buildMCPDatasourceOutput(item *v1.Datasource) map[string]any {
+	out := map[string]any{
+		"datasourceID": item.GetDatasourceID(),
+		"type":         item.GetType(),
+		"name":         item.GetName(),
+		"baseURL":      item.GetBaseURL(),
+		"authType":     item.GetAuthType(),
+		"timeoutMs":    item.GetTimeoutMs(),
+		"isEnabled":    item.GetIsEnabled(),
+		"createdAt":    timestampToRFC3339(item.GetCreatedAt()),
+		"updatedAt":    timestampToRFC3339(item.GetUpdatedAt()),
+	}
+	if labels := strings.TrimSpace(item.GetLabelsJSON()); labels != "" {
+		out["labelsJSON"] = sanitizeJSONString(labels)
+	}
+	return out
+}
+
+func buildMCPAIJobOutput(job *v1.AIJob) map[string]any {
+	out := map[string]any{
+		"jobID":          job.GetJobID(),
+		"incidentID":     job.GetIncidentID(),
+		"pipeline":       job.GetPipeline(),
+		"trigger":        job.GetTrigger(),
+		"status":         job.GetStatus(),
+		"timeRangeStart": timestampToRFC3339(job.GetTimeRangeStart()),
+		"timeRangeEnd":   timestampToRFC3339(job.GetTimeRangeEnd()),
+		"createdAt":      timestampToRFC3339(job.GetCreatedAt()),
+		"createdBy":      job.GetCreatedBy(),
+	}
+	if ts := timestampToRFC3339(job.GetStartedAt()); ts != "" {
+		out["startedAt"] = ts
+	}
+	if ts := timestampToRFC3339(job.GetFinishedAt()); ts != "" {
+		out["finishedAt"] = ts
+	}
+	if hints := strings.TrimSpace(job.GetInputHintsJSON()); hints != "" {
+		out["inputHintsJSON"] = sanitizeJSONString(hints)
+	}
+	if summary := strings.TrimSpace(job.GetOutputSummary()); summary != "" {
+		out["outputSummary"] = sanitizeString(summary)
+	}
+	if output := strings.TrimSpace(job.GetOutputJSON()); output != "" {
+		out["outputJSON"] = sanitizeJSONString(output)
+	}
+	if evidence := strings.TrimSpace(job.GetEvidenceIDsJSON()); evidence != "" {
+		out["evidenceIDsJSON"] = sanitizeJSONString(evidence)
+	}
+	if msg := strings.TrimSpace(job.GetErrorMessage()); msg != "" {
+		out["errorMessage"] = sanitizeAuditError(msg)
+	}
+	return out
+}
+
+func buildMCPToolCallOutput(item *v1.AIToolCall) map[string]any {
+	out := map[string]any{
+		"toolCallID":        item.GetToolCallID(),
+		"jobID":             item.GetJobID(),
+		"seq":               item.GetSeq(),
+		"nodeName":          item.GetNodeName(),
+		"toolName":          item.GetToolName(),
+		"responseSizeBytes": item.GetResponseSizeBytes(),
+		"status":            item.GetStatus(),
+		"latencyMs":         item.GetLatencyMs(),
+		"createdAt":         timestampToRFC3339(item.GetCreatedAt()),
+	}
+	if input := sanitizeAuditPayload(item.GetRequestJSON(), mcpMaxAuditInputBytes); input != nil {
+		out["input"] = input
+	}
+	if output := sanitizeAuditPayload(item.GetResponseJSON(), mcpMaxAuditOutputBytes); output != nil {
+		out["output"] = output
+	}
+	if errText := strings.TrimSpace(item.GetErrorMessage()); errText != "" {
+		out["error"] = sanitizeAuditError(errText)
+	}
+	if evidence := sanitizeAuditPayload(item.GetEvidenceIDsJSON(), mcpMaxAuditOutputBytes); evidence != nil {
+		out["evidence"] = evidence
+	}
+	return out
+}
+
+func buildMCPSilenceOutput(item *v1.Silence) map[string]any {
+	out := map[string]any{
+		"silenceID": item.GetSilenceID(),
+		"namespace": item.GetNamespace(),
+		"enabled":   item.GetEnabled(),
+		"startsAt":  timestampToRFC3339(item.GetStartsAt()),
+		"endsAt":    timestampToRFC3339(item.GetEndsAt()),
+		"createdAt": timestampToRFC3339(item.GetCreatedAt()),
+		"updatedAt": timestampToRFC3339(item.GetUpdatedAt()),
+	}
+	putNonEmpty(out, "reason", strings.TrimSpace(item.GetReason()))
+	putNonEmpty(out, "createdBy", strings.TrimSpace(item.GetCreatedBy()))
+	matchers := item.GetMatchers()
+	if len(matchers) > 0 {
+		matcherItems := make([]map[string]any, 0, len(matchers))
+		for _, matcher := range matchers {
+			matcherItems = append(matcherItems, map[string]any{
+				"key":   matcher.GetKey(),
+				"op":    matcher.GetOp(),
+				"value": matcher.GetValue(),
+			})
+		}
+		out["matchers"] = matcherItems
+	}
+	return out
+}
+
+func buildMCPNoticeDeliveryOutput(item *v1.NoticeDelivery) map[string]any {
+	out := map[string]any{
+		"deliveryID":  item.GetDeliveryID(),
+		"channelID":   item.GetChannelID(),
+		"eventType":   item.GetEventType(),
+		"latencyMs":   item.GetLatencyMs(),
+		"status":      item.GetStatus(),
+		"createdAt":   timestampToRFC3339(item.GetCreatedAt()),
+		"attempts":    item.GetAttempts(),
+		"maxAttempts": item.GetMaxAttempts(),
+	}
+	putNonEmpty(out, "incidentID", strings.TrimSpace(item.GetIncidentID()))
+	putNonEmpty(out, "jobID", strings.TrimSpace(item.GetJobID()))
+	putNonEmpty(out, "lockedBy", strings.TrimSpace(item.GetLockedBy()))
+	if item.ResponseCode != nil {
+		out["responseCode"] = item.GetResponseCode()
+	}
+	if ts := timestampToRFC3339(item.GetNextRetryAt()); ts != "" {
+		out["nextRetryAt"] = ts
+	}
+	if ts := timestampToRFC3339(item.GetLockedAt()); ts != "" {
+		out["lockedAt"] = ts
+	}
+	return out
+}
+
+func sanitizeAuditPayload(raw string, maxBytes int) any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	sanitized := clampJSONStringByBytes(sanitizeJSONString(trimmed), maxBytes)
+	if strings.TrimSpace(sanitized) == "" {
+		return nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(sanitized), &payload); err == nil {
+		return sanitizeAny(payload)
+	}
+	return sanitizeString(sanitized)
+}
+
+func sanitizeAuditError(raw string) string {
+	clipped, _ := truncateStringByBytes(sanitizeString(raw), mcpMaxAuditErrorBytes)
+	return clipped
+}
+
 //nolint:gocognit,wsl_v5 // Recursive sanitizer intentionally handles mixed JSON-like types.
 func sanitizeAny(value any) any {
 	switch typed := value.(type) {
@@ -1101,13 +1999,27 @@ func sanitizeString(value string) string {
 	if trimmed == "" {
 		return ""
 	}
-	// Keep it simple and deterministic: remove obvious bearer token text.
 	lower := strings.ToLower(trimmed)
+	if containsSensitiveToken(lower) {
+		return "[REDACTED]"
+	}
+
+	// Keep it simple and deterministic: remove obvious bearer token text.
 	idx := strings.Index(lower, "bearer ")
 	if idx >= 0 {
 		return trimmed[:idx] + "Bearer [REDACTED]"
 	}
 	return trimmed
+}
+
+func containsSensitiveToken(lower string) bool {
+	return strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "authorization") ||
+		strings.Contains(lower, "\"token\"") ||
+		strings.Contains(lower, "token=") ||
+		strings.Contains(lower, "token:") ||
+		strings.Contains(lower, "x-api-key") ||
+		strings.Contains(lower, "apikey")
 }
 
 func extractRootCauseTypeFromDiagnosis(raw string) string {

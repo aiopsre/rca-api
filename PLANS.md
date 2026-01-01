@@ -698,3 +698,21 @@ python -m orchestrator.main
 * ToolCall 审计贯穿一致：平台侧落库 `tool_name=mcp.*`，回归可查询验证；
 * 新增回归脚本 `scripts/test_c2_L1_orchestrator_mcp.sh` 并通过；
 * `make test` 与 `make lint-new` 均通过。
+
+---
+
+## C3 MCP Readonly Tools Expansion（Done Definition）
+
+* 在 rca-api MCP shim（`/v1/mcp/tools`、`/v1/mcp/tools/call`）上新增只读/低风险工具：
+
+  * `list_incidents`、`list_alert_events_history`
+  * `list_datasources`、`get_datasource`（仅元信息，严格脱敏）
+  * `get_ai_job`、`list_ai_jobs`、`list_tool_calls`（ToolCall 查询仍遵循截断/脱敏）
+  * `list_silences`、`list_notice_deliveries`
+* 所有新增工具：
+
+  * 复用 X-Scopes 默认拒绝与 required_scopes 映射
+  * 输出遵循字段白名单 + 脱敏 + 截断（审计 8KB/8KB/2KB；响应整体 16KB；超限 TRUNCATED_OUTPUT）
+  * `query_metrics/query_logs` 仍严格复用 evidence guardrails（不可绕过）
+* 新增回归脚本 `scripts/test_c3_L1_mcp_more_tools.sh` 覆盖 allow/deny/截断/脱敏与审计查询，并通过；
+* `make test` 与 `make lint-new` 均通过。

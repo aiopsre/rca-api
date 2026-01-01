@@ -36,7 +36,7 @@ func TestMCPListTools(t *testing.T) {
 	require.Equal(t, mcpToolRegistryVersion, asString(payload["version"]))
 	rawTools, ok := payload["tools"].([]any)
 	require.True(t, ok)
-	require.Len(t, rawTools, 6)
+	require.Len(t, rawTools, 15)
 
 	names := make(map[string]struct{}, len(rawTools))
 	for _, item := range rawTools {
@@ -45,12 +45,21 @@ func TestMCPListTools(t *testing.T) {
 		name, _ := obj["name"].(string)
 		names[name] = struct{}{}
 	}
+	require.Contains(t, names, "list_incidents")
 	require.Contains(t, names, "get_incident")
 	require.Contains(t, names, "list_alert_events_current")
+	require.Contains(t, names, "list_alert_events_history")
+	require.Contains(t, names, "list_datasources")
+	require.Contains(t, names, "get_datasource")
 	require.Contains(t, names, "get_evidence")
 	require.Contains(t, names, "list_incident_evidence")
 	require.Contains(t, names, "query_metrics")
 	require.Contains(t, names, "query_logs")
+	require.Contains(t, names, "get_ai_job")
+	require.Contains(t, names, "list_ai_jobs")
+	require.Contains(t, names, "list_tool_calls")
+	require.Contains(t, names, "list_silences")
+	require.Contains(t, names, "list_notice_deliveries")
 }
 
 func TestMCPCallGetIncident_AllowAndAudit(t *testing.T) {
@@ -291,6 +300,140 @@ func TestMCPCallAudit_RequestAndResponseAreSanitizedAndClamped(t *testing.T) {
 	require.NotContains(t, lowerRequest, "super-secret-token")
 }
 
+func TestMCPCallGetDatasource_MetadataOnly(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServer(t)
+	defer cleanup()
+
+	ds := &model.DatasourceM{
+		Type:               "prometheus",
+		Name:               "mcp-ds-meta",
+		BaseURL:            "http://127.0.0.1:19090",
+		AuthType:           "bearer",
+		AuthSecretRef:      ptrStringValue("vault://prod/metrics"),
+		TimeoutMs:          3000,
+		IsEnabled:          true,
+		DefaultHeadersJSON: ptrStringValue(`{"Authorization":"Bearer top-secret-token","X-Test":"demo"}`),
+		TLSConfigJSON:      ptrStringValue(`{"insecure_skip_verify":true}`),
+	}
+	require.NoError(t, s.Datasource().Create(context.Background(), ds))
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "get_datasource",
+		"input": map[string]any{
+			"datasource_id": ds.DatasourceID,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "datasource.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	assertNoSensitiveLeak(t, respBody)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	output, ok := payload["output"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, ds.DatasourceID, asString(output["datasourceID"]))
+	require.NotContains(t, output, "authSecretRef")
+	require.NotContains(t, output, "defaultHeadersJSON")
+	require.NotContains(t, output, "tlsConfigJSON")
+}
+
+func TestMCPCallListToolCalls_SanitizedAndClamped(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServer(t)
+	defer cleanup()
+
+	jobID := "job-mcp-list-tool-calls"
+	huge := strings.Repeat("x", mcpMaxAuditInputBytes+1024)
+	requestJSON := fmt.Sprintf(`{"headers":{"Authorization":"Bearer super-secret-token"},"token":"abc","payload":"%s"}`, huge)
+	responseJSON := fmt.Sprintf(`{"secret":"sensitive","content":"%s"}`, huge)
+	errorMessage := strings.Repeat("authorization token leaked; ", 300)
+
+	row := &model.AIToolCallM{
+		ToolCallID:        fmt.Sprintf("seed-tool-call-%d", time.Now().UTC().UnixNano()),
+		JobID:             jobID,
+		Seq:               1,
+		NodeName:          "node-test",
+		ToolName:          "mcp.query_logs",
+		RequestJSON:       requestJSON,
+		ResponseJSON:      &responseJSON,
+		ResponseSizeBytes: int64(len(responseJSON)),
+		Status:            "error",
+		LatencyMs:         7,
+		ErrorMessage:      &errorMessage,
+	}
+	err := s.AIToolCall().Create(context.Background(), row)
+	require.NoError(t, err)
+	toolCallID := row.ToolCallID
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "list_tool_calls",
+		"input": map[string]any{
+			"job_id": jobID,
+			"limit":  20,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "toolcall.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	assertNoSensitiveLeak(t, respBody)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	output, ok := payload["output"].(map[string]any)
+	require.True(t, ok)
+	toolCalls, ok := output["toolCalls"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, toolCalls)
+	var matched map[string]any
+	for _, item := range toolCalls {
+		call, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if asString(call["toolCallID"]) == toolCallID {
+			matched = call
+			break
+		}
+	}
+	require.NotNil(t, matched)
+	require.Equal(t, toolCallID, asString(matched["toolCallID"]))
+
+	inputPayload, ok := matched["input"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, inputPayload["truncated"])
+	responsePayload, ok := matched["output"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, responsePayload["truncated"])
+	require.Equal(t, "[REDACTED]", asString(matched["error"]))
+}
+
+func TestMCPCallListToolCalls_ScopeDenied(t *testing.T) {
+	baseURL, cleanup, _, client := newMCPTestServer(t)
+	defer cleanup()
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "list_tool_calls",
+		"input": map[string]any{
+			"job_id": "job-for-scope-denied",
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "incident.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok := payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
+}
+
 func newMCPTestServer(t *testing.T) (baseURL string, cleanup func(), s store.IStore, client *http.Client) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -365,4 +508,13 @@ func asString(value any) string {
 func ptrStringValue(value string) *string {
 	v := value
 	return &v
+}
+
+func assertNoSensitiveLeak(t *testing.T, body []byte) {
+	t.Helper()
+	lower := strings.ToLower(string(body))
+	require.NotContains(t, lower, "\"secret\"")
+	require.NotContains(t, lower, "\"authorization\"")
+	require.NotContains(t, lower, "\"token\"")
+	require.NotContains(t, lower, "\"headers\"")
 }
