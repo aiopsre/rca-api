@@ -33,6 +33,7 @@ func TestMCPListTools(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(body, &payload))
+	require.Equal(t, mcpToolRegistryVersion, asString(payload["version"]))
 	rawTools, ok := payload["tools"].([]any)
 	require.True(t, ok)
 	require.Len(t, rawTools, 6)
@@ -112,7 +113,7 @@ func TestMCPCallScopeDenied_FixedError(t *testing.T) {
 	require.NoError(t, json.Unmarshal(respBody, &payload))
 	errorObj, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "SCOPE_DENIED", asString(errorObj["code"]))
+	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
 
 	details, ok := errorObj["details"].(map[string]any)
 	require.True(t, ok)
@@ -163,7 +164,7 @@ func TestMCPCallQueryLogs_GuardrailInvalidArgument(t *testing.T) {
 	require.NoError(t, json.Unmarshal(respBody, &payload))
 	errorObj, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, "INVALID_ARGUMENT", asString(errorObj["code"]))
+	require.Equal(t, string(MCPErrorCodeInvalidArg), asString(errorObj["code"]))
 }
 
 func TestMCPCallListAlertEventsCurrent_ResponseTruncated(t *testing.T) {

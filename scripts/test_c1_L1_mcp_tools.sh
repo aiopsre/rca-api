@@ -9,6 +9,10 @@ TRUNC_ALERT_COUNT="${TRUNC_ALERT_COUNT:-20}"
 CURL_CONNECT_TIMEOUT="${CURL_CONNECT_TIMEOUT:-5}"
 CURL_MAX_TIME="${CURL_MAX_TIME:-30}"
 SEED_PROGRESS_EVERY="${SEED_PROGRESS_EVERY:-10}"
+MCP_TOOLS_VERSION="${MCP_TOOLS_VERSION:-c1}"
+MOCK_DS_HOST="${MOCK_DS_HOST:-127.0.0.1}"
+MOCK_DS_PORT="${MOCK_DS_PORT:-19091}"
+MOCK_DS_BASE_URL="${MOCK_DS_BASE_URL:-http://${MOCK_DS_HOST}:${MOCK_DS_PORT}}"
 
 LAST_HTTP_CODE=""
 LAST_BODY=""
@@ -17,6 +21,8 @@ INCIDENT_ID=""
 TOOL_CALL_ID=""
 DATASOURCE_METRICS_ID=""
 DATASOURCE_LOGS_ID=""
+MOCK_DS_PID=""
+MOCK_DS_SCRIPT=""
 
 need_cmd() {
 	command -v "$1" >/dev/null 2>&1
@@ -31,6 +37,20 @@ debug() {
 info() {
 	echo "[INFO] $*" >&2
 }
+
+cleanup() {
+	if [[ -n "${MOCK_DS_PID}" ]]; then
+		kill "${MOCK_DS_PID}" >/dev/null 2>&1 || true
+		wait "${MOCK_DS_PID}" 2>/dev/null || true
+		MOCK_DS_PID=""
+	fi
+	if [[ -n "${MOCK_DS_SCRIPT}" ]]; then
+		rm -f "${MOCK_DS_SCRIPT}" >/dev/null 2>&1 || true
+		MOCK_DS_SCRIPT=""
+	fi
+}
+
+trap cleanup EXIT
 
 truncate_2kb() {
 	printf '%s' "$1" | head -c 2048
@@ -190,9 +210,122 @@ assert_error_shape_or_fail() {
 	fi
 }
 
+assert_no_sensitive() {
+	local step="$1"
+	local body="${2:-${LAST_BODY}}"
+
+	if printf '%s' "${body}" | grep -Eiq '("secret"|\\\"secret\\\"|"authorization"|\\\"authorization\\\"|"Authorization"|\\\"Authorization\\\"|"token"|\\\"token\\\"|"headers"|\\\"headers\\\")'; then
+		fail_step "${step}.SensitiveLeak" "${LAST_HTTP_CODE}" "${body}"
+	fi
+}
+
+start_mock_datasource() {
+	if ! need_cmd python3; then
+		fail_step "MockDatasource.MissingPython3" "PRECHECK" "python3 command not found"
+	fi
+
+	MOCK_DS_SCRIPT="$(mktemp)"
+	cat >"${MOCK_DS_SCRIPT}" <<'PY'
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+
+HOST = sys.argv[1]
+PORT = int(sys.argv[2])
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _write(self, status, payload):
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path.startswith("/healthz"):
+            self._write(200, {"ok": True})
+            return
+        if self.path.startswith("/api/v1/query_range"):
+            self._write(
+                200,
+                {
+                    "status": "success",
+                    "data": {
+                        "resultType": "matrix",
+                        "result": [
+                            {
+                                "metric": {"__name__": "up", "job": "mock"},
+                                "values": [["1700000000", "1"]],
+                            }
+                        ],
+                    },
+                },
+            )
+            return
+        if self.path.startswith("/loki/api/v1/query_range"):
+            self._write(
+                200,
+                {
+                    "status": "success",
+                    "data": {
+                        "resultType": "streams",
+                        "result": [
+                            {
+                                "stream": {"app": "mock"},
+                                "values": [["1700000000000000000", "mock log line"]],
+                            }
+                        ],
+                    },
+                },
+            )
+            return
+        self._write(404, {"error": "not_found"})
+
+    def log_message(self, *args):
+        return
+
+
+if __name__ == "__main__":
+    HTTPServer((HOST, PORT), Handler).serve_forever()
+PY
+
+	python3 "${MOCK_DS_SCRIPT}" "${MOCK_DS_HOST}" "${MOCK_DS_PORT}" >/dev/null 2>&1 &
+	MOCK_DS_PID=$!
+
+	local i
+	for i in $(seq 1 30); do
+		if http_json GET "${MOCK_DS_BASE_URL}/healthz" "" ""; then
+			if [[ "${LAST_HTTP_CODE}" == "200" ]]; then
+				return 0
+			fi
+		fi
+		sleep 0.1
+	done
+
+	fail_step "MockDatasource.StartTimeout" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+}
+
 rand="${RAND:-$RANDOM}"
 now_epoch="$(date -u +%s)"
 start_epoch="$((now_epoch - 1800))"
+
+call_or_fail "MCPListTools" GET "${BASE_URL}/v1/mcp/tools" "" "${SCOPES}"
+assert_no_sensitive "MCPListTools.NoSensitive" "${LAST_BODY}"
+if need_cmd jq; then
+	tools_version="$(printf '%s' "${LAST_BODY}" | jq -r '.version // empty' 2>/dev/null || true)"
+	if [[ "${tools_version}" != "${MCP_TOOLS_VERSION}" ]]; then
+		fail_step "MCPListTools.Version" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+	fi
+else
+	if [[ "${LAST_BODY}" != *'"version":"'"${MCP_TOOLS_VERSION}"'"'* ]] && [[ "${LAST_BODY}" != *'"version": "'"${MCP_TOOLS_VERSION}"'"'* ]]; then
+		fail_step "MCPListTools.Version" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+	fi
+fi
+
+start_mock_datasource
 
 fingerprint="c1-l1-fp-${rand}"
 ingest_body=$(cat <<JSON
@@ -211,6 +344,7 @@ allow_body=$(cat <<JSON
 JSON
 )
 call_or_fail "MCPAllowGetIncident" POST "${BASE_URL}/v1/mcp/tools/call" "${allow_body}" "incident.read"
+assert_no_sensitive "MCPAllowGetIncident.NoSensitive" "${LAST_BODY}"
 TOOL_CALL_ID="$(extract_field "${LAST_BODY}" "tool_call_id" "toolCallID")" || true
 if [[ -z "${TOOL_CALL_ID}" ]]; then
 	fail_step "MCPAllowGetIncident.ParseToolCallID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
@@ -224,6 +358,7 @@ if need_cmd jq; then
 fi
 
 call_or_fail "MCPAllowAuditListToolCalls" GET "${BASE_URL}/v1/ai/jobs/mcp-readonly/tool-calls?offset=0&limit=200" "" "ai.read"
+assert_no_sensitive "MCPAllowAuditListToolCalls.NoSensitive" "${LAST_BODY}"
 if need_cmd jq; then
 	match_count="$(printf '%s' "${LAST_BODY}" | jq -r --arg tc "${TOOL_CALL_ID}" '
 		(.toolCalls // .data.toolCalls // [])
@@ -245,7 +380,7 @@ fi
 assert_error_shape_or_fail "MCPDenyScope" "SCOPE_DENIED" "403"
 
 metrics_ds_body=$(cat <<JSON
-{"type":"prometheus","name":"c1-metrics-${rand}","baseURL":"http://127.0.0.1:9090","authType":"none","timeoutMs":2000,"isEnabled":true}
+{"type":"prometheus","name":"c1-metrics-${rand}","baseURL":"${MOCK_DS_BASE_URL}","authType":"none","timeoutMs":2000,"isEnabled":true}
 JSON
 )
 call_or_fail "CreateMetricsDatasource" POST "${BASE_URL}/v1/datasources" "${metrics_ds_body}" "datasource.admin"
@@ -255,13 +390,26 @@ if [[ -z "${DATASOURCE_METRICS_ID}" ]]; then
 fi
 
 logs_ds_body=$(cat <<JSON
-{"type":"loki","name":"c1-logs-${rand}","baseURL":"http://127.0.0.1:9090","authType":"none","timeoutMs":2000,"isEnabled":true}
+{"type":"loki","name":"c1-logs-${rand}","baseURL":"${MOCK_DS_BASE_URL}","authType":"none","timeoutMs":2000,"isEnabled":true}
 JSON
 )
 call_or_fail "CreateLogsDatasource" POST "${BASE_URL}/v1/datasources" "${logs_ds_body}" "datasource.admin"
 DATASOURCE_LOGS_ID="$(extract_field "${LAST_BODY}" "datasourceID" "datasource_id")" || true
 if [[ -z "${DATASOURCE_LOGS_ID}" ]]; then
 	fail_step "CreateLogsDatasource.ParseID" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+fi
+
+metrics_success_body=$(cat <<JSON
+{"tool":"query_metrics","input":{"datasource_id":"${DATASOURCE_METRICS_ID}","expr":"up","time_range_start":{"seconds":$((now_epoch - 300)),"nanos":0},"time_range_end":{"seconds":${now_epoch},"nanos":0},"step_seconds":30}}
+JSON
+)
+call_or_fail "MCPSuccessQueryMetrics" POST "${BASE_URL}/v1/mcp/tools/call" "${metrics_success_body}" "evidence.query"
+assert_no_sensitive "MCPSuccessQueryMetrics.NoSensitive" "${LAST_BODY}"
+if need_cmd jq; then
+	metrics_result="$(printf '%s' "${LAST_BODY}" | jq -r '.output.queryResultJSON // empty' 2>/dev/null || true)"
+	if [[ -z "${metrics_result}" ]]; then
+		fail_step "MCPSuccessQueryMetrics.Result" "${LAST_HTTP_CODE}" "${LAST_BODY}"
+	fi
 fi
 
 metrics_guardrail_body=$(cat <<JSON

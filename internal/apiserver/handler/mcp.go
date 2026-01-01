@@ -25,6 +25,7 @@ const (
 	mcpToolCallAuditJobID    = "mcp-readonly"
 	mcpToolCallNodeName      = "mcp.http-shim"
 	mcpToolCallToolPrefix    = "mcp."
+	mcpToolRegistryVersion   = "c1"
 	mcpWarningTruncated      = "TRUNCATED_OUTPUT"
 	mcpCallStep              = "mcp.call"
 	mcpMaxResponseBytes      = 16 * 1024
@@ -38,6 +39,16 @@ const (
 )
 
 var mcpToolCallSeq atomic.Int64
+
+type MCPErrorCode string
+
+const (
+	MCPErrorCodeScopeDenied MCPErrorCode = "SCOPE_DENIED"
+	MCPErrorCodeInvalidArg  MCPErrorCode = "INVALID_ARGUMENT"
+	MCPErrorCodeNotFound    MCPErrorCode = "NOT_FOUND"
+	MCPErrorCodeRateLimited MCPErrorCode = "RATE_LIMITED"
+	MCPErrorCodeInternal    MCPErrorCode = "INTERNAL"
+)
 
 type mcpToolDefinition struct {
 	Name           string
@@ -59,7 +70,7 @@ type mcpErrorEnvelope struct {
 }
 
 type mcpErrorBody struct {
-	Code    string          `json:"code"`
+	Code    MCPErrorCode    `json:"code"`
 	Message string          `json:"message"`
 	Details mcpErrorDetails `json:"details"`
 }
@@ -201,7 +212,10 @@ func (h *Handler) ListMCPTools(c *gin.Context) {
 			"required_scopes": tool.RequiredScopes,
 		})
 	}
-	c.JSON(http.StatusOK, map[string]any{"tools": items})
+	c.JSON(http.StatusOK, map[string]any{
+		"version": mcpToolRegistryVersion,
+		"tools":   items,
+	})
 }
 
 func (h *Handler) CallMCPTool(c *gin.Context) {
@@ -685,16 +699,16 @@ func mapMCPCallError(err error, tool string) (int, mcpErrorEnvelope) {
 		}
 	}
 
-	code := "INTERNAL"
+	code := MCPErrorCodeInternal
 	switch status {
 	case http.StatusBadRequest:
-		code = "INVALID_ARGUMENT"
+		code = MCPErrorCodeInvalidArg
 	case http.StatusForbidden:
-		code = "SCOPE_DENIED"
+		code = MCPErrorCodeScopeDenied
 	case http.StatusNotFound:
-		code = "NOT_FOUND"
+		code = MCPErrorCodeNotFound
 	case http.StatusTooManyRequests:
-		code = "RATE_LIMITED"
+		code = MCPErrorCodeRateLimited
 	default:
 		status = http.StatusInternalServerError
 	}
