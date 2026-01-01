@@ -36,7 +36,7 @@ func TestMCPListTools(t *testing.T) {
 	require.Equal(t, mcpToolRegistryVersion, asString(payload["version"]))
 	rawTools, ok := payload["tools"].([]any)
 	require.True(t, ok)
-	require.Len(t, rawTools, 15)
+	require.Len(t, rawTools, 21)
 
 	names := make(map[string]struct{}, len(rawTools))
 	for _, item := range rawTools {
@@ -45,14 +45,17 @@ func TestMCPListTools(t *testing.T) {
 		name, _ := obj["name"].(string)
 		names[name] = struct{}{}
 	}
+	require.Contains(t, names, "search_incidents")
 	require.Contains(t, names, "list_incidents")
 	require.Contains(t, names, "get_incident")
+	require.Contains(t, names, "get_incident_timeline")
 	require.Contains(t, names, "list_alert_events_current")
 	require.Contains(t, names, "list_alert_events_history")
 	require.Contains(t, names, "list_datasources")
 	require.Contains(t, names, "get_datasource")
 	require.Contains(t, names, "get_evidence")
 	require.Contains(t, names, "list_incident_evidence")
+	require.Contains(t, names, "search_evidence")
 	require.Contains(t, names, "query_metrics")
 	require.Contains(t, names, "query_logs")
 	require.Contains(t, names, "get_ai_job")
@@ -60,6 +63,9 @@ func TestMCPListTools(t *testing.T) {
 	require.Contains(t, names, "list_tool_calls")
 	require.Contains(t, names, "list_silences")
 	require.Contains(t, names, "list_notice_deliveries")
+	require.Contains(t, names, "get_notice_deliveries_by_incident")
+	require.Contains(t, names, "list_notice_deliveries_by_time")
+	require.Contains(t, names, "get_notice_delivery")
 }
 
 func TestMCPCallGetIncident_AllowAndAudit(t *testing.T) {
@@ -434,6 +440,144 @@ func TestMCPCallListToolCalls_ScopeDenied(t *testing.T) {
 	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
 }
 
+func TestMCPCallGetIncidentTimeline_WhitelistOutput(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServer(t)
+	defer cleanup()
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	require.NoError(t, s.DB(context.Background()).Exec(`
+CREATE TABLE incident_timeline (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	incident_id TEXT NOT NULL,
+	event_type TEXT,
+	ref_id TEXT,
+	payload_json TEXT,
+	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`).Error)
+	require.NoError(t, s.DB(context.Background()).Exec(
+		`INSERT INTO incident_timeline (incident_id, event_type, ref_id, payload_json) VALUES (?, ?, ?, ?)`,
+		incident.IncidentID,
+		"alert_ingested",
+		"event-1",
+		`{"message":"demo timeline detail","headers":{"Authorization":"Bearer secret-token"},"token":"abc"}`,
+	).Error)
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "get_incident_timeline",
+		"input": map[string]any{
+			"incident_id": incident.IncidentID,
+			"limit":       20,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "incident.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	assertNoSensitiveLeak(t, respBody)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	output, ok := payload["output"].(map[string]any)
+	require.True(t, ok)
+	events, ok := output["events"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, events)
+
+	firstEvent, ok := events[0].(map[string]any)
+	require.True(t, ok)
+	require.NotContains(t, firstEvent, "payloadJSON")
+	require.NotContains(t, firstEvent, "detail")
+}
+
+func TestMCPCallGetNoticeDelivery_Sanitized(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServer(t)
+	defer cleanup()
+
+	responseBody := `{"secret":"top-secret","ok":false}`
+	errorMessage := "authorization failed with token"
+	incidentID := "incident-notice-sanitized"
+	jobID := "job-notice-sanitized"
+	snapshotEndpoint := "http://notice.local/webhook"
+	snapshotHeaders := `{"Authorization":"Bearer super-secret-token","X-Test":"mcp"}`
+	snapshotSecret := "secret-fingerprint"
+	snapshotTimeout := int64(3200)
+	snapshotVersion := int64(7)
+
+	delivery := &model.NoticeDeliveryM{
+		ChannelID:                 "notice-channel-1",
+		EventType:                 "incident_created",
+		IncidentID:                &incidentID,
+		JobID:                     &jobID,
+		RequestBody:               `{"message":"hello","headers":{"Authorization":"Bearer top-secret"},"token":"abc"}`,
+		ResponseBody:              &responseBody,
+		LatencyMs:                 12,
+		Status:                    "failed",
+		Attempts:                  1,
+		MaxAttempts:               3,
+		NextRetryAt:               time.Now().UTC(),
+		SnapshotEndpointURL:       &snapshotEndpoint,
+		SnapshotTimeoutMs:         &snapshotTimeout,
+		SnapshotHeadersJSON:       &snapshotHeaders,
+		SnapshotSecretFingerprint: &snapshotSecret,
+		SnapshotChannelVersion:    &snapshotVersion,
+		IdempotencyKey:            "idem-notice-mcp",
+		Error:                     &errorMessage,
+	}
+	require.NoError(t, s.NoticeDelivery().Create(context.Background(), delivery))
+	require.NotEmpty(t, delivery.DeliveryID)
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "get_notice_delivery",
+		"input": map[string]any{
+			"delivery_id": delivery.DeliveryID,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "notice.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	assertNoSensitiveLeak(t, respBody)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	output, ok := payload["output"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, delivery.DeliveryID, asString(output["deliveryID"]))
+	require.NotContains(t, output, "idempotencyKey")
+
+	if snapshot, ok := output["snapshot"].(map[string]any); ok {
+		require.NotContains(t, snapshot, "headers")
+		require.NotContains(t, snapshot, "secret")
+		require.NotContains(t, snapshot, "secretFingerprint")
+	}
+}
+
+func TestMCPCallGetNoticeDelivery_ScopeDenied(t *testing.T) {
+	baseURL, cleanup, _, client := newMCPTestServer(t)
+	defer cleanup()
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "get_notice_delivery",
+		"input": map[string]any{
+			"delivery_id": "notice-delivery-scope-denied",
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "incident.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok := payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
+}
+
 func newMCPTestServer(t *testing.T) (baseURL string, cleanup func(), s store.IStore, client *http.Client) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -458,7 +602,13 @@ func newMCPTestServer(t *testing.T) (baseURL string, cleanup func(), s store.ISt
 func newMCPTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := newAIJobLongPollTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.AlertEventM{}, &model.DatasourceM{}, &model.EvidenceM{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.AlertEventM{},
+		&model.DatasourceM{},
+		&model.EvidenceM{},
+		&model.NoticeChannelM{},
+		&model.NoticeDeliveryM{},
+	))
 	return db
 }
 

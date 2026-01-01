@@ -10,6 +10,7 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
@@ -49,6 +50,7 @@ type NoticeBiz interface {
 
 	GetDelivery(ctx context.Context, rq *v1.GetNoticeDeliveryRequest) (*v1.GetNoticeDeliveryResponse, error)
 	ListDeliveries(ctx context.Context, rq *v1.ListNoticeDeliveriesRequest) (*v1.ListNoticeDeliveriesResponse, error)
+	ListDeliveriesByTime(ctx context.Context, rq *ListNoticeDeliveriesByTimeRequest) (*ListNoticeDeliveriesByTimeResponse, error)
 	ReplayDelivery(ctx context.Context, rq *v1.ReplayNoticeDeliveryRequest) (*v1.ReplayNoticeDeliveryResponse, error)
 	CancelDelivery(ctx context.Context, rq *v1.CancelNoticeDeliveryRequest) (*v1.CancelNoticeDeliveryResponse, error)
 
@@ -60,6 +62,21 @@ type NoticeExpansion interface{}
 
 type noticeBiz struct {
 	store store.IStore
+}
+
+type ListNoticeDeliveriesByTimeRequest struct {
+	Offset    int64
+	Limit     int64
+	TimeFrom  time.Time
+	TimeTo    time.Time
+	Status    *string
+	EventType *string
+	ChannelID *string
+}
+
+type ListNoticeDeliveriesByTimeResponse struct {
+	TotalCount int64
+	Deliveries []*v1.NoticeDelivery
 }
 
 var _ NoticeBiz = (*noticeBiz)(nil)
@@ -274,6 +291,41 @@ func (b *noticeBiz) ListDeliveries(ctx context.Context, rq *v1.ListNoticeDeliver
 	}, nil
 }
 
+func (b *noticeBiz) ListDeliveriesByTime(ctx context.Context, rq *ListNoticeDeliveriesByTimeRequest) (*ListNoticeDeliveriesByTimeResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	limit := normalizeNoticeListLimit(rq.Limit, defaultNoticeDeliveryListLimit, maxNoticeDeliveryListLimit)
+	whr := where.T(ctx).O(int(rq.Offset)).L(int(limit)).
+		C(clause.Expr{SQL: "created_at >= ?", Vars: []any{rq.TimeFrom.UTC()}}).
+		C(clause.Expr{SQL: "created_at <= ?", Vars: []any{rq.TimeTo.UTC()}})
+
+	if v := strings.TrimSpace(derefString(rq.Status)); v != "" {
+		whr = whr.F("status", strings.ToLower(v))
+	}
+	if v := strings.TrimSpace(derefString(rq.EventType)); v != "" {
+		whr = whr.F("event_type", strings.ToLower(v))
+	}
+	if v := strings.TrimSpace(derefString(rq.ChannelID)); v != "" {
+		whr = whr.F("channel_id", v)
+	}
+
+	total, list, err := b.store.NoticeDelivery().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrNoticeDeliveryListFailed
+	}
+
+	out := make([]*v1.NoticeDelivery, 0, len(list))
+	for _, item := range list {
+		out = append(out, conversion.NoticeDeliveryMToNoticeDeliveryV1(item))
+	}
+	return &ListNoticeDeliveriesByTimeResponse{
+		TotalCount: total,
+		Deliveries: out,
+	}, nil
+}
+
 //nolint:dupl // Replay/Cancel wrappers intentionally mirror each other with different operation specs.
 func (b *noticeBiz) ReplayDelivery(ctx context.Context, rq *v1.ReplayNoticeDeliveryRequest) (*v1.ReplayNoticeDeliveryResponse, error) {
 	deliveryID := strings.TrimSpace(rq.GetDeliveryID())
@@ -468,6 +520,13 @@ func normalizeNoticeListLimit(limit int64, defaultLimit int64, maxLimit int64) i
 		return maxLimit
 	}
 	return limit
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func toNoticeChannelGetError(err error) error {

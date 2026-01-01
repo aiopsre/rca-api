@@ -15,6 +15,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	evidencebiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
+	incidentbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
+	noticebiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
@@ -33,6 +36,9 @@ const (
 	mcpMaxAuditOutputBytes   = 8 * 1024
 	mcpMaxAuditErrorBytes    = 2 * 1024
 	mcpDefaultPageLimit      = int64(20)
+	mcpMaxPageLimit          = int64(200)
+	mcpMaxSearchTimeRange    = 30 * 24 * time.Hour
+	mcpTimelinePreviewBytes  = 1024
 	mcpPreviewBytes          = 1024
 	mcpMinimumPreviewBytes   = 64
 	mcpMaxJSONPreviewRetries = 8
@@ -83,6 +89,32 @@ type mcpErrorDetails struct {
 //nolint:dupl // Tool schemas are kept explicit per MCP contract for readability.
 var mcpReadonlyTools = []mcpToolDefinition{
 	{
+		Name:           "search_incidents",
+		Description:    "Search incidents with multi-dimensional filters and page/limit.",
+		RequiredScopes: []string{authz.ScopeIncidentRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"namespace":       map[string]any{"type": "string"},
+				"service":         map[string]any{"type": "string"},
+				"severity":        map[string]any{"type": "string"},
+				"status":          map[string]any{"type": "string"},
+				"rca_status":      map[string]any{"type": "string"},
+				"root_cause_type": map[string]any{"type": "string"},
+				"q":               map[string]any{"type": "string"},
+				"time_from":       map[string]any{"type": "string"},
+				"time_to":         map[string]any{"type": "string"},
+				"page":            map[string]any{"type": "integer"},
+				"offset":          map[string]any{"type": "integer"},
+				"limit":           map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpSearchIncidents,
+	},
+	{
 		Name:           "list_incidents",
 		Description:    "List incidents with optional filters and page/limit.",
 		RequiredScopes: []string{authz.ScopeIncidentRead},
@@ -120,6 +152,25 @@ var mcpReadonlyTools = []mcpToolDefinition{
 			"type": "object",
 		},
 		Execute: (*Handler).mcpGetIncident,
+	},
+	{
+		Name:           "get_incident_timeline",
+		Description:    "Get incident timeline events by incident_id with page/limit.",
+		RequiredScopes: []string{authz.ScopeIncidentRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"incident_id": map[string]any{"type": "string"},
+				"page":        map[string]any{"type": "integer"},
+				"offset":      map[string]any{"type": "integer"},
+				"limit":       map[string]any{"type": "integer"},
+			},
+			"required": []string{"incident_id"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpGetIncidentTimeline,
 	},
 	{
 		Name:           "list_alert_events_current",
@@ -257,6 +308,28 @@ var mcpReadonlyTools = []mcpToolDefinition{
 			"type": "object",
 		},
 		Execute: (*Handler).mcpListIncidentEvidence,
+	},
+	{
+		Name:           "search_evidence",
+		Description:    "Search evidence by incident/datasource/type/time filters with page/limit.",
+		RequiredScopes: []string{authz.ScopeEvidenceRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"incident_id":   map[string]any{"type": "string"},
+				"datasource_id": map[string]any{"type": "string"},
+				"type":          map[string]any{"type": "string"},
+				"time_from":     map[string]any{"type": "string"},
+				"time_to":       map[string]any{"type": "string"},
+				"page":          map[string]any{"type": "integer"},
+				"offset":        map[string]any{"type": "integer"},
+				"limit":         map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpSearchEvidence,
 	},
 	{
 		Name:           "query_metrics",
@@ -404,6 +477,64 @@ var mcpReadonlyTools = []mcpToolDefinition{
 			"type": "object",
 		},
 		Execute: (*Handler).mcpListNoticeDeliveries,
+	},
+	{
+		Name:           "get_notice_deliveries_by_incident",
+		Description:    "List notice deliveries by incident_id with page/limit.",
+		RequiredScopes: []string{authz.ScopeNoticeRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"incident_id": map[string]any{"type": "string"},
+				"page":        map[string]any{"type": "integer"},
+				"offset":      map[string]any{"type": "integer"},
+				"limit":       map[string]any{"type": "integer"},
+			},
+			"required": []string{"incident_id"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpGetNoticeDeliveriesByIncident,
+	},
+	{
+		Name:           "list_notice_deliveries_by_time",
+		Description:    "List notice deliveries by created_at range with page/limit.",
+		RequiredScopes: []string{authz.ScopeNoticeRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"time_from":  map[string]any{"type": "string"},
+				"time_to":    map[string]any{"type": "string"},
+				"status":     map[string]any{"type": "string"},
+				"event_type": map[string]any{"type": "string"},
+				"channel_id": map[string]any{"type": "string"},
+				"page":       map[string]any{"type": "integer"},
+				"offset":     map[string]any{"type": "integer"},
+				"limit":      map[string]any{"type": "integer"},
+			},
+			"required": []string{"time_from", "time_to"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpListNoticeDeliveriesByTime,
+	},
+	{
+		Name:           "get_notice_delivery",
+		Description:    "Get one notice delivery by delivery_id.",
+		RequiredScopes: []string{authz.ScopeNoticeRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"delivery_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"delivery_id"},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpGetNoticeDelivery,
 	},
 }
 
@@ -609,6 +740,107 @@ func (h *Handler) mcpGetIncident(c *gin.Context, input map[string]any) (any, boo
 }
 
 //nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
+func (h *Handler) mcpSearchIncidents(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &incidentbiz.SearchIncidentsRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "namespace"); v != "" {
+		req.Namespace = &v
+	}
+	if v := readInputString(input, "service"); v != "" {
+		req.Service = &v
+	}
+	if v := readInputString(input, "severity"); v != "" {
+		req.Severity = &v
+	}
+	if v := readInputString(input, "status"); v != "" {
+		req.Status = &v
+	}
+	if v := readInputString(input, "rca_status", "rcaStatus"); v != "" {
+		req.RCAStatus = &v
+	}
+	if v := readInputString(input, "root_cause_type", "rootCauseType"); v != "" {
+		req.RootCauseType = &v
+	}
+	if v := readInputString(input, "q"); v != "" {
+		req.Q = &v
+	}
+
+	from, to, hasRange, err := parseMCPTimeRange(
+		input,
+		false,
+		mcpMaxSearchTimeRange,
+		[]string{"time_from", "timeFrom"},
+		[]string{"time_to", "timeTo"},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if hasRange {
+		req.TimeFrom = &from
+		req.TimeTo = &to
+	}
+
+	resp, err := h.biz.IncidentV1().Search(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	incidents := make([]map[string]any, 0, len(resp.Incidents))
+	for _, item := range resp.Incidents {
+		incidents = append(incidents, buildMCPIncidentOutput(item))
+	}
+	return map[string]any{
+		"totalCount": resp.TotalCount,
+		"offset":     offset,
+		"limit":      limit,
+		"incidents":  incidents,
+	}, false, nil
+}
+
+func (h *Handler) mcpGetIncidentTimeline(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	incidentID := readInputString(input, "incident_id", "incidentID")
+	getReq := &v1.GetIncidentRequest{IncidentID: incidentID}
+	if err := h.val.ValidateGetIncidentRequest(c.Request.Context(), getReq); err != nil {
+		return nil, false, err
+	}
+	if _, err := h.biz.IncidentV1().Get(c.Request.Context(), getReq); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.IncidentV1().ListTimeline(c.Request.Context(), &incidentbiz.ListIncidentTimelineRequest{
+		IncidentID: incidentID,
+		Offset:     offset,
+		Limit:      limit,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	events := make([]map[string]any, 0, len(resp.Events))
+	for _, item := range resp.Events {
+		events = append(events, buildMCPIncidentTimelineOutput(item))
+	}
+	return map[string]any{
+		"incidentID": incidentID,
+		"totalCount": resp.TotalCount,
+		"offset":     offset,
+		"limit":      limit,
+		"events":     events,
+	}, false, nil
+}
+
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
 func (h *Handler) mcpListAlertEventsCurrent(c *gin.Context, input map[string]any) (any, bool, error) {
 	offset, limit, err := parsePageOffset(input)
 	if err != nil {
@@ -799,22 +1031,7 @@ func (h *Handler) mcpListIncidentEvidence(c *gin.Context, input map[string]any) 
 
 	items := make([]map[string]any, 0, len(resp.GetEvidence()))
 	for _, item := range resp.GetEvidence() {
-		out := map[string]any{
-			"evidenceID":      item.GetEvidenceID(),
-			"incidentID":      item.GetIncidentID(),
-			"type":            item.GetType(),
-			"queryText":       item.GetQueryText(),
-			"timeRangeStart":  timestampToRFC3339(item.GetTimeRangeStart()),
-			"timeRangeEnd":    timestampToRFC3339(item.GetTimeRangeEnd()),
-			"resultSizeBytes": item.GetResultSizeBytes(),
-			"isTruncated":     item.GetIsTruncated(),
-			"createdAt":       timestampToRFC3339(item.GetCreatedAt()),
-			"createdBy":       item.GetCreatedBy(),
-		}
-		putNonEmpty(out, "jobID", strings.TrimSpace(item.GetJobID()))
-		putNonEmpty(out, "datasourceID", strings.TrimSpace(item.GetDatasourceID()))
-		putNonEmpty(out, "summary", strings.TrimSpace(item.GetSummary()))
-		items = append(items, out)
+		items = append(items, buildMCPEvidenceSummaryOutput(item))
 	}
 
 	out := map[string]any{
@@ -824,6 +1041,58 @@ func (h *Handler) mcpListIncidentEvidence(c *gin.Context, input map[string]any) 
 		"evidence":   items,
 	}
 	return out, false, nil
+}
+
+func (h *Handler) mcpSearchEvidence(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &evidencebiz.SearchEvidenceRequest{
+		Offset: offset,
+		Limit:  limit,
+	}
+	if v := readInputString(input, "incident_id", "incidentID"); v != "" {
+		req.IncidentID = &v
+	}
+	if v := readInputString(input, "datasource_id", "datasourceID"); v != "" {
+		req.DatasourceID = &v
+	}
+	if v := readInputString(input, "type"); v != "" {
+		req.Type = &v
+	}
+
+	from, to, hasRange, err := parseMCPTimeRange(
+		input,
+		false,
+		mcpMaxSearchTimeRange,
+		[]string{"time_from", "timeFrom"},
+		[]string{"time_to", "timeTo"},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if hasRange {
+		req.TimeFrom = &from
+		req.TimeTo = &to
+	}
+
+	resp, err := h.biz.EvidenceV1().Search(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	items := make([]map[string]any, 0, len(resp.Evidence))
+	for _, item := range resp.Evidence {
+		items = append(items, buildMCPEvidenceSummaryOutput(item))
+	}
+	return map[string]any{
+		"totalCount": resp.TotalCount,
+		"offset":     offset,
+		"limit":      limit,
+		"evidence":   items,
+	}, false, nil
 }
 
 func (h *Handler) mcpListDatasources(c *gin.Context, input map[string]any) (any, bool, error) {
@@ -1183,6 +1452,135 @@ func (h *Handler) mcpListNoticeDeliveries(c *gin.Context, input map[string]any) 
 	}, false, nil
 }
 
+func (h *Handler) mcpGetNoticeDeliveriesByIncident(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &v1.ListNoticeDeliveriesRequest{
+		IncidentID: ptrString(readInputString(input, "incident_id", "incidentID")),
+		Offset:     offset,
+		Limit:      limit,
+	}
+	if req.IncidentID == nil {
+		return nil, false, errorsx.ErrInvalidArgument
+	}
+	if err := h.val.ValidateListNoticeDeliveriesRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+	resp, err := h.biz.NoticeV1().ListDeliveries(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	items := make([]map[string]any, 0, len(resp.GetNoticeDeliveries()))
+	for _, item := range resp.GetNoticeDeliveries() {
+		items = append(items, buildMCPNoticeDeliveryOutput(item))
+	}
+	return map[string]any{
+		"incidentID":       req.GetIncidentID(),
+		"totalCount":       resp.GetTotalCount(),
+		"offset":           offset,
+		"limit":            limit,
+		"noticeDeliveries": items,
+	}, false, nil
+}
+
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
+func (h *Handler) mcpListNoticeDeliveriesByTime(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	from, to, _, err := parseMCPTimeRange(
+		input,
+		true,
+		mcpMaxSearchTimeRange,
+		[]string{"time_from", "timeFrom"},
+		[]string{"time_to", "timeTo"},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &noticebiz.ListNoticeDeliveriesByTimeRequest{
+		Offset:   offset,
+		Limit:    limit,
+		TimeFrom: from,
+		TimeTo:   to,
+	}
+	if v := readInputString(input, "status"); v != "" {
+		req.Status = &v
+	}
+	if v := readInputString(input, "event_type", "eventType"); v != "" {
+		req.EventType = &v
+	}
+	if v := readInputString(input, "channel_id", "channelID"); v != "" {
+		req.ChannelID = &v
+	}
+
+	if err := h.val.ValidateListNoticeDeliveriesRequest(c.Request.Context(), &v1.ListNoticeDeliveriesRequest{
+		ChannelID: req.ChannelID,
+		EventType: req.EventType,
+		Status:    req.Status,
+		Offset:    offset,
+		Limit:     limit,
+	}); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.NoticeV1().ListDeliveriesByTime(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	items := make([]map[string]any, 0, len(resp.Deliveries))
+	for _, item := range resp.Deliveries {
+		items = append(items, buildMCPNoticeDeliveryOutput(item))
+	}
+	out := map[string]any{
+		"timeFrom":         from.UTC().Format(time.RFC3339Nano),
+		"timeTo":           to.UTC().Format(time.RFC3339Nano),
+		"totalCount":       resp.TotalCount,
+		"offset":           offset,
+		"limit":            limit,
+		"noticeDeliveries": items,
+	}
+	if req.Status != nil {
+		out["status"] = strings.ToLower(strings.TrimSpace(*req.Status))
+	}
+	if req.EventType != nil {
+		out["eventType"] = strings.ToLower(strings.TrimSpace(*req.EventType))
+	}
+	if req.ChannelID != nil {
+		out["channelID"] = strings.TrimSpace(*req.ChannelID)
+	}
+	return out, false, nil
+}
+
+//nolint:dupl // Pattern matches other get-by-id tool branches by design.
+func (h *Handler) mcpGetNoticeDelivery(c *gin.Context, input map[string]any) (any, bool, error) {
+	req := &v1.GetNoticeDeliveryRequest{
+		DeliveryID: readInputString(input, "delivery_id", "deliveryID"),
+	}
+	if err := h.val.ValidateGetNoticeDeliveryRequest(c.Request.Context(), req); err != nil {
+		return nil, false, err
+	}
+
+	resp, err := h.biz.NoticeV1().GetDelivery(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+	delivery := resp.GetNoticeDelivery()
+	if delivery == nil {
+		return nil, false, errno.ErrNoticeDeliveryNotFound
+	}
+
+	return buildMCPNoticeDeliveryDetailOutput(delivery), false, nil
+}
+
 func (h *Handler) recordMCPToolCall(
 	c *gin.Context,
 	tool string,
@@ -1428,6 +1826,7 @@ func normalizeWarningList(raw any) []string {
 	return out
 }
 
+//nolint:gocognit,gocyclo // Pagination parser keeps MCP input handling explicit.
 func parsePageOffset(input map[string]any) (int64, int64, error) {
 	limit := mcpDefaultPageLimit
 	if v, ok, err := readInputInt64(input, "limit"); err != nil {
@@ -1435,12 +1834,18 @@ func parsePageOffset(input map[string]any) (int64, int64, error) {
 	} else if ok {
 		limit = v
 	}
+	if limit <= 0 || limit > mcpMaxPageLimit {
+		return 0, 0, errorsx.ErrInvalidArgument
+	}
 
 	offset, hasOffset, err := readInputInt64(input, "offset")
 	if err != nil {
 		return 0, 0, err
 	}
 	if hasOffset {
+		if offset < 0 {
+			return 0, 0, errorsx.ErrInvalidArgument
+		}
 		return offset, limit, nil
 	}
 
@@ -1454,10 +1859,63 @@ func parsePageOffset(input map[string]any) (int64, int64, error) {
 	if page <= 0 {
 		return 0, 0, errorsx.ErrInvalidArgument
 	}
-	if limit <= 0 {
-		return 0, 0, errorsx.ErrInvalidArgument
-	}
 	return (page - 1) * limit, limit, nil
+}
+
+//nolint:gocognit,gocyclo // Time range parser keeps MCP guardrails explicit.
+func parseMCPTimeRange(
+	input map[string]any,
+	required bool,
+	maxRange time.Duration,
+	fromKeys []string,
+	toKeys []string,
+) (time.Time, time.Time, bool, error) {
+
+	from, hasFrom, err := readOptionalInputTime(input, fromKeys...)
+	if err != nil {
+		return time.Time{}, time.Time{}, false, err
+	}
+	to, hasTo, err := readOptionalInputTime(input, toKeys...)
+	if err != nil {
+		return time.Time{}, time.Time{}, false, err
+	}
+
+	if required {
+		if !hasFrom || !hasTo {
+			return time.Time{}, time.Time{}, false, errorsx.ErrInvalidArgument
+		}
+	} else if hasFrom != hasTo {
+		return time.Time{}, time.Time{}, false, errorsx.ErrInvalidArgument
+	}
+
+	if !hasFrom && !hasTo {
+		return time.Time{}, time.Time{}, false, nil
+	}
+	if from.After(to) {
+		return time.Time{}, time.Time{}, false, errorsx.ErrInvalidArgument
+	}
+	if maxRange > 0 && to.Sub(from) > maxRange {
+		return time.Time{}, time.Time{}, false, errorsx.ErrInvalidArgument
+	}
+	return from, to, true, nil
+}
+
+func readOptionalInputTime(input map[string]any, keys ...string) (time.Time, bool, error) {
+	ts, has, err := readInputTimestamp(input, keys...)
+	if err != nil {
+		return time.Time{}, has, err
+	}
+	if !has {
+		return time.Time{}, false, nil
+	}
+	if ts == nil {
+		return time.Time{}, true, errorsx.ErrInvalidArgument
+	}
+	t := ts.AsTime().UTC()
+	if t.IsZero() {
+		return time.Time{}, true, errorsx.ErrInvalidArgument
+	}
+	return t, true, nil
 }
 
 func readInputString(input map[string]any, keys ...string) string {
@@ -1808,6 +2266,25 @@ func buildMCPDatasourceOutput(item *v1.Datasource) map[string]any {
 	return out
 }
 
+func buildMCPEvidenceSummaryOutput(item *v1.Evidence) map[string]any {
+	out := map[string]any{
+		"evidenceID":      item.GetEvidenceID(),
+		"incidentID":      item.GetIncidentID(),
+		"type":            item.GetType(),
+		"queryText":       item.GetQueryText(),
+		"timeRangeStart":  timestampToRFC3339(item.GetTimeRangeStart()),
+		"timeRangeEnd":    timestampToRFC3339(item.GetTimeRangeEnd()),
+		"resultSizeBytes": item.GetResultSizeBytes(),
+		"isTruncated":     item.GetIsTruncated(),
+		"createdAt":       timestampToRFC3339(item.GetCreatedAt()),
+		"createdBy":       item.GetCreatedBy(),
+	}
+	putNonEmpty(out, "jobID", strings.TrimSpace(item.GetJobID()))
+	putNonEmpty(out, "datasourceID", strings.TrimSpace(item.GetDatasourceID()))
+	putNonEmpty(out, "summary", strings.TrimSpace(item.GetSummary()))
+	return out
+}
+
 func buildMCPAIJobOutput(job *v1.AIJob) map[string]any {
 	out := map[string]any{
 		"jobID":          job.GetJobID(),
@@ -1921,6 +2398,60 @@ func buildMCPNoticeDeliveryOutput(item *v1.NoticeDelivery) map[string]any {
 	if ts := timestampToRFC3339(item.GetLockedAt()); ts != "" {
 		out["lockedAt"] = ts
 	}
+	return out
+}
+
+func buildMCPIncidentTimelineOutput(event *incidentbiz.IncidentTimelineEvent) map[string]any {
+	out := map[string]any{}
+	if event == nil {
+		return out
+	}
+	putNonEmpty(out, "eventType", strings.TrimSpace(event.EventType))
+	putNonEmpty(out, "refID", strings.TrimSpace(event.RefID))
+	if !event.CreatedAt.IsZero() {
+		out["createdAt"] = event.CreatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if detail := strings.TrimSpace(event.Detail); detail != "" {
+		preview, truncated := truncateStringByBytes(sanitizeJSONString(detail), mcpTimelinePreviewBytes)
+		putNonEmpty(out, "detailPreview", preview)
+		if truncated {
+			out["detailTruncated"] = true
+		}
+	}
+	return out
+}
+
+//nolint:gocognit,gocyclo // Delivery detail output keeps explicit whitelist/sanitization logic.
+func buildMCPNoticeDeliveryDetailOutput(item *v1.NoticeDelivery) map[string]any {
+	out := buildMCPNoticeDeliveryOutput(item)
+	if item == nil {
+		return out
+	}
+
+	if request := strings.TrimSpace(item.GetRequestBody()); request != "" {
+		out["requestBody"] = clampJSONStringByBytes(sanitizeJSONString(request), mcpMaxAuditInputBytes)
+	}
+	if response := strings.TrimSpace(item.GetResponseBody()); response != "" {
+		out["responseBody"] = clampJSONStringByBytes(sanitizeJSONString(response), mcpMaxAuditOutputBytes)
+	}
+	if errText := strings.TrimSpace(item.GetError()); errText != "" {
+		out["error"] = sanitizeAuditError(errText)
+	}
+
+	if snapshot := item.GetSnapshot(); snapshot != nil {
+		sanitized := map[string]any{}
+		putNonEmpty(sanitized, "endpointURL", strings.TrimSpace(snapshot.GetEndpointURL()))
+		if snapshot.TimeoutMs != nil {
+			sanitized["timeoutMs"] = snapshot.GetTimeoutMs()
+		}
+		if snapshot.ChannelVersion != nil {
+			sanitized["channelVersion"] = snapshot.GetChannelVersion()
+		}
+		if len(sanitized) > 0 {
+			out["snapshot"] = sanitized
+		}
+	}
+
 	return out
 }
 
@@ -2166,6 +2697,14 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func ptrString(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 func mustMarshalJSON(value any) string {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/clients"
@@ -45,16 +46,20 @@ type EvidenceDatasourceClient interface {
 }
 
 // EvidenceBiz defines evidence use-cases.
+//
+//nolint:interfacebloat // Query/save/get/list/search are intentionally grouped in one biz entrypoint.
 type EvidenceBiz interface {
 	QueryMetrics(ctx context.Context, rq *v1.QueryMetricsRequest) (*v1.QueryMetricsResponse, error)
 	QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*v1.QueryLogsResponse, error)
 	Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1.SaveEvidenceResponse, error)
 	Get(ctx context.Context, rq *v1.GetEvidenceRequest) (*v1.GetEvidenceResponse, error)
 	ListByIncident(ctx context.Context, rq *v1.ListIncidentEvidenceRequest) (*v1.ListIncidentEvidenceResponse, error)
+	Search(ctx context.Context, rq *SearchEvidenceRequest) (*SearchEvidenceResponse, error)
 
 	EvidenceExpansion
 }
 
+//nolint:modernize // Keep explicit empty interface as placeholder expansion point.
 type EvidenceExpansion interface{}
 
 type evidenceBiz struct {
@@ -62,6 +67,21 @@ type evidenceBiz struct {
 	guardrails policy.EvidenceGuardrails
 	limiter    *policy.DatasourceRateLimiter
 	client     EvidenceDatasourceClient
+}
+
+type SearchEvidenceRequest struct {
+	Offset       int64
+	Limit        int64
+	IncidentID   *string
+	DatasourceID *string
+	Type         *string
+	TimeFrom     *time.Time
+	TimeTo       *time.Time
+}
+
+type SearchEvidenceResponse struct {
+	TotalCount int64
+	Evidence   []*v1.Evidence
 }
 
 var _ EvidenceBiz = (*evidenceBiz)(nil)
@@ -82,6 +102,7 @@ func NewWithDeps(store store.IStore, guardrails policy.EvidenceGuardrails, clien
 	}
 }
 
+//nolint:gocognit,gocyclo // Guardrails and error mapping are intentionally explicit.
 func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsRequest) (*v1.QueryMetricsResponse, error) {
 	startedAt := time.Now()
 	outcome := "ok"
@@ -129,7 +150,7 @@ func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsReque
 	result, rowCount, err := b.client.QueryPrometheusRange(queryCtx, datasource, strings.TrimSpace(rq.GetPromql()), start, end, step)
 	if err != nil {
 		mapped := toDatasourceQueryError(err)
-		if mapped == errno.ErrEvidenceQueryTimeout {
+		if errors.Is(mapped, errno.ErrEvidenceQueryTimeout) {
 			outcome = "timeout"
 		} else {
 			outcome = "dependency_error"
@@ -162,6 +183,7 @@ func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsReque
 	}, nil
 }
 
+//nolint:gocognit,gocyclo // Guardrails and backend selection are intentionally explicit.
 func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*v1.QueryLogsResponse, error) {
 	startedAt := time.Now()
 	outcome := "ok"
@@ -221,7 +243,7 @@ func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*
 	}
 	if err != nil {
 		mapped := toDatasourceQueryError(err)
-		if mapped == errno.ErrEvidenceQueryTimeout {
+		if errors.Is(mapped, errno.ErrEvidenceQueryTimeout) {
 			outcome = "timeout"
 		} else {
 			outcome = "dependency_error"
@@ -254,6 +276,7 @@ func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*
 	}, nil
 }
 
+//nolint:gocognit,gocyclo // Save flow keeps idempotency and guardrails explicit.
 func (b *evidenceBiz) Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1.SaveEvidenceResponse, error) {
 	start := rq.GetTimeRangeStart().AsTime()
 	end := rq.GetTimeRangeEnd().AsTime()
@@ -385,6 +408,53 @@ func (b *evidenceBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentEvi
 	}, nil
 }
 
+func (b *evidenceBiz) Search(ctx context.Context, rq *SearchEvidenceRequest) (*SearchEvidenceResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	whr := where.T(ctx).P(int(rq.Offset), int(limit))
+	if v := trimOptionalString(rq.IncidentID); v != "" {
+		whr = whr.F("incident_id", v)
+	}
+	if v := trimOptionalString(rq.DatasourceID); v != "" {
+		whr = whr.F("datasource_id", v)
+	}
+	if v := trimOptionalString(rq.Type); v != "" {
+		whr = whr.F("type", strings.ToLower(v))
+	}
+	if rq.TimeFrom != nil {
+		whr = whr.C(clause.Expr{
+			SQL:  "time_range_start >= ?",
+			Vars: []any{rq.TimeFrom.UTC()},
+		})
+	}
+	if rq.TimeTo != nil {
+		whr = whr.C(clause.Expr{
+			SQL:  "time_range_end <= ?",
+			Vars: []any{rq.TimeTo.UTC()},
+		})
+	}
+
+	total, list, err := b.store.Evidence().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrEvidenceListFailed
+	}
+
+	out := make([]*v1.Evidence, 0, len(list))
+	for _, item := range list {
+		out = append(out, conversion.EvidenceMToEvidenceV1(item))
+	}
+	return &SearchEvidenceResponse{
+		TotalCount: total,
+		Evidence:   out,
+	}, nil
+}
+
 func (b *evidenceBiz) getActiveDatasource(ctx context.Context, datasourceID string) (*model.DatasourceM, error) {
 	m, err := b.store.Datasource().Get(ctx, where.T(ctx).F("datasource_id", strings.TrimSpace(datasourceID)))
 	if err != nil {
@@ -434,7 +504,11 @@ func (b *evidenceBiz) normalizeRawResult(result string, maxBytes int) (string, i
 		"reason":    "max_result_bytes_exceeded",
 		"preview":   preview,
 	}
-	out, _ := json.Marshal(wrapped)
+	out, err := json.Marshal(wrapped)
+	if err != nil {
+		fallback := `{"truncated":true,"reason":"marshal_failed"}`
+		return fallback, size, true
+	}
 	return string(out), size, true
 }
 
@@ -444,7 +518,10 @@ func (b *evidenceBiz) truncatedResultJSON(existing string, reason string) string
 		"reason":    reason,
 		"preview":   existing,
 	}
-	out, _ := json.Marshal(wrapped)
+	out, err := json.Marshal(wrapped)
+	if err != nil {
+		return `{"truncated":true,"reason":"marshal_failed"}`
+	}
 	return string(out)
 }
 
@@ -497,4 +574,11 @@ func isDuplicateKeyError(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "duplicate") || strings.Contains(lower, "unique constraint")
+}
+
+func trimOptionalString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
 }

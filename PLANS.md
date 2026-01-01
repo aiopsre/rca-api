@@ -716,3 +716,24 @@ python -m orchestrator.main
   * `query_metrics/query_logs` 仍严格复用 evidence guardrails（不可绕过）
 * 新增回归脚本 `scripts/test_c3_L1_mcp_more_tools.sh` 覆盖 allow/deny/截断/脱敏与审计查询，并通过；
 * `make test` 与 `make lint-new` 均通过。
+
+---
+
+## C4 MCP Readonly Advanced Views（Done Definition）
+
+* 在 rca-api MCP shim（`/v1/mcp/tools`、`/v1/mcp/tools/call`）新增只读视图工具：
+
+  * `search_incidents`
+  * `get_incident_timeline`
+  * `search_evidence`
+  * `get_notice_deliveries_by_incident`
+  * `list_notice_deliveries_by_time`
+  * `get_notice_delivery`
+* 所有新增工具：
+
+  * required_scopes 基于 X-Scopes 默认拒绝（incident.read/evidence.read/notice.read）
+  * 强制分页与时间窗校验（超限/非法 → INVALID_ARGUMENT）
+  * 输出白名单 + 脱敏 + 截断（审计与响应阈值沿用平台既定）
+  * 每次调用写 ToolCall 审计（tool_name=mcp.*）
+* 新增回归脚本 `scripts/test_c4_L1_mcp_advanced_views.sh` 覆盖 allow/deny/截断/审计并通过；
+* `make test` 与 `make lint-new` 均通过。
