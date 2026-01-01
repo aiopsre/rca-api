@@ -11,6 +11,8 @@ import (
 const (
 	scopeHeader = "X-Scopes"
 
+	ScopeIncidentRead = "incident.read"
+
 	ScopeAlertRead   = "alert.read"
 	ScopeAlertIngest = "alert.ingest"
 	ScopeAlertAck    = "alert.ack"

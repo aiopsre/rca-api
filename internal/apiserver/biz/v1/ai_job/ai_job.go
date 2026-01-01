@@ -72,6 +72,7 @@ type AIJobBiz interface {
 	Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error)
 	CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error)
 	ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequest) (*v1.ListAIToolCallsResponse, error)
+	RecordToolCallAudit(ctx context.Context, rq *RecordToolCallAuditRequest) (string, error)
 
 	AIJobExpansion
 }
@@ -81,6 +82,21 @@ type AIJobExpansion interface{}
 
 type aiJobBiz struct {
 	store store.IStore
+}
+
+// RecordToolCallAuditRequest writes one audit row to ai_tool_calls without AI job status gating.
+// It is used by MCP read-only tool shim to reuse ToolCall audit storage.
+type RecordToolCallAuditRequest struct {
+	JobID             string
+	Seq               int64
+	NodeName          string
+	ToolName          string
+	RequestJSON       string
+	ResponseJSON      *string
+	ResponseSizeBytes int64
+	Status            string
+	LatencyMs         int64
+	ErrorMessage      *string
 }
 
 var _ AIJobBiz = (*aiJobBiz)(nil)
@@ -574,6 +590,58 @@ func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRe
 	}
 
 	return &v1.CreateAIToolCallResponse{ToolCallID: outID}, nil
+}
+
+//nolint:gocognit,gocyclo // Validation+persist path is intentionally explicit for audit safety.
+func (b *aiJobBiz) RecordToolCallAudit(ctx context.Context, rq *RecordToolCallAuditRequest) (string, error) {
+	if rq == nil {
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+
+	jobID := strings.TrimSpace(rq.JobID)
+	nodeName := strings.TrimSpace(rq.NodeName)
+	toolName := strings.TrimSpace(rq.ToolName)
+	requestJSON := strings.TrimSpace(rq.RequestJSON)
+	status := strings.ToLower(strings.TrimSpace(rq.Status))
+	if jobID == "" || rq.Seq <= 0 || nodeName == "" || toolName == "" || requestJSON == "" {
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+	if status != "ok" && status != "error" && status != "timeout" && status != "canceled" {
+		return "", errno.ErrAIToolCallInvalidStatus
+	}
+	if rq.LatencyMs < 0 {
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+
+	call := &model.AIToolCallM{
+		JobID:             jobID,
+		Seq:               rq.Seq,
+		NodeName:          nodeName,
+		ToolName:          toolName,
+		RequestJSON:       requestJSON,
+		ResponseSizeBytes: rq.ResponseSizeBytes,
+		Status:            status,
+		LatencyMs:         rq.LatencyMs,
+	}
+	if rq.ResponseJSON != nil {
+		v := strings.TrimSpace(*rq.ResponseJSON)
+		call.ResponseJSON = &v
+	}
+	if rq.ErrorMessage != nil {
+		v := strings.TrimSpace(*rq.ErrorMessage)
+		call.ErrorMessage = &v
+	}
+
+	if err := b.store.AIToolCall().Create(ctx, call); err != nil {
+		if isDuplicateKeyError(err) {
+			existing, getErr := b.store.AIToolCall().Get(ctx, where.T(ctx).F("job_id", jobID, "seq", rq.Seq))
+			if getErr == nil {
+				return existing.ToolCallID, nil
+			}
+		}
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+	return call.ToolCallID, nil
 }
 
 func (b *aiJobBiz) ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequest) (*v1.ListAIToolCallsResponse, error) {

@@ -672,3 +672,15 @@ python -m orchestrator.main
    - 禁止 missing/conflict 与 confidence>0.60 同时出现
 4) 新增回归脚本 scripts/test_p0_L5_quality_gate.sh 覆盖 missing/conflict（必选）与 pass（可选），并断言 toolcalls 中 gate_decision 存在
 5) make test / make lint-new 通过
+
+
+---
+
+## C1 MCP Readonly Tools（Done Definition）
+
+* 提供 `/v1/mcp/tools` 与 `/v1/mcp/tools/call` 两个接口；
+* 支持 6 个 tool：get_incident、list_alert_events_current、get_evidence、list_incident_evidence、query_metrics、query_logs；
+* tool 权限：基于 `X-Scopes` 映射，默认拒绝，403 返回固定错误结构；
+* query_metrics/query_logs 复用 evidence guardrails（时间窗/limit/timeout/max_result_bytes/限流）；
+* 每次调用写入 ToolCall 审计（tool_name=mcp.*，input/output/error/latency，截断一致，严禁泄露 secret/headers/token）；
+* 新增回归脚本 `scripts/test_c1_L1_mcp_tools.sh` 通过；并保证 `make test`、`make lint-new` 通过。
