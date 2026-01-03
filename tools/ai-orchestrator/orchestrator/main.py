@@ -3,10 +3,12 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import os
+import socket
+import threading
 import time
 from typing import Any, Dict, List
 
-from .graph import OrchestratorConfig, build_graph
+from .graph import LeaseGuard, OrchestratorConfig, build_graph
 from .state import GraphState
 from .tools_rca_api import RCAApiClient
 
@@ -17,7 +19,9 @@ class Settings:
     scopes: str
     mcp_scopes: str
     mcp_verify_remote_tools: bool
+    instance_id: str
     poll_interval_ms: int
+    lease_heartbeat_interval_seconds: int
     concurrency: int
     run_query: bool
     force_no_evidence: bool
@@ -49,12 +53,17 @@ def _env_bool(name: str, default: bool) -> bool:
 def load_settings() -> Settings:
     long_poll_wait_seconds = _env_int("LONG_POLL_WAIT_SECONDS", 20)
     long_poll_wait_seconds = max(0, min(30, long_poll_wait_seconds))
+    default_instance_id = f"{socket.gethostname()}-{os.getpid()}"
+    lease_heartbeat_interval_seconds = _env_int("LEASE_HEARTBEAT_INTERVAL_SECONDS", 10)
+    lease_heartbeat_interval_seconds = max(1, lease_heartbeat_interval_seconds)
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
         mcp_scopes=os.getenv("RCA_API_SCOPES", "").strip(),
         mcp_verify_remote_tools=_env_bool("MCP_VERIFY_REMOTE_TOOLS", False),
+        instance_id=os.getenv("INSTANCE_ID", default_instance_id).strip() or default_instance_id,
         poll_interval_ms=max(100, _env_int("POLL_INTERVAL_MS", 1000)),
+        lease_heartbeat_interval_seconds=lease_heartbeat_interval_seconds,
         concurrency=max(1, _env_int("CONCURRENCY", 1)),
         run_query=_env_bool("RUN_QUERY", False),
         force_no_evidence=_env_bool("FORCE_NO_EVIDENCE", False),
@@ -82,9 +91,45 @@ def _extract_job_id(job_obj: Dict[str, Any]) -> str:
     return str(job_obj.get("jobID") or job_obj.get("job_id") or "").strip()
 
 
-def _invoke_graph(compiled_graph, job_id: str, debug: bool) -> None:
-    state = GraphState(job_id=job_id)
+def _new_client(settings: Settings) -> RCAApiClient:
+    return RCAApiClient(
+        settings.base_url,
+        settings.scopes,
+        instance_id=settings.instance_id,
+        timeout_s=10.0,
+        mcp_scopes=settings.mcp_scopes,
+        mcp_verify_remote_tools=settings.mcp_verify_remote_tools,
+    )
+
+
+def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
+    client = _new_client(settings)
+    if not client.start_job(job_id):
+        if debug:
+            _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
+        return
+
+    lease_guard = LeaseGuard()
+    stop_event = threading.Event()
+
+    def heartbeat_loop() -> None:
+        while not stop_event.wait(settings.lease_heartbeat_interval_seconds):
+            ok, reason = client.renew_job_lease(job_id)
+            if ok:
+                continue
+            lease_guard.mark_lost(reason)
+            _log(f"lease heartbeat failed job={job_id} instance_id={settings.instance_id} reason={reason}")
+            stop_event.set()
+            return
+
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
+    state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
+    compiled_graph = build_graph(client, graph_cfg, lease_guard)
     final_state = compiled_graph.invoke(state)
+    stop_event.set()
+    heartbeat_thread.join(timeout=2.0)
+
     if isinstance(final_state, dict):
         final_state = GraphState.model_validate(final_state)
     if debug:
@@ -101,9 +146,11 @@ def main() -> None:
     _log(
         "orchestrator starting "
         f"base_url={settings.base_url} "
+        f"instance_id={settings.instance_id} "
         f"mcp_scopes_set={int(bool(settings.mcp_scopes))} "
         f"mcp_verify_remote_tools={int(settings.mcp_verify_remote_tools)} "
         f"poll_interval_ms={settings.poll_interval_ms} "
+        f"lease_heartbeat_interval_seconds={settings.lease_heartbeat_interval_seconds} "
         f"concurrency={settings.concurrency} "
         f"run_query={int(settings.run_query)} "
         f"force_no_evidence={int(settings.force_no_evidence)} "
@@ -111,13 +158,7 @@ def main() -> None:
         f"long_poll_wait_seconds={settings.long_poll_wait_seconds}"
     )
 
-    client = RCAApiClient(
-        settings.base_url,
-        settings.scopes,
-        timeout_s=10.0,
-        mcp_scopes=settings.mcp_scopes,
-        mcp_verify_remote_tools=settings.mcp_verify_remote_tools,
-    )
+    poll_client = _new_client(settings)
     graph_cfg = OrchestratorConfig(
         run_query=settings.run_query,
         force_no_evidence=settings.force_no_evidence,
@@ -125,13 +166,12 @@ def main() -> None:
         ds_base_url=settings.ds_base_url,
         auto_create_datasource=settings.auto_create_datasource,
     )
-    compiled_graph = build_graph(client, graph_cfg)
 
     sleep_s = settings.poll_interval_ms / 1000.0
     wait_seconds = 0
     while True:
         try:
-            listed = client.list_jobs(
+            listed = poll_client.list_jobs(
                 status="queued",
                 limit=settings.pull_limit,
                 offset=0,
@@ -155,7 +195,7 @@ def main() -> None:
                         continue
                     if settings.debug:
                         _log(f"[DEBUG] invoking graph for job={job_id}")
-                    _invoke_graph(compiled_graph, job_id, settings.debug)
+                    _invoke_graph(settings, graph_cfg, job_id, settings.debug)
             else:
                 max_workers = min(settings.concurrency, len(jobs))
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -164,7 +204,7 @@ def main() -> None:
                         job_id = _extract_job_id(job)
                         if not job_id:
                             continue
-                        futures.append(pool.submit(_invoke_graph, compiled_graph, job_id, settings.debug))
+                        futures.append(pool.submit(_invoke_graph, settings, graph_cfg, job_id, settings.debug))
                     for future in futures:
                         future.result()
         except Exception as exc:  # noqa: BLE001

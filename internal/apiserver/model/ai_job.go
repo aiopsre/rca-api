@@ -1,3 +1,4 @@
+//nolint:tagalign
 package model
 
 import "time"
@@ -20,6 +21,10 @@ type AIJobM struct {
 	EvidenceIDsJSON *string    `gorm:"column:evidence_ids_json;type:text" json:"evidence_ids_json"`
 	ErrorMessage    *string    `gorm:"column:error_message;type:text" json:"error_message"`
 	IdempotencyKey  *string    `gorm:"column:idempotency_key;uniqueIndex:uniq_ai_jobs_idempotency_key" json:"idempotency_key"`
+	LeaseOwner      *string    `gorm:"column:lease_owner;type:varchar(128);index:idx_ai_jobs_lease_owner" json:"lease_owner"`
+	LeaseExpiresAt  *time.Time `gorm:"column:lease_expires_at;index:idx_ai_jobs_lease_expires_at" json:"lease_expires_at"`
+	LeaseVersion    int64      `gorm:"column:lease_version;not null;default:0" json:"lease_version"`
+	HeartbeatAt     *time.Time `gorm:"column:heartbeat_at" json:"heartbeat_at"`
 	CreatedBy       string     `gorm:"column:created_by;not null" json:"created_by"`
 	CreatedAt       time.Time  `gorm:"column:created_at;index:idx_ai_jobs_incident_id_created_at,priority:2;index:idx_ai_jobs_status_created_at,priority:2;not null;default:current_timestamp" json:"created_at"`
 	StartedAt       *time.Time `gorm:"column:started_at" json:"started_at"`

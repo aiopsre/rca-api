@@ -15,6 +15,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -796,6 +797,101 @@ func TestAIJobFinalize_DiagnosisWrittenTriggersNoticeDelivery(t *testing.T) {
 	require.Equal(t, runResp.GetJobID(), *deliveries[0].JobID)
 }
 
+func TestAIJobStart_MultiOwnerClaimAndRenew(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidTransition, err)
+
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+func TestAIJobStart_LegacyRunningIdempotent(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+func TestAIJobList_ReclaimExpiredLeaseToQueued(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	expiredAt := time.Now().UTC().Add(-2 * time.Minute)
+	require.NoError(t, s.DB(context.Background()).
+		Model(&model.AIJobM{}).
+		Where("job_id = ?", runResp.JobID).
+		Update("lease_expires_at", expiredAt).Error)
+
+	resp, err := biz.List(context.Background(), &v1.ListAIJobsRequest{
+		Status: "queued",
+		Offset: 0,
+		Limit:  20,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	reclaimed, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "queued", reclaimed.Status)
+	require.Nil(t, reclaimed.LeaseOwner)
+	require.Nil(t, reclaimed.LeaseExpiresAt)
+
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
 func newAIJobTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
@@ -842,7 +938,7 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIToolCallM{}, &model.EvidenceM{}))
+	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}, &model.EvidenceM{}))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }

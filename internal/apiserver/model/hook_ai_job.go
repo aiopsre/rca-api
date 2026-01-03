@@ -19,7 +19,9 @@ func (m *AIToolCallM) AfterCreate(tx *gorm.DB) error {
 	return tx.Model(m).UpdateColumn("tool_call_id", m.ToolCallID).Error
 }
 
+//nolint:gochecknoinits // Model registry hooks are intentionally init-based in this codebase.
 func init() {
 	registry.Register(&AIJobM{})
 	registry.Register(&AIToolCallM{})
+	registry.Register(&AIJobQueueSignalM{})
 }

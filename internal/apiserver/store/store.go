@@ -35,6 +35,7 @@ type IStore interface {
 	Datasource() DatasourceStore
 	Evidence() EvidenceStore
 	AIJob() AIJobStore
+	AIJobQueueSignal() AIJobQueueSignalStore
 	AIToolCall() AIToolCallStore
 	Silence() SilenceStore
 	NoticeChannel() NoticeChannelStore
@@ -130,6 +131,10 @@ func (s *store) Evidence() EvidenceStore {
 
 func (s *store) AIJob() AIJobStore {
 	return newAIJobStore(s)
+}
+
+func (s *store) AIJobQueueSignal() AIJobQueueSignalStore {
+	return newAIJobQueueSignalStore(s)
 }
 
 func (s *store) AIToolCall() AIToolCallStore {

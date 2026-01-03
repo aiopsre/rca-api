@@ -269,7 +269,7 @@ func listPendingCandidateIDs(tx *gorm.DB, limit int, now time.Time, staleBefore 
 
 func claimDeliveryID(tx *gorm.DB, id int64, workerID string, now time.Time, staleBefore time.Time) (bool, error) {
 	res := tx.Model(&model.NoticeDeliveryM{}).
-		Where("id = ? AND status = ? AND (locked_at IS NULL OR locked_at < ?)", id, "pending", staleBefore).
+		Where("id = ? AND status = ? AND next_retry_at <= ? AND (locked_at IS NULL OR locked_at < ?)", id, "pending", now, staleBefore).
 		Updates(map[string]any{
 			"locked_by": workerID,
 			"locked_at": now,
@@ -357,7 +357,7 @@ func (n *noticeDeliveryStore) MarkSucceeded(
 ) error {
 
 	res := n.s.DB(ctx).Model(&model.NoticeDeliveryM{}).
-		Where("delivery_id = ? AND locked_by = ?", deliveryID, workerID).
+		Where("delivery_id = ? AND status = ? AND locked_by = ?", deliveryID, "pending", workerID).
 		Updates(map[string]any{
 			"status":        "succeeded",
 			"attempts":      gorm.Expr("attempts + 1"),
@@ -390,7 +390,7 @@ func (n *noticeDeliveryStore) MarkRetry(
 ) error {
 
 	res := n.s.DB(ctx).Model(&model.NoticeDeliveryM{}).
-		Where("delivery_id = ? AND locked_by = ?", deliveryID, workerID).
+		Where("delivery_id = ? AND status = ? AND locked_by = ?", deliveryID, "pending", workerID).
 		Updates(map[string]any{
 			"status":        "pending",
 			"attempts":      gorm.Expr("attempts + 1"),
@@ -422,7 +422,7 @@ func (n *noticeDeliveryStore) MarkFailed(
 ) error {
 
 	res := n.s.DB(ctx).Model(&model.NoticeDeliveryM{}).
-		Where("delivery_id = ? AND locked_by = ?", deliveryID, workerID).
+		Where("delivery_id = ? AND status = ? AND locked_by = ?", deliveryID, "pending", workerID).
 		Updates(map[string]any{
 			"status":        "failed",
 			"attempts":      gorm.Expr("attempts + 1"),

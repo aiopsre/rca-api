@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"io"
 	"strconv"
@@ -13,7 +14,13 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+)
+
+const (
+	orchestratorInstanceIDHeader = "X-Orchestrator-Instance-ID"
+	longPollDBCheckInterval      = 500 * time.Millisecond
 )
 
 func (h *Handler) RunIncidentAIJob(c *gin.Context) {
@@ -74,6 +81,7 @@ func (h *Handler) ListIncidentAIJobs(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:dupl // Keep handler pattern aligned with other resources.
 func (h *Handler) GetAIJob(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -92,6 +100,7 @@ func (h *Handler) GetAIJob(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:gocognit,gocyclo // Long-poll flow keeps explicit control branches for API semantics.
 func (h *Handler) ListAIJobs(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -144,7 +153,6 @@ func (h *Handler) ListAIJobs(c *gin.Context) {
 	}
 	queueStatus = req.GetStatus()
 
-	version := h.jobQueueNotifier.Version()
 	resp, err := h.biz.AIJobV1().List(c.Request.Context(), req)
 	if err != nil {
 		outcome = "error"
@@ -156,20 +164,57 @@ func (h *Handler) ListAIJobs(c *gin.Context) {
 		return
 	}
 
-	h.jobQueueNotifier.Wait(c.Request.Context(), version, time.Duration(waitSeconds)*time.Second)
-	if c.Request.Context().Err() != nil {
-		core.WriteResponse(c, &v1.ListAIJobsResponse{
-			TotalCount: 0,
-			Jobs:       []*v1.AIJob{},
-		}, nil)
+	baselineVersion, err := h.biz.AIJobV1().QueueSignalVersion(c.Request.Context())
+	if err != nil {
+		outcome = "error"
+		core.WriteResponse(c, nil, err)
 		return
 	}
 
+	// Close list->baseline race: if queue changed before baseline read, this second list catches it.
 	resp, err = h.biz.AIJobV1().List(c.Request.Context(), req)
 	if err != nil {
 		outcome = "error"
+		core.WriteResponse(c, nil, err)
+		return
 	}
-	core.WriteResponse(c, resp, err)
+	if len(resp.GetJobs()) > 0 {
+		core.WriteResponse(c, resp, nil)
+		return
+	}
+
+	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
+	notifierVersion := h.jobQueueNotifier.Version()
+	for c.Request.Context().Err() == nil {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		waitDur := longPollDBCheckInterval
+		waitDur = min(waitDur, remaining)
+		h.jobQueueNotifier.Wait(c.Request.Context(), notifierVersion, waitDur)
+		notifierVersion = h.jobQueueNotifier.Version()
+
+		currentVersion, verErr := h.biz.AIJobV1().QueueSignalVersion(c.Request.Context())
+		if verErr != nil {
+			outcome = "error"
+			core.WriteResponse(c, nil, verErr)
+			return
+		}
+		if currentVersion != baselineVersion {
+			resp, err = h.biz.AIJobV1().List(c.Request.Context(), req)
+			if err != nil {
+				outcome = "error"
+			}
+			core.WriteResponse(c, resp, err)
+			return
+		}
+	}
+
+	core.WriteResponse(c, &v1.ListAIJobsResponse{
+		TotalCount: 0,
+		Jobs:       []*v1.AIJob{},
+	}, nil)
 }
 
 func (h *Handler) StartAIJob(c *gin.Context) {
@@ -186,7 +231,32 @@ func (h *Handler) StartAIJob(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.biz.AIJobV1().Start(c.Request.Context(), req)
+	ctx := withOrchestratorInstanceID(c)
+	resp, err := h.biz.AIJobV1().Start(ctx, req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) RenewAIJobLease(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	req := &v1.StartAIJobRequest{
+		JobID: strings.TrimSpace(c.Param("jobID")),
+	}
+	if err := h.val.ValidateStartAIJobRequest(c.Request.Context(), req); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	if strings.TrimSpace(c.GetHeader(orchestratorInstanceIDHeader)) == "" {
+		core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+		return
+	}
+
+	ctx := withOrchestratorInstanceID(c)
+	resp, err := h.biz.AIJobV1().Renew(ctx, req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -211,6 +281,7 @@ func (h *Handler) CancelAIJob(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:dupl // Keep request bind/validate/dispatch pattern explicit and consistent.
 func (h *Handler) FinalizeAIJob(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -228,10 +299,12 @@ func (h *Handler) FinalizeAIJob(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.biz.AIJobV1().Finalize(c.Request.Context(), &req)
+	ctx := withOrchestratorInstanceID(c)
+	resp, err := h.biz.AIJobV1().Finalize(ctx, &req)
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:dupl // Keep request bind/validate/dispatch pattern explicit and consistent.
 func (h *Handler) CreateAIToolCall(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -249,10 +322,12 @@ func (h *Handler) CreateAIToolCall(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.biz.AIJobV1().CreateToolCall(c.Request.Context(), &req)
+	ctx := withOrchestratorInstanceID(c)
+	resp, err := h.biz.AIJobV1().CreateToolCall(ctx, &req)
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:gocognit // Query parsing intentionally keeps explicit field handling for guardrails.
 func (h *Handler) ListAIToolCalls(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -286,6 +361,7 @@ func (h *Handler) ListAIToolCalls(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:gochecknoinits // Route registration follows repository-wide init registrar pattern.
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
 		incidentGroup := v1.Group("/incidents", mws...)
@@ -296,9 +372,19 @@ func init() {
 		jobGroup.GET("", handler.ListAIJobs)
 		jobGroup.GET("/:jobID", handler.GetAIJob)
 		jobGroup.POST("/:jobID/start", handler.StartAIJob)
+		jobGroup.POST("/:jobID/heartbeat", handler.RenewAIJobLease)
 		jobGroup.POST("/:jobID/cancel", handler.CancelAIJob)
 		jobGroup.POST("/:jobID/finalize", handler.FinalizeAIJob)
 		jobGroup.POST("/:jobID/tool-calls", handler.CreateAIToolCall)
 		jobGroup.GET("/:jobID/tool-calls", handler.ListAIToolCalls)
 	})
+}
+
+func withOrchestratorInstanceID(c *gin.Context) context.Context {
+	ctx := c.Request.Context()
+	instanceID := strings.TrimSpace(c.GetHeader(orchestratorInstanceIDHeader))
+	if instanceID == "" {
+		return ctx
+	}
+	return contextx.WithOrchestratorInstanceID(ctx, instanceID)
 }

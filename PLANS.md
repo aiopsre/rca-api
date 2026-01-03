@@ -815,3 +815,18 @@ python -m orchestrator.main
 * `/v1/mcp/tools` metadata 增加 `isolation.mode` 回传当前隔离模式；
 * 新增回归脚本 `scripts/test_c5plus_L1_toolcall_search_and_isolation_mode.sh`：
   * 覆盖 search_tool_calls allow/deny、deny/not_found 模式差异、敏感字段断言与审计断言。
+
+---
+
+## B Multi-Instance Hardening（Done Definition）
+
+* AIJob 引入 DB lease（lease_owner/lease_expires_at/lease_version/heartbeat_at），实现多 orchestrator 领取互斥、续租、过期回收；
+* `/v1/ai/jobs?wait_seconds=` 支持跨 apiserver 实例正确唤醒：引入 DB watermark/version（ai_job_queue_signal），不依赖本地 notifier；
+* notice-worker 多实例 claim/锁回收/幂等/节流协议固化，确保不会重复发送与风暴放大；
+* 新增回归脚本：
+
+  * `test_b1_L1_ai_job_multi_orchestrator_claim.sh`
+  * `test_b2_L1_ai_job_lease_reclaim.sh`
+  * `test_b3_L1_longpoll_cross_instance.sh`
+  * `test_b4_L1_notice_worker_multi_instance_claim.sh`
+* `make test` / `make lint-new` 通过，以上脚本 PASS。

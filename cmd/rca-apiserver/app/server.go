@@ -156,10 +156,12 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 	_ = metrics.Init("notice-worker")
 
 	worker := noticepkg.NewWorker(st, noticepkg.WorkerOptions{
-		WorkerID:     opts.NoticeWorkerID,
-		BatchSize:    opts.NoticeWorkerBatchSize,
-		PollInterval: opts.NoticeWorkerPollInterval,
-		LockTimeout:  opts.NoticeWorkerLockTimeout,
+		WorkerID:              opts.NoticeWorkerID,
+		BatchSize:             opts.NoticeWorkerBatchSize,
+		PollInterval:          opts.NoticeWorkerPollInterval,
+		LockTimeout:           opts.NoticeWorkerLockTimeout,
+		PerChannelConcurrency: opts.NoticeWorkerChannelConcurrency,
+		GlobalQPS:             opts.NoticeWorkerGlobalQPS,
 	})
 
 	slog.Info("notice worker started",
@@ -167,6 +169,8 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		"batch_size", opts.NoticeWorkerBatchSize,
 		"poll_interval", opts.NoticeWorkerPollInterval.String(),
 		"lock_timeout", opts.NoticeWorkerLockTimeout.String(),
+		"channel_concurrency", opts.NoticeWorkerChannelConcurrency,
+		"global_qps", opts.NoticeWorkerGlobalQPS,
 	)
 	defer slog.Info("notice worker exited")
 

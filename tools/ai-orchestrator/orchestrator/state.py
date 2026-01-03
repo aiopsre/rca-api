@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class GraphState(BaseModel):
     job_id: str
+    instance_id: Optional[str] = None
     incident_id: Optional[str] = None
     datasource_id: Optional[str] = None
 

@@ -9,24 +9,27 @@ import (
 	"math/big"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
-	"gorm.io/gorm"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/pkg/store/where"
+	"gorm.io/gorm"
 )
 
 // WorkerOptions contains notice-worker runtime options.
 type WorkerOptions struct {
-	WorkerID     string
-	BatchSize    int
-	PollInterval time.Duration
-	LockTimeout  time.Duration
-	BaseBackoff  time.Duration
-	CapBackoff   time.Duration
-	JitterMax    time.Duration
+	WorkerID              string
+	BatchSize             int
+	PollInterval          time.Duration
+	LockTimeout           time.Duration
+	BaseBackoff           time.Duration
+	CapBackoff            time.Duration
+	JitterMax             time.Duration
+	PerChannelConcurrency int
+	GlobalQPS             float64
 }
 
 var (
@@ -60,23 +63,30 @@ func (e *secretFingerprintMismatchError) Error() string {
 // DefaultWorkerOptions returns default worker options.
 func DefaultWorkerOptions() WorkerOptions {
 	return WorkerOptions{
-		WorkerID:     fmt.Sprintf("notice-worker-%d-%d", os.Getpid(), time.Now().UTC().UnixNano()),
-		BatchSize:    16,
-		PollInterval: 1 * time.Second,
-		LockTimeout:  60 * time.Second,
-		BaseBackoff:  1 * time.Second,
-		CapBackoff:   60 * time.Second,
-		JitterMax:    200 * time.Millisecond,
+		WorkerID:              fmt.Sprintf("notice-worker-%d-%d", os.Getpid(), time.Now().UTC().UnixNano()),
+		BatchSize:             16,
+		PollInterval:          1 * time.Second,
+		LockTimeout:           60 * time.Second,
+		BaseBackoff:           1 * time.Second,
+		CapBackoff:            60 * time.Second,
+		JitterMax:             200 * time.Millisecond,
+		PerChannelConcurrency: 2,
+		GlobalQPS:             20,
 	}
 }
 
 // Worker consumes pending notice deliveries and sends webhooks with retry.
 type Worker struct {
-	store store.IStore
-	opts  WorkerOptions
+	store         store.IStore
+	opts          WorkerOptions
+	channelMu     sync.Mutex
+	channelSem    map[string]chan struct{}
+	globalLimiter *tokenBucket
 }
 
 // NewWorker creates a notice worker.
+//
+//nolint:gocyclo // Option normalization keeps explicit guards for readability.
 func NewWorker(st store.IStore, opts WorkerOptions) *Worker {
 	dft := DefaultWorkerOptions()
 	if strings.TrimSpace(opts.WorkerID) == "" {
@@ -103,10 +113,18 @@ func NewWorker(st store.IStore, opts WorkerOptions) *Worker {
 	if opts.BaseBackoff > opts.CapBackoff {
 		opts.BaseBackoff = opts.CapBackoff
 	}
+	if opts.PerChannelConcurrency <= 0 {
+		opts.PerChannelConcurrency = dft.PerChannelConcurrency
+	}
+	if opts.GlobalQPS <= 0 {
+		opts.GlobalQPS = dft.GlobalQPS
+	}
 
 	return &Worker{
-		store: st,
-		opts:  opts,
+		store:         st,
+		opts:          opts,
+		channelSem:    make(map[string]chan struct{}),
+		globalLimiter: newTokenBucket(opts.GlobalQPS),
 	}
 }
 
@@ -179,6 +197,14 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 	if err != nil {
 		w.recordSecretFingerprintMismatch(ctx, delivery, err)
 		return w.failWithoutSend(ctx, delivery, err)
+	}
+	releaseChannel, err := w.acquireChannelSlot(ctx, delivery.ChannelID)
+	if err != nil {
+		return err
+	}
+	defer releaseChannel()
+	if err := w.waitGlobalToken(ctx); err != nil {
+		return err
 	}
 
 	code, responseBody, latencyMs, sendErr := sendWebhook(
@@ -365,6 +391,44 @@ func (w *Worker) handleMarkClaimLost(ctx context.Context, delivery *model.Notice
 	return nil
 }
 
+func (w *Worker) acquireChannelSlot(ctx context.Context, channelID string) (func(), error) {
+	if w.opts.PerChannelConcurrency <= 0 {
+		return func() {}, nil
+	}
+	id := strings.TrimSpace(channelID)
+	if id == "" {
+		id = "__empty__"
+	}
+
+	w.channelMu.Lock()
+	sem, ok := w.channelSem[id]
+	if !ok {
+		sem = make(chan struct{}, w.opts.PerChannelConcurrency)
+		w.channelSem[id] = sem
+	}
+	w.channelMu.Unlock()
+
+	select {
+	case sem <- struct{}{}:
+		return func() {
+			select {
+			case <-sem:
+			default:
+			}
+		}, nil
+
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (w *Worker) waitGlobalToken(ctx context.Context) error {
+	if w.globalLimiter == nil {
+		return nil
+	}
+	return w.globalLimiter.Wait(ctx)
+}
+
 func isRetryable(sendErr error, code *int32) bool {
 	if sendErr != nil {
 		return true
@@ -453,6 +517,80 @@ func fingerprintPrefix(raw string) string {
 		return normalized
 	}
 	return normalized[:fingerprintPrefixLength]
+}
+
+type tokenBucket struct {
+	mu       sync.Mutex
+	rate     float64
+	capacity float64
+	tokens   float64
+	last     time.Time
+}
+
+func newTokenBucket(rate float64) *tokenBucket {
+	if rate <= 0 {
+		return nil
+	}
+	capacity := rate
+	if capacity < 1 {
+		capacity = 1
+	}
+	now := time.Now().UTC()
+	return &tokenBucket{
+		rate:     rate,
+		capacity: capacity,
+		tokens:   capacity,
+		last:     now,
+	}
+}
+
+func (b *tokenBucket) Wait(ctx context.Context) error {
+	if b == nil {
+		return nil
+	}
+	for {
+		waitDuration := b.tryTake()
+		if waitDuration <= 0 {
+			return nil
+		}
+		timer := time.NewTimer(waitDuration)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+
+		case <-timer.C:
+		}
+	}
+}
+
+func (b *tokenBucket) tryTake() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	now := time.Now().UTC()
+	elapsed := now.Sub(b.last).Seconds()
+	if elapsed > 0 {
+		b.tokens = minFloat64(b.capacity, b.tokens+elapsed*b.rate)
+		b.last = now
+	}
+
+	if b.tokens >= 1 {
+		b.tokens -= 1
+		return 0
+	}
+	needed := (1 - b.tokens) / b.rate
+	if needed <= 0 {
+		return 0
+	}
+	return time.Duration(needed * float64(time.Second))
+}
+
+func minFloat64(a float64, b float64) float64 {
+	if a <= b {
+		return a
+	}
+	return b
 }
 
 func randomNanos(maxNanos int64) int64 {

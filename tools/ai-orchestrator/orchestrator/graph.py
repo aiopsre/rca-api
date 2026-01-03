@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import threading
 import time
 from typing import Any, Callable
 
@@ -24,6 +25,28 @@ class OrchestratorConfig:
     force_conflict: bool = False
     ds_base_url: str = ""
     auto_create_datasource: bool = True
+
+
+class LeaseGuard:
+    def __init__(self) -> None:
+        self._mu = threading.Lock()
+        self._lost = False
+        self._reason = ""
+
+    def mark_lost(self, reason: str) -> None:
+        with self._mu:
+            if self._lost:
+                return
+            self._lost = True
+            self._reason = str(reason).strip() or "lease_renew_failed"
+
+    def is_lost(self) -> bool:
+        with self._mu:
+            return self._lost
+
+    def reason(self) -> str:
+        with self._mu:
+            return self._reason
 
 
 def _extract_incident_id(job_obj: dict[str, Any]) -> str:
@@ -218,7 +241,6 @@ def load_job_and_start(state: GraphState, client: RCAApiClient, cfg: Orchestrato
     job = client.get_job(state.job_id)
     state.incident_id = _extract_incident_id(job)
     state.force_no_evidence, state.force_conflict = _resolve_force_switches(job, cfg)
-    client.start_job(state.job_id)
     state.started = True
     return state
 
@@ -387,6 +409,7 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
         request_json={
             "incident_id": state.incident_id,
             "datasource_id": state.datasource_id,
+            "instance_id": state.instance_id,
             "force_no_evidence": state.force_no_evidence,
             "force_conflict": state.force_conflict,
         },
@@ -397,6 +420,7 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
 
     synthesize_request = {
         "incident_id": state.incident_id,
+        "instance_id": state.instance_id,
         "evidence_ids": state.evidence_ids,
         "missing_evidence": missing_evidence,
         "quality_gate": quality_gate,
@@ -621,9 +645,17 @@ def _build_conflict_evidence_diagnosis(state: GraphState) -> dict[str, Any]:
     }
 
 
-def _guard(node_name: str, fn: Callable[[GraphState], GraphState]) -> Callable[[GraphState], GraphState]:
+def _guard(
+    node_name: str,
+    fn: Callable[[GraphState], GraphState],
+    lease_guard: LeaseGuard | None = None,
+) -> Callable[[GraphState], GraphState]:
     def wrapped(state: GraphState) -> GraphState:
         if state.last_error:
+            return state
+        if lease_guard is not None and lease_guard.is_lost():
+            reason = lease_guard.reason() or "lease_renew_failed"
+            state.last_error = f"{node_name}: lease_lost: {reason}"
             return state
         try:
             return fn(state)
@@ -634,7 +666,12 @@ def _guard(node_name: str, fn: Callable[[GraphState], GraphState]) -> Callable[[
     return wrapped
 
 
-def finalize_job(state: GraphState, client: RCAApiClient) -> GraphState:
+def finalize_job(state: GraphState, client: RCAApiClient, lease_guard: LeaseGuard | None = None) -> GraphState:
+    if lease_guard is not None and lease_guard.is_lost():
+        if not state.last_error:
+            state.last_error = f"lease_lost: {lease_guard.reason() or 'lease_renew_failed'}"
+        return state
+
     error_message = (state.last_error or "").strip()
 
     if not error_message and not state.evidence_ids:
@@ -684,12 +721,21 @@ def finalize_job(state: GraphState, client: RCAApiClient) -> GraphState:
         return state
 
 
-def build_graph(client: RCAApiClient, cfg: OrchestratorConfig):
+def build_graph(client: RCAApiClient, cfg: OrchestratorConfig, lease_guard: LeaseGuard | None = None):
     builder = StateGraph(GraphState)
-    builder.add_node("load_job_and_start", _guard("load_job_and_start", lambda s: load_job_and_start(s, client, cfg)))
-    builder.add_node("collect_evidence", _guard("collect_evidence", lambda s: collect_evidence(s, client, cfg)))
-    builder.add_node("write_tool_calls", _guard("write_tool_calls", lambda s: write_tool_calls(s, client)))
-    builder.add_node("finalize_job", lambda s: finalize_job(s, client))
+    builder.add_node(
+        "load_job_and_start",
+        _guard("load_job_and_start", lambda s: load_job_and_start(s, client, cfg), lease_guard),
+    )
+    builder.add_node(
+        "collect_evidence",
+        _guard("collect_evidence", lambda s: collect_evidence(s, client, cfg), lease_guard),
+    )
+    builder.add_node(
+        "write_tool_calls",
+        _guard("write_tool_calls", lambda s: write_tool_calls(s, client), lease_guard),
+    )
+    builder.add_node("finalize_job", lambda s: finalize_job(s, client, lease_guard))
 
     builder.add_edge(START, "load_job_and_start")
     builder.add_edge("load_job_and_start", "collect_evidence")

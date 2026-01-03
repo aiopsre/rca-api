@@ -114,6 +114,86 @@ func TestListAIJobs_LongPollWakeupOnRun(t *testing.T) {
 	}
 }
 
+func TestListAIJobs_LongPollWakeupAcrossInstancesOnRun(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store.ResetForTest()
+	defer store.ResetForTest()
+
+	db := newAIJobLongPollTestDB(t)
+	s := store.NewStore(db)
+	val := validation.New(s)
+
+	handlerA := NewHandler(biz.NewBiz(s), val)
+	engineA := gin.New()
+	handlerA.ApplyTo(engineA.Group("/v1"))
+	serverA := httptest.NewServer(engineA)
+	defer serverA.Close()
+
+	handlerB := NewHandler(biz.NewBiz(s), val)
+	engineB := gin.New()
+	handlerB.ApplyTo(engineB.Group("/v1"))
+	serverB := httptest.NewServer(engineB)
+	defer serverB.Close()
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	require.NotNil(t, incident)
+
+	type pollResult struct {
+		status  int
+		body    []byte
+		elapsed time.Duration
+		err     error
+	}
+	pollDone := make(chan pollResult, 1)
+
+	const waitSeconds = int64(5)
+	go func() {
+		listURL := fmt.Sprintf("%s/v1/ai/jobs?status=queued&limit=10&offset=0&wait_seconds=%d", serverB.URL, waitSeconds)
+		started := time.Now()
+		status, body, err := doJSONRequest(serverB.Client(), http.MethodGet, listURL, nil)
+		pollDone <- pollResult{
+			status:  status,
+			body:    body,
+			elapsed: time.Since(started),
+			err:     err,
+		}
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+
+	now := time.Now().UTC().Unix()
+	runBody := map[string]any{
+		"incidentID":     incident.IncidentID,
+		"idempotencyKey": fmt.Sprintf("idem-cross-instance-%d", time.Now().UTC().UnixNano()),
+		"timeRangeStart": map[string]any{
+			"seconds": now - 1200,
+			"nanos":   0,
+		},
+		"timeRangeEnd": map[string]any{
+			"seconds": now,
+			"nanos":   0,
+		},
+	}
+	payload, err := json.Marshal(runBody)
+	require.NoError(t, err)
+
+	runURL := fmt.Sprintf("%s/v1/incidents/%s/ai:run", serverA.URL, incident.IncidentID)
+	runStatus, runRespBody, err := doJSONRequest(serverA.Client(), http.MethodPost, runURL, payload)
+	require.NoError(t, err)
+	require.Equalf(t, http.StatusOK, runStatus, "run response: %s", string(runRespBody))
+
+	select {
+	case res := <-pollDone:
+		require.NoError(t, res.err)
+		require.Equal(t, http.StatusOK, res.status)
+		require.Less(t, res.elapsed, 4500*time.Millisecond, "long poll did not wake up across instances")
+		jobs := extractJobs(res.body)
+		require.NotEmpty(t, jobs)
+	case <-time.After(7 * time.Second):
+		t.Fatalf("long poll did not return in expected time window")
+	}
+}
+
 func newTestServer(t *testing.T) (baseURL string, cleanup func(), s store.IStore, client *http.Client) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -216,7 +296,7 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIToolCallM{}))
+	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}))
 	return db
 }
 

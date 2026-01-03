@@ -18,6 +18,8 @@ var (
 	errInvalidNoticeWorkerPollInterval = errors.New("noticeWorkerPollInterval must be > 0")
 	errInvalidNoticeWorkerBatchSize    = errors.New("noticeWorkerBatchSize must be > 0")
 	errInvalidNoticeWorkerLockTimeout  = errors.New("noticeWorkerLockTimeout must be > 0")
+	errInvalidNoticeWorkerChannelConc  = errors.New("noticeWorkerChannelConcurrency must be > 0")
+	errInvalidNoticeWorkerGlobalQPS    = errors.New("noticeWorkerGlobalQPS must be > 0")
 	errInvalidNoticeBaseURL            = errors.New("noticeBaseURL must be valid http(s) url")
 )
 
@@ -39,6 +41,10 @@ type ServerOptions struct {
 	NoticeWorkerLockTimeout time.Duration `json:"noticeWorkerLockTimeout" mapstructure:"noticeWorkerLockTimeout"`
 	// NoticeWorkerID identifies the worker instance in lock records.
 	NoticeWorkerID string `json:"noticeWorkerID" mapstructure:"noticeWorkerID"`
+	// NoticeWorkerChannelConcurrency controls per-channel max in-flight send count.
+	NoticeWorkerChannelConcurrency int `json:"noticeWorkerChannelConcurrency" mapstructure:"noticeWorkerChannelConcurrency"`
+	// NoticeWorkerGlobalQPS controls global send QPS token bucket for one worker process.
+	NoticeWorkerGlobalQPS float64 `json:"noticeWorkerGlobalQPS" mapstructure:"noticeWorkerGlobalQPS"`
 	// NoticeBaseURL is default links base_url when channel.baseURL is unset.
 	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
 	// MCPPolicy configures per-tool MCP governance limits and enable switches.
@@ -48,13 +54,15 @@ type ServerOptions struct {
 // NewServerOptions creates a ServerOptions instance with default values.
 func NewServerOptions() *ServerOptions {
 	opts := &ServerOptions{
-		TLSOptions:               genericoptions.NewTLSOptions(),
-		HTTPOptions:              genericoptions.NewHTTPOptions(),
-		MySQLOptions:             genericoptions.NewMySQLOptions(),
-		OTelOptions:              genericoptions.NewOTelOptions(),
-		NoticeWorkerPollInterval: 1 * time.Second,
-		NoticeWorkerBatchSize:    16,
-		NoticeWorkerLockTimeout:  60 * time.Second,
+		TLSOptions:                     genericoptions.NewTLSOptions(),
+		HTTPOptions:                    genericoptions.NewHTTPOptions(),
+		MySQLOptions:                   genericoptions.NewMySQLOptions(),
+		OTelOptions:                    genericoptions.NewOTelOptions(),
+		NoticeWorkerPollInterval:       1 * time.Second,
+		NoticeWorkerBatchSize:          16,
+		NoticeWorkerLockTimeout:        60 * time.Second,
+		NoticeWorkerChannelConcurrency: 2,
+		NoticeWorkerGlobalQPS:          20,
 	}
 	opts.HTTPOptions.Addr = ":5555"
 
@@ -72,6 +80,8 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.NoticeWorkerBatchSize, "notice-worker-batch-size", o.NoticeWorkerBatchSize, "Batch size per notice worker claim.")
 	fs.DurationVar(&o.NoticeWorkerLockTimeout, "notice-worker-lock-timeout", o.NoticeWorkerLockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
 	fs.StringVar(&o.NoticeWorkerID, "notice-worker-id", o.NoticeWorkerID, "Worker instance id for notice worker lock ownership.")
+	fs.IntVar(&o.NoticeWorkerChannelConcurrency, "notice-worker-channel-concurrency", o.NoticeWorkerChannelConcurrency, "Per-channel max in-flight sends.")
+	fs.Float64Var(&o.NoticeWorkerGlobalQPS, "notice-worker-global-qps", o.NoticeWorkerGlobalQPS, "Global send QPS token bucket for one worker process.")
 	fs.StringVar(&o.NoticeBaseURL, "notice-base-url", o.NoticeBaseURL, "Default base URL for notice links when channel.baseURL is empty.")
 }
 
@@ -98,6 +108,12 @@ func (o *ServerOptions) Validate() error {
 	}
 	if o.NoticeWorkerLockTimeout <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerLockTimeout)
+	}
+	if o.NoticeWorkerChannelConcurrency <= 0 {
+		errs = append(errs, errInvalidNoticeWorkerChannelConc)
+	}
+	if o.NoticeWorkerGlobalQPS <= 0 {
+		errs = append(errs, errInvalidNoticeWorkerGlobalQPS)
 	}
 	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
 		errs = append(errs, errInvalidNoticeBaseURL)

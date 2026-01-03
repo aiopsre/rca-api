@@ -47,6 +47,7 @@ class RCAApiClient:
         self,
         base_url: str,
         scopes: str | None,
+        instance_id: str | None = None,
         timeout_s: float = 10.0,
         mcp_scopes: str | None = None,
         mcp_timeout_s: float | None = None,
@@ -55,10 +56,13 @@ class RCAApiClient:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.scopes = (scopes or "").strip()
+        self.instance_id = (instance_id or "").strip()
         self.session = requests.Session()
         self.session.headers.update({"Accept": "application/json"})
         if self.scopes:
             self.session.headers.update({"X-Scopes": self.scopes})
+        if self.instance_id:
+            self.session.headers.update({"X-Orchestrator-Instance-ID": self.instance_id})
 
         mcp_scopes_value = mcp_scopes
         if mcp_scopes_value is None:
@@ -189,8 +193,29 @@ class RCAApiClient:
             return payload["job"]
         return data
 
-    def start_job(self, job_id: str) -> None:
-        self._request("POST", f"/v1/ai/jobs/{job_id}/start")
+    def start_job(self, job_id: str) -> bool:
+        url = f"{self.base_url}/v1/ai/jobs/{job_id}/start"
+        try:
+            response = self.session.request(
+                method="POST",
+                url=url,
+                timeout=self.timeout_s,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"POST /v1/ai/jobs/{job_id}/start network error: {exc}") from exc
+        body_text = response.text.strip()
+        if response.status_code == 409:
+            return False
+        if not response.ok:
+            raise RuntimeError(f"POST /v1/ai/jobs/{job_id}/start failed: http={response.status_code}, body={body_text}")
+        return True
+
+    def renew_job_lease(self, job_id: str) -> tuple[bool, str]:
+        try:
+            self._request("POST", f"/v1/ai/jobs/{job_id}/heartbeat")
+            return True, ""
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     def add_tool_call(
         self,

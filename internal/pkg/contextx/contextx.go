@@ -22,6 +22,8 @@ const (
 	traceIDKey contextKey = "traceID"
 	// loggerKey is the context key for storing and retrieving a structured logger.
 	loggerKey contextKey = "logger"
+	// orchestratorInstanceIDKey stores orchestrator instance identity for job lease ownership.
+	orchestratorInstanceIDKey contextKey = "orchestratorInstanceID"
 )
 
 // WithUserID returns a new context with the given user ID.
@@ -118,4 +120,19 @@ func Logger(ctx context.Context) *slog.Logger {
 // If no logger is found, it returns slog.Default().
 func L(ctx context.Context) *slog.Logger {
 	return Logger(ctx)
+}
+
+// WithOrchestratorInstanceID returns a new context with orchestrator instance id.
+func WithOrchestratorInstanceID(ctx context.Context, instanceID string) context.Context {
+	return context.WithValue(ctx, orchestratorInstanceIDKey, instanceID)
+}
+
+// OrchestratorInstanceID retrieves orchestrator instance id from context.
+// Returns empty string when missing.
+func OrchestratorInstanceID(ctx context.Context) string {
+	val, ok := ctx.Value(orchestratorInstanceIDKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
 }
