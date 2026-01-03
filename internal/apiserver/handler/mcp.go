@@ -85,12 +85,14 @@ type mcpResolvedToolPolicyLimits struct {
 }
 
 type mcpPolicyRegistry struct {
-	byTool map[string]mcpResolvedToolPolicy
+	byTool        map[string]mcpResolvedToolPolicy
+	isolationMode mcpIsolationPolicyMode
 }
 
 type mcpIsolationConstraints struct {
 	allowedNamespaces map[string]struct{}
 	allowedServices   map[string]struct{}
+	mode              mcpIsolationPolicyMode
 }
 
 type mcpIsolationFieldRule struct {
@@ -104,6 +106,14 @@ const (
 	mcpIsolationModeNone mcpIsolationMode = iota
 	mcpIsolationModeGet
 	mcpIsolationModeList
+)
+
+type mcpIsolationPolicyMode string
+
+const (
+	mcpIsolationPolicyModeFilter   mcpIsolationPolicyMode = "filter"
+	mcpIsolationPolicyModeDeny     mcpIsolationPolicyMode = "deny"
+	mcpIsolationPolicyModeNotFound mcpIsolationPolicyMode = "not_found"
 )
 
 type mcpToolCallRequest struct {
@@ -479,6 +489,30 @@ var mcpReadonlyTools = []mcpToolDefinition{
 		Execute: (*Handler).mcpListToolCalls,
 	},
 	{
+		Name:           "search_tool_calls",
+		Description:    "Search tool call audits by tool/job/request/time filters with page/limit.",
+		RequiredScopes: []string{authz.ScopeToolCallRead},
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tool_prefix": map[string]any{"type": "string"},
+				"tool_name":   map[string]any{"type": "string"},
+				"job_id":      map[string]any{"type": "string"},
+				"incident_id": map[string]any{"type": "string"},
+				"request_id":  map[string]any{"type": "string"},
+				"time_from":   map[string]any{"type": "string"},
+				"time_to":     map[string]any{"type": "string"},
+				"page":        map[string]any{"type": "integer"},
+				"offset":      map[string]any{"type": "integer"},
+				"limit":       map[string]any{"type": "integer"},
+			},
+		},
+		OutputSchema: map[string]any{
+			"type": "object",
+		},
+		Execute: (*Handler).mcpSearchToolCalls,
+	},
+	{
 		Name:           "list_silences",
 		Description:    "List silences with optional filters and page/limit.",
 		RequiredScopes: []string{authz.ScopeSilenceRead},
@@ -587,7 +621,6 @@ var mcpScopeAliases = map[string][]string{
 
 var mcpIsolationModes = map[string]mcpIsolationMode{
 	"get_incident":              mcpIsolationModeGet,
-	"get_incident_timeline":     mcpIsolationModeGet,
 	"list_incidents":            mcpIsolationModeList,
 	"search_incidents":          mcpIsolationModeList,
 	"list_alert_events_current": mcpIsolationModeList,
@@ -643,7 +676,10 @@ func buildMCPPolicyRegistry(cfg policy.MCPPolicyConfig) mcpPolicyRegistry {
 		p = applyMCPPolicyOverride(p, override)
 		byTool[name] = p
 	}
-	return mcpPolicyRegistry{byTool: byTool}
+	return mcpPolicyRegistry{
+		byTool:        byTool,
+		isolationMode: normalizeMCPIsolationPolicyMode(cfg.Isolation.Mode),
+	}
 }
 
 func applyMCPPolicyOverride(base mcpResolvedToolPolicy, override policy.MCPToolPolicy) mcpResolvedToolPolicy {
@@ -695,6 +731,21 @@ func (r mcpPolicyRegistry) resolve(tool string) mcpResolvedToolPolicy {
 	}
 }
 
+func (r mcpPolicyRegistry) isolationPolicyMode() mcpIsolationPolicyMode {
+	return normalizeMCPIsolationPolicyMode(string(r.isolationMode))
+}
+
+func normalizeMCPIsolationPolicyMode(raw string) mcpIsolationPolicyMode {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(mcpIsolationPolicyModeDeny):
+		return mcpIsolationPolicyModeDeny
+	case string(mcpIsolationPolicyModeNotFound):
+		return mcpIsolationPolicyModeNotFound
+	default:
+		return mcpIsolationPolicyModeFilter
+	}
+}
+
 func (h *Handler) ConfigureMCPPolicy(cfg policy.MCPPolicyConfig) {
 	h.mcpPolicies = buildMCPPolicyRegistry(cfg)
 }
@@ -736,6 +787,9 @@ func (h *Handler) ListMCPTools(c *gin.Context) {
 			"required_scopes": tool.RequiredScopes,
 			"metadata": map[string]any{
 				"policy": toolPolicy.toMetadata(),
+				"isolation": map[string]any{
+					"mode": string(h.mcpPolicies.isolationPolicyMode()),
+				},
 			},
 		})
 	}
@@ -784,7 +838,7 @@ func (h *Handler) CallMCPTool(c *gin.Context) {
 		return
 	}
 
-	isolation := parseMCPIsolationConstraints(c)
+	isolation := parseMCPIsolationConstraints(c, h.mcpPolicies.isolationPolicyMode())
 	if err := validateMCPIsolationInput(req.Tool, req.Input, isolation); err != nil {
 		h.writeMCPCallFailure(c, req.Tool, req.Input, req.IdempotencyKey, startedAt, err)
 		return
@@ -1048,8 +1102,9 @@ func (h *Handler) mcpGetIncidentTimeline(c *gin.Context, input map[string]any) (
 		return nil, false, err
 	}
 	if incident := getResp.GetIncident(); incident != nil {
+		isolation := parseMCPIsolationConstraints(c, h.mcpPolicies.isolationPolicyMode())
 		if err := validateMCPIsolationResource(
-			parseMCPIsolationConstraints(c),
+			isolation,
 			incident.GetNamespace(),
 			incident.GetService(),
 			mcpIsolationFieldRules["get_incident_timeline"],
@@ -1607,6 +1662,66 @@ func (h *Handler) mcpListToolCalls(c *gin.Context, input map[string]any) (any, b
 	return out, false, nil
 }
 
+//nolint:gocognit,gocyclo // MCP input-to-request mapping is intentionally explicit.
+func (h *Handler) mcpSearchToolCalls(c *gin.Context, input map[string]any) (any, bool, error) {
+	offset, limit, err := parsePageOffset(input)
+	if err != nil {
+		return nil, false, err
+	}
+
+	from, to, hasRange, err := parseMCPTimeRange(
+		input,
+		false,
+		mcpMaxSearchTimeRange,
+		[]string{"time_from", "timeFrom"},
+		[]string{"time_to", "timeTo"},
+	)
+	if err != nil {
+		return nil, false, err
+	}
+
+	req := &aijobbiz.SearchToolCallsRequest{
+		ToolPrefix: readInputString(input, "tool_prefix", "toolPrefix"),
+		ToolName:   readInputString(input, "tool_name", "toolName"),
+		JobID:      readInputString(input, "job_id", "jobID"),
+		IncidentID: readInputString(input, "incident_id", "incidentID"),
+		RequestID:  readInputString(input, "request_id", "requestID"),
+		Offset:     offset,
+		Limit:      limit,
+	}
+	if hasRange {
+		req.TimeFrom = &from
+		req.TimeTo = &to
+	}
+
+	resp, err := h.biz.AIJobV1().SearchToolCalls(c.Request.Context(), req)
+	if err != nil {
+		return nil, false, err
+	}
+
+	items := make([]map[string]any, 0, len(resp.ToolCalls))
+	for _, item := range resp.ToolCalls {
+		items = append(items, buildMCPToolCallOutput(item))
+	}
+
+	out := map[string]any{
+		"totalCount": resp.TotalCount,
+		"offset":     offset,
+		"limit":      limit,
+		"toolCalls":  items,
+	}
+	putNonEmpty(out, "toolPrefix", req.ToolPrefix)
+	putNonEmpty(out, "toolName", req.ToolName)
+	putNonEmpty(out, "jobID", req.JobID)
+	putNonEmpty(out, "incidentID", req.IncidentID)
+	putNonEmpty(out, "requestID", req.RequestID)
+	if hasRange {
+		out["timeFrom"] = from.Format(time.RFC3339)
+		out["timeTo"] = to.Format(time.RFC3339)
+	}
+	return out, false, nil
+}
+
 func (h *Handler) mcpListSilences(c *gin.Context, input map[string]any) (any, bool, error) {
 	offset, limit, err := parsePageOffset(input)
 	if err != nil {
@@ -1985,6 +2100,10 @@ func mcpScopeDeniedError(message string) error {
 	return errorsx.New(http.StatusForbidden, "", "%s", strings.TrimSpace(message))
 }
 
+func mcpNotFoundError(message string) error {
+	return errorsx.New(http.StatusNotFound, "", "%s", strings.TrimSpace(message))
+}
+
 func validateMCPToolPolicyInput(input map[string]any, toolPolicy mcpResolvedToolPolicy) error {
 	if toolPolicy.Limits.MaxLimit > 0 {
 		if limit, has, err := readInputInt64(input, "limit"); err != nil {
@@ -2032,10 +2151,11 @@ func validateInputTimeRange(input map[string]any, maxRange time.Duration, fromKe
 	return nil
 }
 
-func parseMCPIsolationConstraints(c *gin.Context) mcpIsolationConstraints {
+func parseMCPIsolationConstraints(c *gin.Context, mode mcpIsolationPolicyMode) mcpIsolationConstraints {
 	return mcpIsolationConstraints{
 		allowedNamespaces: parseMCPHeaderAllowSet(c.GetHeader(mcpHeaderAllowedNamespaces)),
 		allowedServices:   parseMCPHeaderAllowSet(c.GetHeader(mcpHeaderAllowedServices)),
+		mode:              normalizeMCPIsolationPolicyMode(string(mode)),
 	}
 }
 
@@ -2063,6 +2183,10 @@ func (c mcpIsolationConstraints) enabled() bool {
 	return len(c.allowedNamespaces) > 0 || len(c.allowedServices) > 0
 }
 
+func (c mcpIsolationConstraints) policyMode() mcpIsolationPolicyMode {
+	return normalizeMCPIsolationPolicyMode(string(c.mode))
+}
+
 func validateMCPIsolationInput(tool string, input map[string]any, constraints mcpIsolationConstraints) error {
 	if !constraints.enabled() {
 		return nil
@@ -2074,43 +2198,106 @@ func validateMCPIsolationInput(tool string, input map[string]any, constraints mc
 	if !ok {
 		return nil
 	}
-
-	namespace := ""
-	service := ""
-	if rule.Namespace {
-		namespace = readInputString(input, "namespace")
-	}
-	if rule.Service {
-		service = readInputString(input, "service")
-	}
-	if namespace == "" && service == "" {
+	if constraints.policyMode() == mcpIsolationPolicyModeFilter {
 		return nil
 	}
-	return validateMCPIsolationResource(constraints, namespace, service, rule)
+
+	if err := validateMCPIsolationExplicitInputField(
+		input,
+		rule.Namespace,
+		constraints.allowedNamespaces,
+		constraints,
+		"namespace",
+	); err != nil {
+		return err
+	}
+	if err := validateMCPIsolationExplicitInputField(
+		input,
+		rule.Service,
+		constraints.allowedServices,
+		constraints,
+		"service",
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateMCPIsolationExplicitInputField(
+	input map[string]any,
+	fieldEnabled bool,
+	allowed map[string]struct{},
+	constraints mcpIsolationConstraints,
+	key string,
+) error {
+
+	if !fieldEnabled || len(allowed) == 0 {
+		return nil
+	}
+	value, hasValue := readInputStringWithPresence(input, key)
+	if hasValue && !isMCPScopeValueAllowed(allowed, value) {
+		return mcpIsolationViolationError(constraints)
+	}
+	return nil
 }
 
 //nolint:gocognit // Namespace/service checks are kept explicit for governance auditability.
 func validateMCPIsolationResource(constraints mcpIsolationConstraints, namespace string, service string, rule mcpIsolationFieldRule) error {
-	if !constraints.enabled() {
+	if isMCPIsolationResourceAllowed(constraints, namespace, service, rule) {
 		return nil
 	}
+	return mcpIsolationViolationError(constraints)
+}
+
+//nolint:gocognit // Namespace/service checks are kept explicit for governance auditability.
+func isMCPIsolationResourceAllowed(
+	constraints mcpIsolationConstraints,
+	namespace string,
+	service string,
+	rule mcpIsolationFieldRule,
+) bool {
+
+	if !constraints.enabled() {
+		return true
+	}
 	if rule.Namespace && len(constraints.allowedNamespaces) > 0 {
-		if strings.TrimSpace(namespace) == "" {
-			return mcpScopeDeniedError("namespace is outside allowed scope")
-		}
-		if _, ok := constraints.allowedNamespaces[strings.TrimSpace(namespace)]; !ok {
-			return mcpScopeDeniedError("namespace is outside allowed scope")
+		if !isMCPScopeValueAllowed(constraints.allowedNamespaces, namespace) {
+			return false
 		}
 	}
 	if rule.Service && len(constraints.allowedServices) > 0 {
-		if strings.TrimSpace(service) == "" {
-			return mcpScopeDeniedError("service is outside allowed scope")
-		}
-		if _, ok := constraints.allowedServices[strings.TrimSpace(service)]; !ok {
-			return mcpScopeDeniedError("service is outside allowed scope")
+		if !isMCPScopeValueAllowed(constraints.allowedServices, service) {
+			return false
 		}
 	}
-	return nil
+	return true
+}
+
+func isMCPScopeValueAllowed(allowed map[string]struct{}, value string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	_, ok := allowed[trimmed]
+	return ok
+}
+
+func readInputStringWithPresence(input map[string]any, keys ...string) (string, bool) {
+	if _, ok := findInputValue(input, keys...); !ok {
+		return "", false
+	}
+
+	return readInputString(input, keys...), true
+}
+
+func mcpIsolationViolationError(constraints mcpIsolationConstraints) error {
+	if constraints.policyMode() == mcpIsolationPolicyModeNotFound {
+		return mcpNotFoundError("resource not found")
+	}
+	return mcpScopeDeniedError("resource is outside allowed scope")
 }
 
 //nolint:gocognit,gocyclo // Tool-specific output filtering keeps explicit branch behavior.
@@ -2171,12 +2358,13 @@ func applyMCPIsolationOutput(tool string, output any, constraints mcpIsolationCo
 
 		filtered := make([]any, 0, len(rawItems))
 		for _, item := range rawItems {
-			if err := validateMCPIsolationResource(
+			allowed := isMCPIsolationResourceAllowed(
 				constraints,
 				readItemString(item, "namespace"),
 				readItemString(item, "service"),
 				rule,
-			); err == nil {
+			)
+			if allowed {
 				filtered = append(filtered, item)
 			}
 		}

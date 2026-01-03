@@ -72,6 +72,7 @@ type AIJobBiz interface {
 	Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error)
 	CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error)
 	ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequest) (*v1.ListAIToolCallsResponse, error)
+	SearchToolCalls(ctx context.Context, rq *SearchToolCallsRequest) (*SearchToolCallsResponse, error)
 	RecordToolCallAudit(ctx context.Context, rq *RecordToolCallAuditRequest) (string, error)
 
 	AIJobExpansion
@@ -97,6 +98,25 @@ type RecordToolCallAuditRequest struct {
 	Status            string
 	LatencyMs         int64
 	ErrorMessage      *string
+}
+
+// SearchToolCallsRequest filters MCP tool-call audits by optional dimensions.
+type SearchToolCallsRequest struct {
+	ToolPrefix string
+	ToolName   string
+	JobID      string
+	IncidentID string
+	RequestID  string
+	TimeFrom   *time.Time
+	TimeTo     *time.Time
+	Offset     int64
+	Limit      int64
+}
+
+// SearchToolCallsResponse returns paginated tool-call audits.
+type SearchToolCallsResponse struct {
+	TotalCount int64
+	ToolCalls  []*v1.AIToolCall
 }
 
 var _ AIJobBiz = (*aiJobBiz)(nil)
@@ -662,6 +682,61 @@ func (b *aiJobBiz) ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequ
 		out = append(out, conversion.AIToolCallMToAIToolCallV1(item))
 	}
 	return &v1.ListAIToolCallsResponse{
+		TotalCount: total,
+		ToolCalls:  out,
+	}, nil
+}
+
+//nolint:gocognit,gocyclo // Search filters are intentionally explicit and composable.
+func (b *aiJobBiz) SearchToolCalls(
+	ctx context.Context,
+	rq *SearchToolCallsRequest,
+) (*SearchToolCallsResponse, error) {
+
+	if rq == nil {
+		return nil, errno.ErrAIToolCallListFailed
+	}
+
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultToolLimit
+	}
+
+	whr := where.T(ctx).O(int(rq.Offset)).L(int(limit))
+	if jobID := strings.TrimSpace(rq.JobID); jobID != "" {
+		whr = whr.F("job_id", jobID)
+	}
+
+	if toolName := strings.TrimSpace(rq.ToolName); toolName != "" {
+		whr = whr.F("tool_name", toolName)
+	} else if toolPrefix := strings.TrimSpace(rq.ToolPrefix); toolPrefix != "" {
+		whr = whr.Q("tool_name LIKE ?", toolPrefix+"%")
+	}
+
+	if incidentID := strings.TrimSpace(rq.IncidentID); incidentID != "" {
+		whr = whr.Q("request_json LIKE ?", `%"incident_id":"`+incidentID+`"%`)
+	}
+	if requestID := strings.TrimSpace(rq.RequestID); requestID != "" {
+		whr = whr.Q("request_json LIKE ?", `%"request_id":"`+requestID+`"%`)
+	}
+
+	if rq.TimeFrom != nil {
+		whr = whr.Q("created_at >= ?", rq.TimeFrom.UTC())
+	}
+	if rq.TimeTo != nil {
+		whr = whr.Q("created_at <= ?", rq.TimeTo.UTC())
+	}
+
+	total, list, err := b.store.AIToolCall().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrAIToolCallListFailed
+	}
+
+	out := make([]*v1.AIToolCall, 0, len(list))
+	for _, item := range list {
+		out = append(out, conversion.AIToolCallMToAIToolCallV1(item))
+	}
+	return &SearchToolCallsResponse{
 		TotalCount: total,
 		ToolCalls:  out,
 	}, nil

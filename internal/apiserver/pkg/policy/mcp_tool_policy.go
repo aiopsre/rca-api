@@ -14,7 +14,13 @@ type MCPToolPolicy struct {
 	Limits    MCPToolPolicyLimits `json:"limits"              mapstructure:"limits"`
 }
 
+// MCPIsolationPolicy defines MCP namespace/service isolation behavior.
+type MCPIsolationPolicy struct {
+	Mode string `json:"mode,omitempty" mapstructure:"mode"`
+}
+
 // MCPPolicyConfig contains per-tool MCP policy overrides loaded from config/env.
 type MCPPolicyConfig struct {
-	Tools map[string]MCPToolPolicy `json:"tools,omitempty" mapstructure:"tools"`
+	Tools     map[string]MCPToolPolicy `json:"tools,omitempty"     mapstructure:"tools"`
+	Isolation MCPIsolationPolicy       `json:"isolation"           mapstructure:"isolation"`
 }

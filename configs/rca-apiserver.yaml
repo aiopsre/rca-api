@@ -45,6 +45,8 @@ coredb:
 
 # MCP 治理策略（C5）：按 tool 维度覆盖 enabled/riskLevel/limits
 # mcp:
+#   isolation:
+#     mode: filter # filter | deny | not_found
 #   tools:
 #     search_incidents:
 #       enabled: true
@@ -55,6 +57,8 @@ coredb:
 #         maxResponseBytes: 8192
 
 mcp:
+  isolation:
+    mode: filter
   tools:
     query_logs:
       enabled: false

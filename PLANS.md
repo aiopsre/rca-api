@@ -762,6 +762,8 @@ python -m orchestrator.main
 * 新增回归脚本 `scripts/test_c5_L1_mcp_policy_isolation_metrics.sh` 覆盖 policy/隔离/指标/审计并通过；
 * `make test` 与 `make lint-new` 均通过。
 
+---
+
 ### C5 实现更新（2026-02-10）
 
 * 已在 `GET /v1/mcp/tools` 的 `metadata.policy` 返回 per-tool `enabled/risk_level/limits`；
@@ -778,3 +780,38 @@ python -m orchestrator.main
   * `mcp_truncated_total{tool}`
   * `mcp_scope_denied_total{tool}`
   * `mcp_rate_limited_total{tool}`
+
+---
+
+## C5+ ToolCall Search + Stricter Isolation（Done Definition）
+
+* 新增 MCP 工具 `search_tool_calls`（scope：toolcall.read）：
+
+  * 支持按 tool_name/tool_prefix/job_id/incident_id/request_id/time_range 分页查询 ToolCall；
+  * 返回仍遵循既有 ToolCall 脱敏与截断（不得绕过）。
+* 引入 isolation.mode（filter/deny/not_found，默认 filter）：
+
+  * 对越界输入在 deny/not_found 模式下执行更严格拒绝语义；
+  * not_found 模式对越界 get/list 以 404 + NOT_FOUND 响应（反枚举）。
+* 新增回归脚本 `scripts/test_c5plus_L1_toolcall_search_and_isolation_mode.sh` 覆盖：
+
+  * search_tool_calls allow/deny
+  * isolation.mode=deny/not_found 行为差异
+  * 敏感字段拦截与（可选）metrics 断言
+* `make test` 与 `make lint-new` 均通过。
+
+---
+
+### C5+ 实现更新（2026-02-10）
+
+* MCP 新增只读工具 `search_tool_calls`（scope: `toolcall.read`）：
+  * 支持 `tool_prefix/tool_name/job_id/incident_id/request_id/time_from/time_to/page/limit` 过滤；
+  * 复用 ToolCall 存储查询并返回分页；
+  * 每条记录继续应用既有 `input/output/error` 脱敏与截断（8KB/8KB/2KB）。
+* MCP policy 新增 `isolation.mode`（`filter|deny|not_found`，默认 `filter`）：
+  * `filter`: get 越界 -> `403+SCOPE_DENIED`；list/search 过滤；
+  * `deny`: 显式越界输入 -> `403+SCOPE_DENIED`；其余过滤；
+  * `not_found`: get 或显式越界输入 -> `404+NOT_FOUND`；其余过滤。
+* `/v1/mcp/tools` metadata 增加 `isolation.mode` 回传当前隔离模式；
+* 新增回归脚本 `scripts/test_c5plus_L1_toolcall_search_and_isolation_mode.sh`：
+  * 覆盖 search_tool_calls allow/deny、deny/not_found 模式差异、敏感字段断言与审计断言。

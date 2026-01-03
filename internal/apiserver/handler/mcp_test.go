@@ -37,7 +37,7 @@ func TestMCPListTools(t *testing.T) {
 	require.Equal(t, mcpToolRegistryVersion, asString(payload["version"]))
 	rawTools, ok := payload["tools"].([]any)
 	require.True(t, ok)
-	require.Len(t, rawTools, 21)
+	require.Len(t, rawTools, 22)
 
 	names := make(map[string]struct{}, len(rawTools))
 	for _, item := range rawTools {
@@ -62,6 +62,7 @@ func TestMCPListTools(t *testing.T) {
 	require.Contains(t, names, "get_ai_job")
 	require.Contains(t, names, "list_ai_jobs")
 	require.Contains(t, names, "list_tool_calls")
+	require.Contains(t, names, "search_tool_calls")
 	require.Contains(t, names, "list_silences")
 	require.Contains(t, names, "list_notice_deliveries")
 	require.Contains(t, names, "get_notice_deliveries_by_incident")
@@ -109,6 +110,9 @@ func TestMCPListTools_ContainsPolicyMetadata(t *testing.T) {
 		require.True(t, ok)
 		require.Equal(t, false, policyObj["enabled"])
 		require.Equal(t, "readonly", asString(policyObj["risk_level"]))
+		isolationObj, ok := metadata["isolation"].(map[string]any)
+		require.True(t, ok)
+		require.Equal(t, "filter", asString(isolationObj["mode"]))
 		limits, ok := policyObj["limits"].(map[string]any)
 		require.True(t, ok)
 		require.Equal(t, "5", asString(limits["max_limit"]))
@@ -627,6 +631,172 @@ func TestMCPCallListToolCalls_ScopeDenied(t *testing.T) {
 	errorObj, ok := payload["error"].(map[string]any)
 	require.True(t, ok)
 	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
+}
+
+func TestMCPCallSearchToolCalls_SanitizedAndClamped(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServer(t)
+	defer cleanup()
+
+	huge := strings.Repeat("x", mcpMaxAuditInputBytes+1024)
+	requestJSON := fmt.Sprintf(`{"incident_id":"incident-search","request_id":"req-search","headers":{"Authorization":"Bearer super-secret-token"},"token":"abc","payload":"%s"}`, huge)
+	responseJSON := fmt.Sprintf(`{"secret":"sensitive","content":"%s"}`, huge)
+	errorMessage := strings.Repeat("authorization token leaked; ", 300)
+
+	row := &model.AIToolCallM{
+		ToolCallID:        fmt.Sprintf("seed-search-tool-call-%d", time.Now().UTC().UnixNano()),
+		JobID:             mcpToolCallAuditJobID,
+		Seq:               5,
+		NodeName:          "node-test",
+		ToolName:          "mcp.search_incidents",
+		RequestJSON:       requestJSON,
+		ResponseJSON:      &responseJSON,
+		ResponseSizeBytes: int64(len(responseJSON)),
+		Status:            "error",
+		LatencyMs:         11,
+		ErrorMessage:      &errorMessage,
+	}
+	require.NoError(t, s.AIToolCall().Create(context.Background(), row))
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "search_tool_calls",
+		"input": map[string]any{
+			"tool_prefix": "mcp.",
+			"incident_id": "incident-search",
+			"request_id":  "req-search",
+			"limit":       20,
+			"page":        1,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "toolcall.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	assertNoSensitiveLeak(t, respBody)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	output, ok := payload["output"].(map[string]any)
+	require.True(t, ok)
+	toolCalls, ok := output["toolCalls"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, toolCalls)
+
+	var matched map[string]any
+	for _, item := range toolCalls {
+		call, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if asString(call["toolName"]) == "mcp.search_incidents" {
+			matched = call
+			break
+		}
+	}
+	require.NotNil(t, matched)
+
+	inputPayload, ok := matched["input"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, inputPayload["truncated"])
+	responsePayload, ok := matched["output"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, responsePayload["truncated"])
+	require.Equal(t, "[REDACTED]", asString(matched["error"]))
+}
+
+func TestMCPCallSearchToolCalls_ScopeDenied(t *testing.T) {
+	baseURL, cleanup, _, client := newMCPTestServer(t)
+	defer cleanup()
+
+	rawBody, err := json.Marshal(map[string]any{
+		"tool": "search_tool_calls",
+		"input": map[string]any{
+			"tool_prefix": "mcp.",
+			"limit":       20,
+			"page":        1,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "incident.read")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok := payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeScopeDenied), asString(errorObj["code"]))
+}
+
+func TestMCPCallIsolation_NotFoundMode_ExplicitMismatchAndGetOutOfScope(t *testing.T) {
+	baseURL, cleanup, s, client := newMCPTestServerWithPolicy(t, policy.MCPPolicyConfig{
+		Isolation: policy.MCPIsolationPolicy{Mode: "not_found"},
+	})
+	defer cleanup()
+
+	incidentDenied := createAIJobLongPollTestIncident(t, s)
+	incidentDenied.Namespace = "ns-denied"
+	incidentDenied.Service = "svc-denied"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentDenied))
+
+	headers := map[string]string{
+		mcpHeaderAllowedNamespaces: "ns-allowed",
+		mcpHeaderAllowedServices:   "svc-allowed",
+	}
+
+	searchBody, err := json.Marshal(map[string]any{
+		"tool": "search_incidents",
+		"input": map[string]any{
+			"namespace": "ns-denied",
+			"service":   "svc-denied",
+			"limit":     20,
+			"page":      1,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err := doScopedJSONRequestWithHeaders(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/mcp/tools/call",
+		searchBody,
+		"incident.read",
+		headers,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, status)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok := payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeNotFound), asString(errorObj["code"]))
+
+	getBody, err := json.Marshal(map[string]any{
+		"tool": "get_incident",
+		"input": map[string]any{
+			"incident_id": incidentDenied.IncidentID,
+		},
+	})
+	require.NoError(t, err)
+
+	status, respBody, err = doScopedJSONRequestWithHeaders(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/mcp/tools/call",
+		getBody,
+		"incident.read",
+		headers,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, status)
+
+	payload = map[string]any{}
+	require.NoError(t, json.Unmarshal(respBody, &payload))
+	errorObj, ok = payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, string(MCPErrorCodeNotFound), asString(errorObj["code"]))
 }
 
 func TestMCPCallGetIncidentTimeline_WhitelistOutput(t *testing.T) {
