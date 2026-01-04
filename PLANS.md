@@ -818,15 +818,58 @@ python -m orchestrator.main
 
 ---
 
-## B Multi-Instance Hardening（Done Definition）
+## R：Redis 中间件重构（R1→R4）
 
-* AIJob 引入 DB lease（lease_owner/lease_expires_at/lease_version/heartbeat_at），实现多 orchestrator 领取互斥、续租、过期回收；
-* `/v1/ai/jobs?wait_seconds=` 支持跨 apiserver 实例正确唤醒：引入 DB watermark/version（ai_job_queue_signal），不依赖本地 notifier；
-* notice-worker 多实例 claim/锁回收/幂等/节流协议固化，确保不会重复发送与风暴放大；
-* 新增回归脚本：
+> 约束：MySQL 仍是权威；Redis 只做信号/队列/短期状态/全局限流；Redis down 必须可降级（fail-open 默认 true）。
+> 禁止：引入 UI；高风险自动处置。
 
-  * `test_b1_L1_ai_job_multi_orchestrator_claim.sh`
-  * `test_b2_L1_ai_job_lease_reclaim.sh`
-  * `test_b3_L1_longpoll_cross_instance.sh`
-  * `test_b4_L1_notice_worker_multi_instance_claim.sh`
-* `make test` / `make lint-new` 通过，以上脚本 PASS。
+### R1：Redis 唤醒 Long Poll（替换 DB watermark 主要路径，保留 fallback）
+- Doc: `docs/devel/zh-CN/15_R1_Redis_Wakeup_LongPoll.md`
+- Done Definition：
+  - ai:run 成功后必定 publish `redis.topic.ai_job_queue_signal`
+  - longpoll 首次 list 为空时：Redis ready → 纯 notify 等待（无 DB watermark 轮询）；不 ready → 退回 B2 DB watermark 轮询
+  - Redis down 时功能正确（允许更慢）
+  - 新增回归脚本：`scripts/test_r1_L1_longpoll_redis_wakeup_cross_instance.sh`
+  - 新增/更新单测 2~4 个覆盖：redis-wakeup 与 fallback 分支
+  - `make test` / `make lint-new` 通过
+
+### R1 实施更新（2026-02-11）
+- 已新增 Redis Pub/Sub 唤醒桥接：`internal/apiserver/pkg/redisx/*`、`internal/apiserver/pkg/queue/redis_pubsub_wakeup.go`
+- `RunAIJob` 成功路径已增加 best-effort publish（失败不影响 HTTP 200），并保留本地 notifier 唤醒
+- `ListAIJobs` 长轮询已实现分支：
+  - `Ready=true`：仅走 notifier wait + MySQL re-list
+  - `Ready=false`：保留 B2 DB watermark 轮询 fallback
+- 已新增最小观测：
+  - `redis_pubsub_publish_total`
+  - `redis_pubsub_subscribe_state`
+  - `ai_job_longpoll_wakeup_total{source=redis|db_watermark|timeout}`
+- 已新增回归脚本：`scripts/test_r1_L1_longpoll_redis_wakeup_cross_instance.sh`
+
+### R2：notice-worker 全局限流/并发（Redis Lua 原子）
+- Doc: `docs/devel/zh-CN/16_R2_Redis_Global_RateLimit_NoticeWorker.md`
+- Done Definition：
+  - 多实例下总 QPS 不随实例数线性放大（全局阈值生效）
+  - 可选 per-channel QPS + 必须 per-channel 全局并发上限
+  - Redis down → 每实例 token bucket（功能正确但不保证全局阈值）
+  - 新增回归脚本：`scripts/test_r2_L1_notice_worker_global_rate_limit.sh`
+  - 新增/更新单测 2~4 个覆盖 limiter 行为
+  - `make test` / `make lint-new` 通过
+
+### R3：Redis Streams 分发（NoticeDelivery 优先）
+- Doc: `docs/devel/zh-CN/17_R3_Redis_Streams_Dispatch.md`
+- Done Definition：
+  - delivery 入队后 XADD stream（只写 id），worker 优先从 stream 消费并回 MySQL claim/推进状态机
+  - 处理重复消息/消费者崩溃/pending/replay
+  - Redis down → 退回 DB claim 模式
+  - 新增回归脚本：`scripts/test_r3_L1_stream_dispatch_notice_delivery.sh`
+  - 新增/更新单测 2~4 个覆盖 stream 消费与 fallback
+  - `make test` / `make lint-new` 通过
+
+### R4：告警降噪/抑制/合并链路重构（兼容 Silence/merge）
+- Doc: `docs/devel/zh-CN/18_R4_Alert_Denoise_Suppress_Refactor.md`
+- Done Definition：
+  - 策略模块化 + 可配置；默认行为与旧版一致
+  - 可选 Redis 短期状态（dedup/burst），必须可降级
+  - 新增回归脚本：`scripts/test_r4_L1_alert_denoise_suppress.sh`
+  - 新增/更新单测 2~4 个覆盖：默认兼容、silence 优先、dedup/burst
+  - `make test` / `make lint-new` 通过

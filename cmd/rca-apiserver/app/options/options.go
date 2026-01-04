@@ -12,6 +12,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 )
 
 var (
@@ -33,6 +34,8 @@ type ServerOptions struct {
 	MySQLOptions *genericoptions.MySQLOptions `json:"coredb" mapstructure:"coredb"`
 	// OTelOptions used to specify the otel options.
 	OTelOptions *genericoptions.OTelOptions `json:"otel" mapstructure:"otel"`
+	// RedisOptions configures redis pub/sub wakeup for long poll.
+	RedisOptions redisx.RedisOptions `json:"redis" mapstructure:"redis"`
 	// NoticeWorkerPollInterval controls worker polling interval.
 	NoticeWorkerPollInterval time.Duration `json:"noticeWorkerPollInterval" mapstructure:"noticeWorkerPollInterval"`
 	// NoticeWorkerBatchSize controls max deliveries claimed each run.
@@ -58,6 +61,7 @@ func NewServerOptions() *ServerOptions {
 		HTTPOptions:                    genericoptions.NewHTTPOptions(),
 		MySQLOptions:                   genericoptions.NewMySQLOptions(),
 		OTelOptions:                    genericoptions.NewOTelOptions(),
+		RedisOptions:                   redisx.NewRedisOptions(),
 		NoticeWorkerPollInterval:       1 * time.Second,
 		NoticeWorkerBatchSize:          16,
 		NoticeWorkerLockTimeout:        60 * time.Second,
@@ -76,6 +80,12 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	o.HTTPOptions.AddFlags(fs, "http")
 	o.MySQLOptions.AddFlags(fs, "coredb")
 	o.OTelOptions.AddFlags(fs, "otel")
+	fs.BoolVar(&o.RedisOptions.Enabled, "redis.enabled", o.RedisOptions.Enabled, "Enable redis pub/sub wakeup bridge for ai job long polling.")
+	fs.StringVar(&o.RedisOptions.Addr, "redis.addr", o.RedisOptions.Addr, "Redis address used by ai job wakeup bridge.")
+	fs.IntVar(&o.RedisOptions.DB, "redis.db", o.RedisOptions.DB, "Redis db index used by ai job wakeup bridge.")
+	fs.StringVar(&o.RedisOptions.Password, "redis.password", o.RedisOptions.Password, "Redis password used by ai job wakeup bridge.")
+	fs.StringVar(&o.RedisOptions.Topic.AIJobQueueSignal, "redis.topic.ai_job_queue_signal", o.RedisOptions.Topic.AIJobQueueSignal, "Redis pub/sub topic for ai job queue wakeup.")
+	fs.BoolVar(&o.RedisOptions.FailOpen, "redis.fail_open", o.RedisOptions.FailOpen, "Whether redis failures should fall back to DB watermark long poll.")
 	fs.DurationVar(&o.NoticeWorkerPollInterval, "notice-worker-poll-interval", o.NoticeWorkerPollInterval, "Polling interval for notice worker.")
 	fs.IntVar(&o.NoticeWorkerBatchSize, "notice-worker-batch-size", o.NoticeWorkerBatchSize, "Batch size per notice worker claim.")
 	fs.DurationVar(&o.NoticeWorkerLockTimeout, "notice-worker-lock-timeout", o.NoticeWorkerLockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
@@ -100,6 +110,9 @@ func (o *ServerOptions) Validate() error {
 	errs = append(errs, o.HTTPOptions.Validate()...)
 	errs = append(errs, o.MySQLOptions.Validate()...)
 	errs = append(errs, o.OTelOptions.Validate()...)
+	if err := o.RedisOptions.Validate(); err != nil {
+		errs = append(errs, err)
+	}
 	if o.NoticeWorkerPollInterval <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerPollInterval)
 	}
@@ -125,10 +138,13 @@ func (o *ServerOptions) Validate() error {
 
 // Config builds an apiserver.Config based on ServerOptions.
 func (o *ServerOptions) Config() (*apiserver.Config, error) {
+	redisOpts := o.RedisOptions
+	redisOpts.ApplyDefaults()
 	return &apiserver.Config{
 		TLSOptions:    o.TLSOptions,
 		HTTPOptions:   o.HTTPOptions,
 		MySQLOptions:  o.MySQLOptions,
+		RedisOptions:  redisOpts,
 		NoticeBaseURL: strings.TrimSpace(o.NoticeBaseURL),
 		MCPPolicy:     o.MCPPolicy,
 	}, nil

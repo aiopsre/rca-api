@@ -31,6 +31,9 @@ type Metrics struct {
 	NoticeDeliverySnapshotMismatchTotal metric.Int64Counter
 	NoticeDeliveryReplayTotal           metric.Int64Counter
 	NoticeDeliveryCancelTotal           metric.Int64Counter
+	RedisPubSubPublishTotal             *prometheus.CounterVec
+	RedisPubSubSubscribeState           *prometheus.GaugeVec
+	AIJobLongPollWakeupTotal            *prometheus.CounterVec
 	MCPCallsTotal                       *prometheus.CounterVec
 	MCPCallLatencyMS                    *prometheus.HistogramVec
 	MCPTruncatedTotal                   *prometheus.CounterVec
@@ -153,6 +156,21 @@ func Init(scope string) error {
 			Help: "Total MCP rate-limited errors by tool.",
 		}, []string{"tool"})
 
+		redisPubSubPublishTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "redis_pubsub_publish_total",
+			Help: "Total redis pubsub publish attempts for ai job queue wakeup by topic/result.",
+		}, []string{"topic", "result"})
+
+		redisPubSubSubscribeState := promauto.With(prometheus.DefaultRegisterer).NewGaugeVec(prometheus.GaugeOpts{
+			Name: "redis_pubsub_subscribe_state",
+			Help: "Current redis pubsub subscribe readiness for ai job queue wakeup by topic (0/1).",
+		}, []string{"topic"})
+
+		aiJobLongPollWakeupTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "ai_job_longpoll_wakeup_total",
+			Help: "Total ai job longpoll wakeup outcomes by source.",
+		}, []string{"source"})
+
 		// Assign the global singleton.
 		M = &Metrics{
 			Meter:                               meter,
@@ -171,6 +189,9 @@ func Init(scope string) error {
 			NoticeDeliverySnapshotMismatchTotal: noticeSnapshotMismatchTotal,
 			NoticeDeliveryReplayTotal:           noticeReplayTotal,
 			NoticeDeliveryCancelTotal:           noticeCancelTotal,
+			RedisPubSubPublishTotal:             redisPubSubPublishTotal,
+			RedisPubSubSubscribeState:           redisPubSubSubscribeState,
+			AIJobLongPollWakeupTotal:            aiJobLongPollWakeupTotal,
 			MCPCallsTotal:                       mcpCallsTotal,
 			MCPCallLatencyMS:                    mcpCallLatencyMS,
 			MCPTruncatedTotal:                   mcpTruncatedTotal,
@@ -184,6 +205,12 @@ func Init(scope string) error {
 		mcpTruncatedTotal.WithLabelValues("unknown").Add(0)
 		mcpScopeDeniedTotal.WithLabelValues("unknown").Add(0)
 		mcpRateLimitedTotal.WithLabelValues("unknown").Add(0)
+		redisPubSubPublishTotal.WithLabelValues("unknown", "ok").Add(0)
+		redisPubSubPublishTotal.WithLabelValues("unknown", "error").Add(0)
+		redisPubSubSubscribeState.WithLabelValues("unknown").Set(0)
+		aiJobLongPollWakeupTotal.WithLabelValues("redis").Add(0)
+		aiJobLongPollWakeupTotal.WithLabelValues("db_watermark").Add(0)
+		aiJobLongPollWakeupTotal.WithLabelValues("timeout").Add(0)
 	})
 
 	return nil
@@ -244,6 +271,50 @@ func (m *Metrics) RecordAIJobQueuePull(ctx context.Context, status string, outco
 	}
 	m.AIJobQueuePullCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.AIJobQueuePullLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordRedisPubSubPublish records one redis pubsub publish attempt.
+func (m *Metrics) RecordRedisPubSubPublish(topic string, result string) {
+	if m == nil || m.RedisPubSubPublishTotal == nil {
+		return
+	}
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		topic = "unknown"
+	}
+	result = strings.TrimSpace(strings.ToLower(result))
+	if result == "" {
+		result = "unknown"
+	}
+	m.RedisPubSubPublishTotal.WithLabelValues(topic, result).Inc()
+}
+
+// SetRedisPubSubSubscribeState updates redis subscribe readiness gauge.
+func (m *Metrics) SetRedisPubSubSubscribeState(topic string, ready bool) {
+	if m == nil || m.RedisPubSubSubscribeState == nil {
+		return
+	}
+	topic = strings.TrimSpace(topic)
+	if topic == "" {
+		topic = "unknown"
+	}
+	value := 0.0
+	if ready {
+		value = 1
+	}
+	m.RedisPubSubSubscribeState.WithLabelValues(topic).Set(value)
+}
+
+// RecordAIJobLongPollWakeup records one longpoll wakeup source.
+func (m *Metrics) RecordAIJobLongPollWakeup(source string) {
+	if m == nil || m.AIJobLongPollWakeupTotal == nil {
+		return
+	}
+	source = strings.TrimSpace(strings.ToLower(source))
+	if source == "" {
+		source = "unknown"
+	}
+	m.AIJobLongPollWakeupTotal.WithLabelValues(source).Inc()
 }
 
 // RecordNoticeDeliveryDispatch records one notice delivery enqueue event.

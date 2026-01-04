@@ -9,6 +9,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 	genericoptions "github.com/onexstack/onexstack/pkg/options"
 	"github.com/onexstack/onexstack/pkg/server"
 	"github.com/onexstack/onexstack/pkg/store/registry"
@@ -26,6 +27,7 @@ type Config struct {
 	TLSOptions    *genericoptions.TLSOptions
 	HTTPOptions   *genericoptions.HTTPOptions
 	MySQLOptions  *genericoptions.MySQLOptions
+	RedisOptions  redisx.RedisOptions
 	NoticeBaseURL string
 	MCPPolicy     policy.MCPPolicyConfig
 }

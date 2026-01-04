@@ -15,6 +15,7 @@ type Handler struct {
 	biz              biz.IBiz
 	val              *validation.Validator
 	jobQueueNotifier *queue.Notifier
+	jobQueueWakeup   queue.AIJobQueueWakeup
 	mcpPolicies      mcpPolicyRegistry
 }
 
@@ -25,10 +26,29 @@ var registrars []Registrar
 
 // NewHandler creates a new instance of Handler.
 func NewHandler(biz biz.IBiz, val *validation.Validator) *Handler {
+	return NewHandlerWithQueueDeps(biz, val, queue.NewNotifier(), queue.NewNoopWakeup())
+}
+
+// NewHandlerWithQueueDeps creates a handler with externally provided queue notifier/wakeup bridge.
+func NewHandlerWithQueueDeps(
+	biz biz.IBiz,
+	val *validation.Validator,
+	jobQueueNotifier *queue.Notifier,
+	jobQueueWakeup queue.AIJobQueueWakeup,
+) *Handler {
+
+	if jobQueueNotifier == nil {
+		jobQueueNotifier = queue.NewNotifier()
+	}
+	if jobQueueWakeup == nil {
+		jobQueueWakeup = queue.NewNoopWakeup()
+	}
+
 	return &Handler{
 		biz:              biz,
 		val:              val,
-		jobQueueNotifier: queue.NewNotifier(),
+		jobQueueNotifier: jobQueueNotifier,
+		jobQueueWakeup:   jobQueueWakeup,
 		mcpPolicies:      newMCPPolicyRegistry(),
 	}
 }

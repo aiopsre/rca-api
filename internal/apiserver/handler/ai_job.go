@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,9 @@ import (
 const (
 	orchestratorInstanceIDHeader = "X-Orchestrator-Instance-ID"
 	longPollDBCheckInterval      = 500 * time.Millisecond
+	wakeupSourceRedis            = "redis"
+	wakeupSourceDBWatermark      = "db_watermark"
+	wakeupSourceTimeout          = "timeout"
 )
 
 func (h *Handler) RunIncidentAIJob(c *gin.Context) {
@@ -49,6 +53,9 @@ func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 	resp, err := h.biz.AIJobV1().Run(c.Request.Context(), &req)
 	if err == nil {
 		h.jobQueueNotifier.Notify()
+		if h.jobQueueWakeup != nil {
+			_ = h.jobQueueWakeup.PublishAIJobQueueSignal(c.Request.Context())
+		}
 	}
 	core.WriteResponse(c, resp, err)
 }
@@ -164,57 +171,108 @@ func (h *Handler) ListAIJobs(c *gin.Context) {
 		return
 	}
 
-	baselineVersion, err := h.biz.AIJobV1().QueueSignalVersion(c.Request.Context())
+	var wakeupSource string
+	if h.jobQueueWakeup != nil && h.jobQueueWakeup.Ready() {
+		resp, wakeupSource, err = h.longPollAIJobsViaRedisSignal(c.Request.Context(), req, waitSeconds)
+	} else {
+		resp, wakeupSource, err = h.longPollAIJobsViaDBWatermark(c.Request.Context(), req, waitSeconds)
+	}
 	if err != nil {
 		outcome = "error"
 		core.WriteResponse(c, nil, err)
 		return
+	}
+	h.recordLongPollWake(c.Request.Context(), wakeupSource, waitSeconds)
+	core.WriteResponse(c, resp, nil)
+}
+
+func (h *Handler) longPollAIJobsViaRedisSignal(
+	ctx context.Context,
+	req *v1.ListAIJobsRequest,
+	waitSeconds int64,
+) (*v1.ListAIJobsResponse, string, error) {
+
+	// Close list->wait race: if queue changed before entering wait, this second list catches it.
+	notifierVersion := h.jobQueueNotifier.Version()
+	resp, err := h.biz.AIJobV1().List(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(resp.GetJobs()) > 0 {
+		return resp, wakeupSourceRedis, nil
+	}
+
+	waitDur := time.Duration(waitSeconds) * time.Second
+	woke := h.jobQueueNotifier.Wait(ctx, notifierVersion, waitDur)
+	source := wakeupSourceTimeout
+	if woke {
+		source = wakeupSourceRedis
+	}
+
+	resp, err = h.biz.AIJobV1().List(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+	return resp, source, nil
+}
+
+//nolint:gocognit // Fallback loop intentionally mirrors legacy B2 watermark polling flow.
+func (h *Handler) longPollAIJobsViaDBWatermark(
+	ctx context.Context,
+	req *v1.ListAIJobsRequest,
+	waitSeconds int64,
+) (*v1.ListAIJobsResponse, string, error) {
+
+	baselineVersion, err := h.biz.AIJobV1().QueueSignalVersion(ctx)
+	if err != nil {
+		return nil, "", err
 	}
 
 	// Close list->baseline race: if queue changed before baseline read, this second list catches it.
-	resp, err = h.biz.AIJobV1().List(c.Request.Context(), req)
+	resp, err := h.biz.AIJobV1().List(ctx, req)
 	if err != nil {
-		outcome = "error"
-		core.WriteResponse(c, nil, err)
-		return
+		return nil, "", err
 	}
 	if len(resp.GetJobs()) > 0 {
-		core.WriteResponse(c, resp, nil)
-		return
+		return resp, wakeupSourceDBWatermark, nil
 	}
 
 	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
 	notifierVersion := h.jobQueueNotifier.Version()
-	for c.Request.Context().Err() == nil {
+	for ctx.Err() == nil {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
 		waitDur := longPollDBCheckInterval
 		waitDur = min(waitDur, remaining)
-		h.jobQueueNotifier.Wait(c.Request.Context(), notifierVersion, waitDur)
+		h.jobQueueNotifier.Wait(ctx, notifierVersion, waitDur)
 		notifierVersion = h.jobQueueNotifier.Version()
 
-		currentVersion, verErr := h.biz.AIJobV1().QueueSignalVersion(c.Request.Context())
+		currentVersion, verErr := h.biz.AIJobV1().QueueSignalVersion(ctx)
 		if verErr != nil {
-			outcome = "error"
-			core.WriteResponse(c, nil, verErr)
-			return
+			return nil, "", verErr
 		}
 		if currentVersion != baselineVersion {
-			resp, err = h.biz.AIJobV1().List(c.Request.Context(), req)
-			if err != nil {
-				outcome = "error"
+			resp, listErr := h.biz.AIJobV1().List(ctx, req)
+			if listErr != nil {
+				return nil, "", listErr
 			}
-			core.WriteResponse(c, resp, err)
-			return
+			return resp, wakeupSourceDBWatermark, nil
 		}
 	}
 
-	core.WriteResponse(c, &v1.ListAIJobsResponse{
+	return &v1.ListAIJobsResponse{
 		TotalCount: 0,
 		Jobs:       []*v1.AIJob{},
-	}, nil)
+	}, wakeupSourceTimeout, nil
+}
+
+func (h *Handler) recordLongPollWake(ctx context.Context, source string, waitSeconds int64) {
+	if metrics.M != nil {
+		metrics.M.RecordAIJobLongPollWakeup(source)
+	}
+	slog.Info("ai job long poll wake", "wakeup_source", source, "wait_seconds", waitSeconds)
 }
 
 func (h *Handler) StartAIJob(c *gin.Context) {

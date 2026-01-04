@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/biz"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
@@ -114,7 +117,7 @@ func TestListAIJobs_LongPollWakeupOnRun(t *testing.T) {
 	}
 }
 
-func TestListAIJobs_LongPollWakeupAcrossInstancesOnRun(t *testing.T) {
+func TestListAIJobs_LongPollWakeupViaRedisBridge(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store.ResetForTest()
 	defer store.ResetForTest()
@@ -123,13 +126,24 @@ func TestListAIJobs_LongPollWakeupAcrossInstancesOnRun(t *testing.T) {
 	s := store.NewStore(db)
 	val := validation.New(s)
 
-	handlerA := NewHandler(biz.NewBiz(s), val)
+	notifierA := queue.NewNotifier()
+	notifierB := queue.NewNotifier()
+	wakeupA := &fakeAIJobQueueWakeup{
+		ready: true,
+		publishHook: func(context.Context) error {
+			notifierB.Notify()
+			return nil
+		},
+	}
+	wakeupB := &fakeAIJobQueueWakeup{ready: true}
+
+	handlerA := NewHandlerWithQueueDeps(biz.NewBiz(s), val, notifierA, wakeupA)
 	engineA := gin.New()
 	handlerA.ApplyTo(engineA.Group("/v1"))
 	serverA := httptest.NewServer(engineA)
 	defer serverA.Close()
 
-	handlerB := NewHandler(biz.NewBiz(s), val)
+	handlerB := NewHandlerWithQueueDeps(biz.NewBiz(s), val, notifierB, wakeupB)
 	engineB := gin.New()
 	handlerB.ApplyTo(engineB.Group("/v1"))
 	serverB := httptest.NewServer(engineB)
@@ -192,6 +206,140 @@ func TestListAIJobs_LongPollWakeupAcrossInstancesOnRun(t *testing.T) {
 	case <-time.After(7 * time.Second):
 		t.Fatalf("long poll did not return in expected time window")
 	}
+
+	require.Equal(t, int64(1), wakeupA.PublishCalls())
+}
+
+func TestListAIJobs_LongPollFallbackToDBWatermarkWhenRedisNotReady(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store.ResetForTest()
+	defer store.ResetForTest()
+
+	db := newAIJobLongPollTestDB(t)
+	s := store.NewStore(db)
+	val := validation.New(s)
+
+	notifierA := queue.NewNotifier()
+	notifierB := queue.NewNotifier()
+	wakeupA := &fakeAIJobQueueWakeup{ready: false}
+	wakeupB := &fakeAIJobQueueWakeup{ready: false}
+
+	handlerA := NewHandlerWithQueueDeps(biz.NewBiz(s), val, notifierA, wakeupA)
+	engineA := gin.New()
+	handlerA.ApplyTo(engineA.Group("/v1"))
+	serverA := httptest.NewServer(engineA)
+	defer serverA.Close()
+
+	handlerB := NewHandlerWithQueueDeps(biz.NewBiz(s), val, notifierB, wakeupB)
+	engineB := gin.New()
+	handlerB.ApplyTo(engineB.Group("/v1"))
+	serverB := httptest.NewServer(engineB)
+	defer serverB.Close()
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	require.NotNil(t, incident)
+
+	type pollResult struct {
+		status  int
+		body    []byte
+		elapsed time.Duration
+		err     error
+	}
+	pollDone := make(chan pollResult, 1)
+
+	const waitSeconds = int64(5)
+	go func() {
+		listURL := fmt.Sprintf("%s/v1/ai/jobs?status=queued&limit=10&offset=0&wait_seconds=%d", serverB.URL, waitSeconds)
+		started := time.Now()
+		status, body, err := doJSONRequest(serverB.Client(), http.MethodGet, listURL, nil)
+		pollDone <- pollResult{
+			status:  status,
+			body:    body,
+			elapsed: time.Since(started),
+			err:     err,
+		}
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+
+	now := time.Now().UTC().Unix()
+	runBody := map[string]any{
+		"incidentID":     incident.IncidentID,
+		"idempotencyKey": fmt.Sprintf("idem-cross-instance-db-fallback-%d", time.Now().UTC().UnixNano()),
+		"timeRangeStart": map[string]any{
+			"seconds": now - 1200,
+			"nanos":   0,
+		},
+		"timeRangeEnd": map[string]any{
+			"seconds": now,
+			"nanos":   0,
+		},
+	}
+	payload, err := json.Marshal(runBody)
+	require.NoError(t, err)
+
+	runURL := fmt.Sprintf("%s/v1/incidents/%s/ai:run", serverA.URL, incident.IncidentID)
+	runStatus, runRespBody, err := doJSONRequest(serverA.Client(), http.MethodPost, runURL, payload)
+	require.NoError(t, err)
+	require.Equalf(t, http.StatusOK, runStatus, "run response: %s", string(runRespBody))
+
+	select {
+	case res := <-pollDone:
+		require.NoError(t, res.err)
+		require.Equal(t, http.StatusOK, res.status)
+		require.Less(t, res.elapsed, 4500*time.Millisecond, "fallback long poll did not wake up across instances")
+		jobs := extractJobs(res.body)
+		require.NotEmpty(t, jobs)
+	case <-time.After(7 * time.Second):
+		t.Fatalf("long poll did not return in expected time window")
+	}
+}
+
+func TestRunAIJob_PublishCalledBestEffort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store.ResetForTest()
+	defer store.ResetForTest()
+
+	db := newAIJobLongPollTestDB(t)
+	s := store.NewStore(db)
+	val := validation.New(s)
+
+	notifier := queue.NewNotifier()
+	wakeup := &fakeAIJobQueueWakeup{
+		ready:      true,
+		publishErr: errors.New("publish failed"),
+	}
+	h := NewHandlerWithQueueDeps(biz.NewBiz(s), val, notifier, wakeup)
+
+	engine := gin.New()
+	h.ApplyTo(engine.Group("/v1"))
+	server := httptest.NewServer(engine)
+	defer server.Close()
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	require.NotNil(t, incident)
+
+	now := time.Now().UTC().Unix()
+	runBody := map[string]any{
+		"incidentID":     incident.IncidentID,
+		"idempotencyKey": fmt.Sprintf("idem-publish-best-effort-%d", time.Now().UTC().UnixNano()),
+		"timeRangeStart": map[string]any{
+			"seconds": now - 1200,
+			"nanos":   0,
+		},
+		"timeRangeEnd": map[string]any{
+			"seconds": now,
+			"nanos":   0,
+		},
+	}
+	payload, err := json.Marshal(runBody)
+	require.NoError(t, err)
+
+	runURL := fmt.Sprintf("%s/v1/incidents/%s/ai:run", server.URL, incident.IncidentID)
+	runStatus, runRespBody, err := doJSONRequest(server.Client(), http.MethodPost, runURL, payload)
+	require.NoError(t, err)
+	require.Equalf(t, http.StatusOK, runStatus, "run response: %s", string(runRespBody))
+	require.Equal(t, int64(1), wakeup.PublishCalls())
 }
 
 func newTestServer(t *testing.T) (baseURL string, cleanup func(), s store.IStore, client *http.Client) {
@@ -365,4 +513,29 @@ func extractString(m map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+type fakeAIJobQueueWakeup struct {
+	ready        bool
+	publishErr   error
+	publishHook  func(context.Context) error
+	publishCalls atomic.Int64
+}
+
+func (f *fakeAIJobQueueWakeup) PublishAIJobQueueSignal(ctx context.Context) error {
+	f.publishCalls.Add(1)
+	if f.publishHook != nil {
+		if err := f.publishHook(ctx); err != nil {
+			return err
+		}
+	}
+	return f.publishErr
+}
+
+func (f *fakeAIJobQueueWakeup) Ready() bool {
+	return f.ready
+}
+
+func (f *fakeAIJobQueueWakeup) PublishCalls() int64 {
+	return f.publishCalls.Load()
 }

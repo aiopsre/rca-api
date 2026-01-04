@@ -9,11 +9,11 @@ package apiserver
 import (
 	"context"
 
-	"github.com/google/wire"
 	"github.com/aiopsre/rca-api/internal/apiserver/biz"
 	"github.com/aiopsre/rca-api/internal/apiserver/handler"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/google/wire"
 )
 
 // Injectors from wire.go:
@@ -25,10 +25,15 @@ func NewServer(contextContext context.Context, config *Config) (*Server, error) 
 	if err != nil {
 		return nil, err
 	}
+	notifier := ProvideJobQueueNotifier()
+	aiJobQueueWakeup, err := ProvideAIJobQueueWakeup(contextContext, config, notifier)
+	if err != nil {
+		return nil, err
+	}
 	storeStore := store.NewStore(db)
 	bizBiz := biz.NewBiz(storeStore)
 	validator := validation.New(storeStore)
-	handlerHandler := handler.NewHandler(bizBiz, validator)
+	handlerHandler := handler.NewHandlerWithQueueDeps(bizBiz, validator, notifier, aiJobQueueWakeup)
 	serverConfig := &ServerConfig{
 		Config:       config,
 		Dependencies: dependencies,
@@ -51,4 +56,6 @@ func NewServer(contextContext context.Context, config *Config) (*Server, error) 
 // This keeps the main wire.Build call clean.
 var infrastructureSet = wire.NewSet(
 	ProvideDB,
+	ProvideJobQueueNotifier,
+	ProvideAIJobQueueWakeup,
 )
