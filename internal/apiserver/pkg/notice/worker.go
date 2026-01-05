@@ -30,11 +30,13 @@ type WorkerOptions struct {
 	JitterMax             time.Duration
 	PerChannelConcurrency int
 	GlobalQPS             float64
+	Limiter               NoticeRateLimiter
 }
 
 var (
 	errNoticeChannelNotFound = errors.New("notice channel not found")
 	errNoticeChannelDisabled = errors.New("notice channel disabled")
+	errNoticeRateLimitDenied = errors.New("notice rate limiter denied within lock timeout")
 )
 
 const (
@@ -77,16 +79,14 @@ func DefaultWorkerOptions() WorkerOptions {
 
 // Worker consumes pending notice deliveries and sends webhooks with retry.
 type Worker struct {
-	store         store.IStore
-	opts          WorkerOptions
-	channelMu     sync.Mutex
-	channelSem    map[string]chan struct{}
-	globalLimiter *tokenBucket
+	store       store.IStore
+	opts        WorkerOptions
+	rateLimiter NoticeRateLimiter
 }
 
 // NewWorker creates a notice worker.
 //
-//nolint:gocyclo // Option normalization keeps explicit guards for readability.
+//nolint:gocognit,gocyclo // Option normalization keeps explicit guards for readability.
 func NewWorker(st store.IStore, opts WorkerOptions) *Worker {
 	dft := DefaultWorkerOptions()
 	if strings.TrimSpace(opts.WorkerID) == "" {
@@ -119,12 +119,14 @@ func NewWorker(st store.IStore, opts WorkerOptions) *Worker {
 	if opts.GlobalQPS <= 0 {
 		opts.GlobalQPS = dft.GlobalQPS
 	}
+	if opts.Limiter == nil {
+		opts.Limiter = newLocalRateLimiter(opts.GlobalQPS, opts.PerChannelConcurrency)
+	}
 
 	return &Worker{
-		store:         st,
-		opts:          opts,
-		channelSem:    make(map[string]chan struct{}),
-		globalLimiter: newTokenBucket(opts.GlobalQPS),
+		store:       st,
+		opts:        opts,
+		rateLimiter: opts.Limiter,
 	}
 }
 
@@ -198,14 +200,11 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 		w.recordSecretFingerprintMismatch(ctx, delivery, err)
 		return w.failWithoutSend(ctx, delivery, err)
 	}
-	releaseChannel, err := w.acquireChannelSlot(ctx, delivery.ChannelID)
+	permit, err := w.acquireRateLimitPermit(ctx, delivery)
 	if err != nil {
 		return err
 	}
-	defer releaseChannel()
-	if err := w.waitGlobalToken(ctx); err != nil {
-		return err
-	}
+	defer w.releaseRateLimitPermit(ctx, permit)
 
 	code, responseBody, latencyMs, sendErr := sendWebhook(
 		ctx,
@@ -267,6 +266,79 @@ func (w *Worker) processDelivery(ctx context.Context, delivery *model.NoticeDeli
 		"error", derefString(errText),
 	)
 	return nil
+}
+
+func (w *Worker) acquireRateLimitPermit(ctx context.Context, delivery *model.NoticeDeliveryM) (RateLimitPermit, error) {
+	if w.rateLimiter == nil {
+		return RateLimitPermit{}, nil
+	}
+
+	deadline := time.Now().UTC().Add(w.opts.LockTimeout)
+	for {
+		decision, err := w.rateLimiter.Acquire(ctx, delivery.ChannelID)
+		if err != nil {
+			return RateLimitPermit{}, err
+		}
+		if decision.Allowed {
+			return decision.Permit, nil
+		}
+
+		retryAfter, reason := normalizeRateLimitRetry(decision)
+		slog.InfoContext(ctx, "notice rate limiter denied, retrying",
+			"worker_id", w.opts.WorkerID,
+			"delivery_id", delivery.DeliveryID,
+			"channel_id", delivery.ChannelID,
+			"mode", rateLimitModeRedis,
+			"reason", reason,
+			"retry_after_ms", retryAfter.Milliseconds(),
+		)
+
+		if time.Now().UTC().Add(retryAfter).After(deadline) {
+			return RateLimitPermit{}, fmt.Errorf(
+				"%w: delivery_id=%s channel_id=%s reason=%s retry_after_ms=%d",
+				errNoticeRateLimitDenied,
+				delivery.DeliveryID,
+				delivery.ChannelID,
+				reason,
+				retryAfter.Milliseconds(),
+			)
+		}
+
+		if err := waitRateLimitRetry(ctx, retryAfter); err != nil {
+			return RateLimitPermit{}, err
+		}
+	}
+}
+
+func normalizeRateLimitRetry(decision RateLimitAcquireResult) (time.Duration, string) {
+	retryAfter := decision.RetryAfter
+	if retryAfter <= 0 {
+		retryAfter = defaultNoticeRetryAfterFallback
+	}
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = rateLimitReasonUnknown
+	}
+	return retryAfter, reason
+}
+
+func waitRateLimitRetry(ctx context.Context, retryAfter time.Duration) error {
+	timer := time.NewTimer(retryAfter)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (w *Worker) releaseRateLimitPermit(ctx context.Context, permit RateLimitPermit) {
+	if w.rateLimiter == nil {
+		return
+	}
+	w.rateLimiter.Release(ctx, permit)
 }
 
 func (w *Worker) resolveSendConfig(ctx context.Context, delivery *model.NoticeDeliveryM) (webhookSendConfig, error) {
@@ -389,44 +461,6 @@ func (w *Worker) handleMarkClaimLost(ctx context.Context, delivery *model.Notice
 		"job_id", derefString(delivery.JobID),
 	)
 	return nil
-}
-
-func (w *Worker) acquireChannelSlot(ctx context.Context, channelID string) (func(), error) {
-	if w.opts.PerChannelConcurrency <= 0 {
-		return func() {}, nil
-	}
-	id := strings.TrimSpace(channelID)
-	if id == "" {
-		id = "__empty__"
-	}
-
-	w.channelMu.Lock()
-	sem, ok := w.channelSem[id]
-	if !ok {
-		sem = make(chan struct{}, w.opts.PerChannelConcurrency)
-		w.channelSem[id] = sem
-	}
-	w.channelMu.Unlock()
-
-	select {
-	case sem <- struct{}{}:
-		return func() {
-			select {
-			case <-sem:
-			default:
-			}
-		}, nil
-
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (w *Worker) waitGlobalToken(ctx context.Context) error {
-	if w.globalLimiter == nil {
-		return nil
-	}
-	return w.globalLimiter.Wait(ctx)
 }
 
 func isRetryable(sendErr error, code *int32) bool {

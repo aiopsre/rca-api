@@ -31,6 +31,7 @@ type Metrics struct {
 	NoticeDeliverySnapshotMismatchTotal metric.Int64Counter
 	NoticeDeliveryReplayTotal           metric.Int64Counter
 	NoticeDeliveryCancelTotal           metric.Int64Counter
+	NoticeRateLimitAcquireTotal         *prometheus.CounterVec
 	RedisPubSubPublishTotal             *prometheus.CounterVec
 	RedisPubSubSubscribeState           *prometheus.GaugeVec
 	AIJobLongPollWakeupTotal            *prometheus.CounterVec
@@ -129,6 +130,11 @@ func Init(scope string) error {
 			metric.WithDescription("Total number of notice delivery cancel operations"),
 		)
 
+		noticeRateLimitAcquireTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_rate_limit_acquire_total",
+			Help: "Total notice rate limiter acquire outcomes by mode/result/reason.",
+		}, []string{"mode", "result", "reason"})
+
 		mcpCallsTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
 			Name: "mcp_calls_total",
 			Help: "Total MCP tool calls by tool/error_code.",
@@ -189,6 +195,7 @@ func Init(scope string) error {
 			NoticeDeliverySnapshotMismatchTotal: noticeSnapshotMismatchTotal,
 			NoticeDeliveryReplayTotal:           noticeReplayTotal,
 			NoticeDeliveryCancelTotal:           noticeCancelTotal,
+			NoticeRateLimitAcquireTotal:         noticeRateLimitAcquireTotal,
 			RedisPubSubPublishTotal:             redisPubSubPublishTotal,
 			RedisPubSubSubscribeState:           redisPubSubSubscribeState,
 			AIJobLongPollWakeupTotal:            aiJobLongPollWakeupTotal,
@@ -205,6 +212,10 @@ func Init(scope string) error {
 		mcpTruncatedTotal.WithLabelValues("unknown").Add(0)
 		mcpScopeDeniedTotal.WithLabelValues("unknown").Add(0)
 		mcpRateLimitedTotal.WithLabelValues("unknown").Add(0)
+		noticeRateLimitAcquireTotal.WithLabelValues("redis", "ok", "ok").Add(0)
+		noticeRateLimitAcquireTotal.WithLabelValues("redis", "deny", "global_qps").Add(0)
+		noticeRateLimitAcquireTotal.WithLabelValues("redis", "error", "redis_error").Add(0)
+		noticeRateLimitAcquireTotal.WithLabelValues("local", "ok", "local").Add(0)
 		redisPubSubPublishTotal.WithLabelValues("unknown", "ok").Add(0)
 		redisPubSubPublishTotal.WithLabelValues("unknown", "error").Add(0)
 		redisPubSubSubscribeState.WithLabelValues("unknown").Set(0)
@@ -315,6 +326,26 @@ func (m *Metrics) RecordAIJobLongPollWakeup(source string) {
 		source = "unknown"
 	}
 	m.AIJobLongPollWakeupTotal.WithLabelValues(source).Inc()
+}
+
+// RecordNoticeRateLimitAcquire records one limiter acquire outcome.
+func (m *Metrics) RecordNoticeRateLimitAcquire(mode string, result string, reason string) {
+	if m == nil || m.NoticeRateLimitAcquireTotal == nil {
+		return
+	}
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	if mode == "" {
+		mode = "unknown"
+	}
+	result = strings.TrimSpace(strings.ToLower(result))
+	if result == "" {
+		result = "unknown"
+	}
+	reason = strings.TrimSpace(strings.ToLower(reason))
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.NoticeRateLimitAcquireTotal.WithLabelValues(mode, result, reason).Inc()
 }
 
 // RecordNoticeDeliveryDispatch records one notice delivery enqueue event.

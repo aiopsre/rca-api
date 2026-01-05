@@ -21,6 +21,10 @@ var (
 	errInvalidNoticeWorkerLockTimeout  = errors.New("noticeWorkerLockTimeout must be > 0")
 	errInvalidNoticeWorkerChannelConc  = errors.New("noticeWorkerChannelConcurrency must be > 0")
 	errInvalidNoticeWorkerGlobalQPS    = errors.New("noticeWorkerGlobalQPS must be > 0")
+	errInvalidNoticeWorkerChannelQPS   = errors.New("noticeWorkerChannelQPS must be >= 0")
+	errInvalidNoticeWorkerRedisPrefix  = errors.New("noticeWorkerRedisRLKeyPrefix must not be empty")
+	errInvalidNoticeWorkerRedisConcTTL = errors.New("noticeWorkerRedisConcTTL must be > 0")
+	errInvalidNoticeWorkerRedisWinTTL  = errors.New("noticeWorkerRedisWindowTTL must be > 0")
 	errInvalidNoticeBaseURL            = errors.New("noticeBaseURL must be valid http(s) url")
 )
 
@@ -48,6 +52,14 @@ type ServerOptions struct {
 	NoticeWorkerChannelConcurrency int `json:"noticeWorkerChannelConcurrency" mapstructure:"noticeWorkerChannelConcurrency"`
 	// NoticeWorkerGlobalQPS controls global send QPS token bucket for one worker process.
 	NoticeWorkerGlobalQPS float64 `json:"noticeWorkerGlobalQPS" mapstructure:"noticeWorkerGlobalQPS"`
+	// NoticeWorkerChannelQPS controls per-channel send QPS. 0 disables this guard.
+	NoticeWorkerChannelQPS float64 `json:"noticeWorkerChannelQPS" mapstructure:"noticeWorkerChannelQPS"`
+	// NoticeWorkerRedisRLKeyPrefix controls redis limiter key namespace.
+	NoticeWorkerRedisRLKeyPrefix string `json:"noticeWorkerRedisRLKeyPrefix" mapstructure:"noticeWorkerRedisRLKeyPrefix"`
+	// NoticeWorkerRedisConcTTL controls redis per-channel concurrency key ttl.
+	NoticeWorkerRedisConcTTL time.Duration `json:"noticeWorkerRedisConcTTL" mapstructure:"noticeWorkerRedisConcTTL"`
+	// NoticeWorkerRedisWindowTTL controls redis qps window key ttl.
+	NoticeWorkerRedisWindowTTL time.Duration `json:"noticeWorkerRedisWindowTTL" mapstructure:"noticeWorkerRedisWindowTTL"`
 	// NoticeBaseURL is default links base_url when channel.baseURL is unset.
 	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
 	// MCPPolicy configures per-tool MCP governance limits and enable switches.
@@ -67,6 +79,10 @@ func NewServerOptions() *ServerOptions {
 		NoticeWorkerLockTimeout:        60 * time.Second,
 		NoticeWorkerChannelConcurrency: 2,
 		NoticeWorkerGlobalQPS:          20,
+		NoticeWorkerChannelQPS:         0,
+		NoticeWorkerRedisRLKeyPrefix:   "rca:notice",
+		NoticeWorkerRedisConcTTL:       60 * time.Second,
+		NoticeWorkerRedisWindowTTL:     2 * time.Second,
 	}
 	opts.HTTPOptions.Addr = ":5555"
 
@@ -92,6 +108,10 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.NoticeWorkerID, "notice-worker-id", o.NoticeWorkerID, "Worker instance id for notice worker lock ownership.")
 	fs.IntVar(&o.NoticeWorkerChannelConcurrency, "notice-worker-channel-concurrency", o.NoticeWorkerChannelConcurrency, "Per-channel max in-flight sends.")
 	fs.Float64Var(&o.NoticeWorkerGlobalQPS, "notice-worker-global-qps", o.NoticeWorkerGlobalQPS, "Global send QPS token bucket for one worker process.")
+	fs.Float64Var(&o.NoticeWorkerChannelQPS, "notice-worker-channel-qps", o.NoticeWorkerChannelQPS, "Per-channel send QPS limit (0 disables).")
+	fs.StringVar(&o.NoticeWorkerRedisRLKeyPrefix, "notice-worker-redis-rl-key-prefix", o.NoticeWorkerRedisRLKeyPrefix, "Redis key prefix for notice global limiter.")
+	fs.DurationVar(&o.NoticeWorkerRedisConcTTL, "notice-worker-redis-conc-ttl", o.NoticeWorkerRedisConcTTL, "Redis TTL for per-channel concurrency key.")
+	fs.DurationVar(&o.NoticeWorkerRedisWindowTTL, "notice-worker-redis-window-ttl", o.NoticeWorkerRedisWindowTTL, "Redis TTL for per-second QPS window keys.")
 	fs.StringVar(&o.NoticeBaseURL, "notice-base-url", o.NoticeBaseURL, "Default base URL for notice links when channel.baseURL is empty.")
 }
 
@@ -113,6 +133,17 @@ func (o *ServerOptions) Validate() error {
 	if err := o.RedisOptions.Validate(); err != nil {
 		errs = append(errs, err)
 	}
+	errs = append(errs, o.validateNoticeWorkerOptions()...)
+	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
+		errs = append(errs, errInvalidNoticeBaseURL)
+	}
+
+	// Aggregate all errors and return them.
+	return utilerrors.NewAggregate(errs)
+}
+
+func (o *ServerOptions) validateNoticeWorkerOptions() []error {
+	errs := make([]error, 0, 9)
 	if o.NoticeWorkerPollInterval <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerPollInterval)
 	}
@@ -128,12 +159,20 @@ func (o *ServerOptions) Validate() error {
 	if o.NoticeWorkerGlobalQPS <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerGlobalQPS)
 	}
-	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
-		errs = append(errs, errInvalidNoticeBaseURL)
+	if o.NoticeWorkerChannelQPS < 0 {
+		errs = append(errs, errInvalidNoticeWorkerChannelQPS)
 	}
-
-	// Aggregate all errors and return them.
-	return utilerrors.NewAggregate(errs)
+	o.NoticeWorkerRedisRLKeyPrefix = strings.TrimSpace(o.NoticeWorkerRedisRLKeyPrefix)
+	if o.NoticeWorkerRedisRLKeyPrefix == "" {
+		errs = append(errs, errInvalidNoticeWorkerRedisPrefix)
+	}
+	if o.NoticeWorkerRedisConcTTL <= 0 {
+		errs = append(errs, errInvalidNoticeWorkerRedisConcTTL)
+	}
+	if o.NoticeWorkerRedisWindowTTL <= 0 {
+		errs = append(errs, errInvalidNoticeWorkerRedisWinTTL)
+	}
+	return errs
 }
 
 // Config builds an apiserver.Config based on ServerOptions.

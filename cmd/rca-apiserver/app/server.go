@@ -4,17 +4,20 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/onexstack/onexstack/pkg/cli/cli"
 	"github.com/onexstack/onexstack/pkg/core"
 	"github.com/onexstack/onexstack/pkg/version"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 
 	"github.com/aiopsre/rca-api/cmd/rca-apiserver/app/options"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
@@ -105,6 +108,7 @@ func newNoticeWorkerCommand(opts *options.ServerOptions) *cobra.Command {
 	return cmd
 }
 
+//nolint:gocognit // Startup wiring intentionally keeps validation/setup order explicit.
 func runWithPreparedOptions(
 	opts *options.ServerOptions,
 	runner func(context.Context, *options.ServerOptions) error,
@@ -117,9 +121,18 @@ func runWithPreparedOptions(
 		// Check if the --version flag was requested. If so, print version info and exit.
 		version.PrintAndExitIfRequested()
 
+		// Bind parsed CLI flags into viper so command-line values override config defaults.
+		if err := viper.BindPFlags(cmd.Flags()); err != nil {
+			return fmt.Errorf("failed to bind command flags: %w", err)
+		}
+		cliOverrides := captureSetFlags(cmd.Flags())
+
 		// Unmarshal the configuration from Viper into the ServerOptions struct.
 		if err := viper.Unmarshal(opts); err != nil {
 			return fmt.Errorf("failed to unmarshal configuration: %w", err)
+		}
+		if err := applyFlagOverrides(cmd.Flags(), cliOverrides); err != nil {
+			return err
 		}
 
 		// Complete the options by setting default values and deriving configurations.
@@ -143,6 +156,29 @@ func runWithPreparedOptions(
 	}
 }
 
+func captureSetFlags(flags *pflag.FlagSet) map[string]string {
+	overrides := make(map[string]string)
+	if flags == nil {
+		return overrides
+	}
+	flags.Visit(func(flag *pflag.Flag) {
+		overrides[flag.Name] = flag.Value.String()
+	})
+	return overrides
+}
+
+func applyFlagOverrides(flags *pflag.FlagSet, overrides map[string]string) error {
+	if flags == nil || len(overrides) == 0 {
+		return nil
+	}
+	for name, value := range overrides {
+		if err := flags.Set(name, value); err != nil {
+			return fmt.Errorf("failed to re-apply command flag %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 	cfg, err := opts.Config()
 	if err != nil {
@@ -155,6 +191,15 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 	st := store.NewStore(db)
 	_ = metrics.Init("notice-worker")
 
+	var redisClientClose func() error
+	limiter, err := buildNoticeLimiter(ctx, opts, &redisClientClose)
+	if err != nil {
+		return fmt.Errorf("failed to initialize notice limiter: %w", err)
+	}
+	if redisClientClose != nil {
+		defer func() { _ = redisClientClose() }()
+	}
+
 	worker := noticepkg.NewWorker(st, noticepkg.WorkerOptions{
 		WorkerID:              opts.NoticeWorkerID,
 		BatchSize:             opts.NoticeWorkerBatchSize,
@@ -162,6 +207,7 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		LockTimeout:           opts.NoticeWorkerLockTimeout,
 		PerChannelConcurrency: opts.NoticeWorkerChannelConcurrency,
 		GlobalQPS:             opts.NoticeWorkerGlobalQPS,
+		Limiter:               limiter,
 	})
 
 	slog.Info("notice worker started",
@@ -171,10 +217,55 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		"lock_timeout", opts.NoticeWorkerLockTimeout.String(),
 		"channel_concurrency", opts.NoticeWorkerChannelConcurrency,
 		"global_qps", opts.NoticeWorkerGlobalQPS,
+		"channel_qps", opts.NoticeWorkerChannelQPS,
+		"redis_enabled", opts.RedisOptions.Enabled,
+		"redis_fail_open", opts.RedisOptions.FailOpen,
+		"redis_rl_prefix", strings.TrimSpace(opts.NoticeWorkerRedisRLKeyPrefix),
 	)
 	defer slog.Info("notice worker exited")
 
 	return worker.Run(ctx)
+}
+
+func buildNoticeLimiter(
+	ctx context.Context,
+	opts *options.ServerOptions,
+	redisClientClose *func() error,
+) (noticepkg.NoticeRateLimiter, error) {
+
+	redisOpts := opts.RedisOptions
+	redisOpts.ApplyDefaults()
+	limiterOpts := noticepkg.RedisRateLimiterOptions{
+		Enabled:               redisOpts.Enabled,
+		FailOpen:              redisOpts.FailOpen,
+		KeyPrefix:             opts.NoticeWorkerRedisRLKeyPrefix,
+		GlobalQPS:             opts.NoticeWorkerGlobalQPS,
+		PerChannelQPS:         opts.NoticeWorkerChannelQPS,
+		PerChannelConcurrency: opts.NoticeWorkerChannelConcurrency,
+		WindowTTL:             opts.NoticeWorkerRedisWindowTTL,
+		ConcurrencyTTL:        opts.NoticeWorkerRedisConcTTL,
+	}
+
+	if !redisOpts.Enabled {
+		return noticepkg.NewRedisRateLimiter(nil, limiterOpts), nil
+	}
+
+	client, err := redisx.NewClient(ctx, redisOpts)
+	if err != nil {
+		if redisOpts.FailOpen {
+			slog.Error("notice worker redis init failed, fallback to local limiter",
+				"addr", redisOpts.Addr,
+				"error", err,
+			)
+			return noticepkg.NewRedisRateLimiter(nil, limiterOpts), nil
+		}
+		return nil, err
+	}
+
+	if redisClientClose != nil {
+		*redisClientClose = client.Close
+	}
+	return noticepkg.NewRedisRateLimiter(client, limiterOpts), nil
 }
 
 func workerIDForLog(id string) string {

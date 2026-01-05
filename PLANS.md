@@ -855,6 +855,22 @@ python -m orchestrator.main
   - 新增/更新单测 2~4 个覆盖 limiter 行为
   - `make test` / `make lint-new` 通过
 
+### R2 实施更新（2026-02-11）
+- 已新增 Redis Lua limiter：`internal/apiserver/pkg/notice/redis_limiter.go`
+  - `Acquire(channelID)` 原子检查/更新全局 QPS、可选 per-channel QPS、per-channel 并发
+  - `Release(channelID)` 释放 Redis 并发计数
+  - Redis error + `redis.fail_open=true` 自动回退 local limiter（token bucket + semaphore）
+- `notice-worker` 已切换为 send 前 Acquire / send 后 Release：
+  - deny 时基于 `retry_after_ms` sleep+retry（受 `lock_timeout` 约束）
+  - MySQL claim/lockedBy/lockedAt/outbox/retry 语义保持不变
+- `notice-worker` 子命令已接入 limiter 初始化（复用 `redis.*`）
+  - 新增 worker 配置：`noticeWorkerChannelQPS`、`noticeWorkerRedisRLKeyPrefix`、`noticeWorkerRedisConcTTL`、`noticeWorkerRedisWindowTTL`
+- 已新增最小指标：`notice_rate_limit_acquire_total{mode,result,reason}`
+- 已新增单测：
+  - `TestRedisRateLimiter_FallbackLocalOnRedisError`
+  - `TestRedisRateLimiter_DenyReturnsRetryAfter`
+- 已新增回归脚本：`scripts/test_r2_L1_notice_worker_global_rate_limit.sh`
+
 ### R3：Redis Streams 分发（NoticeDelivery 优先）
 - Doc: `docs/devel/zh-CN/17_R3_Redis_Streams_Dispatch.md`
 - Done Definition：

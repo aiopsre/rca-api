@@ -44,13 +44,23 @@ coredb:
   max-open-connections: 100 # 连接池中允许同时打开的最大连接数（包括正在用的和空闲的）
 
 redis:
-  enabled: false
+  enabled: true 
   addr: "192.168.39.2:6379"
   db: 0
   password: "Az123456_"
   fail_open: true
   topic:
     ai_job_queue_signal: "rca:ai_job_queue_signal"
+
+noticeWorkerPollInterval: 1s
+noticeWorkerBatchSize: 16
+noticeWorkerLockTimeout: 60s
+noticeWorkerChannelConcurrency: 2
+noticeWorkerGlobalQPS: 20
+noticeWorkerChannelQPS: 0
+noticeWorkerRedisRLKeyPrefix: "rca:notice"
+noticeWorkerRedisConcTTL: 60s
+noticeWorkerRedisWindowTTL: 2s
 
 # MCP 治理策略（C5）：按 tool 维度覆盖 enabled/riskLevel/limits
 # mcp:
