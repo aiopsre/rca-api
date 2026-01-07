@@ -59,7 +59,12 @@ func (w *PubSubWakeup) PublishAIJobQueueSignal(ctx context.Context) error {
 	result := "ok"
 	if err != nil {
 		result = "error"
-		slog.Error("redis publish ai job queue signal failed", "topic", w.topic, "err", err)
+		slog.Error("redis publish ai job queue signal failed",
+			"topic", w.topic,
+			"capability", "pubsub",
+			"fallback", true,
+			"err", err,
+		)
 	}
 	if metrics.M != nil {
 		metrics.M.RecordRedisPubSubPublish(w.topic, result)
@@ -105,7 +110,12 @@ func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
 		if _, err := pubsub.Receive(ctx); err != nil {
 			w.setReady(false)
 			_ = pubsub.Close()
-			slog.Error("redis subscribe ai job queue signal failed", "topic", w.topic, "err", err)
+			slog.Error("redis subscribe ai job queue signal failed",
+				"topic", w.topic,
+				"capability", "pubsub",
+				"fallback", true,
+				"err", err,
+			)
 			if !waitRetry(ctx, backoff) {
 				return
 			}
@@ -141,7 +151,12 @@ func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
 		w.setReady(false)
 		_ = pubsub.Close()
 		if ctx.Err() == nil {
-			slog.Error("redis subscribe ai job queue signal failed", "topic", w.topic, "err", errRedisSubscribeChannelClosed)
+			slog.Error("redis subscribe ai job queue signal failed",
+				"topic", w.topic,
+				"capability", "pubsub",
+				"fallback", true,
+				"err", errRedisSubscribeChannelClosed,
+			)
 			if !waitRetry(ctx, backoff) {
 				return
 			}

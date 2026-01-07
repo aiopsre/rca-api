@@ -163,13 +163,22 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	if streamErr != nil {
 		slog.ErrorContext(ctx, "notice worker stream consume failed, fallback to db claim",
 			"worker_id", w.opts.WorkerID,
+			"capability", "streams",
+			"fallback", true,
 			"error", streamErr,
 		)
 	}
 	if processedByStream > 0 {
+		if metrics.M != nil {
+			metrics.M.RecordNoticeWorkerClaimSource("stream", processedByStream)
+		}
 		return processedByStream, nil
 	}
-	return w.runOnceFromDB(ctx)
+	processedByDB, err := w.runOnceFromDB(ctx)
+	if processedByDB > 0 && metrics.M != nil {
+		metrics.M.RecordNoticeWorkerClaimSource("db_fallback", processedByDB)
+	}
+	return processedByDB, err
 }
 
 func (w *Worker) runOnceFromDB(ctx context.Context) (int, error) {

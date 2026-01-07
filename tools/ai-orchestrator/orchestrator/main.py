@@ -8,6 +8,8 @@ import threading
 import time
 from typing import Any, Dict, List
 
+import requests
+
 from .graph import LeaseGuard, OrchestratorConfig, build_graph
 from .state import GraphState
 from .tools_rca_api import RCAApiClient
@@ -102,6 +104,48 @@ def _new_client(settings: Settings) -> RCAApiClient:
     )
 
 
+def _parse_prometheus_metric_value(line: str) -> float:
+    if not line:
+        return 0.0
+    parts = line.strip().split()
+    if not parts:
+        return 0.0
+    try:
+        return float(parts[-1])
+    except ValueError:
+        return 0.0
+
+
+def _detect_pubsub_ready(base_url: str, scopes: str, timeout_s: float = 2.0) -> tuple[bool, bool]:
+    url = f"{base_url.rstrip('/')}/metrics"
+    headers = {"Accept": "text/plain"}
+    if scopes:
+        headers["X-Scopes"] = scopes
+    try:
+        response = requests.get(url, headers=headers, timeout=max(timeout_s, 0.5))
+    except Exception:  # noqa: BLE001
+        return False, False
+    if not response.ok:
+        return False, False
+
+    found = False
+    ready = False
+    for raw in response.text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("redis_pubsub_subscribe_ready"):
+            found = True
+            if _parse_prometheus_metric_value(line) > 0:
+                ready = True
+            continue
+        if not found and line.startswith("redis_pubsub_subscribe_state"):
+            found = True
+            if _parse_prometheus_metric_value(line) > 0:
+                ready = True
+    return found, ready
+
+
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
     if not client.start_job(job_id):
@@ -143,6 +187,15 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
 def main() -> None:
     settings = load_settings()
+    pubsub_enabled, subscribe_ready = _detect_pubsub_ready(settings.base_url, settings.scopes)
+    redis_enabled = pubsub_enabled
+    _log(
+        "orchestrator redis profile "
+        f"enabled={int(redis_enabled)} "
+        f"pubsub={int(pubsub_enabled)} "
+        f"subscribe_ready={int(subscribe_ready)} "
+        "fallback=db_watermark_longpoll"
+    )
     _log(
         "orchestrator starting "
         f"base_url={settings.base_url} "

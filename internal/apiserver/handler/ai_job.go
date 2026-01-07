@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	orchestratorInstanceIDHeader = "X-Orchestrator-Instance-ID"
-	longPollDBCheckInterval      = 500 * time.Millisecond
-	wakeupSourceRedis            = "redis"
-	wakeupSourceDBWatermark      = "db_watermark"
-	wakeupSourceTimeout          = "timeout"
+	orchestratorInstanceIDHeader   = "X-Orchestrator-Instance-ID"
+	longPollDBCheckInterval        = 500 * time.Millisecond
+	wakeupSourceRedis              = "redis"
+	wakeupSourceDBWatermark        = "db_watermark"
+	wakeupSourceTimeout            = "timeout"
+	fallbackReasonRedisUnavailable = "redis_unavailable"
 )
 
 func (h *Handler) RunIncidentAIJob(c *gin.Context) {
@@ -175,6 +176,9 @@ func (h *Handler) ListAIJobs(c *gin.Context) {
 	if h.jobQueueWakeup != nil && h.jobQueueWakeup.Ready() {
 		resp, wakeupSource, err = h.longPollAIJobsViaRedisSignal(c.Request.Context(), req, waitSeconds)
 	} else {
+		if metrics.M != nil {
+			metrics.M.RecordAIJobLongPollFallback(fallbackReasonRedisUnavailable)
+		}
 		resp, wakeupSource, err = h.longPollAIJobsViaDBWatermark(c.Request.Context(), req, waitSeconds)
 	}
 	if err != nil {

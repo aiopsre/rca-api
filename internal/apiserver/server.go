@@ -79,8 +79,8 @@ func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) e
 	}
 	opts := cfg.RedisOptions
 	opts.ApplyDefaults()
-	streamOpts := opts.Streams.NoticeDelivery
-	if !opts.Enabled || !streamOpts.Enabled {
+	streamOpts := opts.Streams
+	if !opts.StreamsEnabled() {
 		return nil
 	}
 
@@ -89,6 +89,8 @@ func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) e
 		if opts.FailOpen {
 			slog.Error("notice delivery stream publisher init failed, fallback to db-only dispatch",
 				"addr", opts.Addr,
+				"capability", "streams",
+				"fallback", true,
 				"error", err,
 			)
 			return nil
@@ -99,8 +101,8 @@ func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) e
 		client,
 		noticepkg.RedisNoticeDeliveryStreamOptions{
 			Enabled: true,
-			Key:     streamOpts.Key,
-			Group:   streamOpts.Group,
+			Key:     streamOpts.NoticeDeliveryStream,
+			Group:   streamOpts.ConsumerGroup,
 		},
 	))
 	return nil

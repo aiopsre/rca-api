@@ -44,19 +44,27 @@ coredb:
   max-open-connections: 100 # 连接池中允许同时打开的最大连接数（包括正在用的和空闲的）
 
 redis:
-  enabled: true 
+  enabled: true
   addr: "192.168.39.2:6379"
   db: 0
   password: "Az123456_"
   fail_open: true
-  topic:
-    ai_job_queue_signal: "rca:ai_job_queue_signal"
+  pubsub:
+    enabled: true
+    topic_ai_job_signal: "rca:ai_job_queue_signal"
+  limiter:
+    enabled: true
+    mode: "both"
+    global_qps: 20
+    channel_qps: 0
+    burst: 20
   streams:
-    notice_delivery:
-      enabled: false
-      key: "rca:notice:delivery_stream"
-      group: "notice_delivery_workers"
-      reclaim_idle_seconds: 60
+    enabled: false
+    notice_delivery_stream: "rca:notice:delivery_stream"
+    consumer_group: "notice_delivery_workers"
+    reclaim_idle_seconds: 60
+  alerting:
+    enabled: true
 
 alerting:
   ingest_policy:

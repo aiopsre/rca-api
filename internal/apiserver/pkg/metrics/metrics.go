@@ -34,11 +34,18 @@ type Metrics struct {
 	NoticeDeliveryReplayTotal           metric.Int64Counter
 	NoticeDeliveryCancelTotal           metric.Int64Counter
 	NoticeRateLimitAcquireTotal         *prometheus.CounterVec
+	NoticeLimiterAllowTotal             *prometheus.CounterVec
+	NoticeLimiterDenyTotal              *prometheus.CounterVec
+	NoticeLimiterFallbackTotal          *prometheus.CounterVec
 	NoticeStreamReadTotal               *prometheus.CounterVec
 	NoticeStreamMessagesTotal           *prometheus.CounterVec
+	RedisStreamConsumeTotal             *prometheus.CounterVec
+	NoticeWorkerClaimSourceTotal        *prometheus.CounterVec
 	RedisPubSubPublishTotal             *prometheus.CounterVec
 	RedisPubSubSubscribeState           *prometheus.GaugeVec
+	RedisPubSubSubscribeReady           *prometheus.GaugeVec
 	AIJobLongPollWakeupTotal            *prometheus.CounterVec
+	AIJobLongPollFallbackTotal          *prometheus.CounterVec
 	MCPCallsTotal                       *prometheus.CounterVec
 	MCPCallLatencyMS                    *prometheus.HistogramVec
 	MCPTruncatedTotal                   *prometheus.CounterVec
@@ -148,6 +155,18 @@ func Init(scope string) error {
 			Name: "notice_rate_limit_acquire_total",
 			Help: "Total notice rate limiter acquire outcomes by mode/result/reason.",
 		}, []string{"mode", "result", "reason"})
+		noticeLimiterAllowTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_limiter_allow_total",
+			Help: "Total notice limiter allow decisions by mode.",
+		}, []string{"mode"})
+		noticeLimiterDenyTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_limiter_deny_total",
+			Help: "Total notice limiter deny decisions by mode/reason.",
+		}, []string{"mode", "reason"})
+		noticeLimiterFallbackTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_limiter_fallback_total",
+			Help: "Total notice limiter fallback events by reason.",
+		}, []string{"reason"})
 		noticeStreamReadTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
 			Name: "notice_stream_read_total",
 			Help: "Total redis streams read attempts for notice delivery dispatch by result.",
@@ -156,6 +175,14 @@ func Init(scope string) error {
 			Name: "notice_stream_messages_total",
 			Help: "Total notice stream message actions by type.",
 		}, []string{"action"})
+		redisStreamConsumeTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "redis_stream_consume_total",
+			Help: "Total redis stream consume attempts by stream/result.",
+		}, []string{"stream", "result"})
+		noticeWorkerClaimSourceTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_worker_claim_source_total",
+			Help: "Total notice worker claimed deliveries by source.",
+		}, []string{"source"})
 
 		mcpCallsTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
 			Name: "mcp_calls_total",
@@ -193,11 +220,19 @@ func Init(scope string) error {
 			Name: "redis_pubsub_subscribe_state",
 			Help: "Current redis pubsub subscribe readiness for ai job queue wakeup by topic (0/1).",
 		}, []string{"topic"})
+		redisPubSubSubscribeReady := promauto.With(prometheus.DefaultRegisterer).NewGaugeVec(prometheus.GaugeOpts{
+			Name: "redis_pubsub_subscribe_ready",
+			Help: "Current redis pubsub subscribe readiness for ai job queue wakeup by topic (0/1).",
+		}, []string{"topic"})
 
 		aiJobLongPollWakeupTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
 			Name: "ai_job_longpoll_wakeup_total",
 			Help: "Total ai job longpoll wakeup outcomes by source.",
 		}, []string{"source"})
+		aiJobLongPollFallbackTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "ai_job_longpoll_fallback_total",
+			Help: "Total ai job longpoll fallback events by reason.",
+		}, []string{"reason"})
 
 		// Assign the global singleton.
 		M = &Metrics{
@@ -220,11 +255,18 @@ func Init(scope string) error {
 			NoticeDeliveryReplayTotal:           noticeReplayTotal,
 			NoticeDeliveryCancelTotal:           noticeCancelTotal,
 			NoticeRateLimitAcquireTotal:         noticeRateLimitAcquireTotal,
+			NoticeLimiterAllowTotal:             noticeLimiterAllowTotal,
+			NoticeLimiterDenyTotal:              noticeLimiterDenyTotal,
+			NoticeLimiterFallbackTotal:          noticeLimiterFallbackTotal,
 			NoticeStreamReadTotal:               noticeStreamReadTotal,
 			NoticeStreamMessagesTotal:           noticeStreamMessagesTotal,
+			RedisStreamConsumeTotal:             redisStreamConsumeTotal,
+			NoticeWorkerClaimSourceTotal:        noticeWorkerClaimSourceTotal,
 			RedisPubSubPublishTotal:             redisPubSubPublishTotal,
 			RedisPubSubSubscribeState:           redisPubSubSubscribeState,
+			RedisPubSubSubscribeReady:           redisPubSubSubscribeReady,
 			AIJobLongPollWakeupTotal:            aiJobLongPollWakeupTotal,
+			AIJobLongPollFallbackTotal:          aiJobLongPollFallbackTotal,
 			MCPCallsTotal:                       mcpCallsTotal,
 			MCPCallLatencyMS:                    mcpCallLatencyMS,
 			MCPTruncatedTotal:                   mcpTruncatedTotal,
@@ -242,6 +284,10 @@ func Init(scope string) error {
 		noticeRateLimitAcquireTotal.WithLabelValues("redis", "deny", "global_qps").Add(0)
 		noticeRateLimitAcquireTotal.WithLabelValues("redis", "error", "redis_error").Add(0)
 		noticeRateLimitAcquireTotal.WithLabelValues("local", "ok", "local").Add(0)
+		noticeLimiterAllowTotal.WithLabelValues("redis").Add(0)
+		noticeLimiterAllowTotal.WithLabelValues("local").Add(0)
+		noticeLimiterDenyTotal.WithLabelValues("redis", "global_qps").Add(0)
+		noticeLimiterFallbackTotal.WithLabelValues("redis_error").Add(0)
 		alertIngestPolicyDecisionTotal.WithLabelValues("normal", "mysql").Add(0)
 		alertIngestPolicyDecisionTotal.WithLabelValues("merged", "mysql").Add(0)
 		alertIngestPolicyDecisionTotal.WithLabelValues("silenced", "mysql").Add(0)
@@ -258,12 +304,20 @@ func Init(scope string) error {
 		noticeStreamMessagesTotal.WithLabelValues("claim_error").Add(0)
 		noticeStreamMessagesTotal.WithLabelValues("process_error").Add(0)
 		noticeStreamMessagesTotal.WithLabelValues("ack").Add(0)
+		redisStreamConsumeTotal.WithLabelValues("unknown", "ok").Add(0)
+		redisStreamConsumeTotal.WithLabelValues("unknown", "error").Add(0)
+		noticeWorkerClaimSourceTotal.WithLabelValues("stream").Add(0)
+		noticeWorkerClaimSourceTotal.WithLabelValues("db_fallback").Add(0)
 		redisPubSubPublishTotal.WithLabelValues("unknown", "ok").Add(0)
 		redisPubSubPublishTotal.WithLabelValues("unknown", "error").Add(0)
 		redisPubSubSubscribeState.WithLabelValues("unknown").Set(0)
+		redisPubSubSubscribeReady.WithLabelValues("unknown").Set(0)
 		aiJobLongPollWakeupTotal.WithLabelValues("redis").Add(0)
 		aiJobLongPollWakeupTotal.WithLabelValues("db_watermark").Add(0)
 		aiJobLongPollWakeupTotal.WithLabelValues("timeout").Add(0)
+		aiJobLongPollFallbackTotal.WithLabelValues("redis_unavailable").Add(0)
+		aiJobLongPollFallbackTotal.WithLabelValues("db_watermark").Add(0)
+		aiJobLongPollFallbackTotal.WithLabelValues("timeout").Add(0)
 	})
 
 	return nil
@@ -376,7 +430,7 @@ func (m *Metrics) RecordRedisPubSubPublish(topic string, result string) {
 
 // SetRedisPubSubSubscribeState updates redis subscribe readiness gauge.
 func (m *Metrics) SetRedisPubSubSubscribeState(topic string, ready bool) {
-	if m == nil || m.RedisPubSubSubscribeState == nil {
+	if m == nil {
 		return
 	}
 	topic = strings.TrimSpace(topic)
@@ -387,7 +441,12 @@ func (m *Metrics) SetRedisPubSubSubscribeState(topic string, ready bool) {
 	if ready {
 		value = 1
 	}
-	m.RedisPubSubSubscribeState.WithLabelValues(topic).Set(value)
+	if m.RedisPubSubSubscribeState != nil {
+		m.RedisPubSubSubscribeState.WithLabelValues(topic).Set(value)
+	}
+	if m.RedisPubSubSubscribeReady != nil {
+		m.RedisPubSubSubscribeReady.WithLabelValues(topic).Set(value)
+	}
 }
 
 // RecordAIJobLongPollWakeup records one longpoll wakeup source.
@@ -402,7 +461,21 @@ func (m *Metrics) RecordAIJobLongPollWakeup(source string) {
 	m.AIJobLongPollWakeupTotal.WithLabelValues(source).Inc()
 }
 
+// RecordAIJobLongPollFallback records one longpoll fallback reason.
+func (m *Metrics) RecordAIJobLongPollFallback(reason string) {
+	if m == nil || m.AIJobLongPollFallbackTotal == nil {
+		return
+	}
+	reason = strings.TrimSpace(strings.ToLower(reason))
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.AIJobLongPollFallbackTotal.WithLabelValues(reason).Inc()
+}
+
 // RecordNoticeRateLimitAcquire records one limiter acquire outcome.
+//
+//nolint:gocognit,gocyclo // Counter fan-out is intentionally explicit for ops visibility.
 func (m *Metrics) RecordNoticeRateLimitAcquire(mode string, result string, reason string) {
 	if m == nil || m.NoticeRateLimitAcquireTotal == nil {
 		return
@@ -420,6 +493,22 @@ func (m *Metrics) RecordNoticeRateLimitAcquire(mode string, result string, reaso
 		reason = "unknown"
 	}
 	m.NoticeRateLimitAcquireTotal.WithLabelValues(mode, result, reason).Inc()
+	switch result {
+	case "ok":
+		if m.NoticeLimiterAllowTotal != nil {
+			m.NoticeLimiterAllowTotal.WithLabelValues(mode).Inc()
+		}
+
+	case "deny":
+		if m.NoticeLimiterDenyTotal != nil {
+			m.NoticeLimiterDenyTotal.WithLabelValues(mode, reason).Inc()
+		}
+
+	case "error":
+		if m.NoticeLimiterFallbackTotal != nil && reason == "redis_error" {
+			m.NoticeLimiterFallbackTotal.WithLabelValues(reason).Inc()
+		}
+	}
 }
 
 // RecordNoticeStreamRead records redis notice stream read result.
@@ -432,6 +521,34 @@ func (m *Metrics) RecordNoticeStreamRead(result string) {
 		result = "unknown"
 	}
 	m.NoticeStreamReadTotal.WithLabelValues(result).Inc()
+}
+
+// RecordRedisStreamConsume records one redis stream consume result.
+func (m *Metrics) RecordRedisStreamConsume(stream string, result string) {
+	if m == nil || m.RedisStreamConsumeTotal == nil {
+		return
+	}
+	stream = strings.TrimSpace(stream)
+	if stream == "" {
+		stream = "unknown"
+	}
+	result = strings.TrimSpace(strings.ToLower(result))
+	if result == "" {
+		result = "unknown"
+	}
+	m.RedisStreamConsumeTotal.WithLabelValues(stream, result).Inc()
+}
+
+// RecordNoticeWorkerClaimSource records notice worker claim source count.
+func (m *Metrics) RecordNoticeWorkerClaimSource(source string, count int) {
+	if m == nil || m.NoticeWorkerClaimSourceTotal == nil || count <= 0 {
+		return
+	}
+	source = strings.TrimSpace(strings.ToLower(source))
+	if source == "" {
+		source = "unknown"
+	}
+	m.NoticeWorkerClaimSourceTotal.WithLabelValues(source).Add(float64(count))
 }
 
 // RecordNoticeStreamMessage records one notice stream message action.

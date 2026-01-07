@@ -97,8 +97,11 @@ func (o *RedisRateLimiterOptions) applyDefaults() {
 	if o.PerChannelConcurrency <= 0 {
 		o.PerChannelConcurrency = 1
 	}
-	if o.GlobalQPS <= 0 {
-		o.GlobalQPS = 1
+	if o.GlobalQPS < 0 {
+		o.GlobalQPS = 0
+	}
+	if o.PerChannelQPS < 0 {
+		o.PerChannelQPS = 0
 	}
 }
 
@@ -193,6 +196,8 @@ func (l *redisRateLimiter) Acquire(ctx context.Context, channelID string) (RateL
 		}
 		slog.ErrorContext(ctx, "notice redis limiter acquire failed, fallback to local limiter",
 			"channel_id", channel,
+			"capability", "limiter",
+			"fallback", true,
 			"error", err,
 		)
 		return l.local.Acquire(ctx, channel)
@@ -224,6 +229,8 @@ func (l *redisRateLimiter) Release(ctx context.Context, permit RateLimitPermit) 
 	if _, err := l.releaseScript.Run(ctx, l.client, []string{key}).Result(); err != nil {
 		slog.ErrorContext(ctx, "notice redis limiter release failed",
 			"channel_id", channel,
+			"capability", "limiter",
+			"fallback", false,
 			"error", err,
 		)
 	}

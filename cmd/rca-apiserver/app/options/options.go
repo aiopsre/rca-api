@@ -29,6 +29,11 @@ var (
 	errInvalidNoticeBaseURL            = errors.New("noticeBaseURL must be valid http(s) url")
 )
 
+const (
+	defaultNoticeWorkerGlobalQPS  = 20.0
+	defaultNoticeWorkerChannelQPS = 0.0
+)
+
 // ServerOptions contains the configuration options for the server.
 type ServerOptions struct {
 	// TLSOptions contains the TLS configuration options.
@@ -116,12 +121,26 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.RedisOptions.Addr, "redis.addr", o.RedisOptions.Addr, "Redis address used by ai job wakeup bridge.")
 	fs.IntVar(&o.RedisOptions.DB, "redis.db", o.RedisOptions.DB, "Redis db index used by ai job wakeup bridge.")
 	fs.StringVar(&o.RedisOptions.Password, "redis.password", o.RedisOptions.Password, "Redis password used by ai job wakeup bridge.")
+	fs.BoolVar(&o.RedisOptions.FailOpen, "redis.fail_open", o.RedisOptions.FailOpen, "Whether redis failures should fall back to mysql/local paths.")
+	fs.BoolVar(&o.RedisOptions.PubSub.Enabled, "redis.pubsub.enabled", o.RedisOptions.PubSub.Enabled, "Enable redis pub/sub wakeup bridge for ai job long polling.")
+	fs.StringVar(&o.RedisOptions.PubSub.TopicAIJobSignal, "redis.pubsub.topic_ai_job_signal", o.RedisOptions.PubSub.TopicAIJobSignal, "Redis pub/sub topic for ai job queue wakeup.")
+	fs.BoolVar(&o.RedisOptions.Limiter.Enabled, "redis.limiter.enabled", o.RedisOptions.Limiter.Enabled, "Enable redis-backed notice worker limiter.")
+	fs.StringVar(&o.RedisOptions.Limiter.Mode, "redis.limiter.mode", o.RedisOptions.Limiter.Mode, "Redis limiter mode: global|per_channel|both.")
+	fs.Float64Var(&o.RedisOptions.Limiter.GlobalQPS, "redis.limiter.global_qps", o.RedisOptions.Limiter.GlobalQPS, "Redis limiter global qps profile.")
+	fs.Float64Var(&o.RedisOptions.Limiter.ChannelQPS, "redis.limiter.channel_qps", o.RedisOptions.Limiter.ChannelQPS, "Redis limiter per-channel qps profile.")
+	fs.IntVar(&o.RedisOptions.Limiter.Burst, "redis.limiter.burst", o.RedisOptions.Limiter.Burst, "Redis limiter burst profile.")
+	fs.BoolVar(&o.RedisOptions.Streams.Enabled, "redis.streams.enabled", o.RedisOptions.Streams.Enabled, "Enable redis streams dispatch/consume for notice delivery.")
+	fs.StringVar(&o.RedisOptions.Streams.NoticeDeliveryStream, "redis.streams.notice_delivery_stream", o.RedisOptions.Streams.NoticeDeliveryStream, "Redis stream key for notice delivery dispatch.")
+	fs.StringVar(&o.RedisOptions.Streams.ConsumerGroup, "redis.streams.consumer_group", o.RedisOptions.Streams.ConsumerGroup, "Redis stream consumer group for notice workers.")
+	fs.IntVar(&o.RedisOptions.Streams.ReclaimIdleSeconds, "redis.streams.reclaim_idle_seconds", o.RedisOptions.Streams.ReclaimIdleSeconds, "Idle seconds before reclaiming pending notice stream messages.")
+	fs.BoolVar(&o.RedisOptions.Alerting.Enabled, "redis.alerting.enabled", o.RedisOptions.Alerting.Enabled, "Enable redis short-state backend for alerting ingest policy.")
+
+	// Backward-compatible flags (R1/R2/R3 layout).
 	fs.StringVar(&o.RedisOptions.Topic.AIJobQueueSignal, "redis.topic.ai_job_queue_signal", o.RedisOptions.Topic.AIJobQueueSignal, "Redis pub/sub topic for ai job queue wakeup.")
 	fs.BoolVar(&o.RedisOptions.Streams.NoticeDelivery.Enabled, "redis.streams.notice_delivery.enabled", o.RedisOptions.Streams.NoticeDelivery.Enabled, "Enable redis streams dispatch for notice deliveries.")
 	fs.StringVar(&o.RedisOptions.Streams.NoticeDelivery.Key, "redis.streams.notice_delivery.key", o.RedisOptions.Streams.NoticeDelivery.Key, "Redis stream key for notice delivery dispatch.")
 	fs.StringVar(&o.RedisOptions.Streams.NoticeDelivery.Group, "redis.streams.notice_delivery.group", o.RedisOptions.Streams.NoticeDelivery.Group, "Redis stream consumer group for notice workers.")
 	fs.IntVar(&o.RedisOptions.Streams.NoticeDelivery.ReclaimIdleSeconds, "redis.streams.notice_delivery.reclaim_idle_seconds", o.RedisOptions.Streams.NoticeDelivery.ReclaimIdleSeconds, "Idle seconds before reclaiming pending notice stream messages.")
-	fs.BoolVar(&o.RedisOptions.FailOpen, "redis.fail_open", o.RedisOptions.FailOpen, "Whether redis failures should fall back to DB watermark long poll.")
 	fs.IntVar(&o.Alerting.IngestPolicy.DedupWindowSeconds, "alerting.ingest_policy.dedup_window_seconds", o.Alerting.IngestPolicy.DedupWindowSeconds, "Dedup suppression window in seconds for alert ingest. 0 disables.")
 	fs.IntVar(&o.Alerting.IngestPolicy.Burst.WindowSeconds, "alerting.ingest_policy.burst.window_seconds", o.Alerting.IngestPolicy.Burst.WindowSeconds, "Burst counter window in seconds for alert ingest. 0 disables.")
 	fs.IntVar(&o.Alerting.IngestPolicy.Burst.Threshold, "alerting.ingest_policy.burst.threshold", o.Alerting.IngestPolicy.Burst.Threshold, "Burst threshold in one window for alert ingest. 0 disables.")
@@ -142,7 +161,17 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 
 // Complete completes all the required options.
 func (o *ServerOptions) Complete() error {
-	// TODO: Add the completion logic if needed.
+	o.RedisOptions.ApplyDefaults()
+
+	// Keep notice-worker as source-of-truth for runtime limiter values while allowing
+	// redis.limiter profile to override default notice-worker values.
+	if o.NoticeWorker.GlobalQPS == defaultNoticeWorkerGlobalQPS && o.RedisOptions.Limiter.GlobalQPS > 0 {
+		o.NoticeWorker.GlobalQPS = o.RedisOptions.Limiter.GlobalQPS
+	}
+	if o.NoticeWorker.ChannelQPS == defaultNoticeWorkerChannelQPS && o.RedisOptions.Limiter.ChannelQPS >= 0 {
+		o.NoticeWorker.ChannelQPS = o.RedisOptions.Limiter.ChannelQPS
+	}
+
 	return nil
 }
 

@@ -1,0 +1,167 @@
+name: rca-redis-ops
+
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-Az123456_}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-rca}
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7.2-alpine
+    command:
+      - sh
+      - -c
+      - redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-Az123456_}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$${REDIS_PASSWORD}" ping | grep -q PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - redis_data:/data
+
+  rca-apiserver:
+    image: ${RCA_APISERVER_IMAGE:-rca-apiserver:latest}
+    build:
+      context: ../..
+      dockerfile: build/docker/rca-apiserver/Dockerfile
+      args:
+        ENV: dev
+        OS: linux
+        ARCH: amd64
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      - --config=/etc/rca/rca-apiserver.yaml
+      - --http.addr=0.0.0.0:5555
+      - --coredb.addr=mysql:3306
+      - --coredb.username=root
+      - --coredb.password=${MYSQL_ROOT_PASSWORD:-Az123456_}
+      - --coredb.database=${MYSQL_DATABASE:-rca}
+      - --redis.enabled=${REDIS_ENABLED:-true}
+      - --redis.addr=redis:6379
+      - --redis.password=${REDIS_PASSWORD:-Az123456_}
+      - --redis.fail_open=${REDIS_FAIL_OPEN:-true}
+      - --redis.pubsub.enabled=${REDIS_PUBSUB_ENABLED:-true}
+      - --redis.pubsub.topic_ai_job_signal=${REDIS_TOPIC_AI_JOB_SIGNAL:-rca:ai_job_queue_signal}
+      - --redis.limiter.enabled=${REDIS_LIMITER_ENABLED:-true}
+      - --redis.limiter.mode=${REDIS_LIMITER_MODE:-both}
+      - --redis.limiter.global_qps=${REDIS_LIMITER_GLOBAL_QPS:-20}
+      - --redis.limiter.channel_qps=${REDIS_LIMITER_CHANNEL_QPS:-0}
+      - --redis.limiter.burst=${REDIS_LIMITER_BURST:-20}
+      - --redis.streams.enabled=${REDIS_STREAMS_ENABLED:-true}
+      - --redis.streams.notice_delivery_stream=${REDIS_NOTICE_DELIVERY_STREAM:-rca:notice:delivery_stream}
+      - --redis.streams.consumer_group=${REDIS_STREAMS_CONSUMER_GROUP:-notice_delivery_workers}
+      - --redis.alerting.enabled=${REDIS_ALERTING_ENABLED:-true}
+    volumes:
+      - ../../configs/rca-apiserver.yaml:/etc/rca/rca-apiserver.yaml:ro
+    ports:
+      - "${APISERVER_PORT:-5555}:5555"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:5555/healthz >/dev/null 2>&1 || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  notice-worker:
+    image: ${RCA_APISERVER_IMAGE:-rca-apiserver:latest}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rca-apiserver:
+        condition: service_healthy
+    command:
+      - --config=/etc/rca/rca-apiserver.yaml
+      - --coredb.addr=mysql:3306
+      - --coredb.username=root
+      - --coredb.password=${MYSQL_ROOT_PASSWORD:-Az123456_}
+      - --coredb.database=${MYSQL_DATABASE:-rca}
+      - --redis.enabled=${REDIS_ENABLED:-true}
+      - --redis.addr=redis:6379
+      - --redis.password=${REDIS_PASSWORD:-Az123456_}
+      - --redis.fail_open=${REDIS_FAIL_OPEN:-true}
+      - --redis.pubsub.enabled=${REDIS_PUBSUB_ENABLED:-true}
+      - --redis.pubsub.topic_ai_job_signal=${REDIS_TOPIC_AI_JOB_SIGNAL:-rca:ai_job_queue_signal}
+      - --redis.limiter.enabled=${REDIS_LIMITER_ENABLED:-true}
+      - --redis.limiter.mode=${REDIS_LIMITER_MODE:-both}
+      - --redis.limiter.global_qps=${REDIS_LIMITER_GLOBAL_QPS:-20}
+      - --redis.limiter.channel_qps=${REDIS_LIMITER_CHANNEL_QPS:-0}
+      - --redis.limiter.burst=${REDIS_LIMITER_BURST:-20}
+      - --redis.streams.enabled=${REDIS_STREAMS_ENABLED:-true}
+      - --redis.streams.notice_delivery_stream=${REDIS_NOTICE_DELIVERY_STREAM:-rca:notice:delivery_stream}
+      - --redis.streams.consumer_group=${REDIS_STREAMS_CONSUMER_GROUP:-notice_delivery_workers}
+      - --redis.streams.reclaim_idle_seconds=${REDIS_STREAMS_RECLAIM_IDLE_SECONDS:-60}
+      - notice-worker
+      - --notice-worker-id=${NOTICE_WORKER_ID:-notice-worker-1}
+      - --notice-worker-poll-interval=${NOTICE_WORKER_POLL_INTERVAL:-200ms}
+      - --notice-worker-batch-size=${NOTICE_WORKER_BATCH_SIZE:-16}
+      - --notice-worker-lock-timeout=${NOTICE_WORKER_LOCK_TIMEOUT:-60s}
+      - --notice-worker-channel-concurrency=${NOTICE_WORKER_CHANNEL_CONCURRENCY:-2}
+      - --notice-worker-global-qps=${NOTICE_WORKER_GLOBAL_QPS:-20}
+      - --notice-worker-channel-qps=${NOTICE_WORKER_CHANNEL_QPS:-0}
+    volumes:
+      - ../../configs/rca-apiserver.yaml:/etc/rca/rca-apiserver.yaml:ro
+
+  ai-orchestrator:
+    image: python:3.11-slim
+    working_dir: /workspace/tools/ai-orchestrator
+    depends_on:
+      rca-apiserver:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://rca-apiserver:5555
+      SCOPES: ${ORCH_SCOPES:-*}
+      RCA_API_SCOPES: ${ORCH_MCP_SCOPES:-*}
+      INSTANCE_ID: ${ORCH_INSTANCE_ID:-orchestrator-1}
+      LONG_POLL_WAIT_SECONDS: ${ORCH_LONG_POLL_WAIT_SECONDS:-20}
+      RUN_QUERY: ${ORCH_RUN_QUERY:-0}
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_PUBSUB_ENABLED: ${REDIS_PUBSUB_ENABLED:-true}
+    command:
+      - sh
+      - -lc
+      - python -m pip install --no-cache-dir -e . && python -m orchestrator.main
+    volumes:
+      - ../../tools/ai-orchestrator:/workspace/tools/ai-orchestrator
+
+  mock-webhook:
+    image: mendhak/http-https-echo:35
+    profiles: ["mock"]
+    ports:
+      - "${MOCK_WEBHOOK_PORT:-18080}:8080"
+
+volumes:
+  mysql_data: {}
+  redis_data: {}

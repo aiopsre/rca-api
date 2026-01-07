@@ -46,7 +46,7 @@ func NewDefaultPipeline(cfg RuntimeConfig, mysqlLookup CurrentAlertLookup) *Pipe
 
 	fallback := NewMySQLBackend(mysqlLookup)
 	var primary Backend
-	if cfg.Policy.RedisBackend.Enabled && cfg.Redis.Enabled {
+	if cfg.Policy.RedisBackend.Enabled && cfg.Redis.AlertingEnabled() {
 		primary = NewRedisBackend(RedisBackendOptions{
 			Addr:      cfg.Redis.Addr,
 			Password:  cfg.Redis.Password,

@@ -23,7 +23,7 @@ func ProvideAIJobQueueWakeup(
 	opts := cfg.RedisOptions
 	opts.ApplyDefaults()
 
-	if !opts.Enabled {
+	if !opts.PubSubEnabled() {
 		return queue.NewNoopWakeup(), nil
 	}
 
@@ -32,6 +32,8 @@ func ProvideAIJobQueueWakeup(
 		if opts.FailOpen {
 			slog.Error("redis client init failed, fallback to db watermark long poll",
 				"addr", opts.Addr,
+				"capability", "pubsub",
+				"fallback", true,
 				"err", err,
 			)
 			return queue.NewNoopWakeup(), nil
@@ -39,7 +41,7 @@ func ProvideAIJobQueueWakeup(
 		return nil, err
 	}
 
-	wakeup := queue.NewPubSubWakeup(client, opts.Topic.AIJobQueueSignal)
+	wakeup := queue.NewPubSubWakeup(client, opts.PubSub.TopicAIJobSignal)
 	wakeup.StartSubscribe(ctx, notifier.Notify)
 	return wakeup, nil
 }

@@ -82,6 +82,8 @@ func NewAPIServerCommand() *cobra.Command {
 
 // run contains the main logic for initializing and running the server.
 func run(ctx context.Context, opts *options.ServerOptions) error {
+	logAPIServerRedisProfile(opts)
+
 	// Retrieve the application configuration from the parsed options.
 	cfg, err := opts.Config()
 	if err != nil {
@@ -192,6 +194,12 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 	st := store.NewStore(db)
 	_ = metrics.Init("notice-worker")
 
+	redisOpts := opts.RedisOptions
+	redisOpts.ApplyDefaults()
+	limiterMode := effectiveLimiterMode(redisOpts.Limiter.Mode)
+	limiterGlobalQPS, limiterChannelQPS := resolveNoticeLimiterQPS(opts)
+	consumerID := workerIDForLog(opts.NoticeWorker.WorkerID)
+
 	var redisClientClose func() error
 	limiter, err := buildNoticeLimiter(ctx, opts, &redisClientClose)
 	if err != nil {
@@ -222,6 +230,18 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		StreamReclaimIdle:     reclaimIdle,
 	})
 
+	slog.Info("notice worker redis profile",
+		"redis_enabled", redisOpts.Enabled,
+		"redis_fail_open", redisOpts.FailOpen,
+		"streams_enabled", redisOpts.StreamsEnabled(),
+		"streams_group", strings.TrimSpace(redisOpts.Streams.ConsumerGroup),
+		"streams_consumer_id", consumerID,
+		"limiter_enabled", redisOpts.LimiterEnabled(),
+		"limiter_mode", limiterMode,
+		"limiter_global_qps", limiterGlobalQPS,
+		"limiter_channel_qps", limiterChannelQPS,
+		"fallback_strategy", "streams->db_claim,limiter->local",
+	)
 	slog.Info("notice worker started",
 		"worker_id", workerIDForLog(opts.NoticeWorker.WorkerID),
 		"batch_size", opts.NoticeWorker.BatchSize,
@@ -230,13 +250,13 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		"channel_concurrency", opts.NoticeWorker.ChannelConcurrency,
 		"global_qps", opts.NoticeWorker.GlobalQPS,
 		"channel_qps", opts.NoticeWorker.ChannelQPS,
-		"redis_enabled", opts.RedisOptions.Enabled,
-		"redis_fail_open", opts.RedisOptions.FailOpen,
+		"redis_enabled", redisOpts.Enabled,
+		"redis_fail_open", redisOpts.FailOpen,
 		"redis_rl_prefix", strings.TrimSpace(opts.NoticeWorker.Redis.KeyPrefix),
-		"redis_stream_enabled", opts.RedisOptions.Streams.NoticeDelivery.Enabled,
-		"redis_stream_key", strings.TrimSpace(opts.RedisOptions.Streams.NoticeDelivery.Key),
-		"redis_stream_group", strings.TrimSpace(opts.RedisOptions.Streams.NoticeDelivery.Group),
-		"redis_stream_reclaim_idle_seconds", opts.RedisOptions.Streams.NoticeDelivery.ReclaimIdleSeconds,
+		"redis_stream_enabled", redisOpts.StreamsEnabled(),
+		"redis_stream_key", strings.TrimSpace(redisOpts.Streams.NoticeDeliveryStream),
+		"redis_stream_group", strings.TrimSpace(redisOpts.Streams.ConsumerGroup),
+		"redis_stream_reclaim_idle_seconds", redisOpts.Streams.ReclaimIdleSeconds,
 	)
 	defer slog.Info("notice worker exited")
 
@@ -251,18 +271,26 @@ func buildNoticeLimiter(
 
 	redisOpts := opts.RedisOptions
 	redisOpts.ApplyDefaults()
+	limiterMode := effectiveLimiterMode(redisOpts.Limiter.Mode)
+	globalQPS, channelQPS := resolveNoticeLimiterQPS(opts)
+	switch limiterMode {
+	case "global":
+		channelQPS = 0
+	case "per_channel":
+		globalQPS = 0
+	}
 	limiterOpts := noticepkg.RedisRateLimiterOptions{
-		Enabled:               redisOpts.Enabled,
+		Enabled:               redisOpts.LimiterEnabled(),
 		FailOpen:              redisOpts.FailOpen,
 		KeyPrefix:             opts.NoticeWorker.Redis.KeyPrefix,
-		GlobalQPS:             opts.NoticeWorker.GlobalQPS,
-		PerChannelQPS:         opts.NoticeWorker.ChannelQPS,
+		GlobalQPS:             globalQPS,
+		PerChannelQPS:         channelQPS,
 		PerChannelConcurrency: opts.NoticeWorker.ChannelConcurrency,
 		WindowTTL:             opts.NoticeWorker.Redis.WindowTTL,
 		ConcurrencyTTL:        opts.NoticeWorker.Redis.ConcTTL,
 	}
 
-	if !redisOpts.Enabled {
+	if !redisOpts.LimiterEnabled() {
 		return noticepkg.NewRedisRateLimiter(nil, limiterOpts), nil
 	}
 
@@ -271,6 +299,8 @@ func buildNoticeLimiter(
 		if redisOpts.FailOpen {
 			slog.Error("notice worker redis init failed, fallback to local limiter",
 				"addr", redisOpts.Addr,
+				"capability", "limiter",
+				"fallback", true,
 				"error", err,
 			)
 			return noticepkg.NewRedisRateLimiter(nil, limiterOpts), nil
@@ -296,12 +326,12 @@ func buildNoticeStreamConsumer(
 	}
 	redisOpts := opts.RedisOptions
 	redisOpts.ApplyDefaults()
-	streamOpts := redisOpts.Streams.NoticeDelivery
+	streamOpts := redisOpts.Streams
 	reclaimIdle := time.Duration(streamOpts.ReclaimIdleSeconds) * time.Second
 	if reclaimIdle <= 0 {
 		reclaimIdle = time.Duration(redisx.DefaultNoticeDeliveryReclaimIdleSeconds) * time.Second
 	}
-	if !redisOpts.Enabled || !streamOpts.Enabled {
+	if !redisOpts.StreamsEnabled() {
 		return noopConsumer, reclaimIdle, nil
 	}
 
@@ -310,6 +340,8 @@ func buildNoticeStreamConsumer(
 		if redisOpts.FailOpen {
 			slog.Error("notice worker redis streams init failed, fallback to db claim mode",
 				"addr", redisOpts.Addr,
+				"capability", "streams",
+				"fallback", true,
 				"error", err,
 			)
 			return noopConsumer, reclaimIdle, nil
@@ -319,8 +351,8 @@ func buildNoticeStreamConsumer(
 
 	stream := noticepkg.NewRedisNoticeDeliveryStream(client, noticepkg.RedisNoticeDeliveryStreamOptions{
 		Enabled: true,
-		Key:     streamOpts.Key,
-		Group:   streamOpts.Group,
+		Key:     streamOpts.NoticeDeliveryStream,
+		Group:   streamOpts.ConsumerGroup,
 	})
 	if redisClientClose != nil {
 		*redisClientClose = stream.Close
@@ -333,4 +365,42 @@ func workerIDForLog(id string) string {
 		return "auto"
 	}
 	return id
+}
+
+func logAPIServerRedisProfile(opts *options.ServerOptions) {
+	if opts == nil {
+		return
+	}
+	redisOpts := opts.RedisOptions
+	redisOpts.ApplyDefaults()
+	limiterMode := effectiveLimiterMode(redisOpts.Limiter.Mode)
+	limiterGlobalQPS, limiterChannelQPS := resolveNoticeLimiterQPS(opts)
+
+	slog.Info("rca-apiserver redis profile",
+		"enabled", redisOpts.Enabled,
+		"fail_open", redisOpts.FailOpen,
+		"pubsub_enabled", redisOpts.PubSubEnabled(),
+		"pubsub_topic", strings.TrimSpace(redisOpts.PubSub.TopicAIJobSignal),
+		"streams_enabled", redisOpts.StreamsEnabled(),
+		"streams_stream", strings.TrimSpace(redisOpts.Streams.NoticeDeliveryStream),
+		"limiter_enabled", redisOpts.LimiterEnabled(),
+		"limiter_mode", limiterMode,
+		"limiter_global_qps", limiterGlobalQPS,
+		"limiter_channel_qps", limiterChannelQPS,
+	)
+}
+
+func resolveNoticeLimiterQPS(opts *options.ServerOptions) (float64, float64) {
+	return opts.NoticeWorker.GlobalQPS, opts.NoticeWorker.ChannelQPS
+}
+
+func effectiveLimiterMode(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "global":
+		return "global"
+	case "per_channel":
+		return "per_channel"
+	default:
+		return "both"
+	}
 }

@@ -936,3 +936,13 @@ python -m orchestrator.main
 - 新增回归脚本：
   - `scripts/test_r4_L1_alert_denoise_suppress.sh`
   - 覆盖：默认兼容、dedup 抑制、silence 命中不创建 incident 且不新增 queued AIJob
+
+---
+
+## O1 Redis Ops 收口（Runbook + Release Profile）（Done Definition）
+
+* 固化一套可复制运行拓扑（优先 docker-compose）：apiserver/notice-worker/ai-orchestrator/mysql/redis（含可选 mock-webhook）；
+* 收敛 Redis 能力开关（pubsub/limiter/streams/alerting 可选）与默认值，并在三进程启动日志打印“最终生效配置摘要”；
+* `/metrics` 暴露 pubsub/streams/limiter 的关键指标（能定位 ready/fallback/lag/deny）；
+* 新增 `scripts/test_o1_L1_redis_ops_profile_and_metrics.sh` 覆盖“关键指标存在性 + 最小调用后指标出现”，并通过；
+* `make test` / `make lint-new` 通过。

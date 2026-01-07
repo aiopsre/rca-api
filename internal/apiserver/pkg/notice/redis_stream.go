@@ -90,7 +90,12 @@ func PublishNoticeDeliverySignalBestEffort(ctx context.Context, deliveryID strin
 		return
 	}
 	if err := publisher.PublishDeliveryID(ctx, deliveryID); err != nil {
-		slog.ErrorContext(ctx, "notice delivery stream publish failed", "delivery_id", deliveryID, "error", err)
+		slog.ErrorContext(ctx, "notice delivery stream publish failed",
+			"delivery_id", deliveryID,
+			"capability", "streams",
+			"fallback", true,
+			"error", err,
+		)
 	}
 }
 
@@ -154,10 +159,10 @@ func (s *RedisNoticeDeliveryStream) PublishDeliveryID(ctx context.Context, deliv
 			noticeDeliveryStreamFieldDeliveryID: deliveryID,
 		},
 	}).Result(); err != nil {
-		recordNoticeStreamRead("error")
+		recordNoticeStreamRead("", "error")
 		return err
 	}
-	recordNoticeStreamRead("ok")
+	recordNoticeStreamRead("", "ok")
 	recordNoticeStreamMessage("xadd")
 	return nil
 }
@@ -178,7 +183,7 @@ func (s *RedisNoticeDeliveryStream) ReadNew(
 	}
 	consumer = normalizeStreamConsumerName(consumer)
 	if err := s.ensureGroup(ctx); err != nil {
-		recordNoticeStreamRead("error")
+		recordNoticeStreamRead(s.opts.Key, "error")
 		return nil, err
 	}
 	if count <= 0 {
@@ -194,7 +199,7 @@ func (s *RedisNoticeDeliveryStream) ReadNew(
 	}).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			recordNoticeStreamRead("ok")
+			recordNoticeStreamRead(s.opts.Key, "ok")
 			return nil, nil
 		}
 		if isNoticeStreamNoGroupError(err) {
@@ -210,11 +215,11 @@ func (s *RedisNoticeDeliveryStream) ReadNew(
 			}
 		}
 		if err != nil {
-			recordNoticeStreamRead("error")
+			recordNoticeStreamRead(s.opts.Key, "error")
 			return nil, err
 		}
 	}
-	recordNoticeStreamRead("ok")
+	recordNoticeStreamRead(s.opts.Key, "ok")
 	return decodeNoticeStreamMessages(streams), nil
 }
 
@@ -234,7 +239,7 @@ func (s *RedisNoticeDeliveryStream) ClaimPendingIdle(
 	}
 	consumer = normalizeStreamConsumerName(consumer)
 	if err := s.ensureGroup(ctx); err != nil {
-		recordNoticeStreamRead("error")
+		recordNoticeStreamRead(s.opts.Key, "error")
 		return nil, err
 	}
 	if count <= 0 {
@@ -253,14 +258,14 @@ func (s *RedisNoticeDeliveryStream) ClaimPendingIdle(
 	}).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
-			recordNoticeStreamRead("ok")
+			recordNoticeStreamRead(s.opts.Key, "ok")
 			return nil, nil
 		}
-		recordNoticeStreamRead("error")
+		recordNoticeStreamRead(s.opts.Key, "error")
 		return nil, err
 	}
 	if len(pending) == 0 {
-		recordNoticeStreamRead("ok")
+		recordNoticeStreamRead(s.opts.Key, "ok")
 		return nil, nil
 	}
 	streamIDs := make([]string, 0, len(pending))
@@ -271,7 +276,7 @@ func (s *RedisNoticeDeliveryStream) ClaimPendingIdle(
 		}
 	}
 	if len(streamIDs) == 0 {
-		recordNoticeStreamRead("ok")
+		recordNoticeStreamRead(s.opts.Key, "ok")
 		return nil, nil
 	}
 	msgs, err := s.client.XClaim(ctx, &redis.XClaimArgs{
@@ -282,10 +287,10 @@ func (s *RedisNoticeDeliveryStream) ClaimPendingIdle(
 		Messages: streamIDs,
 	}).Result()
 	if err != nil {
-		recordNoticeStreamRead("error")
+		recordNoticeStreamRead(s.opts.Key, "error")
 		return nil, err
 	}
-	recordNoticeStreamRead("ok")
+	recordNoticeStreamRead(s.opts.Key, "ok")
 	recordNoticeStreamMessage("reclaim")
 	return decodeNoticeXMessages(msgs), nil
 }
@@ -377,11 +382,14 @@ func normalizeStreamConsumerName(consumer string) string {
 	return consumer
 }
 
-func recordNoticeStreamRead(result string) {
+func recordNoticeStreamRead(stream string, result string) {
 	if metrics.M == nil {
 		return
 	}
 	metrics.M.RecordNoticeStreamRead(result)
+	if strings.TrimSpace(stream) != "" {
+		metrics.M.RecordRedisStreamConsume(stream, result)
+	}
 }
 
 func recordNoticeStreamMessage(action string) {
