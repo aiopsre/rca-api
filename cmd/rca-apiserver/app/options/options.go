@@ -43,26 +43,8 @@ type ServerOptions struct {
 	RedisOptions redisx.RedisOptions `json:"redis" mapstructure:"redis"`
 	// Alerting groups alerting-related runtime policy options.
 	Alerting AlertingOptions `json:"alerting" mapstructure:"alerting"`
-	// NoticeWorkerPollInterval controls worker polling interval.
-	NoticeWorkerPollInterval time.Duration `json:"noticeWorkerPollInterval" mapstructure:"noticeWorkerPollInterval"`
-	// NoticeWorkerBatchSize controls max deliveries claimed each run.
-	NoticeWorkerBatchSize int `json:"noticeWorkerBatchSize" mapstructure:"noticeWorkerBatchSize"`
-	// NoticeWorkerLockTimeout controls lock timeout recovery for claims.
-	NoticeWorkerLockTimeout time.Duration `json:"noticeWorkerLockTimeout" mapstructure:"noticeWorkerLockTimeout"`
-	// NoticeWorkerID identifies the worker instance in lock records.
-	NoticeWorkerID string `json:"noticeWorkerID" mapstructure:"noticeWorkerID"`
-	// NoticeWorkerChannelConcurrency controls per-channel max in-flight send count.
-	NoticeWorkerChannelConcurrency int `json:"noticeWorkerChannelConcurrency" mapstructure:"noticeWorkerChannelConcurrency"`
-	// NoticeWorkerGlobalQPS controls global send QPS token bucket for one worker process.
-	NoticeWorkerGlobalQPS float64 `json:"noticeWorkerGlobalQPS" mapstructure:"noticeWorkerGlobalQPS"`
-	// NoticeWorkerChannelQPS controls per-channel send QPS. 0 disables this guard.
-	NoticeWorkerChannelQPS float64 `json:"noticeWorkerChannelQPS" mapstructure:"noticeWorkerChannelQPS"`
-	// NoticeWorkerRedisRLKeyPrefix controls redis limiter key namespace.
-	NoticeWorkerRedisRLKeyPrefix string `json:"noticeWorkerRedisRLKeyPrefix" mapstructure:"noticeWorkerRedisRLKeyPrefix"`
-	// NoticeWorkerRedisConcTTL controls redis per-channel concurrency key ttl.
-	NoticeWorkerRedisConcTTL time.Duration `json:"noticeWorkerRedisConcTTL" mapstructure:"noticeWorkerRedisConcTTL"`
-	// NoticeWorkerRedisWindowTTL controls redis qps window key ttl.
-	NoticeWorkerRedisWindowTTL time.Duration `json:"noticeWorkerRedisWindowTTL" mapstructure:"noticeWorkerRedisWindowTTL"`
+	// NoticeWorker configures notice-worker polling, limits, and redis limiter internals.
+	NoticeWorker NoticeWorkerOptions `json:"notice_worker" mapstructure:"notice_worker"`
 	// NoticeBaseURL is default links base_url when channel.baseURL is unset.
 	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
 	// MCPPolicy configures per-tool MCP governance limits and enable switches.
@@ -72,6 +54,25 @@ type ServerOptions struct {
 // AlertingOptions contains alert ingest policy controls.
 type AlertingOptions struct {
 	IngestPolicy alertingingest.PolicyConfig `json:"ingest_policy" mapstructure:"ingest_policy"`
+}
+
+// NoticeWorkerRedisOptions configures redis-local knobs for notice-worker limiter.
+type NoticeWorkerRedisOptions struct {
+	KeyPrefix string        `json:"key_prefix" mapstructure:"key_prefix"`
+	ConcTTL   time.Duration `json:"conc_ttl" mapstructure:"conc_ttl"`
+	WindowTTL time.Duration `json:"window_ttl" mapstructure:"window_ttl"`
+}
+
+// NoticeWorkerOptions configures notice-worker runtime behavior.
+type NoticeWorkerOptions struct {
+	PollInterval       time.Duration            `json:"poll_interval" mapstructure:"poll_interval"`
+	BatchSize          int                      `json:"batch_size" mapstructure:"batch_size"`
+	LockTimeout        time.Duration            `json:"lock_timeout" mapstructure:"lock_timeout"`
+	WorkerID           string                   `json:"worker_id" mapstructure:"worker_id"`
+	ChannelConcurrency int                      `json:"channel_concurrency" mapstructure:"channel_concurrency"`
+	GlobalQPS          float64                  `json:"global_qps" mapstructure:"global_qps"`
+	ChannelQPS         float64                  `json:"channel_qps" mapstructure:"channel_qps"`
+	Redis              NoticeWorkerRedisOptions `json:"redis" mapstructure:"redis"`
 }
 
 // NewServerOptions creates a ServerOptions instance with default values.
@@ -85,15 +86,19 @@ func NewServerOptions() *ServerOptions {
 		Alerting: AlertingOptions{
 			IngestPolicy: alertingingest.DefaultPolicyConfig(),
 		},
-		NoticeWorkerPollInterval:       1 * time.Second,
-		NoticeWorkerBatchSize:          16,
-		NoticeWorkerLockTimeout:        60 * time.Second,
-		NoticeWorkerChannelConcurrency: 2,
-		NoticeWorkerGlobalQPS:          20,
-		NoticeWorkerChannelQPS:         0,
-		NoticeWorkerRedisRLKeyPrefix:   "rca:notice",
-		NoticeWorkerRedisConcTTL:       60 * time.Second,
-		NoticeWorkerRedisWindowTTL:     2 * time.Second,
+		NoticeWorker: NoticeWorkerOptions{
+			PollInterval:       1 * time.Second,
+			BatchSize:          16,
+			LockTimeout:        60 * time.Second,
+			ChannelConcurrency: 2,
+			GlobalQPS:          20,
+			ChannelQPS:         0,
+			Redis: NoticeWorkerRedisOptions{
+				KeyPrefix: "rca:notice",
+				ConcTTL:   60 * time.Second,
+				WindowTTL: 2 * time.Second,
+			},
+		},
 	}
 	opts.HTTPOptions.Addr = ":5555"
 
@@ -122,16 +127,16 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.Alerting.IngestPolicy.Burst.Threshold, "alerting.ingest_policy.burst.threshold", o.Alerting.IngestPolicy.Burst.Threshold, "Burst threshold in one window for alert ingest. 0 disables.")
 	fs.BoolVar(&o.Alerting.IngestPolicy.RedisBackend.Enabled, "alerting.ingest_policy.redis_backend.enabled", o.Alerting.IngestPolicy.RedisBackend.Enabled, "Enable redis backend for alert ingest dedup/burst short-state.")
 	fs.StringVar(&o.Alerting.IngestPolicy.RedisBackend.KeyPrefix, "alerting.ingest_policy.redis_backend.key_prefix", o.Alerting.IngestPolicy.RedisBackend.KeyPrefix, "Redis key prefix for alert ingest policy state.")
-	fs.DurationVar(&o.NoticeWorkerPollInterval, "notice-worker-poll-interval", o.NoticeWorkerPollInterval, "Polling interval for notice worker.")
-	fs.IntVar(&o.NoticeWorkerBatchSize, "notice-worker-batch-size", o.NoticeWorkerBatchSize, "Batch size per notice worker claim.")
-	fs.DurationVar(&o.NoticeWorkerLockTimeout, "notice-worker-lock-timeout", o.NoticeWorkerLockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
-	fs.StringVar(&o.NoticeWorkerID, "notice-worker-id", o.NoticeWorkerID, "Worker instance id for notice worker lock ownership.")
-	fs.IntVar(&o.NoticeWorkerChannelConcurrency, "notice-worker-channel-concurrency", o.NoticeWorkerChannelConcurrency, "Per-channel max in-flight sends.")
-	fs.Float64Var(&o.NoticeWorkerGlobalQPS, "notice-worker-global-qps", o.NoticeWorkerGlobalQPS, "Global send QPS token bucket for one worker process.")
-	fs.Float64Var(&o.NoticeWorkerChannelQPS, "notice-worker-channel-qps", o.NoticeWorkerChannelQPS, "Per-channel send QPS limit (0 disables).")
-	fs.StringVar(&o.NoticeWorkerRedisRLKeyPrefix, "notice-worker-redis-rl-key-prefix", o.NoticeWorkerRedisRLKeyPrefix, "Redis key prefix for notice global limiter.")
-	fs.DurationVar(&o.NoticeWorkerRedisConcTTL, "notice-worker-redis-conc-ttl", o.NoticeWorkerRedisConcTTL, "Redis TTL for per-channel concurrency key.")
-	fs.DurationVar(&o.NoticeWorkerRedisWindowTTL, "notice-worker-redis-window-ttl", o.NoticeWorkerRedisWindowTTL, "Redis TTL for per-second QPS window keys.")
+	fs.DurationVar(&o.NoticeWorker.PollInterval, "notice-worker-poll-interval", o.NoticeWorker.PollInterval, "Polling interval for notice worker.")
+	fs.IntVar(&o.NoticeWorker.BatchSize, "notice-worker-batch-size", o.NoticeWorker.BatchSize, "Batch size per notice worker claim.")
+	fs.DurationVar(&o.NoticeWorker.LockTimeout, "notice-worker-lock-timeout", o.NoticeWorker.LockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
+	fs.StringVar(&o.NoticeWorker.WorkerID, "notice-worker-id", o.NoticeWorker.WorkerID, "Worker instance id for notice worker lock ownership.")
+	fs.IntVar(&o.NoticeWorker.ChannelConcurrency, "notice-worker-channel-concurrency", o.NoticeWorker.ChannelConcurrency, "Per-channel max in-flight sends.")
+	fs.Float64Var(&o.NoticeWorker.GlobalQPS, "notice-worker-global-qps", o.NoticeWorker.GlobalQPS, "Global send QPS token bucket for one worker process.")
+	fs.Float64Var(&o.NoticeWorker.ChannelQPS, "notice-worker-channel-qps", o.NoticeWorker.ChannelQPS, "Per-channel send QPS limit (0 disables).")
+	fs.StringVar(&o.NoticeWorker.Redis.KeyPrefix, "notice-worker-redis-rl-key-prefix", o.NoticeWorker.Redis.KeyPrefix, "Redis key prefix for notice global limiter.")
+	fs.DurationVar(&o.NoticeWorker.Redis.ConcTTL, "notice-worker-redis-conc-ttl", o.NoticeWorker.Redis.ConcTTL, "Redis TTL for per-channel concurrency key.")
+	fs.DurationVar(&o.NoticeWorker.Redis.WindowTTL, "notice-worker-redis-window-ttl", o.NoticeWorker.Redis.WindowTTL, "Redis TTL for per-second QPS window keys.")
 	fs.StringVar(&o.NoticeBaseURL, "notice-base-url", o.NoticeBaseURL, "Default base URL for notice links when channel.baseURL is empty.")
 }
 
@@ -165,32 +170,32 @@ func (o *ServerOptions) Validate() error {
 
 func (o *ServerOptions) validateNoticeWorkerOptions() []error {
 	errs := make([]error, 0, 9)
-	if o.NoticeWorkerPollInterval <= 0 {
+	if o.NoticeWorker.PollInterval <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerPollInterval)
 	}
-	if o.NoticeWorkerBatchSize <= 0 {
+	if o.NoticeWorker.BatchSize <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerBatchSize)
 	}
-	if o.NoticeWorkerLockTimeout <= 0 {
+	if o.NoticeWorker.LockTimeout <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerLockTimeout)
 	}
-	if o.NoticeWorkerChannelConcurrency <= 0 {
+	if o.NoticeWorker.ChannelConcurrency <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerChannelConc)
 	}
-	if o.NoticeWorkerGlobalQPS <= 0 {
+	if o.NoticeWorker.GlobalQPS <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerGlobalQPS)
 	}
-	if o.NoticeWorkerChannelQPS < 0 {
+	if o.NoticeWorker.ChannelQPS < 0 {
 		errs = append(errs, errInvalidNoticeWorkerChannelQPS)
 	}
-	o.NoticeWorkerRedisRLKeyPrefix = strings.TrimSpace(o.NoticeWorkerRedisRLKeyPrefix)
-	if o.NoticeWorkerRedisRLKeyPrefix == "" {
+	o.NoticeWorker.Redis.KeyPrefix = strings.TrimSpace(o.NoticeWorker.Redis.KeyPrefix)
+	if o.NoticeWorker.Redis.KeyPrefix == "" {
 		errs = append(errs, errInvalidNoticeWorkerRedisPrefix)
 	}
-	if o.NoticeWorkerRedisConcTTL <= 0 {
+	if o.NoticeWorker.Redis.ConcTTL <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerRedisConcTTL)
 	}
-	if o.NoticeWorkerRedisWindowTTL <= 0 {
+	if o.NoticeWorker.Redis.WindowTTL <= 0 {
 		errs = append(errs, errInvalidNoticeWorkerRedisWinTTL)
 	}
 	return errs

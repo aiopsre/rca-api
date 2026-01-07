@@ -68,15 +68,17 @@ alerting:
       enabled: false
       key_prefix: "rca:alert"
 
-noticeWorkerPollInterval: 1s
-noticeWorkerBatchSize: 16
-noticeWorkerLockTimeout: 60s
-noticeWorkerChannelConcurrency: 2
-noticeWorkerGlobalQPS: 20
-noticeWorkerChannelQPS: 0
-noticeWorkerRedisRLKeyPrefix: "rca:notice"
-noticeWorkerRedisConcTTL: 60s
-noticeWorkerRedisWindowTTL: 2s
+notice_worker:
+  poll_interval: 1s
+  batch_size: 16
+  lock_timeout: 60s
+  channel_concurrency: 2
+  global_qps: 20
+  channel_qps: 0
+  redis:
+    key_prefix: "rca:notice"
+    conc_ttl: 60s
+    window_ttl: 2s
 
 # MCP 治理策略（C5）：按 tool 维度覆盖 enabled/riskLevel/limits
 # mcp:
