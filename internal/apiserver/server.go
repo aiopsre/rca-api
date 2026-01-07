@@ -49,6 +49,10 @@ type ServerConfig struct {
 // New creates and returns a new Server instance.
 func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	noticepkg.SetConfiguredNoticeBaseURL(cfg.NoticeBaseURL)
+	noticepkg.SetNoticeDeliverySignalPublisher(nil)
+	if err := cfg.configureNoticeDeliverySignalPublisher(ctx); err != nil {
+		return nil, err
+	}
 
 	// Create the core server instance using dependency injection.
 	// This relies on the wire-generated NewServer function.
@@ -61,6 +65,39 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	}
 
 	return s.Prepare(ctx)
+}
+
+func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) error {
+	if cfg == nil {
+		return nil
+	}
+	opts := cfg.RedisOptions
+	opts.ApplyDefaults()
+	streamOpts := opts.Streams.NoticeDelivery
+	if !opts.Enabled || !streamOpts.Enabled {
+		return nil
+	}
+
+	client, err := redisx.NewClient(ctx, opts)
+	if err != nil {
+		if opts.FailOpen {
+			slog.Error("notice delivery stream publisher init failed, fallback to db-only dispatch",
+				"addr", opts.Addr,
+				"error", err,
+			)
+			return nil
+		}
+		return err
+	}
+	noticepkg.SetNoticeDeliverySignalPublisher(noticepkg.NewRedisNoticeDeliveryStream(
+		client,
+		noticepkg.RedisNoticeDeliveryStreamOptions{
+			Enabled: true,
+			Key:     streamOpts.Key,
+			Group:   streamOpts.Group,
+		},
+	))
+	return nil
 }
 
 // Prepare performs post-initialization tasks such as registering subscribers.

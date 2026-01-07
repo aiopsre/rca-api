@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -22,6 +23,7 @@ type NoticeDeliveryStore interface {
 	Replay(ctx context.Context, deliveryID string, now time.Time, opts ReplayDeliveryOptions) (*model.NoticeDeliveryM, error)
 	Cancel(ctx context.Context, deliveryID string, now time.Time) (*model.NoticeDeliveryM, error)
 	ClaimPending(ctx context.Context, workerID string, limit int, now time.Time, lockTimeout time.Duration) ([]*model.NoticeDeliveryM, error)
+	TryClaimByDeliveryID(ctx context.Context, deliveryID string, workerID string, now time.Time, lockTimeout time.Duration) (model.NoticeDeliveryM, bool, error)
 	MarkSucceeded(
 		ctx context.Context,
 		deliveryID string,
@@ -215,6 +217,51 @@ func (n *noticeDeliveryStore) ClaimPending(
 		return nil, nil
 	}
 	return n.getClaimedDeliveries(ctx, claimedIDs, workerID)
+}
+
+func (n *noticeDeliveryStore) TryClaimByDeliveryID(
+	ctx context.Context,
+	deliveryID string,
+	workerID string,
+	now time.Time,
+	lockTimeout time.Duration,
+) (model.NoticeDeliveryM, bool, error) {
+
+	deliveryID = strings.TrimSpace(deliveryID)
+	workerID = strings.TrimSpace(workerID)
+	if deliveryID == "" || workerID == "" {
+		return model.NoticeDeliveryM{}, false, nil
+	}
+	now, staleBefore := normalizeClaimWindow(now, lockTimeout)
+
+	var claimed bool
+	err := n.s.DB(ctx).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&model.NoticeDeliveryM{}).
+			Where("delivery_id = ? AND status = ? AND next_retry_at <= ? AND (locked_at IS NULL OR locked_at < ?)", deliveryID, "pending", now, staleBefore).
+			Updates(map[string]any{
+				"locked_by": workerID,
+				"locked_at": now,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		claimed = res.RowsAffected == 1
+		return nil
+	})
+	if err != nil {
+		return model.NoticeDeliveryM{}, false, err
+	}
+	if !claimed {
+		return model.NoticeDeliveryM{}, false, nil
+	}
+
+	var out model.NoticeDeliveryM
+	if err := n.s.DB(ctx).
+		Where("delivery_id = ? AND status = ? AND locked_by = ?", deliveryID, "pending", workerID).
+		First(&out).Error; err != nil {
+		return model.NoticeDeliveryM{}, false, err
+	}
+	return out, true, nil
 }
 
 func normalizeClaimWindow(now time.Time, lockTimeout time.Duration) (time.Time, time.Time) {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/onexstack/onexstack/pkg/cli/cli"
 	"github.com/onexstack/onexstack/pkg/core"
@@ -200,6 +201,15 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		defer func() { _ = redisClientClose() }()
 	}
 
+	var streamClientClose func() error
+	streamConsumer, reclaimIdle, err := buildNoticeStreamConsumer(ctx, opts, &streamClientClose)
+	if err != nil {
+		return fmt.Errorf("failed to initialize notice stream consumer: %w", err)
+	}
+	if streamClientClose != nil {
+		defer func() { _ = streamClientClose() }()
+	}
+
 	worker := noticepkg.NewWorker(st, noticepkg.WorkerOptions{
 		WorkerID:              opts.NoticeWorkerID,
 		BatchSize:             opts.NoticeWorkerBatchSize,
@@ -208,6 +218,8 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		PerChannelConcurrency: opts.NoticeWorkerChannelConcurrency,
 		GlobalQPS:             opts.NoticeWorkerGlobalQPS,
 		Limiter:               limiter,
+		StreamConsumer:        streamConsumer,
+		StreamReclaimIdle:     reclaimIdle,
 	})
 
 	slog.Info("notice worker started",
@@ -221,6 +233,10 @@ func runNoticeWorker(ctx context.Context, opts *options.ServerOptions) error {
 		"redis_enabled", opts.RedisOptions.Enabled,
 		"redis_fail_open", opts.RedisOptions.FailOpen,
 		"redis_rl_prefix", strings.TrimSpace(opts.NoticeWorkerRedisRLKeyPrefix),
+		"redis_stream_enabled", opts.RedisOptions.Streams.NoticeDelivery.Enabled,
+		"redis_stream_key", strings.TrimSpace(opts.RedisOptions.Streams.NoticeDelivery.Key),
+		"redis_stream_group", strings.TrimSpace(opts.RedisOptions.Streams.NoticeDelivery.Group),
+		"redis_stream_reclaim_idle_seconds", opts.RedisOptions.Streams.NoticeDelivery.ReclaimIdleSeconds,
 	)
 	defer slog.Info("notice worker exited")
 
@@ -266,6 +282,50 @@ func buildNoticeLimiter(
 		*redisClientClose = client.Close
 	}
 	return noticepkg.NewRedisRateLimiter(client, limiterOpts), nil
+}
+
+func buildNoticeStreamConsumer(
+	ctx context.Context,
+	opts *options.ServerOptions,
+	redisClientClose *func() error,
+) (noticepkg.NoticeDeliveryStreamConsumer, time.Duration, error) {
+
+	noopConsumer := noticepkg.NoopNoticeDeliveryStreamConsumer{}
+	if opts == nil {
+		return noopConsumer, 0, nil
+	}
+	redisOpts := opts.RedisOptions
+	redisOpts.ApplyDefaults()
+	streamOpts := redisOpts.Streams.NoticeDelivery
+	reclaimIdle := time.Duration(streamOpts.ReclaimIdleSeconds) * time.Second
+	if reclaimIdle <= 0 {
+		reclaimIdle = time.Duration(redisx.DefaultNoticeDeliveryReclaimIdleSeconds) * time.Second
+	}
+	if !redisOpts.Enabled || !streamOpts.Enabled {
+		return noopConsumer, reclaimIdle, nil
+	}
+
+	client, err := redisx.NewClient(ctx, redisOpts)
+	if err != nil {
+		if redisOpts.FailOpen {
+			slog.Error("notice worker redis streams init failed, fallback to db claim mode",
+				"addr", redisOpts.Addr,
+				"error", err,
+			)
+			return noopConsumer, reclaimIdle, nil
+		}
+		return nil, reclaimIdle, err
+	}
+
+	stream := noticepkg.NewRedisNoticeDeliveryStream(client, noticepkg.RedisNoticeDeliveryStreamOptions{
+		Enabled: true,
+		Key:     streamOpts.Key,
+		Group:   streamOpts.Group,
+	})
+	if redisClientClose != nil {
+		*redisClientClose = stream.Close
+	}
+	return stream, reclaimIdle, nil
 }
 
 func workerIDForLog(id string) string {

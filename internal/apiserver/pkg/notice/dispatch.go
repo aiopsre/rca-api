@@ -114,6 +114,7 @@ func enqueueDeliveryForChannel(ctx context.Context, st store.IStore, plan *dispa
 		return
 	}
 
+	PublishNoticeDeliverySignalBestEffort(ctx, delivery.DeliveryID)
 	rebuildDeliveryPayloadWithID(ctx, st, rq, channel, delivery)
 
 	if metrics.M != nil {

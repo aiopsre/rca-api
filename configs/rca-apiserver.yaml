@@ -51,6 +51,12 @@ redis:
   fail_open: true
   topic:
     ai_job_queue_signal: "rca:ai_job_queue_signal"
+  streams:
+    notice_delivery:
+      enabled: false
+      key: "rca:notice:delivery_stream"
+      group: "notice_delivery_workers"
+      reclaim_idle_seconds: 60
 
 noticeWorkerPollInterval: 1s
 noticeWorkerBatchSize: 16

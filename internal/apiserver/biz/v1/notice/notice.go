@@ -350,6 +350,9 @@ func (b *noticeBiz) ReplayDelivery(ctx context.Context, rq *v1.ReplayNoticeDeliv
 	if metrics.M != nil {
 		metrics.M.RecordNoticeDeliveryReplay(ctx, status, replayMode)
 	}
+	if status == noticepkg.DeliveryStatusPending {
+		noticepkg.PublishNoticeDeliverySignalBestEffort(ctx, out.DeliveryID)
+	}
 	slog.InfoContext(ctx, "notice delivery op succeeded",
 		"op", "replay",
 		"replay_mode", replayMode,

@@ -723,8 +723,10 @@ func TestWorker_SkipCanceledAfterClaim(t *testing.T) {
 
 func newNoticeTestStore(t *testing.T) store.IStore {
 	t.Helper()
+	SetNoticeDeliverySignalPublisher(nil)
 	store.ResetForTest()
 	t.Cleanup(store.ResetForTest)
+	t.Cleanup(func() { SetNoticeDeliverySignalPublisher(nil) })
 
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})

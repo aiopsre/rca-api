@@ -32,6 +32,8 @@ type Metrics struct {
 	NoticeDeliveryReplayTotal           metric.Int64Counter
 	NoticeDeliveryCancelTotal           metric.Int64Counter
 	NoticeRateLimitAcquireTotal         *prometheus.CounterVec
+	NoticeStreamReadTotal               *prometheus.CounterVec
+	NoticeStreamMessagesTotal           *prometheus.CounterVec
 	RedisPubSubPublishTotal             *prometheus.CounterVec
 	RedisPubSubSubscribeState           *prometheus.GaugeVec
 	AIJobLongPollWakeupTotal            *prometheus.CounterVec
@@ -134,6 +136,14 @@ func Init(scope string) error {
 			Name: "notice_rate_limit_acquire_total",
 			Help: "Total notice rate limiter acquire outcomes by mode/result/reason.",
 		}, []string{"mode", "result", "reason"})
+		noticeStreamReadTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_stream_read_total",
+			Help: "Total redis streams read attempts for notice delivery dispatch by result.",
+		}, []string{"result"})
+		noticeStreamMessagesTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "notice_stream_messages_total",
+			Help: "Total notice stream message actions by type.",
+		}, []string{"action"})
 
 		mcpCallsTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
 			Name: "mcp_calls_total",
@@ -196,6 +206,8 @@ func Init(scope string) error {
 			NoticeDeliveryReplayTotal:           noticeReplayTotal,
 			NoticeDeliveryCancelTotal:           noticeCancelTotal,
 			NoticeRateLimitAcquireTotal:         noticeRateLimitAcquireTotal,
+			NoticeStreamReadTotal:               noticeStreamReadTotal,
+			NoticeStreamMessagesTotal:           noticeStreamMessagesTotal,
 			RedisPubSubPublishTotal:             redisPubSubPublishTotal,
 			RedisPubSubSubscribeState:           redisPubSubSubscribeState,
 			AIJobLongPollWakeupTotal:            aiJobLongPollWakeupTotal,
@@ -216,6 +228,15 @@ func Init(scope string) error {
 		noticeRateLimitAcquireTotal.WithLabelValues("redis", "deny", "global_qps").Add(0)
 		noticeRateLimitAcquireTotal.WithLabelValues("redis", "error", "redis_error").Add(0)
 		noticeRateLimitAcquireTotal.WithLabelValues("local", "ok", "local").Add(0)
+		noticeStreamReadTotal.WithLabelValues("ok").Add(0)
+		noticeStreamReadTotal.WithLabelValues("error").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("xadd").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("reclaim").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("claim_ok").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("claim_skip").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("claim_error").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("process_error").Add(0)
+		noticeStreamMessagesTotal.WithLabelValues("ack").Add(0)
 		redisPubSubPublishTotal.WithLabelValues("unknown", "ok").Add(0)
 		redisPubSubPublishTotal.WithLabelValues("unknown", "error").Add(0)
 		redisPubSubSubscribeState.WithLabelValues("unknown").Set(0)
@@ -346,6 +367,30 @@ func (m *Metrics) RecordNoticeRateLimitAcquire(mode string, result string, reaso
 		reason = "unknown"
 	}
 	m.NoticeRateLimitAcquireTotal.WithLabelValues(mode, result, reason).Inc()
+}
+
+// RecordNoticeStreamRead records redis notice stream read result.
+func (m *Metrics) RecordNoticeStreamRead(result string) {
+	if m == nil || m.NoticeStreamReadTotal == nil {
+		return
+	}
+	result = strings.TrimSpace(strings.ToLower(result))
+	if result == "" {
+		result = "unknown"
+	}
+	m.NoticeStreamReadTotal.WithLabelValues(result).Inc()
+}
+
+// RecordNoticeStreamMessage records one notice stream message action.
+func (m *Metrics) RecordNoticeStreamMessage(action string) {
+	if m == nil || m.NoticeStreamMessagesTotal == nil {
+		return
+	}
+	action = strings.TrimSpace(strings.ToLower(action))
+	if action == "" {
+		action = "unknown"
+	}
+	m.NoticeStreamMessagesTotal.WithLabelValues(action).Inc()
 }
 
 // RecordNoticeDeliveryDispatch records one notice delivery enqueue event.

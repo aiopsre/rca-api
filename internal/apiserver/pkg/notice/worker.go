@@ -14,6 +14,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 	"gorm.io/gorm"
@@ -31,6 +32,8 @@ type WorkerOptions struct {
 	PerChannelConcurrency int
 	GlobalQPS             float64
 	Limiter               NoticeRateLimiter
+	StreamConsumer        NoticeDeliveryStreamConsumer
+	StreamReclaimIdle     time.Duration
 }
 
 var (
@@ -74,6 +77,7 @@ func DefaultWorkerOptions() WorkerOptions {
 		JitterMax:             200 * time.Millisecond,
 		PerChannelConcurrency: 2,
 		GlobalQPS:             20,
+		StreamReclaimIdle:     time.Duration(redisx.DefaultNoticeDeliveryReclaimIdleSeconds) * time.Second,
 	}
 }
 
@@ -82,6 +86,7 @@ type Worker struct {
 	store       store.IStore
 	opts        WorkerOptions
 	rateLimiter NoticeRateLimiter
+	stream      NoticeDeliveryStreamConsumer
 }
 
 // NewWorker creates a notice worker.
@@ -122,11 +127,15 @@ func NewWorker(st store.IStore, opts WorkerOptions) *Worker {
 	if opts.Limiter == nil {
 		opts.Limiter = newLocalRateLimiter(opts.GlobalQPS, opts.PerChannelConcurrency)
 	}
+	if opts.StreamReclaimIdle <= 0 {
+		opts.StreamReclaimIdle = dft.StreamReclaimIdle
+	}
 
 	return &Worker{
 		store:       st,
 		opts:        opts,
 		rateLimiter: opts.Limiter,
+		stream:      opts.StreamConsumer,
 	}
 }
 
@@ -150,6 +159,20 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // RunOnce claims and processes one batch of pending deliveries.
 func (w *Worker) RunOnce(ctx context.Context) (int, error) {
+	processedByStream, streamErr := w.runOnceFromStream(ctx)
+	if streamErr != nil {
+		slog.ErrorContext(ctx, "notice worker stream consume failed, fallback to db claim",
+			"worker_id", w.opts.WorkerID,
+			"error", streamErr,
+		)
+	}
+	if processedByStream > 0 {
+		return processedByStream, nil
+	}
+	return w.runOnceFromDB(ctx)
+}
+
+func (w *Worker) runOnceFromDB(ctx context.Context) (int, error) {
 	deliveries, err := w.store.NoticeDelivery().ClaimPending(ctx, w.opts.WorkerID, w.opts.BatchSize, time.Now().UTC(), w.opts.LockTimeout)
 	if err != nil {
 		return 0, err
@@ -174,6 +197,99 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 		}
 	}
 	return processed, nil
+}
+
+func (w *Worker) runOnceFromStream(ctx context.Context) (int, error) {
+	if w.stream == nil || !w.stream.Enabled() || w.opts.BatchSize <= 0 {
+		return 0, nil
+	}
+
+	reclaimed, err := w.stream.ClaimPendingIdle(ctx, w.opts.WorkerID, int64(w.opts.BatchSize), w.opts.StreamReclaimIdle)
+	if err != nil {
+		return 0, err
+	}
+	remaining := w.opts.BatchSize - len(reclaimed)
+	newMessages := make([]NoticeStreamMessage, 0)
+	if remaining > 0 {
+		newMessages, err = w.stream.ReadNew(ctx, w.opts.WorkerID, int64(remaining), w.opts.PollInterval)
+		if err != nil {
+			return 0, err
+		}
+	}
+	messages := append(reclaimed, newMessages...)
+	if len(messages) == 0 {
+		return 0, nil
+	}
+
+	processed := 0
+	for _, msg := range messages {
+		if w.handleStreamMessage(ctx, msg) {
+			processed++
+		}
+	}
+	return processed, nil
+}
+
+// handleStreamMessage returns true when one delivery reaches worker process path.
+func (w *Worker) handleStreamMessage(ctx context.Context, msg NoticeStreamMessage) bool {
+	deliveryID := strings.TrimSpace(msg.DeliveryID)
+	streamID := strings.TrimSpace(msg.StreamID)
+	if deliveryID == "" || streamID == "" {
+		return false
+	}
+
+	delivery, claimed, err := w.store.NoticeDelivery().TryClaimByDeliveryID(
+		ctx,
+		deliveryID,
+		w.opts.WorkerID,
+		time.Now().UTC(),
+		w.opts.LockTimeout,
+	)
+	if err != nil {
+		slog.ErrorContext(ctx, "notice stream try-claim failed",
+			"worker_id", w.opts.WorkerID,
+			"delivery_id", deliveryID,
+			"stream_id", streamID,
+			"error", err,
+		)
+		recordNoticeStreamMessage("claim_error")
+		return false
+	}
+	if !claimed {
+		if err := w.stream.Ack(ctx, streamID); err != nil {
+			slog.ErrorContext(ctx, "notice stream ack skipped delivery failed",
+				"worker_id", w.opts.WorkerID,
+				"delivery_id", deliveryID,
+				"stream_id", streamID,
+				"error", err,
+			)
+			return false
+		}
+		recordNoticeStreamMessage("claim_skip")
+		return false
+	}
+
+	if err := w.processDelivery(ctx, &delivery); err != nil {
+		slog.ErrorContext(ctx, "notice stream delivery process failed",
+			"worker_id", w.opts.WorkerID,
+			"delivery_id", deliveryID,
+			"stream_id", streamID,
+			"error", err,
+		)
+		recordNoticeStreamMessage("process_error")
+		return false
+	}
+	if err := w.stream.Ack(ctx, streamID); err != nil {
+		slog.ErrorContext(ctx, "notice stream ack after process failed",
+			"worker_id", w.opts.WorkerID,
+			"delivery_id", deliveryID,
+			"stream_id", streamID,
+			"error", err,
+		)
+		return false
+	}
+	recordNoticeStreamMessage("claim_ok")
+	return true
 }
 
 //nolint:gocognit,gocyclo // Worker attempt state transitions are explicit for auditability.

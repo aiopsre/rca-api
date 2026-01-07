@@ -881,6 +881,25 @@ python -m orchestrator.main
   - 新增/更新单测 2~4 个覆盖 stream 消费与 fallback
   - `make test` / `make lint-new` 通过
 
+### R3 实施更新（2026-02-11）
+- 已扩展 Redis 配置：`redis.streams.notice_delivery.enabled/key/group/reclaim_idle_seconds`
+- producer 已接入 best-effort XADD（仅写 `delivery_id`）：
+  - `internal/apiserver/pkg/notice/dispatch.go`：Create 成功后 publish
+  - `internal/apiserver/biz/v1/notice/notice.go`：Replay 成功且状态为 pending 时 publish
+- worker 已接入 Streams 优先消费：
+  - `internal/apiserver/pkg/notice/worker.go`：`XREADGROUP(>)` 消费 + `TryClaimByDeliveryID` 回 MySQL claim + ACK 控制
+  - DB error 不 ACK；claim skip（已处理/非 pending）ACK；成功处理后 ACK
+  - 周期性 `XPENDING + XCLAIM` reclaim idle pending
+  - Streams 不可用时自动 fallback 到 `ClaimPending` DB 扫描模式
+- store 已新增按 delivery_id claim：
+  - `internal/apiserver/store/notice_delivery.go`：`TryClaimByDeliveryID(...)`
+- 新增回归脚本：`scripts/test_r3_L1_stream_dispatch_notice_delivery.sh`
+  - 覆盖 streams enabled、kill worker 后 pending reclaim、redis disabled fallback
+- 新增单测（pkg/notice）：
+  - `TestWorker_RunOnce_StreamClaimThenAck`
+  - `TestWorker_RunOnce_StreamSkipNonPendingAck`
+  - `TestWorker_RunOnce_StreamReadErrorFallbackToDB`
+
 ### R4：告警降噪/抑制/合并链路重构（兼容 Silence/merge）
 - Doc: `docs/devel/zh-CN/18_R4_Alert_Denoise_Suppress_Refactor.md`
 - Done Definition：
