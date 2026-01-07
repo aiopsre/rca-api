@@ -22,6 +22,8 @@ type Metrics struct {
 	EvidenceQueryLatency                metric.Float64Histogram
 	AlertEventIngestCounter             metric.Int64Counter
 	AlertEventIngestLatency             metric.Float64Histogram
+	AlertIngestPolicyDecisionTotal      *prometheus.CounterVec
+	AlertIngestPolicyBackendErrorTotal  *prometheus.CounterVec
 	AIJobQueuePullCounter               metric.Int64Counter
 	AIJobQueuePullLatency               metric.Float64Histogram
 	NoticeDeliveryDispatchTotal         metric.Int64Counter
@@ -86,6 +88,16 @@ func Init(scope string) error {
 			"rca_api_apiserver_alert_event_ingest_latency_ms",
 			metric.WithDescription("Latency in milliseconds for alert ingest requests"),
 		)
+
+		alertIngestPolicyDecisionTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_policy_decision_total",
+			Help: "Total alert ingest policy decisions by decision/backend.",
+		}, []string{"decision", "backend"})
+
+		alertIngestPolicyBackendErrorTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_policy_backend_error_total",
+			Help: "Total alert ingest policy backend operation errors by backend/op.",
+		}, []string{"backend", "op"})
 
 		aiJobQueuePullCounter, _ := meter.Int64Counter(
 			"rca_api_apiserver_ai_job_queue_pull_total",
@@ -196,6 +208,8 @@ func Init(scope string) error {
 			EvidenceQueryLatency:                evidenceQueryLatency,
 			AlertEventIngestCounter:             alertEventIngestCounter,
 			AlertEventIngestLatency:             alertEventIngestLatency,
+			AlertIngestPolicyDecisionTotal:      alertIngestPolicyDecisionTotal,
+			AlertIngestPolicyBackendErrorTotal:  alertIngestPolicyBackendErrorTotal,
 			AIJobQueuePullCounter:               aiJobQueuePullCounter,
 			AIJobQueuePullLatency:               aiJobQueuePullLatency,
 			NoticeDeliveryDispatchTotal:         noticeDispatchTotal,
@@ -228,6 +242,13 @@ func Init(scope string) error {
 		noticeRateLimitAcquireTotal.WithLabelValues("redis", "deny", "global_qps").Add(0)
 		noticeRateLimitAcquireTotal.WithLabelValues("redis", "error", "redis_error").Add(0)
 		noticeRateLimitAcquireTotal.WithLabelValues("local", "ok", "local").Add(0)
+		alertIngestPolicyDecisionTotal.WithLabelValues("normal", "mysql").Add(0)
+		alertIngestPolicyDecisionTotal.WithLabelValues("merged", "mysql").Add(0)
+		alertIngestPolicyDecisionTotal.WithLabelValues("silenced", "mysql").Add(0)
+		alertIngestPolicyDecisionTotal.WithLabelValues("deduped", "mysql").Add(0)
+		alertIngestPolicyDecisionTotal.WithLabelValues("deduped", "redis").Add(0)
+		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "dedup").Add(0)
+		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "burst").Add(0)
 		noticeStreamReadTotal.WithLabelValues("ok").Add(0)
 		noticeStreamReadTotal.WithLabelValues("error").Add(0)
 		noticeStreamMessagesTotal.WithLabelValues("xadd").Add(0)
@@ -287,6 +308,38 @@ func (m *Metrics) RecordAlertEventIngest(ctx context.Context, mergeResult string
 	}
 	m.AlertEventIngestCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.AlertEventIngestLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordAlertIngestPolicyDecision records one alert ingest policy decision.
+func (m *Metrics) RecordAlertIngestPolicyDecision(decision string, backend string) {
+	if m == nil || m.AlertIngestPolicyDecisionTotal == nil {
+		return
+	}
+	decision = strings.TrimSpace(strings.ToLower(decision))
+	if decision == "" {
+		decision = "unknown"
+	}
+	backend = strings.TrimSpace(strings.ToLower(backend))
+	if backend == "" {
+		backend = "unknown"
+	}
+	m.AlertIngestPolicyDecisionTotal.WithLabelValues(decision, backend).Inc()
+}
+
+// RecordAlertIngestPolicyBackendError records one policy backend operation error.
+func (m *Metrics) RecordAlertIngestPolicyBackendError(backend string, op string) {
+	if m == nil || m.AlertIngestPolicyBackendErrorTotal == nil {
+		return
+	}
+	backend = strings.TrimSpace(strings.ToLower(backend))
+	if backend == "" {
+		backend = "unknown"
+	}
+	op = strings.TrimSpace(strings.ToLower(op))
+	if op == "" {
+		op = "unknown"
+	}
+	m.AlertIngestPolicyBackendErrorTotal.WithLabelValues(backend, op).Inc()
 }
 
 // RecordAIJobQueuePull records queue pull metrics for orchestrator polling.

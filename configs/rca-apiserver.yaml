@@ -58,6 +58,16 @@ redis:
       group: "notice_delivery_workers"
       reclaim_idle_seconds: 60
 
+alerting:
+  ingest_policy:
+    dedup_window_seconds: 0
+    burst:
+      window_seconds: 0
+      threshold: 0
+    redis_backend:
+      enabled: false
+      key_prefix: "rca:alert"
+
 noticeWorkerPollInterval: 1s
 noticeWorkerBatchSize: 16
 noticeWorkerLockTimeout: 60s

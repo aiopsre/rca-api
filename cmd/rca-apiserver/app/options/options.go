@@ -11,6 +11,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/aiopsre/rca-api/internal/apiserver"
+	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 )
@@ -40,6 +41,8 @@ type ServerOptions struct {
 	OTelOptions *genericoptions.OTelOptions `json:"otel" mapstructure:"otel"`
 	// RedisOptions configures redis pub/sub wakeup for long poll.
 	RedisOptions redisx.RedisOptions `json:"redis" mapstructure:"redis"`
+	// Alerting groups alerting-related runtime policy options.
+	Alerting AlertingOptions `json:"alerting" mapstructure:"alerting"`
 	// NoticeWorkerPollInterval controls worker polling interval.
 	NoticeWorkerPollInterval time.Duration `json:"noticeWorkerPollInterval" mapstructure:"noticeWorkerPollInterval"`
 	// NoticeWorkerBatchSize controls max deliveries claimed each run.
@@ -66,14 +69,22 @@ type ServerOptions struct {
 	MCPPolicy policy.MCPPolicyConfig `json:"mcp" mapstructure:"mcp"`
 }
 
+// AlertingOptions contains alert ingest policy controls.
+type AlertingOptions struct {
+	IngestPolicy alertingingest.PolicyConfig `json:"ingest_policy" mapstructure:"ingest_policy"`
+}
+
 // NewServerOptions creates a ServerOptions instance with default values.
 func NewServerOptions() *ServerOptions {
 	opts := &ServerOptions{
-		TLSOptions:                     genericoptions.NewTLSOptions(),
-		HTTPOptions:                    genericoptions.NewHTTPOptions(),
-		MySQLOptions:                   genericoptions.NewMySQLOptions(),
-		OTelOptions:                    genericoptions.NewOTelOptions(),
-		RedisOptions:                   redisx.NewRedisOptions(),
+		TLSOptions:   genericoptions.NewTLSOptions(),
+		HTTPOptions:  genericoptions.NewHTTPOptions(),
+		MySQLOptions: genericoptions.NewMySQLOptions(),
+		OTelOptions:  genericoptions.NewOTelOptions(),
+		RedisOptions: redisx.NewRedisOptions(),
+		Alerting: AlertingOptions{
+			IngestPolicy: alertingingest.DefaultPolicyConfig(),
+		},
 		NoticeWorkerPollInterval:       1 * time.Second,
 		NoticeWorkerBatchSize:          16,
 		NoticeWorkerLockTimeout:        60 * time.Second,
@@ -106,6 +117,11 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.RedisOptions.Streams.NoticeDelivery.Group, "redis.streams.notice_delivery.group", o.RedisOptions.Streams.NoticeDelivery.Group, "Redis stream consumer group for notice workers.")
 	fs.IntVar(&o.RedisOptions.Streams.NoticeDelivery.ReclaimIdleSeconds, "redis.streams.notice_delivery.reclaim_idle_seconds", o.RedisOptions.Streams.NoticeDelivery.ReclaimIdleSeconds, "Idle seconds before reclaiming pending notice stream messages.")
 	fs.BoolVar(&o.RedisOptions.FailOpen, "redis.fail_open", o.RedisOptions.FailOpen, "Whether redis failures should fall back to DB watermark long poll.")
+	fs.IntVar(&o.Alerting.IngestPolicy.DedupWindowSeconds, "alerting.ingest_policy.dedup_window_seconds", o.Alerting.IngestPolicy.DedupWindowSeconds, "Dedup suppression window in seconds for alert ingest. 0 disables.")
+	fs.IntVar(&o.Alerting.IngestPolicy.Burst.WindowSeconds, "alerting.ingest_policy.burst.window_seconds", o.Alerting.IngestPolicy.Burst.WindowSeconds, "Burst counter window in seconds for alert ingest. 0 disables.")
+	fs.IntVar(&o.Alerting.IngestPolicy.Burst.Threshold, "alerting.ingest_policy.burst.threshold", o.Alerting.IngestPolicy.Burst.Threshold, "Burst threshold in one window for alert ingest. 0 disables.")
+	fs.BoolVar(&o.Alerting.IngestPolicy.RedisBackend.Enabled, "alerting.ingest_policy.redis_backend.enabled", o.Alerting.IngestPolicy.RedisBackend.Enabled, "Enable redis backend for alert ingest dedup/burst short-state.")
+	fs.StringVar(&o.Alerting.IngestPolicy.RedisBackend.KeyPrefix, "alerting.ingest_policy.redis_backend.key_prefix", o.Alerting.IngestPolicy.RedisBackend.KeyPrefix, "Redis key prefix for alert ingest policy state.")
 	fs.DurationVar(&o.NoticeWorkerPollInterval, "notice-worker-poll-interval", o.NoticeWorkerPollInterval, "Polling interval for notice worker.")
 	fs.IntVar(&o.NoticeWorkerBatchSize, "notice-worker-batch-size", o.NoticeWorkerBatchSize, "Batch size per notice worker claim.")
 	fs.DurationVar(&o.NoticeWorkerLockTimeout, "notice-worker-lock-timeout", o.NoticeWorkerLockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
@@ -137,6 +153,7 @@ func (o *ServerOptions) Validate() error {
 	if err := o.RedisOptions.Validate(); err != nil {
 		errs = append(errs, err)
 	}
+	o.Alerting.IngestPolicy.ApplyDefaults()
 	errs = append(errs, o.validateNoticeWorkerOptions()...)
 	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
 		errs = append(errs, errInvalidNoticeBaseURL)
@@ -184,12 +201,13 @@ func (o *ServerOptions) Config() (*apiserver.Config, error) {
 	redisOpts := o.RedisOptions
 	redisOpts.ApplyDefaults()
 	return &apiserver.Config{
-		TLSOptions:    o.TLSOptions,
-		HTTPOptions:   o.HTTPOptions,
-		MySQLOptions:  o.MySQLOptions,
-		RedisOptions:  redisOpts,
-		NoticeBaseURL: strings.TrimSpace(o.NoticeBaseURL),
-		MCPPolicy:     o.MCPPolicy,
+		TLSOptions:           o.TLSOptions,
+		HTTPOptions:          o.HTTPOptions,
+		MySQLOptions:         o.MySQLOptions,
+		RedisOptions:         redisOpts,
+		AlertingIngestPolicy: o.Alerting.IngestPolicy,
+		NoticeBaseURL:        strings.TrimSpace(o.NoticeBaseURL),
+		MCPPolicy:            o.MCPPolicy,
 	}, nil
 }
 

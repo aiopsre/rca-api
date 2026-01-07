@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/handler"
+	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
@@ -24,12 +25,13 @@ type Dependencies struct{}
 
 // Config contains application-related configurations.
 type Config struct {
-	TLSOptions    *genericoptions.TLSOptions
-	HTTPOptions   *genericoptions.HTTPOptions
-	MySQLOptions  *genericoptions.MySQLOptions
-	RedisOptions  redisx.RedisOptions
-	NoticeBaseURL string
-	MCPPolicy     policy.MCPPolicyConfig
+	TLSOptions           *genericoptions.TLSOptions
+	HTTPOptions          *genericoptions.HTTPOptions
+	MySQLOptions         *genericoptions.MySQLOptions
+	RedisOptions         redisx.RedisOptions
+	AlertingIngestPolicy alertingingest.PolicyConfig
+	NoticeBaseURL        string
+	MCPPolicy            policy.MCPPolicyConfig
 }
 
 // Server represents the web server and its background workers.
@@ -48,6 +50,10 @@ type ServerConfig struct {
 
 // New creates and returns a new Server instance.
 func (cfg *Config) New(ctx context.Context) (*Server, error) {
+	alertingingest.SetRuntimeConfig(alertingingest.RuntimeConfig{
+		Policy: cfg.AlertingIngestPolicy,
+		Redis:  cfg.RedisOptions,
+	})
 	noticepkg.SetConfiguredNoticeBaseURL(cfg.NoticeBaseURL)
 	noticepkg.SetNoticeDeliverySignalPublisher(nil)
 	if err := cfg.configureNoticeDeliverySignalPublisher(ctx); err != nil {

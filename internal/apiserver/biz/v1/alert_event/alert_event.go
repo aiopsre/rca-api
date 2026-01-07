@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
@@ -77,13 +78,34 @@ type AlertEventBiz interface {
 type AlertEventExpansion interface{}
 
 type alertEventBiz struct {
-	store store.IStore
+	store          store.IStore
+	ingestPipeline *alertingingest.Pipeline
 }
 
 var _ AlertEventBiz = (*alertEventBiz)(nil)
 
 func New(store store.IStore) *alertEventBiz {
-	return &alertEventBiz{store: store}
+	runtimeCfg := alertingingest.CurrentRuntimeConfig()
+	pipeline := alertingingest.NewDefaultPipeline(runtimeCfg, func(ctx context.Context, fingerprint string) (*time.Time, error) {
+		fingerprint = strings.TrimSpace(fingerprint)
+		if fingerprint == "" {
+			return nil, nil
+		}
+		current, err := store.AlertEvent().Get(ctx, where.T(ctx).F("current_key", fingerprint))
+		if err != nil {
+			if errorsx.Is(err, gorm.ErrRecordNotFound) || isTableNotFoundError(err) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		lastSeen := current.LastSeenAt.UTC()
+		return &lastSeen, nil
+	})
+
+	return &alertEventBiz{
+		store:          store,
+		ingestPipeline: pipeline,
+	}
 }
 
 type ingestInput struct {
@@ -132,6 +154,9 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		incidentStatusChanged bool
 		silenced              bool
 		silenceID             string
+		policyDecision        alertingingest.Decision
+		suppressIncident      bool
+		suppressTimeline      bool
 	)
 
 	err = b.store.TX(ctx, func(txCtx context.Context) error {
@@ -163,7 +188,26 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 			silenceID = matchedSilence.SilenceID
 		}
 
-		if !silenced {
+		if b.ingestPipeline != nil {
+			policyDecision, err = b.ingestPipeline.Evaluate(txCtx, alertingingest.EvaluateInput{
+				Fingerprint: in.fingerprint,
+				Status:      in.status,
+				LastSeenAt:  in.lastSeenAt,
+				SilenceID:   silenceID,
+			})
+			if err != nil {
+				return errno.ErrAlertEventIngestFailed
+			}
+			silenced = policyDecision.Silenced
+			silenceID = policyDecision.SilenceID
+			suppressIncident = policyDecision.SuppressIncident
+			suppressTimeline = policyDecision.SuppressTimeline
+		} else if silenced {
+			suppressIncident = true
+			suppressTimeline = true
+		}
+
+		if !suppressIncident {
 			incident, created, statusChanged, resolveErr := b.resolveIncidentForIngest(txCtx, in)
 			if resolveErr != nil {
 				return resolveErr
@@ -210,7 +254,7 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 			})
 		}
 
-		if !silenced && incidentID != "" {
+		if !silenced && !suppressTimeline && incidentID != "" {
 			audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), incidentID, "alert_ingested", eventID, map[string]any{
 				"event_id":     eventID,
 				"fingerprint":  in.fingerprint,
@@ -274,6 +318,10 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		"idempotency_key", in.idempotencyKey,
 		"silenced", silenced,
 		"silence_id", silenceID,
+		"policy_decision", policyDecision.Decision,
+		"policy_backend", policyDecision.Backend,
+		"policy_deduped", policyDecision.Deduped,
+		"policy_burst_suppressed", policyDecision.BurstSuppressed,
 	)
 
 	resp := &v1.IngestAlertEventResponse{

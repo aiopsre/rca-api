@@ -908,3 +908,31 @@ python -m orchestrator.main
   - 新增回归脚本：`scripts/test_r4_L1_alert_denoise_suppress.sh`
   - 新增/更新单测 2~4 个覆盖：默认兼容、silence 优先、dedup/burst
   - `make test` / `make lint-new` 通过
+
+### R4 实施更新（2026-02-11）
+- 已新增 ingest 策略模块：`internal/apiserver/pkg/alerting/ingest/*`
+  - `PolicyConfig`：`dedup_window_seconds` / `burst.window_seconds` / `burst.threshold` / `redis_backend.enabled|key_prefix`
+  - `Pipeline`：统一决策 `silenced|merged|deduped|normal`，并输出 suppress 开关
+  - `Backend`：
+    - `MySQLBackend`：基于 current alert `last_seen_at` 的 dedup window 判定
+    - `RedisBackend`：`SETNX+EX` dedup 与 `INCR+EXPIRE` burst 计数
+  - Redis backend 失败默认 fail-open，自动回退 MySQL backend（功能正确优先）
+- `alert_event ingest` 已接入 pipeline，事务/落库顺序保持：
+  - `silence` 仍最高优先级，命中后不创建/不推进 incident
+  - policy suppress 命中时：history/current 仍落库，incident 推进与 ingest timeline 可抑制
+  - 默认配置（dedup=0/burst=0）保持原有 silence/merge/incident/history/current/timeline 行为
+- 新增配置注入：
+  - `configs/rca-apiserver.yaml` 新增 `alerting.ingest_policy` 段（默认全关闭）
+  - `cmd/rca-apiserver/app/options/options.go` 增加 viper/flags 绑定
+  - `internal/apiserver/server.go` 启动时注入 ingest runtime config
+- 新增指标：
+  - `alert_ingest_policy_decision_total{decision,backend}`
+  - `alert_ingest_policy_backend_error_total{backend,op}`
+- 新增单测（pkg/alerting/ingest）：
+  - `TestPipeline_DefaultCompatibleWhenPolicyDisabled`
+  - `TestPipeline_SilenceOverridesAllPolicies`
+  - `TestPipeline_DedupWindowWithFakeBackend`
+  - `TestPipeline_RedisErrorFallsBackToMySQLWhenFailOpen`
+- 新增回归脚本：
+  - `scripts/test_r4_L1_alert_denoise_suppress.sh`
+  - 覆盖：默认兼容、dedup 抑制、silence 命中不创建 incident 且不新增 queued AIJob
