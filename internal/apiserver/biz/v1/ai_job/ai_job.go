@@ -6,12 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
+	kbbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/kb"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
@@ -602,8 +604,109 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	if noticeReq != nil {
 		noticepkg.DispatchBestEffort(ctx, b.store, *noticeReq)
 	}
+	if targetStatus == jobStatusSucceeded {
+		b.runKBBestEffort(ctx, jobID)
+	}
 
 	return &v1.FinalizeAIJobResponse{}, nil
+}
+
+//nolint:gocognit,gocyclo // Best-effort path keeps explicit early-return branches for safety.
+func (b *aiJobBiz) runKBBestEffort(ctx context.Context, jobID string) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return
+	}
+
+	job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
+	if err != nil {
+		slog.Warn("kb best-effort skipped: get ai job failed", "job_id", jobID, "error", err)
+		return
+	}
+	if strings.ToLower(strings.TrimSpace(job.Status)) != jobStatusSucceeded {
+		return
+	}
+
+	incident, err := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", job.IncidentID))
+	if err != nil {
+		slog.Warn("kb best-effort skipped: get incident failed", "job_id", jobID, "incident_id", job.IncidentID, "error", err)
+		return
+	}
+	if incident.DiagnosisJSON == nil || strings.TrimSpace(*incident.DiagnosisJSON) == "" {
+		return
+	}
+
+	_, toolCalls, err := b.store.AIToolCall().List(ctx, where.T(ctx).P(0, 200).F("job_id", jobID))
+	if err != nil {
+		slog.Warn("kb best-effort skipped: list tool calls failed", "job_id", jobID, "error", err)
+		return
+	}
+	if len(toolCalls) == 0 {
+		return
+	}
+
+	qualityDecision := kbbiz.ExtractQualityGateDecision(toolCalls)
+	if qualityDecision != "pass" {
+		return
+	}
+
+	rootCauseType := ""
+	if incident.RootCauseType != nil {
+		rootCauseType = strings.TrimSpace(*incident.RootCauseType)
+	}
+	rootCauseSummary := ""
+	if incident.RootCauseSummary != nil {
+		rootCauseSummary = strings.TrimSpace(*incident.RootCauseSummary)
+	}
+	if rootCauseType == "" || rootCauseSummary == "" {
+		return
+	}
+
+	patterns := kbbiz.ExtractPatternsFromDiagnosis(*incident.DiagnosisJSON)
+	if len(patterns) == 0 {
+		patterns = kbbiz.ExtractPatternsFromToolCalls(toolCalls)
+	}
+	if len(patterns) == 0 {
+		return
+	}
+
+	kb := kbbiz.New(b.store)
+	_, err = kb.Writeback(ctx, kbbiz.WritebackInput{
+		Namespace:         incident.Namespace,
+		Service:           incident.Service,
+		RootCauseType:     rootCauseType,
+		RootCauseSummary:  rootCauseSummary,
+		Patterns:          patterns,
+		EvidenceSignature: kbbiz.BuildEvidenceSignature(*incident.DiagnosisJSON, toolCalls),
+		Confidence:        extractDiagnosisRootCauseConfidence(*incident.DiagnosisJSON),
+	})
+	if err != nil {
+		slog.Warn("kb writeback failed (best-effort)", "job_id", jobID, "incident_id", incident.IncidentID, "error", err)
+		return
+	}
+
+	refs, err := kb.Search(ctx, kbbiz.SearchInput{
+		Namespace:     incident.Namespace,
+		Service:       incident.Service,
+		RootCauseType: rootCauseType,
+		Patterns:      patterns,
+		Limit:         3,
+	})
+	if err != nil {
+		slog.Warn("kb retrieval failed (best-effort)", "job_id", jobID, "incident_id", incident.IncidentID, "error", err)
+		return
+	}
+	if len(refs) == 0 {
+		return
+	}
+
+	targetToolCall := kbbiz.SelectPrimaryToolCall(toolCalls)
+	if targetToolCall == nil {
+		return
+	}
+	if err := kb.InjectRefsToToolCall(ctx, targetToolCall, refs); err != nil {
+		slog.Warn("kb refs injection failed (best-effort)", "job_id", jobID, "incident_id", incident.IncidentID, "tool_call_id", targetToolCall.ToolCallID, "error", err)
+	}
 }
 
 //nolint:gocognit,gocyclo,nestif // Existing tool-call write path is intentionally explicit for P0.
@@ -1018,6 +1121,50 @@ func isTerminalStatus(status string) bool {
 	}
 }
 
+//nolint:gocyclo // Keep explicit type branches for robust parsing.
+func extractDiagnosisRootCauseConfidence(raw string) float64 {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0.7
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return 0.7
+	}
+	rootCause, _ := payload["root_cause"].(map[string]any)
+	if rootCause == nil {
+		return 0.7
+	}
+
+	normalize := func(v float64) float64 {
+		if v <= 0 {
+			return 0.7
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+
+	switch confidence := rootCause["confidence"].(type) {
+	case float64:
+		return normalize(confidence)
+	case float32:
+		return normalize(float64(confidence))
+	case int:
+		return normalize(float64(confidence))
+	case int64:
+		return normalize(float64(confidence))
+	case string:
+		var parsed float64
+		if err := json.Unmarshal([]byte(confidence), &parsed); err == nil {
+			return normalize(parsed)
+		}
+	}
+	return 0.7
+}
+
 type diagnosisRootCause struct {
 	Type       string   `json:"type,omitempty"`
 	Category   string   `json:"category"`
@@ -1034,6 +1181,12 @@ type diagnosisHypothesis struct {
 	MissingEvidence      []string `json:"missing_evidence"`
 }
 
+type diagnosisPattern struct {
+	Type   string  `json:"type"`
+	Value  string  `json:"value"`
+	Weight float64 `json:"weight"`
+}
+
 type diagnosisPayload struct {
 	SchemaVersion   string                `json:"schema_version,omitempty"`
 	GeneratedAt     string                `json:"generated_at,omitempty"`
@@ -1043,6 +1196,7 @@ type diagnosisPayload struct {
 	MissingEvidence []string              `json:"missing_evidence,omitempty"`
 	Timeline        []map[string]any      `json:"timeline"`
 	Hypotheses      []diagnosisHypothesis `json:"hypotheses"`
+	Patterns        []diagnosisPattern    `json:"patterns,omitempty"`
 	Observations    []map[string]any      `json:"observations,omitempty"`
 	Recommendations []map[string]any      `json:"recommendations"`
 	Unknowns        []string              `json:"unknowns"`

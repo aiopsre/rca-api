@@ -27,6 +27,8 @@ const (
 	NoticeChannelID ResourceID = "notice-channel"
 	// NoticeDeliveryID defines notice delivery resource identifier.
 	NoticeDeliveryID ResourceID = "notice-delivery"
+	// KBEntryID defines knowledge base entry resource identifier.
+	KBEntryID ResourceID = "kb-entry"
 )
 
 // String 将资源标识符转换为字符串.

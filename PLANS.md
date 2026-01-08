@@ -968,3 +968,14 @@ python -m orchestrator.main
 * 实现候选证据排序（ranking）且可解释（reasons 非空），在固定 seed/mock 下排序稳定；
 * 新增回归脚本 `scripts/test_a3_L1_evidence_plan_budget_and_ranking.sh` 覆盖预算生效/排序可解释/稳定性/不破坏 A2；
 * `make test` / `make lint-new` 通过。
+
+---
+
+## A4 KB Writeback + Rule Retrieval（Done Definition）
+
+* 新增 MySQL 表 `kb_entries`（migration/model/store/biz）；
+* 仅在 `quality_gate=pass` 且 root_cause_type/summary 非空且可提取 patterns 时写回 KB，并具备幂等去重（unique key + upsert）；
+* 诊断时在 A3 collect_evidence 前做 KB 规则检索，输出 `kb_refs` 到 toolcall.output（可解释且脱敏限长），不得绕过 quality gate；
+* 新增回归脚本 `scripts/test_a4_L1_kb_writeback_and_retrieval.sh` 覆盖写回、检索命中、幂等去重、安全不泄露；
+* 最小单测覆盖 normalize/hash 与 scoring 稳定性；
+* `make test` / `make lint-new` 通过。
