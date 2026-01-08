@@ -20,7 +20,7 @@ type NoticeDeliveryM struct {
 	Status                    string     `gorm:"column:status;type:varchar(16);not null;index:idx_notice_deliveries_status_created,priority:1;index:idx_notice_deliveries_status_retry,priority:1;index:idx_notice_deliveries_status_lock,priority:1" json:"status"`
 	Attempts                  int64      `gorm:"column:attempts;not null;default:0" json:"attempts"`
 	MaxAttempts               int64      `gorm:"column:max_attempts;not null;default:3" json:"max_attempts"`
-	NextRetryAt               time.Time  `gorm:"column:next_retry_at;not null;default:current_timestamp;index:idx_notice_deliveries_status_retry,priority:2" json:"next_retry_at"`
+	NextRetryAt               time.Time  `gorm:"column:next_retry_at;not null;default:CURRENT_TIMESTAMP;index:idx_notice_deliveries_status_retry,priority:2" json:"next_retry_at"`
 	SnapshotEndpointURL       *string    `gorm:"column:snapshot_endpoint_url;type:varchar(2048)" json:"snapshot_endpoint_url"`
 	SnapshotTimeoutMs         *int64     `gorm:"column:snapshot_timeout_ms" json:"snapshot_timeout_ms"`
 	SnapshotHeadersJSON       *string    `gorm:"column:snapshot_headers_json;type:longtext" json:"snapshot_headers_json"`
@@ -30,7 +30,7 @@ type NoticeDeliveryM struct {
 	LockedAt                  *time.Time `gorm:"column:locked_at;index:idx_notice_deliveries_status_lock,priority:2" json:"locked_at"`
 	IdempotencyKey            string     `gorm:"column:idempotency_key;type:varchar(128);not null;index:idx_notice_deliveries_idempotency_key" json:"idempotency_key"`
 	Error                     *string    `gorm:"column:error;type:text" json:"error"`
-	CreatedAt                 time.Time  `gorm:"column:created_at;not null;default:current_timestamp;index:idx_notice_deliveries_channel_created,priority:2;index:idx_notice_deliveries_incident_created,priority:2;index:idx_notice_deliveries_event_created,priority:2;index:idx_notice_deliveries_job_created,priority:2;index:idx_notice_deliveries_status_created,priority:2" json:"created_at"`
+	CreatedAt                 time.Time  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP;index:idx_notice_deliveries_channel_created,priority:2;index:idx_notice_deliveries_incident_created,priority:2;index:idx_notice_deliveries_event_created,priority:2;index:idx_notice_deliveries_job_created,priority:2;index:idx_notice_deliveries_status_created,priority:2" json:"created_at"`
 }
 
 // TableName NoticeDeliveryM's table name.

@@ -39,8 +39,8 @@ type AlertEventM struct {
 	AckedBy        *string    `gorm:"column:acked_by;type:varchar(128)" json:"acked_by"`
 	IsSilenced     bool       `gorm:"column:is_silenced;not null;default:false;index:idx_alert_events_current_silenced,priority:1" json:"is_silenced"`
 	SilenceID      *string    `gorm:"column:silence_id;type:varchar(64);index:idx_alert_events_current_silenced,priority:2" json:"silence_id"`
-	CreatedAt      time.Time  `gorm:"column:created_at;index:idx_alert_events_incident_id_created_at,priority:2;not null;default:current_timestamp" json:"created_at"`
-	UpdatedAt      time.Time  `gorm:"column:updated_at;not null;default:current_timestamp" json:"updated_at"`
+	CreatedAt      time.Time  `gorm:"column:created_at;index:idx_alert_events_incident_id_created_at,priority:2;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt      time.Time  `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 }
 
 // TableName AlertEventM's table name.

@@ -61,7 +61,7 @@ services:
     command:
       - --config=/etc/rca/rca-apiserver.yaml
       - --http.addr=0.0.0.0:5555
-      - --coredb.addr=mysql:3306
+      - --coredb.host=mysql:3306
       - --coredb.username=root
       - --coredb.password=${MYSQL_ROOT_PASSWORD:-Az123456_}
       - --coredb.database=${MYSQL_DATABASE:-rca}
@@ -104,7 +104,7 @@ services:
         condition: service_healthy
     command:
       - --config=/etc/rca/rca-apiserver.yaml
-      - --coredb.addr=mysql:3306
+      - --coredb.host=mysql:3306
       - --coredb.username=root
       - --coredb.password=${MYSQL_ROOT_PASSWORD:-Az123456_}
       - --coredb.database=${MYSQL_DATABASE:-rca}

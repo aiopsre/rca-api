@@ -946,3 +946,15 @@ python -m orchestrator.main
 * `/metrics` 暴露 pubsub/streams/limiter 的关键指标（能定位 ready/fallback/lag/deny）；
 * 新增 `scripts/test_o1_L1_redis_ops_profile_and_metrics.sh` 覆盖“关键指标存在性 + 最小调用后指标出现”，并通过；
 * `make test` / `make lint-new` 通过。
+
+---
+
+## O2 Redis Fault Injection Regression（Done Definition）
+
+* 新增 3 个故障注入回归脚本，覆盖 Redis down 下的降级与可观测信号：
+
+  * O2-1：Pub/Sub down → longpoll fallback 到 DB watermark，且 `ai_job_longpoll_fallback_total` 增长；
+  * O2-2：Streams down → notice-worker 回退 DB claim，不重复投递，且 `notice_worker_claim_source_total{source="db_fallback"}` 增长；
+  * O2-3：Limiter down → 回退本地限流，且 `notice_limiter_fallback_total` 增长、发送速率可控；
+* 三脚本 `bash -n` 通过且实跑 PASS；
+* `make test` / `make lint-new` 通过。

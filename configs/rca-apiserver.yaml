@@ -35,6 +35,7 @@ otel:
     time-format: "2006-01-02 15:04:05"
     output: stdout # 支持 stdout, stderr, or file path
 coredb:
+  type: mysql # 数据库方言（mysql|mariadb）
   addr: 192.168.39.1:3306 # MySQL 的访问地址
   username: root # MySQL 用户名
   password: "Az123456_" # MySQL 密码
