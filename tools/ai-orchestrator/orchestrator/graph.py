@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
+from .evidence_plan import BudgetTracker, build_candidates, rank_candidates
 from .state import GraphState
 from .tools_rca_api import RCAApiClient
 
@@ -25,6 +26,9 @@ class OrchestratorConfig:
     force_conflict: bool = False
     ds_base_url: str = ""
     auto_create_datasource: bool = True
+    a3_max_calls: int = 6
+    a3_max_total_bytes: int = 2 * 1024 * 1024
+    a3_max_total_latency_ms: int = 8000
 
 
 class LeaseGuard:
@@ -94,9 +98,7 @@ def _extract_input_hints(job_obj: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _resolve_force_switches(job_obj: dict[str, Any], cfg: OrchestratorConfig) -> tuple[bool, bool]:
-    hints = _extract_input_hints(job_obj)
-
+def _resolve_force_switches(hints: dict[str, Any], cfg: OrchestratorConfig) -> tuple[bool, bool]:
     force_no_evidence = cfg.force_no_evidence
     force_no_evidence = force_no_evidence or _coerce_bool(hints.get("FORCE_NO_EVIDENCE"))
     force_no_evidence = force_no_evidence or _coerce_bool(hints.get("force_no_evidence"))
@@ -105,6 +107,31 @@ def _resolve_force_switches(job_obj: dict[str, Any], cfg: OrchestratorConfig) ->
     force_conflict = force_conflict or _coerce_bool(hints.get("FORCE_CONFLICT"))
     force_conflict = force_conflict or _coerce_bool(hints.get("force_conflict"))
     return force_no_evidence, force_conflict
+
+
+def _coerce_non_negative_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return max(int(default), 0)
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return max(int(default), 0)
+
+
+def _resolve_a3_budget(hints: dict[str, Any], cfg: OrchestratorConfig) -> tuple[int, int, int]:
+    max_calls = _coerce_non_negative_int(
+        hints.get("A3_MAX_CALLS", hints.get("a3_max_calls")),
+        cfg.a3_max_calls,
+    )
+    max_total_bytes = _coerce_non_negative_int(
+        hints.get("A3_MAX_TOTAL_BYTES", hints.get("a3_max_total_bytes")),
+        cfg.a3_max_total_bytes,
+    )
+    max_total_latency_ms = _coerce_non_negative_int(
+        hints.get("A3_MAX_TOTAL_LATENCY_MS", hints.get("a3_max_total_latency_ms")),
+        cfg.a3_max_total_latency_ms,
+    )
+    return max_calls, max_total_bytes, max_total_latency_ms
 
 
 def _ordered_unique_strings(values: list[str]) -> list[str]:
@@ -158,6 +185,34 @@ def _query_result_is_no_data(result: dict[str, Any]) -> bool:
         if isinstance(query_result, list):
             return len(query_result) == 0
     return False
+
+
+def _query_result_size_bytes(result: dict[str, Any]) -> int:
+    if not isinstance(result, dict):
+        return 0
+    size = result.get("resultSizeBytes")
+    if isinstance(size, (int, float)):
+        return max(int(size), 0)
+    size_alt = result.get("result_size_bytes")
+    if isinstance(size_alt, (int, float)):
+        return max(int(size_alt), 0)
+
+    raw_json = result.get("queryResultJSON")
+    if isinstance(raw_json, str):
+        return len(raw_json.encode("utf-8"))
+
+    compact = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    return len(compact.encode("utf-8"))
+
+
+def _extract_incident_context(incident_obj: dict[str, Any]) -> dict[str, str]:
+    if not isinstance(incident_obj, dict):
+        return {"service": "", "namespace": "", "severity": ""}
+    return {
+        "service": str(incident_obj.get("service") or "").strip(),
+        "namespace": str(incident_obj.get("namespace") or "").strip(),
+        "severity": str(incident_obj.get("severity") or "").strip(),
+    }
 
 
 def _build_quality_gate_evidence_summary(state: GraphState) -> dict[str, Any]:
@@ -240,7 +295,10 @@ def _ensure_quality_gate(state: GraphState) -> dict[str, Any]:
 def load_job_and_start(state: GraphState, client: RCAApiClient, cfg: OrchestratorConfig) -> GraphState:
     job = client.get_job(state.job_id)
     state.incident_id = _extract_incident_id(job)
-    state.force_no_evidence, state.force_conflict = _resolve_force_switches(job, cfg)
+    hints = _extract_input_hints(job)
+    state.input_hints = hints
+    state.force_no_evidence, state.force_conflict = _resolve_force_switches(hints, cfg)
+    state.a3_max_calls, state.a3_max_total_bytes, state.a3_max_total_latency_ms = _resolve_a3_budget(hints, cfg)
     state.started = True
     return state
 
@@ -250,6 +308,7 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
         raise RuntimeError("incident_id is required before collect_evidence")
 
     state.evidence_meta = []
+    state.evidence_plan = {}
     if state.force_conflict:
         state.missing_evidence = [
             "align metrics/logs/traces time window and re-query within the same interval",
@@ -333,31 +392,149 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
     if not cfg.auto_create_datasource:
         raise RuntimeError("AUTO_CREATE_DATASOURCE=0 is not supported in P0 without preloaded datasource ID")
 
+    incident_context: dict[str, str] = {"service": "", "namespace": "", "severity": ""}
+    try:
+        incident_context = _extract_incident_context(client.get_incident(state.incident_id))
+    except Exception:  # noqa: BLE001 - context enrichment is best effort.
+        pass
+
     datasource_id = client.ensure_datasource(cfg.ds_base_url)
     state.datasource_id = datasource_id
     state.missing_evidence = []
 
-    now_s = int(time.time())
-    query_expr = "sum(up)"
-    query_request = {
-        "datasourceID": datasource_id,
-        "queryText": query_expr,
-        "queryJSON": "{}",
+    planning_context: dict[str, Any] = {
+        "incident_id": state.incident_id,
+        "service": incident_context.get("service", ""),
+        "namespace": incident_context.get("namespace", ""),
+        "severity": incident_context.get("severity", ""),
     }
-    query_result = client.query_metrics(
-        datasource_id=datasource_id,
-        promql=query_expr,
-        start_ts=now_s - 600,
-        end_ts=now_s,
-        step_s=30,
+    candidates = rank_candidates(build_candidates(planning_context), planning_context)
+    budget_tracker = BudgetTracker(
+        max_calls=state.a3_max_calls,
+        max_total_bytes=state.a3_max_total_bytes,
+        max_total_latency_ms=state.a3_max_total_latency_ms,
     )
-    evidence_id = client.save_evidence_from_query(
-        incident_id=state.incident_id,
-        kind="metrics",
-        query=query_request,
-        result=query_result,
-    )
-    _append_evidence(state, evidence_id, source="metrics", no_data=_query_result_is_no_data(query_result))
+    state.evidence_plan = {
+        "version": "a3",
+        "budget": budget_tracker.budget_snapshot(),
+        "used": budget_tracker.used_snapshot(),
+        "candidates": [item.to_plan_dict() for item in candidates],
+        "executed": [],
+        "skipped": [],
+    }
+
+    now_s = int(time.time())
+
+    for idx, candidate in enumerate(candidates):
+        if not budget_tracker.can_execute_query():
+            for pending in candidates[idx:]:
+                state.evidence_plan["skipped"].append({"name": pending.name, "reason": "budget_exhausted"})
+            break
+
+        window_seconds = max(_coerce_non_negative_int(candidate.params.get("window_seconds"), 600), 60)
+        start_ts = now_s - window_seconds
+        end_ts = now_s
+
+        if candidate.query_type == "metrics":
+            query_expr = str(candidate.params.get("expr") or "sum(up)")
+            step_seconds = max(_coerce_non_negative_int(candidate.params.get("step_seconds"), 30), 1)
+            started_ms = int(time.time() * 1000)
+            try:
+                query_result = client.query_metrics(
+                    datasource_id=datasource_id,
+                    promql=query_expr,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    step_s=step_seconds,
+                )
+            except Exception as exc:  # noqa: BLE001 - continue candidate iteration on query failures.
+                latency_ms = max(1, int(time.time() * 1000) - started_ms)
+                budget_tracker.record_query(result_bytes=0, latency_ms=latency_ms)
+                state.evidence_plan["used"] = budget_tracker.used_snapshot()
+                state.evidence_plan["skipped"].append(
+                    {"name": candidate.name, "reason": "query_failed", "detail": str(exc)[:200]}
+                )
+                continue
+
+            latency_ms = max(1, int(time.time() * 1000) - started_ms)
+            budget_tracker.record_query(
+                result_bytes=_query_result_size_bytes(query_result),
+                latency_ms=latency_ms,
+            )
+            state.evidence_plan["used"] = budget_tracker.used_snapshot()
+            query_request = {
+                "datasourceID": datasource_id,
+                "queryText": query_expr,
+                "queryJSON": "{}",
+            }
+            evidence_id = client.save_evidence_from_query(
+                incident_id=state.incident_id,
+                kind="metrics",
+                query=query_request,
+                result=query_result,
+            )
+            _append_evidence(state, evidence_id, source="metrics", no_data=_query_result_is_no_data(query_result))
+            state.evidence_plan["executed"].append(candidate.name)
+            continue
+
+        if candidate.query_type == "logs":
+            query_text = str(candidate.params.get("query") or '{job=~".+"} |= "error"')
+            limit = max(_coerce_non_negative_int(candidate.params.get("limit"), 200), 1)
+            started_ms = int(time.time() * 1000)
+            try:
+                query_result = client.query_logs(
+                    datasource_id=datasource_id,
+                    query=query_text,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    limit=limit,
+                )
+            except Exception as exc:  # noqa: BLE001 - continue candidate iteration on query failures.
+                latency_ms = max(1, int(time.time() * 1000) - started_ms)
+                budget_tracker.record_query(result_bytes=0, latency_ms=latency_ms)
+                state.evidence_plan["used"] = budget_tracker.used_snapshot()
+                state.evidence_plan["skipped"].append(
+                    {"name": candidate.name, "reason": "query_failed", "detail": str(exc)[:200]}
+                )
+                continue
+
+            latency_ms = max(1, int(time.time() * 1000) - started_ms)
+            budget_tracker.record_query(
+                result_bytes=_query_result_size_bytes(query_result),
+                latency_ms=latency_ms,
+            )
+            state.evidence_plan["used"] = budget_tracker.used_snapshot()
+            query_request = {
+                "datasourceID": datasource_id,
+                "queryText": query_text,
+                "queryJSON": "{}",
+            }
+            evidence_id = client.save_evidence_from_query(
+                incident_id=state.incident_id,
+                kind="logs",
+                query=query_request,
+                result=query_result,
+            )
+            _append_evidence(state, evidence_id, source="logs", no_data=_query_result_is_no_data(query_result))
+            state.evidence_plan["executed"].append(candidate.name)
+            continue
+
+        state.evidence_plan["skipped"].append({"name": candidate.name, "reason": "unsupported_candidate"})
+
+    if not state.evidence_ids:
+        state.missing_evidence = ["logs", "traces"]
+        fallback_id = client.save_mock_evidence(
+            incident_id=state.incident_id,
+            summary="A3 fallback mock evidence: all query candidates failed.",
+            raw={
+                "source": "orchestrator",
+                "mode": "a3_fallback",
+                "kind": "no_data",
+                "reason": "all query candidates failed",
+            },
+        )
+        _append_evidence(state, fallback_id, source="metrics", no_data=True)
+        state.evidence_plan["skipped"].append({"name": "evidence.saveMockFallback", "reason": "all_queries_failed"})
     return state
 
 
@@ -399,6 +576,8 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
             "status": "ok",
             "quality_gate": quality_gate,
         }
+    if state.evidence_plan:
+        collect_response["evidence_plan"] = state.evidence_plan
 
     started_ms = int(time.time() * 1000)
     client.add_tool_call(
@@ -465,6 +644,8 @@ def write_tool_calls(state: GraphState, client: RCAApiClient) -> GraphState:
             "evidence_ids": state.evidence_ids,
             "quality_gate": quality_gate,
         }
+    if state.evidence_plan:
+        synthesize_response["evidence_plan"] = state.evidence_plan
 
     started_ms = int(time.time() * 1000)
     client.add_tool_call(

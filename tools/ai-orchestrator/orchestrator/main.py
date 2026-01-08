@@ -33,6 +33,9 @@ class Settings:
     debug: bool
     pull_limit: int
     long_poll_wait_seconds: int
+    a3_max_calls: int
+    a3_max_total_bytes: int
+    a3_max_total_latency_ms: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -75,6 +78,9 @@ def load_settings() -> Settings:
         debug=_env_bool("DEBUG", False),
         pull_limit=max(1, min(50, _env_int("PULL_LIMIT", 10))),
         long_poll_wait_seconds=long_poll_wait_seconds,
+        a3_max_calls=max(0, _env_int("A3_MAX_CALLS", 6)),
+        a3_max_total_bytes=max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024)),
+        a3_max_total_latency_ms=max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000)),
     )
 
 
@@ -208,7 +214,10 @@ def main() -> None:
         f"run_query={int(settings.run_query)} "
         f"force_no_evidence={int(settings.force_no_evidence)} "
         f"force_conflict={int(settings.force_conflict)} "
-        f"long_poll_wait_seconds={settings.long_poll_wait_seconds}"
+        f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
+        f"a3_max_calls={settings.a3_max_calls} "
+        f"a3_max_total_bytes={settings.a3_max_total_bytes} "
+        f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
     )
 
     poll_client = _new_client(settings)
@@ -218,6 +227,9 @@ def main() -> None:
         force_conflict=settings.force_conflict,
         ds_base_url=settings.ds_base_url,
         auto_create_datasource=settings.auto_create_datasource,
+        a3_max_calls=settings.a3_max_calls,
+        a3_max_total_bytes=settings.a3_max_total_bytes,
+        a3_max_total_latency_ms=settings.a3_max_total_latency_ms,
     )
 
     sleep_s = settings.poll_interval_ms / 1000.0

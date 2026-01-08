@@ -958,3 +958,13 @@ python -m orchestrator.main
   * O2-3：Limiter down → 回退本地限流，且 `notice_limiter_fallback_total` 增长、发送速率可控；
 * 三脚本 `bash -n` 通过且实跑 PASS；
 * `make test` / `make lint-new` 通过。
+
+---
+
+## A3 Evidence Planning/Ranking/Budget（Done Definition）
+
+* Orchestrator 引入 `evidence_plan`（version=a3），包含 budget/used/candidates(score+reasons)/executed/skipped，并写入 toolcall.output；
+* 实现可配置预算（max_calls/max_total_bytes/max_total_latency_ms）并强制执行，超预算必须记录 skipped=budget_exhausted；
+* 实现候选证据排序（ranking）且可解释（reasons 非空），在固定 seed/mock 下排序稳定；
+* 新增回归脚本 `scripts/test_a3_L1_evidence_plan_budget_and_ranking.sh` 覆盖预算生效/排序可解释/稳定性/不破坏 A2；
+* `make test` / `make lint-new` 通过。
