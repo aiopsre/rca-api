@@ -1001,3 +1001,19 @@ python -m orchestrator.main
 * 提供最小示例 MCP client（curl/jq）可跑（list tools / call tool / request_id 追踪）；
 * 新增回归脚本 `scripts/test_c6_L1_mcp_contract_and_ops_pack.sh` 覆盖契约字段、错误枚举、隔离语义差异、审计追踪、敏感字段不泄露；
 * `make test` / `make lint-new` 通过。
+
+---
+
+## T1 Trial Ops Pack（Runbook + Demo + Monitoring Checklist）（Done Definition）
+
+* 新增试运行运维文档 `docs/devel/zh-CN/25_T1_Trial_OpsPack_Runbook_Demo_and_MonitoringChecklist.md`：
+
+  * request_id/incident_id/job_id/tool_call_id/delivery_id 的一键追踪 runbook；
+  * 最小监控指标清单与阈值建议；
+* 新增一键端到端演示脚本 `scripts/demo_T1_end_to_end.sh`：
+
+  * 从创建/触发到 ai:run、job 终态、incident 回填、toolcall 审计、notice（可选）、verification re-check 全链路；
+  * PASS/FAIL 固定输出，FAIL body<=2KB 且打印关键 IDs；
+* `bash -n scripts/demo_T1_end_to_end.sh` 通过；
+* `make test` / `make lint-new` 通过；
+* `scripts/demo_T1_end_to_end.sh` 实跑 PASS。
