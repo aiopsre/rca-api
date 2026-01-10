@@ -1017,3 +1017,17 @@ python -m orchestrator.main
 * `bash -n scripts/demo_T1_end_to_end.sh` 通过；
 * `make test` / `make lint-new` 通过；
 * `scripts/demo_T1_end_to_end.sh` 实跑 PASS。
+
+---
+
+## T2 Trial Data Hygiene（TTL + Explain Pack + Metrics Snapshot）（Done Definition）
+
+* 新增 4 个运维脚本：
+
+  * `scripts/ttl_preview.sh`（TTL 清理预估统计）
+  * `scripts/ttl_apply.sh`（TTL batch 删除，可重试）
+  * `scripts/explain_pack.sh`（关键查询 EXPLAIN/索引命中核验与建议）
+  * `scripts/metrics_snapshot.sh`（关键指标健康摘要）
+* 新增文档 `docs/devel/zh-CN/26_T2_Trial_DataHygiene_TTL_SlowQuery_and_MetricsSnapshot.md`；
+* 四个脚本 `bash -n` 通过，且在可连 MySQL/metrics 环境实跑至少 preview/explain/snapshot；
+* `make test` / `make lint-new` 通过（不引入业务语义变化）。
