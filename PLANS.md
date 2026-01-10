@@ -991,3 +991,13 @@ python -m orchestrator.main
   * 触发 ai:run → 获取 verification_plan → 执行 steps[0]（走 /v1/mcp/tools/call）→ 断言结构完整与敏感词不泄露；
 * 最小单测覆盖 expected allow-list 与 plan size/字段约束；
 * `make test` / `make lint-new` 通过。
+
+---
+
+## C6 MCP Contract & Ops Pack（Done Definition）
+
+* 固化 MCP HTTP 契约：/v1/mcp/tools 与 /v1/mcp/tools/call 的 version/tools/metadata(policy/required_scopes) 与错误码枚举稳定；
+* 文档补齐 scope 映射表与 isolation.mode 语义表，并与实现对齐；
+* 提供最小示例 MCP client（curl/jq）可跑（list tools / call tool / request_id 追踪）；
+* 新增回归脚本 `scripts/test_c6_L1_mcp_contract_and_ops_pack.sh` 覆盖契约字段、错误枚举、隔离语义差异、审计追踪、敏感字段不泄露；
+* `make test` / `make lint-new` 通过。
