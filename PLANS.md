@@ -979,3 +979,15 @@ python -m orchestrator.main
 * 新增回归脚本 `scripts/test_a4_L1_kb_writeback_and_retrieval.sh` 覆盖写回、检索命中、幂等去重、安全不泄露；
 * 最小单测覆盖 normalize/hash 与 scoring 稳定性；
 * `make test` / `make lint-new` 通过。
+
+---
+
+## A5 Verification Plan（Re-check）+ Regression（Done Definition）
+
+* 在 incident.diagnosis_json 与 toolcall.output 中输出 `verification_plan`（version=a5），steps 1~3 条，expected 类型走 allow-list；
+* plan 字段限长、总大小<=4KB，且不包含敏感字段；
+* 新增回归脚本 `scripts/test_a5_L1_verification_plan_recheck.sh`：
+
+  * 触发 ai:run → 获取 verification_plan → 执行 steps[0]（走 /v1/mcp/tools/call）→ 断言结构完整与敏感词不泄露；
+* 最小单测覆盖 expected allow-list 与 plan size/字段约束；
+* `make test` / `make lint-new` 通过。

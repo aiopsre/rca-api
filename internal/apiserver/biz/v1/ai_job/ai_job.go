@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	kbbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/kb"
+	verificationbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/verification"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
@@ -512,6 +514,23 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 				}
 			}
 
+			var jobToolCalls []*model.AIToolCallM
+			if _, jobToolCalls, err = b.store.AIToolCall().List(txCtx, where.T(txCtx).P(0, 200).F("job_id", jobID)); err != nil {
+				slog.Warn("verification plan skipped: list tool calls failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", err)
+			} else {
+				verificationPlan := b.buildVerificationPlan(txCtx, jobToolCalls)
+				if len(verificationPlan) > 0 {
+					if patchedDiagnosisJSON, patchErr := injectVerificationPlanIntoDiagnosis(diagnosisJSON, verificationPlan); patchErr != nil {
+						slog.Warn("verification plan skipped: inject diagnosis failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", patchErr)
+					} else {
+						diagnosisJSON = patchedDiagnosisJSON
+						if mirrorErr := b.mirrorVerificationPlanToToolCall(txCtx, jobToolCalls, verificationPlan); mirrorErr != nil {
+							slog.Warn("verification plan mirror failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", mirrorErr)
+						}
+					}
+				}
+			}
+
 			updates["output_json"] = diagnosisJSON
 			if rq.OutputSummary == nil {
 				if summary := strings.TrimSpace(diagnosis.Summary); summary != "" {
@@ -609,6 +628,237 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	}
 
 	return &v1.FinalizeAIJobResponse{}, nil
+}
+
+func (b *aiJobBiz) buildVerificationPlan(ctx context.Context, toolCalls []*model.AIToolCallM) map[string]any {
+	executed := extractVerificationExecuted(toolCalls)
+	kbPatterns := extractVerificationKBPatterns(toolCalls)
+
+	prometheusID, logsID, defaultID := b.resolveVerificationDatasourceIDs(ctx, toolCalls)
+	if prometheusID == "" && logsID == "" && defaultID == "" {
+		return nil
+	}
+
+	plan := verificationbiz.BuildPlan(verificationbiz.BuildInput{
+		Executed:     executed,
+		KBPatterns:   kbPatterns,
+		Now:          time.Now().UTC(),
+		PrometheusID: prometheusID,
+		LogsID:       logsID,
+		DefaultID:    defaultID,
+	})
+	if plan == nil {
+		return nil
+	}
+
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		return nil
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+//nolint:gocognit,gocyclo,wsl_v5 // Datasource resolution keeps explicit precedence for deterministic fallback.
+func (b *aiJobBiz) resolveVerificationDatasourceIDs(ctx context.Context, toolCalls []*model.AIToolCallM) (string, string, string) {
+	// Prefer datasource_id captured in tool-call requests when available.
+	for _, toolCall := range toolCalls {
+		payload := parseJSONObject(toolCall.RequestJSON)
+		if payload == nil {
+			continue
+		}
+		datasourceID := strings.TrimSpace(anyToString(payload["datasource_id"]))
+		if datasourceID == "" {
+			datasourceID = strings.TrimSpace(anyToString(payload["datasourceID"]))
+		}
+		if datasourceID != "" {
+			ds, err := b.store.Datasource().Get(ctx, where.T(ctx).F("datasource_id", datasourceID))
+			if err == nil && ds != nil && ds.IsEnabled {
+				dsType := strings.ToLower(strings.TrimSpace(ds.Type))
+				switch dsType {
+				case "prometheus":
+					return ds.DatasourceID, "", ds.DatasourceID
+				case "loki", "elasticsearch":
+					return "", ds.DatasourceID, ds.DatasourceID
+				default:
+					return "", "", ds.DatasourceID
+				}
+			}
+		}
+	}
+
+	// Fallback to latest enabled datasources.
+	_, list, err := b.store.Datasource().List(ctx, where.T(ctx).P(0, 20).F("is_enabled", true))
+	if err != nil {
+		return "", "", ""
+	}
+
+	prometheusID := ""
+	logsID := ""
+	defaultID := ""
+	for _, item := range list {
+		if item == nil || !item.IsEnabled {
+			continue
+		}
+		if defaultID == "" {
+			defaultID = item.DatasourceID
+		}
+		dsType := strings.ToLower(strings.TrimSpace(item.Type))
+		switch dsType {
+		case "prometheus":
+			if prometheusID == "" {
+				prometheusID = item.DatasourceID
+			}
+		case "loki", "elasticsearch":
+			if logsID == "" {
+				logsID = item.DatasourceID
+			}
+		}
+	}
+	return prometheusID, logsID, defaultID
+}
+
+func (b *aiJobBiz) mirrorVerificationPlanToToolCall(ctx context.Context, toolCalls []*model.AIToolCallM, plan map[string]any) error {
+	if len(plan) == 0 {
+		return nil
+	}
+	target := selectDiagnosisRelatedToolCall(toolCalls)
+	if target == nil {
+		return nil
+	}
+
+	payload := map[string]any{}
+	if target.ResponseJSON != nil {
+		payload = parseJSONObject(*target.ResponseJSON)
+	}
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+	payload["verification_plan"] = plan
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	value := string(raw)
+	target.ResponseJSON = &value
+	target.ResponseSizeBytes = int64(len(raw))
+	return b.store.AIToolCall().Update(ctx, target)
+}
+
+func selectDiagnosisRelatedToolCall(toolCalls []*model.AIToolCallM) *model.AIToolCallM {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	candidates := make([]*model.AIToolCallM, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		toolName := strings.ToLower(strings.TrimSpace(toolCall.ToolName))
+		nodeName := strings.ToLower(strings.TrimSpace(toolCall.NodeName))
+		if strings.Contains(toolName, "diagnosis") || strings.Contains(nodeName, "synthesize") {
+			candidates = append(candidates, toolCall)
+		}
+	}
+	if len(candidates) == 0 {
+		candidates = toolCalls
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Seq != candidates[j].Seq {
+			return candidates[i].Seq < candidates[j].Seq
+		}
+		return candidates[i].ID < candidates[j].ID
+	})
+	return candidates[len(candidates)-1]
+}
+
+//nolint:gocognit // Extraction keeps explicit guards for heterogeneous historical payloads.
+func extractVerificationExecuted(toolCalls []*model.AIToolCallM) []string {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	for _, toolCall := range toolCalls {
+		payload := parseToolCallResponse(toolCall)
+		if payload == nil {
+			continue
+		}
+		evidencePlan, _ := payload["evidence_plan"].(map[string]any)
+		if evidencePlan == nil {
+			continue
+		}
+		executedAny, _ := evidencePlan["executed"].([]any)
+		if len(executedAny) == 0 {
+			continue
+		}
+		out := make([]string, 0, len(executedAny))
+		for _, item := range executedAny {
+			value := strings.TrimSpace(anyToString(item))
+			if value == "" {
+				continue
+			}
+			out = append(out, value)
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	return nil
+}
+
+//nolint:gocognit // Pattern extraction keeps explicit nested parsing for stable ordering/dedup.
+func extractVerificationKBPatterns(toolCalls []*model.AIToolCallM) []verificationbiz.KBPattern {
+	out := make([]verificationbiz.KBPattern, 0, 8)
+	seen := map[string]struct{}{}
+
+	for _, toolCall := range toolCalls {
+		payload := parseToolCallResponse(toolCall)
+		if payload == nil {
+			continue
+		}
+		refs, _ := payload["kb_refs"].([]any)
+		for _, ref := range refs {
+			refObj, _ := ref.(map[string]any)
+			if refObj == nil {
+				continue
+			}
+			patterns, _ := refObj["patterns"].([]any)
+			for _, pattern := range patterns {
+				patternObj, _ := pattern.(map[string]any)
+				if patternObj == nil {
+					continue
+				}
+				pType := strings.TrimSpace(anyToString(patternObj["type"]))
+				pValue := strings.TrimSpace(anyToString(patternObj["value"]))
+				if pType == "" || pValue == "" {
+					continue
+				}
+				key := strings.ToLower(pType) + ":" + strings.ToLower(pValue)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				out = append(out, verificationbiz.KBPattern{
+					Type:  pType,
+					Value: pValue,
+				})
+			}
+		}
+	}
+	return out
+}
+
+func injectVerificationPlanIntoDiagnosis(diagnosisJSON string, plan map[string]any) (string, error) {
+	payload := parseJSONObject(diagnosisJSON)
+	if payload == nil {
+		return "", errno.ErrAIJobInvalidDiagnosis
+	}
+	payload["verification_plan"] = plan
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 //nolint:gocognit,gocyclo // Best-effort path keeps explicit early-return branches for safety.
@@ -1110,6 +1360,38 @@ func normalizeToolCallResponse(raw string, responseRef string) (*string, int64) 
 
 	v := string(normalized)
 	return &v, size
+}
+
+func parseToolCallResponse(toolCall *model.AIToolCallM) map[string]any {
+	if toolCall == nil || toolCall.ResponseJSON == nil {
+		return nil
+	}
+	return parseJSONObject(*toolCall.ResponseJSON)
+}
+
+func parseJSONObject(raw string) map[string]any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func anyToString(in any) string {
+	switch value := in.(type) {
+	case string:
+		return value
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		return strings.Trim(string(raw), `"`)
+	}
 }
 
 func isTerminalStatus(status string) bool {

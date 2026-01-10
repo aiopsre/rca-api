@@ -2002,8 +2002,10 @@ func (h *Handler) recordMCPToolCall(
 }
 
 func lookupMCPTool(name string) (mcpToolDefinition, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	normalized = strings.TrimPrefix(normalized, mcpToolCallToolPrefix)
 	for _, tool := range mcpReadonlyTools {
-		if tool.Name == name {
+		if tool.Name == normalized {
 			return tool, true
 		}
 	}
