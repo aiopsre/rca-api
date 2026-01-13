@@ -1041,3 +1041,18 @@ python -m orchestrator.main
 * 复用 merge/silence 做降噪闭环，并补齐 ingest_* 指标（ingested/allowed/progressed/silenced/merged/new_incident/dropped）；
 * 新增回归脚本 `scripts/test_t3_L1_alert_ingest_adapter_and_rollout.sh` 覆盖映射、fingerprint 稳定、observe/enforce、silence、指标计数；
 * `make test` / `make lint-new` 通过，脚本 `bash -n` + 实跑 PASS。
+
+---
+
+## T4 Pilot Week Run Standard（Done Definition）
+
+* 新增文档 `docs/devel/zh-CN/28_T4_PilotWeek_RunStandard_DailyOps_and_FeedbackLoop.md`：
+
+  * 试点节奏：observe→enforce→扩容
+  * 每日作业清单与反馈闭环记录规范
+* 新增脚本 `scripts/pilot_T4_daily_check.sh`：
+
+  * 编排运行 metrics_snapshot + ttl_preview（可选 explain_pack）
+  * 输出 PASS/FAIL 固定格式，FAIL 包含 step/command/exit_code/output<=2KB
+* `bash -n` 通过，试点环境实跑 PASS；
+* `make test`/`make lint-new` 通过（不改业务语义）。
