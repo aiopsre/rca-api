@@ -1056,3 +1056,15 @@ python -m orchestrator.main
   * 输出 PASS/FAIL 固定格式，FAIL 包含 step/command/exit_code/output<=2KB
 * `bash -n` 通过，试点环境实跑 PASS；
 * `make test`/`make lint-new` 通过（不改业务语义）。
+
+---
+
+## T5 SLO & Cost Guardrails Snapshot（Done Definition）
+
+* 新增文档 `docs/devel/zh-CN/29_T5_SLO_and_Cost_Guardrails_Snapshot_and_TopN.md` 固化 SLO 口径、阈值建议、异常->动作映射；
+* 新增脚本 `scripts/pilot_slo_cost_snapshot.sh`：
+
+  * 双采样 delta 计算，输出 READY/DEGRADED/ALERT；
+  * 输出 MCP/Notice/Redis/AIJob 关键指标与 TopN 异常；
+  * 可选 DB TopN（tool_calls/notice_deliveries/alert_events），无 DB 自动 SKIP；
+* `bash -n` 通过，实跑可用；`make test` / `make lint-new` 通过。
