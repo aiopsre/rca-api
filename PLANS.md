@@ -1031,3 +1031,13 @@ python -m orchestrator.main
 * 新增文档 `docs/devel/zh-CN/26_T2_Trial_DataHygiene_TTL_SlowQuery_and_MetricsSnapshot.md`；
 * 四个脚本 `bash -n` 通过，且在可连 MySQL/metrics 环境实跑至少 preview/explain/snapshot；
 * `make test` / `make lint-new` 通过（不引入业务语义变化）。
+
+---
+
+## T3 Alert Adapter + Rollout + Noise Control（Done Definition）
+
+* 新增 1 个告警接入 adapter 入口（不破坏既有 ingest），实现外部 payload → 内部 AlertEvent 映射与 fingerprint 稳定规则；
+* 新增灰度策略（allowlist + mode observe/enforce），并固定“未命中时行为”；
+* 复用 merge/silence 做降噪闭环，并补齐 ingest_* 指标（ingested/allowed/progressed/silenced/merged/new_incident/dropped）；
+* 新增回归脚本 `scripts/test_t3_L1_alert_ingest_adapter_and_rollout.sh` 覆盖映射、fingerprint 稳定、observe/enforce、silence、指标计数；
+* `make test` / `make lint-new` 通过，脚本 `bash -n` + 实跑 PASS。

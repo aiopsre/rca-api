@@ -76,6 +76,11 @@ alerting:
     redis_backend:
       enabled: false
       key_prefix: "rca:alert"
+  rollout:
+    enabled: false
+    allowed_namespaces: []
+    allowed_services: []
+    mode: observe
 
 notice_worker:
   poll_interval: 1s

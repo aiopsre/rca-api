@@ -66,8 +66,11 @@ var volatileLabelKeys = map[string]struct{}{
 }
 
 // AlertEventBiz defines alert-event use-cases.
+//
+//nolint:interfacebloat // Domain biz surface intentionally aggregates alert-event operations.
 type AlertEventBiz interface {
 	Ingest(ctx context.Context, rq *v1.IngestAlertEventRequest) (*v1.IngestAlertEventResponse, error)
+	IngestByAdapter(ctx context.Context, adapter string, rq *v1.IngestAlertEventRequest) (*v1.IngestAlertEventResponse, error)
 	ListCurrent(ctx context.Context, rq *v1.ListCurrentAlertEventsRequest) (*v1.ListCurrentAlertEventsResponse, error)
 	ListHistory(ctx context.Context, rq *v1.ListHistoryAlertEventsRequest) (*v1.ListHistoryAlertEventsResponse, error)
 	Ack(ctx context.Context, rq *v1.AckAlertEventRequest) (*v1.AckAlertEventResponse, error)
@@ -80,6 +83,7 @@ type AlertEventExpansion interface{}
 type alertEventBiz struct {
 	store          store.IStore
 	ingestPipeline *alertingingest.Pipeline
+	rolloutConfig  alertingingest.RolloutConfig
 }
 
 var _ AlertEventBiz = (*alertEventBiz)(nil)
@@ -105,6 +109,7 @@ func New(store store.IStore) *alertEventBiz {
 	return &alertEventBiz{
 		store:          store,
 		ingestPipeline: pipeline,
+		rolloutConfig:  runtimeCfg.Rollout,
 	}
 }
 
@@ -129,10 +134,38 @@ type ingestInput struct {
 	rawEventJSON    *string
 }
 
+type ingestOptions struct {
+	adapter      string
+	applyRollout bool
+}
+
+type rolloutDecision struct {
+	allowed        bool
+	shouldProgress bool
+	dropReason     string
+}
+
 func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventRequest) (*v1.IngestAlertEventResponse, error) {
+	return b.ingest(ctx, rq, ingestOptions{})
+}
+
+func (b *alertEventBiz) IngestByAdapter(ctx context.Context, adapter string, rq *v1.IngestAlertEventRequest) (*v1.IngestAlertEventResponse, error) {
+	return b.ingest(ctx, rq, ingestOptions{
+		adapter:      strings.ToLower(strings.TrimSpace(adapter)),
+		applyRollout: true,
+	})
+}
+
+func (b *alertEventBiz) ingest(ctx context.Context, rq *v1.IngestAlertEventRequest, options ingestOptions) (*v1.IngestAlertEventResponse, error) {
 	startedAt := time.Now()
 	outcome := "ok"
 	mergeResult := ""
+	isAdapterIngest := strings.TrimSpace(options.adapter) != ""
+	adapter := strings.ToLower(strings.TrimSpace(options.adapter))
+
+	if isAdapterIngest && metrics.M != nil {
+		metrics.M.RecordAlertIngestTotal(adapter)
+	}
 
 	defer func() {
 		if metrics.M != nil {
@@ -144,6 +177,13 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 	if err != nil {
 		outcome = "invalid_argument"
 		return nil, err
+	}
+	rollout := b.evaluateRolloutDecision(in, options)
+	if isAdapterIngest && rollout.allowed && metrics.M != nil {
+		metrics.M.RecordAlertIngestAllowed(adapter)
+	}
+	if isAdapterIngest && rollout.dropReason != "" && metrics.M != nil {
+		metrics.M.RecordAlertIngestDropped(adapter, rollout.dropReason)
 	}
 
 	var (
@@ -203,6 +243,10 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 			suppressIncident = policyDecision.SuppressIncident
 			suppressTimeline = policyDecision.SuppressTimeline
 		} else if silenced {
+			suppressIncident = true
+			suppressTimeline = true
+		}
+		if !rollout.shouldProgress {
 			suppressIncident = true
 			suppressTimeline = true
 		}
@@ -287,6 +331,18 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 	if reused {
 		outcome = "reused"
 	}
+	if isAdapterIngest && !suppressIncident && metrics.M != nil {
+		metrics.M.RecordAlertIngestProgressed(adapter)
+	}
+	if isAdapterIngest && silenced && metrics.M != nil {
+		metrics.M.RecordAlertIngestSilenced(adapter)
+	}
+	if isAdapterIngest && mergeResult != "" && strings.Contains(mergeResult, "current_") && metrics.M != nil {
+		metrics.M.RecordAlertIngestMerged(adapter, mergeResult)
+	}
+	if isAdapterIngest && incidentCreated && metrics.M != nil {
+		metrics.M.RecordAlertIngestNewIncident(adapter)
+	}
 
 	if incidentCreated && !silenced && incidentID != "" {
 		incidentModel, getErr := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", incidentID))
@@ -318,6 +374,9 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		"idempotency_key", in.idempotencyKey,
 		"silenced", silenced,
 		"silence_id", silenceID,
+		"adapter", adapter,
+		"rollout_should_progress", rollout.shouldProgress,
+		"rollout_drop_reason", rollout.dropReason,
 		"policy_decision", policyDecision.Decision,
 		"policy_backend", policyDecision.Backend,
 		"policy_deduped", policyDecision.Deduped,
@@ -339,6 +398,36 @@ func (b *alertEventBiz) Ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 		resp.SilenceID = &silenceID
 	}
 	return resp, nil
+}
+
+func (b *alertEventBiz) evaluateRolloutDecision(in *ingestInput, options ingestOptions) rolloutDecision {
+	decision := rolloutDecision{
+		allowed:        true,
+		shouldProgress: true,
+		dropReason:     "",
+	}
+	if !options.applyRollout {
+		return decision
+	}
+	cfg := b.rolloutConfig
+	cfg.ApplyDefaults()
+	if !cfg.Enabled {
+		return decision
+	}
+
+	decision.allowed = rolloutAllowMatched(cfg, in.namespace, in.service)
+	switch cfg.Mode {
+	case alertingingest.RolloutModeObserve:
+		decision.shouldProgress = false
+		decision.dropReason = "observe_mode"
+
+	case alertingingest.RolloutModeEnforce:
+		if !decision.allowed {
+			decision.shouldProgress = false
+			decision.dropReason = "not_allowed"
+		}
+	}
+	return decision
 }
 
 func (b *alertEventBiz) ListCurrent(ctx context.Context, rq *v1.ListCurrentAlertEventsRequest) (*v1.ListCurrentAlertEventsResponse, error) {
@@ -1094,4 +1183,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func rolloutAllowMatched(cfg alertingingest.RolloutConfig, namespace string, service string) bool {
+	nsAllowed := allowListMatched(cfg.AllowedNamespaces, namespace)
+	svcAllowed := allowListMatched(cfg.AllowedServices, service)
+	return nsAllowed && svcAllowed
+}
+
+func allowListMatched(allowList []string, value string) bool {
+	if len(allowList) == 0 {
+		return true
+	}
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	if normalized == "" {
+		return false
+	}
+	for _, item := range allowList {
+		if normalized == strings.ToLower(strings.TrimSpace(item)) {
+			return true
+		}
+	}
+	return false
 }

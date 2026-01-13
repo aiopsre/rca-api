@@ -58,7 +58,8 @@ type ServerOptions struct {
 
 // AlertingOptions contains alert ingest policy controls.
 type AlertingOptions struct {
-	IngestPolicy alertingingest.PolicyConfig `json:"ingest_policy" mapstructure:"ingest_policy"`
+	IngestPolicy alertingingest.PolicyConfig  `json:"ingest_policy" mapstructure:"ingest_policy"`
+	Rollout      alertingingest.RolloutConfig `json:"rollout" mapstructure:"rollout"`
 }
 
 // NoticeWorkerRedisOptions configures redis-local knobs for notice-worker limiter.
@@ -90,6 +91,7 @@ func NewServerOptions() *ServerOptions {
 		RedisOptions: redisx.NewRedisOptions(),
 		Alerting: AlertingOptions{
 			IngestPolicy: alertingingest.DefaultPolicyConfig(),
+			Rollout:      alertingingest.DefaultRolloutConfig(),
 		},
 		NoticeWorker: NoticeWorkerOptions{
 			PollInterval:       1 * time.Second,
@@ -146,6 +148,10 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.Alerting.IngestPolicy.Burst.Threshold, "alerting.ingest_policy.burst.threshold", o.Alerting.IngestPolicy.Burst.Threshold, "Burst threshold in one window for alert ingest. 0 disables.")
 	fs.BoolVar(&o.Alerting.IngestPolicy.RedisBackend.Enabled, "alerting.ingest_policy.redis_backend.enabled", o.Alerting.IngestPolicy.RedisBackend.Enabled, "Enable redis backend for alert ingest dedup/burst short-state.")
 	fs.StringVar(&o.Alerting.IngestPolicy.RedisBackend.KeyPrefix, "alerting.ingest_policy.redis_backend.key_prefix", o.Alerting.IngestPolicy.RedisBackend.KeyPrefix, "Redis key prefix for alert ingest policy state.")
+	fs.BoolVar(&o.Alerting.Rollout.Enabled, "alerting.rollout.enabled", o.Alerting.Rollout.Enabled, "Enable adapter ingest rollout gating.")
+	fs.StringSliceVar(&o.Alerting.Rollout.AllowedNamespaces, "alerting.rollout.allowed_namespaces", o.Alerting.Rollout.AllowedNamespaces, "Allowed namespaces for adapter ingest progression.")
+	fs.StringSliceVar(&o.Alerting.Rollout.AllowedServices, "alerting.rollout.allowed_services", o.Alerting.Rollout.AllowedServices, "Allowed services for adapter ingest progression.")
+	fs.StringVar(&o.Alerting.Rollout.Mode, "alerting.rollout.mode", o.Alerting.Rollout.Mode, "Adapter ingest rollout mode: observe|enforce.")
 	fs.DurationVar(&o.NoticeWorker.PollInterval, "notice-worker-poll-interval", o.NoticeWorker.PollInterval, "Polling interval for notice worker.")
 	fs.IntVar(&o.NoticeWorker.BatchSize, "notice-worker-batch-size", o.NoticeWorker.BatchSize, "Batch size per notice worker claim.")
 	fs.DurationVar(&o.NoticeWorker.LockTimeout, "notice-worker-lock-timeout", o.NoticeWorker.LockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
@@ -188,6 +194,7 @@ func (o *ServerOptions) Validate() error {
 		errs = append(errs, err)
 	}
 	o.Alerting.IngestPolicy.ApplyDefaults()
+	o.Alerting.Rollout.ApplyDefaults()
 	errs = append(errs, o.validateNoticeWorkerOptions()...)
 	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
 		errs = append(errs, errInvalidNoticeBaseURL)
@@ -240,6 +247,7 @@ func (o *ServerOptions) Config() (*apiserver.Config, error) {
 		MySQLOptions:         o.MySQLOptions,
 		RedisOptions:         redisOpts,
 		AlertingIngestPolicy: o.Alerting.IngestPolicy,
+		AlertingRollout:      o.Alerting.Rollout,
 		NoticeBaseURL:        strings.TrimSpace(o.NoticeBaseURL),
 		MCPPolicy:            o.MCPPolicy,
 	}, nil

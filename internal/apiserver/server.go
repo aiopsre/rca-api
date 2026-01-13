@@ -30,6 +30,7 @@ type Config struct {
 	MySQLOptions         *genericoptions.MySQLOptions
 	RedisOptions         redisx.RedisOptions
 	AlertingIngestPolicy alertingingest.PolicyConfig
+	AlertingRollout      alertingingest.RolloutConfig
 	NoticeBaseURL        string
 	MCPPolicy            policy.MCPPolicyConfig
 }
@@ -51,8 +52,9 @@ type ServerConfig struct {
 // New creates and returns a new Server instance.
 func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	alertingingest.SetRuntimeConfig(alertingingest.RuntimeConfig{
-		Policy: cfg.AlertingIngestPolicy,
-		Redis:  cfg.RedisOptions,
+		Policy:  cfg.AlertingIngestPolicy,
+		Rollout: cfg.AlertingRollout,
+		Redis:   cfg.RedisOptions,
 	})
 	noticepkg.SetConfiguredNoticeBaseURL(cfg.NoticeBaseURL)
 	noticepkg.SetNoticeDeliverySignalPublisher(nil)

@@ -22,6 +22,13 @@ type Metrics struct {
 	EvidenceQueryLatency                metric.Float64Histogram
 	AlertEventIngestCounter             metric.Int64Counter
 	AlertEventIngestLatency             metric.Float64Histogram
+	AlertIngestTotal                    *prometheus.CounterVec
+	AlertIngestAllowedTotal             *prometheus.CounterVec
+	AlertIngestProgressedTotal          *prometheus.CounterVec
+	AlertIngestDroppedTotal             *prometheus.CounterVec
+	AlertIngestSilencedTotal            *prometheus.CounterVec
+	AlertIngestMergedTotal              *prometheus.CounterVec
+	AlertIngestNewIncidentTotal         *prometheus.CounterVec
 	AlertIngestPolicyDecisionTotal      *prometheus.CounterVec
 	AlertIngestPolicyBackendErrorTotal  *prometheus.CounterVec
 	AIJobQueuePullCounter               metric.Int64Counter
@@ -100,6 +107,34 @@ func Init(scope string) error {
 			Name: "alert_ingest_policy_decision_total",
 			Help: "Total alert ingest policy decisions by decision/backend.",
 		}, []string{"decision", "backend"})
+		alertIngestTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_total",
+			Help: "Total adapter alert ingest requests by adapter.",
+		}, []string{"adapter"})
+		alertIngestAllowedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_allowed_total",
+			Help: "Total adapter alert ingest requests allowed by rollout policy.",
+		}, []string{"adapter"})
+		alertIngestProgressedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_progressed_total",
+			Help: "Total adapter alert ingest requests progressed to incident pipeline.",
+		}, []string{"adapter"})
+		alertIngestDroppedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_dropped_total",
+			Help: "Total adapter alert ingest requests dropped from incident progression by reason.",
+		}, []string{"adapter", "reason"})
+		alertIngestSilencedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_silenced_total",
+			Help: "Total adapter alert ingest requests silenced by silence policy.",
+		}, []string{"adapter"})
+		alertIngestMergedTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_merged_total",
+			Help: "Total adapter alert ingest requests merged into current alert view by merge_result.",
+		}, []string{"adapter", "merge_result"})
+		alertIngestNewIncidentTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alert_ingest_new_incident_total",
+			Help: "Total adapter alert ingest requests that created new incidents.",
+		}, []string{"adapter"})
 
 		alertIngestPolicyBackendErrorTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
 			Name: "alert_ingest_policy_backend_error_total",
@@ -243,6 +278,13 @@ func Init(scope string) error {
 			EvidenceQueryLatency:                evidenceQueryLatency,
 			AlertEventIngestCounter:             alertEventIngestCounter,
 			AlertEventIngestLatency:             alertEventIngestLatency,
+			AlertIngestTotal:                    alertIngestTotal,
+			AlertIngestAllowedTotal:             alertIngestAllowedTotal,
+			AlertIngestProgressedTotal:          alertIngestProgressedTotal,
+			AlertIngestDroppedTotal:             alertIngestDroppedTotal,
+			AlertIngestSilencedTotal:            alertIngestSilencedTotal,
+			AlertIngestMergedTotal:              alertIngestMergedTotal,
+			AlertIngestNewIncidentTotal:         alertIngestNewIncidentTotal,
 			AlertIngestPolicyDecisionTotal:      alertIngestPolicyDecisionTotal,
 			AlertIngestPolicyBackendErrorTotal:  alertIngestPolicyBackendErrorTotal,
 			AIJobQueuePullCounter:               aiJobQueuePullCounter,
@@ -293,6 +335,13 @@ func Init(scope string) error {
 		alertIngestPolicyDecisionTotal.WithLabelValues("silenced", "mysql").Add(0)
 		alertIngestPolicyDecisionTotal.WithLabelValues("deduped", "mysql").Add(0)
 		alertIngestPolicyDecisionTotal.WithLabelValues("deduped", "redis").Add(0)
+		alertIngestTotal.WithLabelValues("unknown").Add(0)
+		alertIngestAllowedTotal.WithLabelValues("unknown").Add(0)
+		alertIngestProgressedTotal.WithLabelValues("unknown").Add(0)
+		alertIngestDroppedTotal.WithLabelValues("unknown", "unknown").Add(0)
+		alertIngestSilencedTotal.WithLabelValues("unknown").Add(0)
+		alertIngestMergedTotal.WithLabelValues("unknown", "unknown").Add(0)
+		alertIngestNewIncidentTotal.WithLabelValues("unknown").Add(0)
 		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "dedup").Add(0)
 		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "burst").Add(0)
 		noticeStreamReadTotal.WithLabelValues("ok").Add(0)
@@ -362,6 +411,68 @@ func (m *Metrics) RecordAlertEventIngest(ctx context.Context, mergeResult string
 	}
 	m.AlertEventIngestCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 	m.AlertEventIngestLatency.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(attrs...))
+}
+
+// RecordAlertIngestTotal records total adapter ingest count.
+func (m *Metrics) RecordAlertIngestTotal(adapter string) {
+	if m == nil || m.AlertIngestTotal == nil {
+		return
+	}
+	m.AlertIngestTotal.WithLabelValues(normalizeAlertAdapterLabel(adapter)).Inc()
+}
+
+// RecordAlertIngestAllowed records rollout allow-list matched count.
+func (m *Metrics) RecordAlertIngestAllowed(adapter string) {
+	if m == nil || m.AlertIngestAllowedTotal == nil {
+		return
+	}
+	m.AlertIngestAllowedTotal.WithLabelValues(normalizeAlertAdapterLabel(adapter)).Inc()
+}
+
+// RecordAlertIngestProgressed records incident progression count.
+func (m *Metrics) RecordAlertIngestProgressed(adapter string) {
+	if m == nil || m.AlertIngestProgressedTotal == nil {
+		return
+	}
+	m.AlertIngestProgressedTotal.WithLabelValues(normalizeAlertAdapterLabel(adapter)).Inc()
+}
+
+// RecordAlertIngestDropped records rollout drop count by reason.
+func (m *Metrics) RecordAlertIngestDropped(adapter string, reason string) {
+	if m == nil || m.AlertIngestDroppedTotal == nil {
+		return
+	}
+	m.AlertIngestDroppedTotal.WithLabelValues(
+		normalizeAlertAdapterLabel(adapter),
+		normalizeAlertReasonLabel(reason),
+	).Inc()
+}
+
+// RecordAlertIngestSilenced records silenced ingest count.
+func (m *Metrics) RecordAlertIngestSilenced(adapter string) {
+	if m == nil || m.AlertIngestSilencedTotal == nil {
+		return
+	}
+	m.AlertIngestSilencedTotal.WithLabelValues(normalizeAlertAdapterLabel(adapter)).Inc()
+}
+
+// RecordAlertIngestMerged records merged ingest count by merge result.
+func (m *Metrics) RecordAlertIngestMerged(adapter string, mergeResult string) {
+	if m == nil || m.AlertIngestMergedTotal == nil {
+		return
+	}
+	m.AlertIngestMergedTotal.WithLabelValues(
+		normalizeAlertAdapterLabel(adapter),
+		normalizeAlertReasonLabel(mergeResult),
+	).Inc()
+}
+
+// RecordAlertIngestNewIncident records new-incident count.
+func (m *Metrics) RecordAlertIngestNewIncident(adapter string) {
+	if m == nil || m.AlertIngestNewIncidentTotal == nil {
+		return
+	}
+	m.AlertIngestNewIncidentTotal.WithLabelValues(normalizeAlertAdapterLabel(adapter)).Inc()
 }
 
 // RecordAlertIngestPolicyDecision records one alert ingest policy decision.
@@ -690,4 +801,18 @@ func normalizeMCPCodeLabel(code string) string {
 		return normalized
 	}
 	return "OK"
+}
+
+func normalizeAlertAdapterLabel(adapter string) string {
+	if normalized := strings.ToLower(strings.TrimSpace(adapter)); normalized != "" {
+		return normalized
+	}
+	return "unknown"
+}
+
+func normalizeAlertReasonLabel(reason string) string {
+	if normalized := strings.ToLower(strings.TrimSpace(reason)); normalized != "" {
+		return normalized
+	}
+	return "unknown"
 }

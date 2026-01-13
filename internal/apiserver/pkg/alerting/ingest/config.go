@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -10,6 +11,10 @@ import (
 const (
 	// DefaultRedisKeyPrefix is the default key prefix for alert ingest policy short-state.
 	DefaultRedisKeyPrefix = "rca:alert"
+	// RolloutModeObserve writes alert events but does not progress incidents.
+	RolloutModeObserve = "observe"
+	// RolloutModeEnforce progresses incidents only when allow-list is matched.
+	RolloutModeEnforce = "enforce"
 )
 
 // BurstConfig controls optional burst suppression thresholds.
@@ -31,10 +36,19 @@ type PolicyConfig struct {
 	RedisBackend       RedisBackendConfig `json:"redis_backend" mapstructure:"redis_backend"`
 }
 
+// RolloutConfig controls adapter ingest rollout in trial environments.
+type RolloutConfig struct {
+	Enabled           bool     `json:"enabled" mapstructure:"enabled"`
+	AllowedNamespaces []string `json:"allowed_namespaces" mapstructure:"allowed_namespaces"`
+	AllowedServices   []string `json:"allowed_services" mapstructure:"allowed_services"`
+	Mode              string   `json:"mode" mapstructure:"mode"`
+}
+
 // RuntimeConfig carries process-level runtime options used by policy pipeline builders.
 type RuntimeConfig struct {
-	Policy PolicyConfig        `json:"policy" mapstructure:"policy"`
-	Redis  redisx.RedisOptions `json:"redis" mapstructure:"redis"`
+	Policy  PolicyConfig        `json:"policy" mapstructure:"policy"`
+	Rollout RolloutConfig       `json:"rollout" mapstructure:"rollout"`
+	Redis   redisx.RedisOptions `json:"redis" mapstructure:"redis"`
 }
 
 var runtimeConfig atomic.Value
@@ -54,11 +68,20 @@ func DefaultPolicyConfig() PolicyConfig {
 	}
 }
 
+// DefaultRolloutConfig returns default rollout profile.
+func DefaultRolloutConfig() RolloutConfig {
+	return RolloutConfig{
+		Enabled: false,
+		Mode:    RolloutModeObserve,
+	}
+}
+
 // DefaultRuntimeConfig returns process-level defaults.
 func DefaultRuntimeConfig() RuntimeConfig {
 	return RuntimeConfig{
-		Policy: DefaultPolicyConfig(),
-		Redis:  redisx.NewRedisOptions(),
+		Policy:  DefaultPolicyConfig(),
+		Rollout: DefaultRolloutConfig(),
+		Redis:   redisx.NewRedisOptions(),
 	}
 }
 
@@ -82,9 +105,25 @@ func (c *PolicyConfig) ApplyDefaults() {
 	}
 }
 
+// ApplyDefaults normalizes rollout fields and applies defaults for empty values.
+func (c *RolloutConfig) ApplyDefaults() {
+	if c == nil {
+		return
+	}
+	c.Mode = strings.ToLower(strings.TrimSpace(c.Mode))
+	switch c.Mode {
+	case RolloutModeObserve, RolloutModeEnforce:
+	default:
+		c.Mode = RolloutModeObserve
+	}
+	c.AllowedNamespaces = normalizeAllowList(c.AllowedNamespaces)
+	c.AllowedServices = normalizeAllowList(c.AllowedServices)
+}
+
 // SetRuntimeConfig sets process-level ingest policy runtime options.
 func SetRuntimeConfig(cfg RuntimeConfig) {
 	cfg.Policy.ApplyDefaults()
+	cfg.Rollout.ApplyDefaults()
 	cfg.Redis.ApplyDefaults()
 	runtimeConfig.Store(cfg)
 }
@@ -93,11 +132,30 @@ func SetRuntimeConfig(cfg RuntimeConfig) {
 func CurrentRuntimeConfig() RuntimeConfig {
 	if cfg, ok := runtimeConfig.Load().(RuntimeConfig); ok {
 		cfg.Policy.ApplyDefaults()
+		cfg.Rollout.ApplyDefaults()
 		cfg.Redis.ApplyDefaults()
 		return cfg
 	}
 	cfg := DefaultRuntimeConfig()
 	cfg.Policy.ApplyDefaults()
+	cfg.Rollout.ApplyDefaults()
 	cfg.Redis.ApplyDefaults()
 	return cfg
+}
+
+func normalizeAllowList(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, item := range values {
+		v := strings.ToLower(strings.TrimSpace(item))
+		if v == "" {
+			continue
+		}
+		set[v] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for v := range set {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
