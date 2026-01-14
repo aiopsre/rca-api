@@ -132,6 +132,147 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.Equal(t, "db", *updatedIncident.RootCauseType)
 }
 
+func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+
+	incident := createTestIncident(t, s)
+	createTestDatasource(t, s, "prometheus")
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+		JobID:        runResp.JobID,
+		Seq:          1,
+		NodeName:     "synthesize",
+		ToolName:     "diagnosis.generate",
+		RequestJSON:  `{"job":"test"}`,
+		ResponseJSON: ptrAIString(`{"result":"diagnosis_json_ready"}`),
+		Status:       "ok",
+		LatencyMs:    8,
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"Insufficient evidence to determine root cause.",
+			"root_cause":{
+				"type":"missing_evidence",
+				"category":"unknown",
+				"summary":"Insufficient evidence to determine root cause.",
+				"statement":"",
+				"confidence":0.15,
+				"evidence_ids":["evidence-placeholder-1"]
+			},
+			"missing_evidence":["logs","traces"],
+			"patterns":[{"type":"signal","value":"latency_spike","weight":0.7}],
+			"timeline":[{"t":"2026-02-07T00:00:00Z","event":"evidence_gap_detected","ref":"evidence-placeholder-1"}],
+			"hypotheses":[
+				{
+					"statement":"Evidence gap prevents confident root-cause attribution.",
+					"confidence":0.15,
+					"supporting_evidence_ids":["evidence-placeholder-1"],
+					"missing_evidence":["logs","traces"]
+				}
+			],
+			"recommendations":[{"type":"readonly_check","action":"collect more evidence","risk":"low"}],
+			"unknowns":["root cause remains unknown"],
+			"next_steps":["re-run after logs/traces are available"]
+		}`),
+		EvidenceIDs: []string{"evidence-placeholder-1"},
+	})
+	require.NoError(t, err)
+
+	updatedIncident, err := s.Incident().Get(context.Background(), where.T(context.Background()).F("incident_id", incident.IncidentID))
+	require.NoError(t, err)
+	require.NotNil(t, updatedIncident.DiagnosisJSON)
+
+	var diagnosis map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.DiagnosisJSON), &diagnosis))
+
+	verificationPlan, ok := diagnosis["verification_plan"].(map[string]any)
+	require.True(t, ok)
+	verificationSteps, ok := verificationPlan["steps"].([]any)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(verificationSteps), 1)
+
+	playbookObj, ok := diagnosis["playbook"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "t6", strings.TrimSpace(anyToString(playbookObj["version"])))
+	itemsAny, ok := playbookObj["items"].([]any)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(itemsAny), 1)
+
+	firstItem, ok := itemsAny[0].(map[string]any)
+	require.True(t, ok)
+	require.NotEmpty(t, strings.TrimSpace(anyToString(firstItem["risk"])))
+	stepsAny, ok := firstItem["steps"].([]any)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(stepsAny), 1)
+	for _, rawStep := range stepsAny {
+		stepObj, stepOK := rawStep.(map[string]any)
+		require.True(t, stepOK)
+		require.LessOrEqual(t, len([]rune(strings.TrimSpace(anyToString(stepObj["text"])))), 256)
+	}
+
+	verificationAny, ok := firstItem["verification"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, true, verificationAny["use_verification_plan"])
+	recommendedAny, ok := verificationAny["recommended_steps"].([]any)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(recommendedAny), 1)
+	recommendedIdx := parseAnyInt(t, recommendedAny[0])
+	require.GreaterOrEqual(t, recommendedIdx, 0)
+	require.Less(t, recommendedIdx, len(verificationSteps))
+	require.LessOrEqual(t, len([]rune(strings.TrimSpace(anyToString(verificationAny["expected_outcome"])))), 256)
+
+	playbookRaw, err := json.Marshal(playbookObj)
+	require.NoError(t, err)
+	lowered := strings.ToLower(string(playbookRaw))
+	require.NotContains(t, lowered, "secret")
+	require.NotContains(t, lowered, "token")
+	require.NotContains(t, lowered, "authorization")
+	require.NotContains(t, lowered, "headers")
+
+	toolCallsResp, err := biz.ListToolCalls(context.Background(), &v1.ListAIToolCallsRequest{
+		JobID:  runResp.JobID,
+		Offset: 0,
+		Limit:  20,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(toolCallsResp.ToolCalls), 1)
+
+	mirroredFound := false
+	for _, item := range toolCallsResp.ToolCalls {
+		responseJSON := strings.TrimSpace(item.GetResponseJSON())
+		if responseJSON == "" {
+			continue
+		}
+		var responseObj map[string]any
+		if unmarshalErr := json.Unmarshal([]byte(responseJSON), &responseObj); unmarshalErr != nil {
+			continue
+		}
+		if pb, has := responseObj["playbook"].(map[string]any); has {
+			require.Equal(t, "t6", strings.TrimSpace(anyToString(pb["version"])))
+			mirroredFound = true
+			break
+		}
+	}
+	require.True(t, mirroredFound)
+}
+
 func TestAIJobFinalize_RejectsInvalidDiagnosis(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -938,7 +1079,7 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}, &model.EvidenceM{}))
+	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}, &model.EvidenceM{}, &model.DatasourceM{}))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }
@@ -985,6 +1126,45 @@ func createTestEvidence(t *testing.T, s store.IStore, incidentID string, evidenc
 	require.NoError(t, s.Evidence().Create(context.Background(), evidence))
 	require.NotEmpty(t, evidence.EvidenceID)
 	return evidence.EvidenceID
+}
+
+func createTestDatasource(t *testing.T, s store.IStore, dsType string) string {
+	t.Helper()
+	datasourceID := "datasource-" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "-")
+	ds := &model.DatasourceM{
+		DatasourceID: datasourceID,
+		Type:         dsType,
+		Name:         "unit-test-" + dsType,
+		BaseURL:      "http://127.0.0.1:19095",
+		AuthType:     "none",
+		TimeoutMs:    3000,
+		IsEnabled:    true,
+	}
+	require.NoError(t, s.Datasource().Create(context.Background(), ds))
+	return ds.DatasourceID
+}
+
+func parseAnyInt(t *testing.T, value any) int {
+	t.Helper()
+	switch v := value.(type) {
+	case int:
+		return v
+	case int8:
+		return int(v)
+	case int16:
+		return int(v)
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float32:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		require.Failf(t, "parseAnyInt", "unsupported integer value type: %T", value)
+		return 0
+	}
 }
 
 func ptrAIString(v string) *string { return &v }

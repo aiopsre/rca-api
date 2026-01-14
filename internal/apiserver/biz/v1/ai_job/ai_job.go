@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	kbbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/kb"
+	playbookbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/playbook"
 	verificationbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/verification"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
@@ -529,6 +530,23 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 						}
 					}
 				}
+
+				playbookPayload, generatedPlaybook, playbookErr := playbookbiz.Build(playbookbiz.BuildInput{
+					DiagnosisJSON: diagnosisJSON,
+					RootCauseType: playbookRootCauseTypeFromDiagnosis(diagnosis),
+				})
+				if playbookErr != nil {
+					slog.Warn("playbook generation skipped", "job_id", jobID, "incident_id", incident.IncidentID, "error", playbookErr)
+				} else if generatedPlaybook {
+					if patchedDiagnosisJSON, patchErr := injectPlaybookIntoDiagnosis(diagnosisJSON, playbookPayload); patchErr != nil {
+						slog.Warn("playbook injection skipped: inject diagnosis failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", patchErr)
+					} else {
+						diagnosisJSON = patchedDiagnosisJSON
+						if mirrorErr := b.mirrorPlaybookToToolCall(txCtx, jobToolCalls, playbookPayload); mirrorErr != nil {
+							slog.Warn("playbook mirror failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", mirrorErr)
+						}
+					}
+				}
 			}
 
 			updates["output_json"] = diagnosisJSON
@@ -859,6 +877,60 @@ func injectVerificationPlanIntoDiagnosis(diagnosisJSON string, plan map[string]a
 		return "", err
 	}
 	return string(raw), nil
+}
+
+func injectPlaybookIntoDiagnosis(diagnosisJSON string, playbook *playbookbiz.Playbook) (string, error) {
+	if playbook == nil {
+		return diagnosisJSON, nil
+	}
+	payload := parseJSONObject(diagnosisJSON)
+	if payload == nil {
+		return "", errno.ErrAIJobInvalidDiagnosis
+	}
+	payload["playbook"] = playbook
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func playbookRootCauseTypeFromDiagnosis(diagnosis *diagnosisPayload) string {
+	if diagnosis == nil || diagnosis.RootCause == nil {
+		return ""
+	}
+	if value := strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Type)); value != "" {
+		return value
+	}
+	return strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Category))
+}
+
+func (b *aiJobBiz) mirrorPlaybookToToolCall(ctx context.Context, toolCalls []*model.AIToolCallM, playbook *playbookbiz.Playbook) error {
+	if playbook == nil {
+		return nil
+	}
+	target := selectDiagnosisRelatedToolCall(toolCalls)
+	if target == nil {
+		return nil
+	}
+
+	payload := map[string]any{}
+	if target.ResponseJSON != nil {
+		payload = parseJSONObject(*target.ResponseJSON)
+	}
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+	payload["playbook"] = playbook
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	value := string(raw)
+	target.ResponseJSON = &value
+	target.ResponseSizeBytes = int64(len(raw))
+	return b.store.AIToolCall().Update(ctx, target)
 }
 
 //nolint:gocognit,gocyclo // Best-effort path keeps explicit early-return branches for safety.
