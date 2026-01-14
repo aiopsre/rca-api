@@ -12,6 +12,7 @@ const (
 	scopeHeader = "X-Scopes"
 
 	ScopeIncidentRead = "incident.read"
+	ScopeIncidentWrite = "incident.write"
 
 	ScopeAlertRead      = "alert.read"
 	ScopeAlertEventRead = "alert_event.read"

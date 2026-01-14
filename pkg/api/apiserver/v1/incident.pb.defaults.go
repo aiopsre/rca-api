@@ -48,3 +48,33 @@ func (x *ListIncidentRequest) Default() {
 
 func (x *ListIncidentResponse) Default() {
 }
+
+func (x *OperatorActionLog) Default() {
+}
+
+func (x *CreateIncidentActionRequest) Default() {
+}
+
+func (x *CreateIncidentActionResponse) Default() {
+}
+
+func (x *ListIncidentActionsRequest) Default() {
+}
+
+func (x *ListIncidentActionsResponse) Default() {
+}
+
+func (x *VerificationRun) Default() {
+}
+
+func (x *CreateIncidentVerificationRunRequest) Default() {
+}
+
+func (x *CreateIncidentVerificationRunResponse) Default() {
+}
+
+func (x *ListIncidentVerificationRunsRequest) Default() {
+}
+
+func (x *ListIncidentVerificationRunsResponse) Default() {
+}

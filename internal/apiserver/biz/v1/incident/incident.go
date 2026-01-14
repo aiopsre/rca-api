@@ -4,12 +4,16 @@ package incident
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jinzhu/copier"
 	"github.com/onexstack/onexstack/pkg/errorsx"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
@@ -17,8 +21,28 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	apiv1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
+)
+
+const (
+	defaultOperatorListLimit = int64(20)
+	maxOperatorListLimit     = int64(200)
+	defaultOperatorActor     = "system"
+
+	maxActionActorLen       = 128
+	maxActionTypeLen        = 64
+	maxActionSummaryLen     = 256
+	maxActionDetailsJSONLen = 8 * 1024
+
+	maxVerificationSourceLen     = 64
+	maxVerificationToolLen       = 128
+	maxVerificationObservedLen   = 512
+	maxVerificationParamsJSONLen = 2 * 1024
+
+	operatorWarningRedacted  = "REDACTION_APPLIED"
+	operatorWarningTruncated = "PAYLOAD_TRUNCATED"
 )
 
 // IncidentBiz 定义 incident 相关业务能力（先最小：Create）
@@ -32,6 +56,10 @@ type IncidentBiz interface {
 	Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error)
 	Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error)
 	List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error)
+	CreateAction(ctx context.Context, rq *apiv1.CreateIncidentActionRequest) (*apiv1.CreateIncidentActionResponse, error)
+	ListActions(ctx context.Context, rq *apiv1.ListIncidentActionsRequest) (*apiv1.ListIncidentActionsResponse, error)
+	CreateVerificationRun(ctx context.Context, rq *apiv1.CreateIncidentVerificationRunRequest) (*apiv1.CreateIncidentVerificationRunResponse, error)
+	ListVerificationRuns(ctx context.Context, rq *apiv1.ListIncidentVerificationRunsRequest) (*apiv1.ListIncidentVerificationRunsResponse, error)
 	Search(ctx context.Context, rq *SearchIncidentsRequest) (*SearchIncidentsResponse, error)
 	ListTimeline(ctx context.Context, rq *ListIncidentTimelineRequest) (*ListIncidentTimelineResponse, error)
 
@@ -189,6 +217,184 @@ func (b *incidentBiz) List(ctx context.Context, rq *apiv1.ListIncidentRequest) (
 	}
 
 	return &apiv1.ListIncidentResponse{TotalCount: count, Incidents: incidents}, nil
+}
+
+func (b *incidentBiz) CreateAction(
+	ctx context.Context,
+	rq *apiv1.CreateIncidentActionRequest,
+) (*apiv1.CreateIncidentActionResponse, error) {
+
+	incidentID := strings.TrimSpace(rq.GetIncidentID())
+	if err := b.ensureIncidentExists(ctx, incidentID); err != nil {
+		return nil, err
+	}
+
+	actor := resolveOperatorActor(ctx, rq.Actor)
+	actionType, _, _ := sanitizeOperatorTextWithLimit(rq.GetActionType(), maxActionTypeLen)
+	summary, summaryRedacted, summaryTruncated := sanitizeOperatorTextWithLimit(rq.GetSummary(), maxActionSummaryLen)
+	detailsJSON, warnings := sanitizeAndLimitJSONLike(rq.GetDetailsJSON(), maxActionDetailsJSONLen)
+	if summaryRedacted {
+		warnings = appendOperatorWarning(warnings, operatorWarningRedacted)
+	}
+	if summaryTruncated {
+		warnings = appendOperatorWarning(warnings, operatorWarningTruncated)
+	}
+
+	m := &model.IncidentActionLogM{
+		IncidentID: incidentID,
+		Actor:      actor,
+		ActionType: strings.ToLower(strings.TrimSpace(actionType)),
+		Summary:    summary,
+	}
+	if detailsJSON != "" {
+		m.DetailsJSON = &detailsJSON
+	}
+
+	if err := b.store.IncidentActionLog().Create(ctx, m); err != nil {
+		return nil, errno.ErrIncidentActionCreateFailed
+	}
+
+	payload := map[string]any{
+		"action_id":   m.ActionID,
+		"actor":       m.Actor,
+		"action_type": m.ActionType,
+		"summary":     m.Summary,
+	}
+	if m.DetailsJSON != nil {
+		payload["details_json"] = *m.DetailsJSON
+	}
+	if len(warnings) > 0 {
+		payload["warnings"] = warnings
+	}
+	audit.AppendIncidentTimelineIfExists(ctx, b.store.DB(ctx), incidentID, "operator_action", m.ActionID, payload)
+
+	return &apiv1.CreateIncidentActionResponse{
+		Action:   conversion.IncidentActionLogMToOperatorActionLogV1(m),
+		Warnings: warnings,
+	}, nil
+}
+
+//nolint:dupl // Keep explicit list flow aligned with verification-runs endpoint behavior.
+func (b *incidentBiz) ListActions(
+	ctx context.Context,
+	rq *apiv1.ListIncidentActionsRequest,
+) (*apiv1.ListIncidentActionsResponse, error) {
+
+	limit := normalizeOperatorListLimit(rq.GetLimit())
+	page := normalizeOperatorPage(rq.GetPage())
+	offset := (page - 1) * limit
+
+	whr := where.T(ctx).
+		O(int(offset)).
+		L(int(limit)).
+		F("incident_id", strings.TrimSpace(rq.GetIncidentID()))
+
+	total, list, err := b.store.IncidentActionLog().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrIncidentActionListFailed
+	}
+
+	actions := make([]*apiv1.OperatorActionLog, 0, len(list))
+	for _, item := range list {
+		actions = append(actions, conversion.IncidentActionLogMToOperatorActionLogV1(item))
+	}
+	return &apiv1.ListIncidentActionsResponse{
+		TotalCount: total,
+		Actions:    actions,
+	}, nil
+}
+
+func (b *incidentBiz) CreateVerificationRun(
+	ctx context.Context,
+	rq *apiv1.CreateIncidentVerificationRunRequest,
+) (*apiv1.CreateIncidentVerificationRunResponse, error) {
+
+	incidentID := strings.TrimSpace(rq.GetIncidentID())
+	if err := b.ensureIncidentExists(ctx, incidentID); err != nil {
+		return nil, err
+	}
+
+	actor := resolveOperatorActor(ctx, rq.Actor)
+	source, _, _ := sanitizeOperatorTextWithLimit(rq.GetSource(), maxVerificationSourceLen)
+	tool, _, _ := sanitizeOperatorTextWithLimit(rq.GetTool(), maxVerificationToolLen)
+	observed, observedRedacted, observedTruncated := sanitizeOperatorTextWithLimit(rq.GetObserved(), maxVerificationObservedLen)
+	paramsJSON, warnings := sanitizeAndLimitJSONLike(rq.GetParamsJSON(), maxVerificationParamsJSONLen)
+	if observedRedacted {
+		warnings = appendOperatorWarning(warnings, operatorWarningRedacted)
+	}
+	if observedTruncated {
+		warnings = appendOperatorWarning(warnings, operatorWarningTruncated)
+	}
+
+	m := &model.IncidentVerificationRunM{
+		IncidentID:       incidentID,
+		Actor:            actor,
+		Source:           strings.ToLower(strings.TrimSpace(source)),
+		StepIndex:        rq.GetStepIndex(),
+		Tool:             strings.TrimSpace(tool),
+		Observed:         observed,
+		MeetsExpectation: rq.GetMeetsExpectation(),
+	}
+	if paramsJSON != "" {
+		m.ParamsJSON = &paramsJSON
+	}
+
+	if err := b.store.IncidentVerificationRun().Create(ctx, m); err != nil {
+		return nil, errno.ErrIncidentVerificationRunCreateFailed
+	}
+
+	payload := map[string]any{
+		"run_id":            m.RunID,
+		"actor":             m.Actor,
+		"source":            m.Source,
+		"step_index":        m.StepIndex,
+		"tool":              m.Tool,
+		"observed":          m.Observed,
+		"meets_expectation": m.MeetsExpectation,
+	}
+	if m.ParamsJSON != nil {
+		payload["params_json"] = *m.ParamsJSON
+	}
+	if len(warnings) > 0 {
+		payload["warnings"] = warnings
+	}
+	audit.AppendIncidentTimelineIfExists(ctx, b.store.DB(ctx), incidentID, "verification_run", m.RunID, payload)
+
+	return &apiv1.CreateIncidentVerificationRunResponse{
+		Run:      conversion.IncidentVerificationRunMToVerificationRunV1(m),
+		Warnings: warnings,
+	}, nil
+}
+
+//nolint:dupl // Keep explicit list flow aligned with actions endpoint behavior.
+func (b *incidentBiz) ListVerificationRuns(
+	ctx context.Context,
+	rq *apiv1.ListIncidentVerificationRunsRequest,
+) (*apiv1.ListIncidentVerificationRunsResponse, error) {
+
+	limit := normalizeOperatorListLimit(rq.GetLimit())
+	page := normalizeOperatorPage(rq.GetPage())
+	offset := (page - 1) * limit
+
+	whr := where.T(ctx).
+		O(int(offset)).
+		L(int(limit)).
+		F("incident_id", strings.TrimSpace(rq.GetIncidentID()))
+
+	total, list, err := b.store.IncidentVerificationRun().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrIncidentVerificationRunListFailed
+	}
+
+	runs := make([]*apiv1.VerificationRun, 0, len(list))
+	for _, item := range list {
+		runs = append(runs, conversion.IncidentVerificationRunMToVerificationRunV1(item))
+	}
+
+	return &apiv1.ListIncidentVerificationRunsResponse{
+		TotalCount: total,
+		Runs:       runs,
+	}, nil
 }
 
 //nolint:gocognit,gocyclo // Incident search filters are explicit for readability.
@@ -406,6 +612,256 @@ func trimOptionalString(v *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*v)
+}
+
+func (b *incidentBiz) ensureIncidentExists(ctx context.Context, incidentID string) error {
+	_, err := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", strings.TrimSpace(incidentID)))
+	if err == nil {
+		return nil
+	}
+	if errorsx.Is(err, gorm.ErrRecordNotFound) {
+		return errno.ErrIncidentNotFound
+	}
+	return errno.ErrIncidentGetFailed
+}
+
+func resolveOperatorActor(ctx context.Context, actorOverride *string) string {
+	if actor := strings.TrimSpace(trimOptionalString(actorOverride)); actor != "" {
+		sanitized, _, _ := sanitizeOperatorTextWithLimit(actor, maxActionActorLen)
+		if sanitized != "" {
+			return sanitized
+		}
+	}
+	if actor := strings.TrimSpace(contextx.Username(ctx)); actor != "" {
+		sanitized, _, _ := sanitizeOperatorTextWithLimit(actor, maxActionActorLen)
+		if sanitized != "" {
+			return sanitized
+		}
+	}
+	if actor := strings.TrimSpace(contextx.UserID(ctx)); actor != "" {
+		sanitized, _, _ := sanitizeOperatorTextWithLimit(actor, maxActionActorLen)
+		if sanitized != "" {
+			return sanitized
+		}
+	}
+	return defaultOperatorActor
+}
+
+func normalizeOperatorListLimit(limit int64) int64 {
+	if limit <= 0 {
+		return defaultOperatorListLimit
+	}
+	if limit > maxOperatorListLimit {
+		return maxOperatorListLimit
+	}
+	return limit
+}
+
+func normalizeOperatorPage(page int64) int64 {
+	if page <= 0 {
+		return 1
+	}
+	return page
+}
+
+func sanitizeAndLimitJSONLike(raw string, maxBytes int) (string, []string) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+
+	redacted := false
+	sanitized := sanitizeOperatorString(trimmed, &redacted)
+
+	var payload any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+		normalized := sanitizeOperatorAny(payload, &redacted)
+		encoded, marshalErr := json.Marshal(normalized)
+		if marshalErr == nil {
+			sanitized = string(encoded)
+		}
+	}
+
+	warnings := []string{}
+	if redacted {
+		warnings = appendOperatorWarning(warnings, operatorWarningRedacted)
+	}
+	limited, truncated := enforceJSONSizeLimit(sanitized, maxBytes)
+	if truncated {
+		warnings = appendOperatorWarning(warnings, operatorWarningTruncated)
+	}
+	return limited, warnings
+}
+
+//nolint:wsl_v5 // Recursive sanitizer intentionally handles mixed JSON-like types.
+func sanitizeOperatorAny(value any, redacted *bool) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return sanitizeOperatorMapAny(typed, redacted)
+	case []any:
+		return sanitizeOperatorSliceAny(typed, redacted)
+	case map[string]string:
+		return sanitizeOperatorMapString(typed, redacted)
+	case string:
+		return sanitizeOperatorString(typed, redacted)
+	default:
+		return typed
+	}
+}
+
+func sanitizeOperatorMapAny(input map[string]any, redacted *bool) map[string]any {
+	out := make(map[string]any, len(input))
+	for key, item := range input {
+		if isOperatorSensitiveKey(key) {
+			markOperatorRedacted(redacted)
+			continue
+		}
+		out[key] = sanitizeOperatorAny(item, redacted)
+	}
+	return out
+}
+
+func sanitizeOperatorSliceAny(input []any, redacted *bool) []any {
+	out := make([]any, 0, len(input))
+	for _, item := range input {
+		out = append(out, sanitizeOperatorAny(item, redacted))
+	}
+	return out
+}
+
+func sanitizeOperatorMapString(input map[string]string, redacted *bool) map[string]any {
+	out := make(map[string]any, len(input))
+	for key, item := range input {
+		if isOperatorSensitiveKey(key) {
+			markOperatorRedacted(redacted)
+			continue
+		}
+		out[key] = sanitizeOperatorAny(item, redacted)
+	}
+	return out
+}
+
+func markOperatorRedacted(redacted *bool) {
+	if redacted != nil {
+		*redacted = true
+	}
+}
+
+func sanitizeOperatorTextWithLimit(raw string, maxBytes int) (string, bool, bool) {
+	redacted := false
+	out := sanitizeOperatorString(raw, &redacted)
+	limited, truncated := truncateUTF8ByBytes(out, maxBytes)
+	return limited, redacted, truncated
+}
+
+func sanitizeOperatorString(raw string, redacted *bool) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	if containsOperatorSensitiveToken(lower) {
+		if redacted != nil {
+			*redacted = true
+		}
+		return "[redacted]"
+	}
+	if idx := strings.Index(lower, "bearer "); idx >= 0 {
+		if redacted != nil {
+			*redacted = true
+		}
+		return trimmed[:idx] + "Bearer [redacted]"
+	}
+	return trimmed
+}
+
+func containsOperatorSensitiveToken(lower string) bool {
+	return strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "authorization") ||
+		strings.Contains(lower, "token") ||
+		strings.Contains(lower, "headers") ||
+		strings.Contains(lower, "header")
+}
+
+func isOperatorSensitiveKey(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if lower == "" {
+		return false
+	}
+	return strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "authorization") ||
+		strings.Contains(lower, "token") ||
+		strings.Contains(lower, "headers") ||
+		strings.Contains(lower, "header")
+}
+
+func appendOperatorWarning(warnings []string, warning string) []string {
+	if strings.TrimSpace(warning) == "" {
+		return warnings
+	}
+	if slices.Contains(warnings, warning) {
+		return warnings
+	}
+	return append(warnings, warning)
+}
+
+func enforceJSONSizeLimit(raw string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		return "", strings.TrimSpace(raw) != ""
+	}
+	if len(raw) <= maxBytes {
+		return raw, false
+	}
+
+	previewLimit := intMax(64, maxBytes/2)
+	preview, _ := truncateUTF8ByBytes(raw, previewLimit)
+	payload := map[string]any{
+		"truncated": true,
+		"reason":    "max_bytes_exceeded",
+		"preview":   preview,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		clipped, _ := truncateUTF8ByBytes(raw, maxBytes)
+		return clipped, true
+	}
+	if len(encoded) <= maxBytes {
+		return string(encoded), true
+	}
+	clipped, _ := truncateUTF8ByBytes(string(encoded), maxBytes)
+	return clipped, true
+}
+
+func truncateUTF8ByBytes(value string, maxBytes int) (string, bool) {
+	if maxBytes <= 0 {
+		return "", strings.TrimSpace(value) != ""
+	}
+	if len(value) <= maxBytes {
+		return value, false
+	}
+
+	var builder strings.Builder
+	builder.Grow(maxBytes)
+	size := 0
+	for _, r := range value {
+		width := utf8.RuneLen(r)
+		if width <= 0 {
+			continue
+		}
+		if size+width > maxBytes {
+			break
+		}
+		builder.WriteRune(r)
+		size += width
+	}
+	return builder.String(), true
+}
+
+func intMax(left int, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func firstExistingColumn(colSet map[string]struct{}, names ...string) string {

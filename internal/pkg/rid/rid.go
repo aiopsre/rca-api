@@ -29,6 +29,10 @@ const (
 	NoticeDeliveryID ResourceID = "notice-delivery"
 	// KBEntryID defines knowledge base entry resource identifier.
 	KBEntryID ResourceID = "kb-entry"
+	// OperatorActionID defines operator action-log resource identifier.
+	OperatorActionID ResourceID = "operator-action"
+	// VerificationRunID defines verification-run resource identifier.
+	VerificationRunID ResourceID = "verification-run"
 )
 
 // String 将资源标识符转换为字符串.
