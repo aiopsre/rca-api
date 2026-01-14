@@ -1068,3 +1068,17 @@ python -m orchestrator.main
   * 输出 MCP/Notice/Redis/AIJob 关键指标与 TopN 异常；
   * 可选 DB TopN（tool_calls/notice_deliveries/alert_events），无 DB 自动 SKIP；
 * `bash -n` 通过，实跑可用；`make test` / `make lint-new` 通过。
+
+---
+
+## T6 Playbooks & HITL Suggestions（Done Definition）
+
+* 在 incident.diagnosis_json 增补 playbook（version=t6），基于 root_cause_type/patterns 生成低风险处置建议（LOW/MEDIUM）；
+* playbook 与 A5 verification_plan 联动：提供 recommended_steps 与 expected_outcome；
+  -（可选）新增 MCP 只读工具 get_incident_playbook / list_playbook_rules，输出白名单与脱敏；
+* 新增回归脚本 `scripts/test_t6_L1_playbook_and_verification_linkage.sh`：
+
+  * 断言 playbook 结构与限长；
+  * 执行一个 verification_plan step 的 MCP re-check，输出 meets_expectation；
+  * 敏感字段检查；
+* make test / make lint-new 通过，脚本 bash -n + 实跑 PASS。
