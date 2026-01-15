@@ -1092,3 +1092,28 @@ python -m orchestrator.main
 * 新增周报脚本 `scripts/pilot_T7_weekly_report.sh`，汇总 7 天 ingest/quality/playbook/verification/notice/ops TopN；
 * 新增回归脚本 `scripts/test_t7_L1_operator_workflow.sh` 覆盖 action + verification_runs 写入/读取/脱敏/（可选）timeline；
 * make test / make lint-new 通过，脚本 bash -n + 实跑 PASS。
+
+---
+
+## T8 — log-alert-job（ES ingress 阈值 + microsvc ERROR 聚类 → rca-api webhook）
+
+Doc: docs/devel/zh-CN/32_T8_LogAlertJob_ES_IngressAndAppThreshold.md
+
+Done Definition
+- 新增 `tools/log-alert-job/`（Go）并与 `docs/devel/zh-CN/32_T8_LogAlertJob_ES_IngressAndAppThreshold.md` 对齐：
+  - 读取 `configs/log_alert_rules.yaml`，`indices.ingress/indices.microsvc` 全配置化；
+  - 支持三条规则（`ingress_5xx_spike` / `ingress_slow_spike` / `microsvc_error_cluster`）；
+  - 支持 `es.urls` 多节点 + 失败切换重试（最多 2 次）+ basic auth（`es.username/password` 或 `ES_USER/ES_PASS`）；
+  - 每次 ES 请求记录 `selected_url/attempt/error/rule_id`，并暴露 `log_alert_es_failover_total` 与 `log_alert_es_request_total{code}`；
+  - 完成 query_string + group_by 聚类 + threshold 触发 + cooldown 去重，触发 `POST /v1/alerts/ingest/generic_v1`；
+  - webhook payload 强制包含 `sample_trace_ids`，ingress 包含 `sample_request_ids`，microsvc 包含 `msg_examples`；
+  - payload 做脱敏与限长（整体 <=16KB，超限 `TRUNCATED`，并过滤 `secret/token/authorization/headers`）；
+  - job 自身暴露 `/metrics`（ticks/queries/clusters/fires/webhook/latency/cooldown）。
+- 新增回归脚本 scripts/test_t8_L1_log_alert_job_ingress_and_microsvc.sh：
+  - 覆盖 ingress 5xx/slow 与 microsvc ERROR 触发、cooldown、样本 trace_ids/request_ids/msg_examples、敏感词拦截
+  - FAIL 输出 step/http_code/body<=2KB/ids；PASS 固定格式
+- 验收：
+  - make test ✅
+  - make lint-new ✅
+  - bash -n scripts/test_t8_L1_log_alert_job_ingress_and_microsvc.sh ✅
+  - scripts/test_t8_L1_log_alert_job_ingress_and_microsvc.sh 实跑 PASS ✅
