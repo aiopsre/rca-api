@@ -18,8 +18,8 @@ type KBEntryM struct {
 	Confidence            float64    `json:"confidence" gorm:"column:confidence;not null;default:0.7"`
 	HitCount              int64      `json:"hit_count" gorm:"column:hit_count;not null;default:0"`
 	LastHitAt             *time.Time `json:"last_hit_at" gorm:"column:last_hit_at"`
-	CreatedAt             time.Time  `json:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt             time.Time  `json:"updated_at" gorm:"column:updated_at;index:idx_kb_entries_updated_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt             time.Time  `json:"created_at" gorm:"column:created_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt             time.Time  `json:"updated_at" gorm:"column:updated_at;type:datetime;index:idx_kb_entries_updated_at;not null;default:CURRENT_TIMESTAMP"`
 }
 
 // TableName KBEntryM's table name.

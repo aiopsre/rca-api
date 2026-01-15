@@ -26,8 +26,8 @@ type NoticeChannelM struct {
 	IncludeLinks       bool      `gorm:"column:include_links;not null;default:false" json:"include_links"`
 	BaseURL            *string   `gorm:"column:base_url;type:varchar(2048)" json:"base_url"`
 	SummaryTemplate    *string   `gorm:"column:summary_template;type:varchar(512)" json:"summary_template"`
-	CreatedAt          time.Time `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt          time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	CreatedAt          time.Time `gorm:"column:created_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt          time.Time `gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 }
 
 // TableName NoticeChannelM's table name.

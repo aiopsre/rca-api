@@ -13,8 +13,8 @@ type IncidentActionLogM struct {
 	ActionType  string    `json:"action_type" gorm:"column:action_type;type:varchar(64);not null"`
 	Summary     string    `json:"summary" gorm:"column:summary;type:varchar(256);not null"`
 	DetailsJSON *string   `json:"details_json" gorm:"column:details_json;type:longtext"`
-	CreatedAt   time.Time `json:"created_at" gorm:"column:created_at;index:idx_incident_action_logs_incident_created,priority:2;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt   time.Time `json:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt   time.Time `json:"created_at" gorm:"column:created_at;type:datetime;index:idx_incident_action_logs_incident_created,priority:2;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt   time.Time `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
 }
 
 // TableName IncidentActionLogM's table name.

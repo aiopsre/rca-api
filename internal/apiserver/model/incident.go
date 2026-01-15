@@ -46,8 +46,8 @@ type IncidentM struct {
 	CreatedBy            *string    `json:"created_by" gorm:"column:created_by;comment:创建人（预留：用户体系接入后填充）"`                                                              // 创建人（预留：用户体系接入后填充）
 	ApprovedBy           *string    `json:"approved_by" gorm:"column:approved_by;comment:审批人（预留：处置需要审批时填充）"`                                                            // 审批人（预留：处置需要审批时填充）
 	ClosedBy             *string    `json:"closed_by" gorm:"column:closed_by;comment:关闭人（预留：手动关闭时填充）"`                                                                  // 关闭人（预留：手动关闭时填充）
-	CreatedAt            time.Time  `json:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP;comment:创建时间（毫秒精度）"`                                  // 创建时间（毫秒精度）
-	UpdatedAt            time.Time  `json:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP;comment:更新时间（毫秒精度）"`                                  // 更新时间（毫秒精度）
+	CreatedAt            time.Time  `json:"created_at" gorm:"column:created_at;type:datetime;not null;default:CURRENT_TIMESTAMP;comment:创建时间（毫秒精度）"`                                  // 创建时间（毫秒精度）
+	UpdatedAt            time.Time  `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP;comment:更新时间（毫秒精度）"`                                  // 更新时间（毫秒精度）
 }
 
 // TableName IncidentM's table name

@@ -18,8 +18,8 @@ type DatasourceM struct {
 	LabelsJSON         *string   `json:"labels_json" gorm:"column:labels_json;type:text"`
 	DefaultHeadersJSON *string   `json:"default_headers_json" gorm:"column:default_headers_json;type:text"`
 	TLSConfigJSON      *string   `json:"tls_config_json" gorm:"column:tls_config_json;type:text"`
-	CreatedAt          time.Time `json:"created_at" gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt          time.Time `json:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt          time.Time `json:"created_at" gorm:"column:created_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt          time.Time `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
 }
 
 // TableName DatasourceM's table name.

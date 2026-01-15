@@ -16,8 +16,8 @@ type IncidentVerificationRunM struct {
 	ParamsJSON       *string   `json:"params_json" gorm:"column:params_json;type:longtext"`
 	Observed         string    `json:"observed" gorm:"column:observed;type:varchar(512);not null"`
 	MeetsExpectation bool      `json:"meets_expectation" gorm:"column:meets_expectation;not null;default:false"`
-	CreatedAt        time.Time `json:"created_at" gorm:"column:created_at;index:idx_incident_verification_runs_incident_created,priority:2;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt        time.Time `json:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt        time.Time `json:"created_at" gorm:"column:created_at;type:datetime;index:idx_incident_verification_runs_incident_created,priority:2;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt        time.Time `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
 }
 
 // TableName IncidentVerificationRunM's table name.

@@ -9,7 +9,7 @@ const TableNameAIJobQueueSignalM = "ai_job_queue_signal"
 type AIJobQueueSignalM struct {
 	ID        int64     `gorm:"column:id;primaryKey;autoIncrement:false" json:"id"`
 	Version   int64     `gorm:"column:version;not null;default:1" json:"version"`
-	UpdatedAt time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	UpdatedAt time.Time `gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 }
 
 // TableName AIJobQueueSignalM's table name.

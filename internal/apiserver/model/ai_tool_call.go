@@ -20,8 +20,8 @@ type AIToolCallM struct {
 	LatencyMs         int64     `json:"latency_ms" gorm:"column:latency_ms;not null;default:0"`
 	ErrorMessage      *string   `json:"error_message" gorm:"column:error_message;type:text"`
 	EvidenceIDsJSON   *string   `json:"evidence_ids_json" gorm:"column:evidence_ids_json;type:text"`
-	CreatedAt         time.Time `json:"created_at" gorm:"column:created_at;index:idx_tool_calls_tool_created_at,priority:2;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt         time.Time `json:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt         time.Time `json:"created_at" gorm:"column:created_at;type:datetime;index:idx_tool_calls_tool_created_at,priority:2;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt         time.Time `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
 }
 
 // TableName AIToolCallM's table name.

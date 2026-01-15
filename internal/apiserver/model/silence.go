@@ -16,8 +16,8 @@ type SilenceM struct {
 	Reason       *string   `gorm:"column:reason;type:text" json:"reason"`
 	CreatedBy    *string   `gorm:"column:created_by;type:varchar(128)" json:"created_by"`
 	MatchersJSON string    `gorm:"column:matchers_json;type:longtext;not null" json:"matchers_json"`
-	CreatedAt    time.Time `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
+	CreatedAt    time.Time `gorm:"column:created_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	UpdatedAt    time.Time `gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
 }
 
 // TableName SilenceM's table name.

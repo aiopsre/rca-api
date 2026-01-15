@@ -23,8 +23,8 @@ type EvidenceM struct {
 	Summary         *string   `json:"summary" gorm:"column:summary;type:text"`
 	CreatedBy       string    `json:"created_by" gorm:"column:created_by;not null"`
 	IdempotencyKey  *string   `json:"idempotency_key" gorm:"column:idempotency_key;type:varchar(191);index:uniq_evidence_incident_idempotency,priority:2"`
-	CreatedAt       time.Time `json:"created_at" gorm:"column:created_at;index:idx_evidence_incident_id_created_at,priority:2;index:idx_evidence_type_created_at,priority:2;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt       time.Time `json:"updated_at" gorm:"column:updated_at;not null;default:CURRENT_TIMESTAMP"`
+	CreatedAt       time.Time `json:"created_at" gorm:"column:created_at;type:datetime;index:idx_evidence_incident_id_created_at,priority:2;index:idx_evidence_type_created_at,priority:2;not null;default:CURRENT_TIMESTAMP"`
+	UpdatedAt       time.Time `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
 }
 
 // TableName EvidenceM's table name.
