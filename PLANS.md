@@ -1082,3 +1082,13 @@ python -m orchestrator.main
   * 执行一个 verification_plan step 的 MCP re-check，输出 meets_expectation；
   * 敏感字段检查；
 * make test / make lint-new 通过，脚本 bash -n + 实跑 PASS。
+
+---
+
+## T7 Operator Workflow（ActionLog + Verification Runs + Weekly Report）（Done Definition）
+
+* 新增 Operator ActionLog（表+API）：POST/GET incidents/:id/actions，脱敏限长，best-effort timeline；
+* 新增 Verification Runs（表+API）：POST/GET incidents/:id/verification-runs，结构化记录 re-check 结果，best-effort timeline；
+* 新增周报脚本 `scripts/pilot_T7_weekly_report.sh`，汇总 7 天 ingest/quality/playbook/verification/notice/ops TopN；
+* 新增回归脚本 `scripts/test_t7_L1_operator_workflow.sh` 覆盖 action + verification_runs 写入/读取/脱敏/（可选）timeline；
+* make test / make lint-new 通过，脚本 bash -n + 实跑 PASS。
