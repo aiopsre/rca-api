@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,16 @@ const (
 )
 
 const defaultBackendOpTimeout = 300 * time.Millisecond
+
+var errRedisClientNotInitialized = errors.New("redis client not initialized")
+
+var burstIncrScript = redis.NewScript(`
+local cnt = redis.call("INCR", KEYS[1])
+if cnt == 1 then
+  redis.call("PEXPIRE", KEYS[1], ARGV[1])
+end
+return cnt
+`)
 
 // CurrentAlertLookup returns current alert last_seen_at for one fingerprint.
 // It should return (nil, nil) when current alert does not exist.
@@ -70,7 +81,8 @@ type RedisBackendOptions struct {
 
 // RedisBackend uses Redis keys for dedup/burst counters.
 type RedisBackend struct {
-	opts RedisBackendOptions
+	opts   RedisBackendOptions
+	client *redis.Client
 }
 
 // NewRedisBackend creates a Redis-backed policy backend.
@@ -86,7 +98,19 @@ func NewRedisBackend(opts RedisBackendOptions) *RedisBackend {
 	if opts.DB < 0 {
 		opts.DB = 0
 	}
-	return &RedisBackend{opts: opts}
+	client := redis.NewClient(&redis.Options{
+		Addr:         opts.Addr,
+		Password:     opts.Password,
+		DB:           opts.DB,
+		DialTimeout:  opts.Timeout,
+		ReadTimeout:  opts.Timeout,
+		WriteTimeout: opts.Timeout,
+	})
+
+	return &RedisBackend{
+		opts:   opts,
+		client: client,
+	}
 }
 
 // Name returns backend name label.
@@ -99,12 +123,10 @@ func (b *RedisBackend) Dedup(ctx context.Context, fingerprint string, _ time.Tim
 	if b == nil || window <= 0 {
 		return false, nil
 	}
-	client := redis.NewClient(&redis.Options{
-		Addr:     b.opts.Addr,
-		Password: b.opts.Password,
-		DB:       b.opts.DB,
-	})
-	defer func() { _ = client.Close() }()
+	client, err := b.redisClient()
+	if err != nil {
+		return false, err
+	}
 
 	opCtx, cancel := context.WithTimeout(ctx, b.opts.Timeout)
 	defer cancel()
@@ -122,6 +144,11 @@ func (b *RedisBackend) Burst(ctx context.Context, fingerprint string, at time.Ti
 	if b == nil || window <= 0 {
 		return 0, nil
 	}
+	client, err := b.redisClient()
+	if err != nil {
+		return 0, err
+	}
+
 	windowMs := window.Milliseconds()
 	if windowMs <= 0 {
 		windowMs = 1000
@@ -129,28 +156,29 @@ func (b *RedisBackend) Burst(ctx context.Context, fingerprint string, at time.Ti
 	bucket := at.UTC().UnixMilli() / windowMs
 	key := fmt.Sprintf("%s:burst:%s:%d", b.opts.KeyPrefix, strings.TrimSpace(fingerprint), bucket)
 
-	client := redis.NewClient(&redis.Options{
-		Addr:     b.opts.Addr,
-		Password: b.opts.Password,
-		DB:       b.opts.DB,
-	})
-	defer func() { _ = client.Close() }()
-
 	opCtx, cancel := context.WithTimeout(ctx, b.opts.Timeout)
 	defer cancel()
 
-	count, err := client.Incr(opCtx, key).Result()
+	ttl := 2 * window
+	if ttl <= 0 {
+		ttl = 2 * time.Second
+	}
+	ttlMs := ttl.Milliseconds()
+	if ttlMs <= 0 {
+		ttlMs = 2000
+	}
+
+	count, err := burstIncrScript.Run(opCtx, client, []string{key}, ttlMs).Int64()
 	if err != nil {
 		return 0, err
 	}
-	if count == 1 {
-		ttl := 2 * window
-		if ttl <= 0 {
-			ttl = 2 * time.Second
-		}
-		if expireErr := client.Expire(opCtx, key, ttl).Err(); expireErr != nil {
-			return 0, expireErr
-		}
-	}
+
 	return count, nil
+}
+
+func (b *RedisBackend) redisClient() (*redis.Client, error) {
+	if b == nil || b.client == nil {
+		return nil, errRedisClientNotInitialized
+	}
+	return b.client, nil
 }

@@ -1117,3 +1117,18 @@ Done Definition
   - make lint-new ✅
   - bash -n scripts/test_t8_L1_log_alert_job_ingress_and_microsvc.sh ✅
   - scripts/test_t8_L1_log_alert_job_ingress_and_microsvc.sh 实跑 PASS ✅
+
+---
+
+## OPS0：rca-api 运维调试部署基线（docker-compose）Done Definition
+
+- [x] 新增 `docs/devel/zh-CN/19_OPS0_rca-api_Ops_Debug_Deploy.md`
+- [x] 新增 `deploy/compose/docker-compose.yml`（MySQL+Redis+apiserver+notice-worker+orchestrator）
+- [x] 新增 `scripts/ops/smoke_ops0.sh`
+  - [x] PASS/FAIL 固定格式
+  - [x] FAIL 输出 step/http_code/body<=2KB/request_id + 关键 IDs（incident_id/job_id/delivery_id/tool_call_id）
+  - [x] `bash -n` 通过
+- [x] 支持三种模式验证：
+  - [x] Mode A：redis_on（主路径）
+  - [x] Mode B：redis_down（验证 fail-open fallback）
+  - [x] Mode C：redis_off（完全回 MySQL baseline）
