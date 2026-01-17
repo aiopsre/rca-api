@@ -66,3 +66,11 @@ func (h *Handler) ApplyTo(v1 *gin.RouterGroup, mws ...gin.HandlerFunc) {
 
 	slog.Info("rest api routes installed", "count", len(registrars))
 }
+
+// Close releases resources held by downstream biz components.
+func (h *Handler) Close() error {
+	if h == nil || h.biz == nil {
+		return nil
+	}
+	return h.biz.Close()
+}

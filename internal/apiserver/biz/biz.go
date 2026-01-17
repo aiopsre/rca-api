@@ -1,7 +1,9 @@
 package biz
 
 import (
-	"github.com/google/wire"
+	"errors"
+	"sync"
+
 	aijobv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	alerteventv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alert_event"
 	datasourcev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/datasource"
@@ -9,6 +11,7 @@ import (
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
+	"github.com/google/wire"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
@@ -27,11 +30,18 @@ type IBiz interface {
 	AIJobV1() aijobv1.AIJobBiz
 	SilenceV1() silencev1.SilenceBiz
 	NoticeV1() noticev1.NoticeBiz
+	Close() error
 }
 
 // biz is the concrete implementation of the business logic IBiz.
 type biz struct {
 	store store.IStore
+
+	alertEventOnce sync.Once
+	alertEventBiz  alerteventv1.AlertEventBiz
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // Ensure biz implements IBiz at compile time.
@@ -47,7 +57,10 @@ func (b *biz) IncidentV1() incidentv1.IncidentBiz {
 }
 
 func (b *biz) AlertEventV1() alerteventv1.AlertEventBiz {
-	return alerteventv1.New(b.store)
+	b.alertEventOnce.Do(func() {
+		b.alertEventBiz = alerteventv1.New(b.store)
+	})
+	return b.alertEventBiz
 }
 
 func (b *biz) DatasourceV1() datasourcev1.DatasourceBiz {
@@ -68,4 +81,20 @@ func (b *biz) SilenceV1() silencev1.SilenceBiz {
 
 func (b *biz) NoticeV1() noticev1.NoticeBiz {
 	return noticev1.New(b.store)
+}
+
+func (b *biz) Close() error {
+	if b == nil {
+		return nil
+	}
+	b.closeOnce.Do(func() {
+		var errs []error
+		if b.alertEventBiz != nil {
+			if closer, ok := b.alertEventBiz.(interface{ Close() error }); ok {
+				errs = append(errs, closer.Close())
+			}
+		}
+		b.closeErr = errors.Join(errs...)
+	})
+	return b.closeErr
 }

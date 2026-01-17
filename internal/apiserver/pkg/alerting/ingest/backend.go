@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -81,8 +82,10 @@ type RedisBackendOptions struct {
 
 // RedisBackend uses Redis keys for dedup/burst counters.
 type RedisBackend struct {
-	opts   RedisBackendOptions
-	client *redis.Client
+	opts      RedisBackendOptions
+	client    *redis.Client
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewRedisBackend creates a Redis-backed policy backend.
@@ -181,4 +184,15 @@ func (b *RedisBackend) redisClient() (*redis.Client, error) {
 		return nil, errRedisClientNotInitialized
 	}
 	return b.client, nil
+}
+
+// Close closes the underlying redis client.
+func (b *RedisBackend) Close() error {
+	if b == nil || b.client == nil {
+		return nil
+	}
+	b.closeOnce.Do(func() {
+		b.closeErr = b.client.Close()
+	})
+	return b.closeErr
 }

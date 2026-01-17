@@ -258,3 +258,26 @@ func (p *Pipeline) recordBackendError(backend string, op string) {
 	}
 	metrics.M.RecordAlertIngestPolicyBackendError(backend, op)
 }
+
+// Close releases backend resources when backends support close semantics.
+func (p *Pipeline) Close() error {
+	if p == nil {
+		return nil
+	}
+	return errors.Join(closeBackend(p.primary), closeBackend(p.fallback))
+}
+
+type backendCloser interface {
+	Close() error
+}
+
+func closeBackend(b Backend) error {
+	if b == nil {
+		return nil
+	}
+	closer, ok := b.(backendCloser)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
+}

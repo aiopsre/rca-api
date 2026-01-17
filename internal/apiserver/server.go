@@ -133,6 +133,11 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Trigger graceful shutdown for all components.
 	s.srv.GracefulStop(shutdownCtx)
+	if s != nil && s.cfg != nil && s.cfg.Handler != nil {
+		if err := s.cfg.Handler.Close(); err != nil {
+			slog.Warn("server component close failed", "component", "handler.biz", "error", err)
+		}
+	}
 
 	slog.Info("server exited successfully")
 

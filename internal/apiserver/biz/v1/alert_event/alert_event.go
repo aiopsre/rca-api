@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
@@ -74,6 +75,7 @@ type AlertEventBiz interface {
 	ListCurrent(ctx context.Context, rq *v1.ListCurrentAlertEventsRequest) (*v1.ListCurrentAlertEventsResponse, error)
 	ListHistory(ctx context.Context, rq *v1.ListHistoryAlertEventsRequest) (*v1.ListHistoryAlertEventsResponse, error)
 	Ack(ctx context.Context, rq *v1.AckAlertEventRequest) (*v1.AckAlertEventResponse, error)
+	Close() error
 
 	AlertEventExpansion
 }
@@ -84,6 +86,8 @@ type alertEventBiz struct {
 	store          store.IStore
 	ingestPipeline *alertingingest.Pipeline
 	rolloutConfig  alertingingest.RolloutConfig
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 var _ AlertEventBiz = (*alertEventBiz)(nil)
@@ -154,6 +158,17 @@ func (b *alertEventBiz) IngestByAdapter(ctx context.Context, adapter string, rq 
 		adapter:      strings.ToLower(strings.TrimSpace(adapter)),
 		applyRollout: true,
 	})
+}
+
+// Close releases resources held by ingest pipeline backends.
+func (b *alertEventBiz) Close() error {
+	if b == nil || b.ingestPipeline == nil {
+		return nil
+	}
+	b.closeOnce.Do(func() {
+		b.closeErr = b.ingestPipeline.Close()
+	})
+	return b.closeErr
 }
 
 func (b *alertEventBiz) ingest(ctx context.Context, rq *v1.IngestAlertEventRequest, options ingestOptions) (*v1.IngestAlertEventResponse, error) {
