@@ -37,8 +37,20 @@ type IBiz interface {
 type biz struct {
 	store store.IStore
 
+	incidentOnce   sync.Once
+	incidentBiz    incidentv1.IncidentBiz
 	alertEventOnce sync.Once
 	alertEventBiz  alerteventv1.AlertEventBiz
+	datasourceOnce sync.Once
+	datasourceBiz  datasourcev1.DatasourceBiz
+	evidenceOnce   sync.Once
+	evidenceBiz    evidencev1.EvidenceBiz
+	aiJobOnce      sync.Once
+	aiJobBiz       aijobv1.AIJobBiz
+	silenceOnce    sync.Once
+	silenceBiz     silencev1.SilenceBiz
+	noticeOnce     sync.Once
+	noticeBiz      noticev1.NoticeBiz
 
 	closeOnce sync.Once
 	closeErr  error
@@ -53,7 +65,10 @@ func NewBiz(store store.IStore) *biz {
 }
 
 func (b *biz) IncidentV1() incidentv1.IncidentBiz {
-	return incidentv1.New(b.store)
+	b.incidentOnce.Do(func() {
+		b.incidentBiz = incidentv1.New(b.store)
+	})
+	return b.incidentBiz
 }
 
 func (b *biz) AlertEventV1() alerteventv1.AlertEventBiz {
@@ -64,23 +79,38 @@ func (b *biz) AlertEventV1() alerteventv1.AlertEventBiz {
 }
 
 func (b *biz) DatasourceV1() datasourcev1.DatasourceBiz {
-	return datasourcev1.New(b.store)
+	b.datasourceOnce.Do(func() {
+		b.datasourceBiz = datasourcev1.New(b.store)
+	})
+	return b.datasourceBiz
 }
 
 func (b *biz) EvidenceV1() evidencev1.EvidenceBiz {
-	return evidencev1.New(b.store)
+	b.evidenceOnce.Do(func() {
+		b.evidenceBiz = evidencev1.New(b.store)
+	})
+	return b.evidenceBiz
 }
 
 func (b *biz) AIJobV1() aijobv1.AIJobBiz {
-	return aijobv1.New(b.store)
+	b.aiJobOnce.Do(func() {
+		b.aiJobBiz = aijobv1.New(b.store)
+	})
+	return b.aiJobBiz
 }
 
 func (b *biz) SilenceV1() silencev1.SilenceBiz {
-	return silencev1.New(b.store)
+	b.silenceOnce.Do(func() {
+		b.silenceBiz = silencev1.New(b.store)
+	})
+	return b.silenceBiz
 }
 
 func (b *biz) NoticeV1() noticev1.NoticeBiz {
-	return noticev1.New(b.store)
+	b.noticeOnce.Do(func() {
+		b.noticeBiz = noticev1.New(b.store)
+	})
+	return b.noticeBiz
 }
 
 func (b *biz) Close() error {
@@ -89,12 +119,25 @@ func (b *biz) Close() error {
 	}
 	b.closeOnce.Do(func() {
 		var errs []error
-		if b.alertEventBiz != nil {
-			if closer, ok := b.alertEventBiz.(interface{ Close() error }); ok {
-				errs = append(errs, closer.Close())
-			}
-		}
+		errs = appendCloseIfSupported(errs, b.incidentBiz)
+		errs = appendCloseIfSupported(errs, b.alertEventBiz)
+		errs = appendCloseIfSupported(errs, b.datasourceBiz)
+		errs = appendCloseIfSupported(errs, b.evidenceBiz)
+		errs = appendCloseIfSupported(errs, b.aiJobBiz)
+		errs = appendCloseIfSupported(errs, b.silenceBiz)
+		errs = appendCloseIfSupported(errs, b.noticeBiz)
 		b.closeErr = errors.Join(errs...)
 	})
 	return b.closeErr
+}
+
+func appendCloseIfSupported(errs []error, target any) []error {
+	if target == nil {
+		return errs
+	}
+	closer, ok := target.(interface{ Close() error })
+	if !ok {
+		return errs
+	}
+	return append(errs, closer.Close())
 }
