@@ -31,6 +31,7 @@ type Metrics struct {
 	AlertIngestNewIncidentTotal         *prometheus.CounterVec
 	AlertIngestPolicyDecisionTotal      *prometheus.CounterVec
 	AlertIngestPolicyBackendErrorTotal  *prometheus.CounterVec
+	AlertingPolicyLoadTotal             *prometheus.CounterVec
 	AIJobQueuePullCounter               metric.Int64Counter
 	AIJobQueuePullLatency               metric.Float64Histogram
 	NoticeDeliveryDispatchTotal         metric.Int64Counter
@@ -140,6 +141,10 @@ func Init(scope string) error {
 			Name: "alert_ingest_policy_backend_error_total",
 			Help: "Total alert ingest policy backend operation errors by backend/op.",
 		}, []string{"backend", "op"})
+		alertingPolicyLoadTotal := promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+			Name: "alerting_policy_load_total",
+			Help: "Total alerting trigger policy load attempts by result/source.",
+		}, []string{"result", "source"})
 
 		aiJobQueuePullCounter, _ := meter.Int64Counter(
 			"rca_api_apiserver_ai_job_queue_pull_total",
@@ -287,6 +292,7 @@ func Init(scope string) error {
 			AlertIngestNewIncidentTotal:         alertIngestNewIncidentTotal,
 			AlertIngestPolicyDecisionTotal:      alertIngestPolicyDecisionTotal,
 			AlertIngestPolicyBackendErrorTotal:  alertIngestPolicyBackendErrorTotal,
+			AlertingPolicyLoadTotal:             alertingPolicyLoadTotal,
 			AIJobQueuePullCounter:               aiJobQueuePullCounter,
 			AIJobQueuePullLatency:               aiJobQueuePullLatency,
 			NoticeDeliveryDispatchTotal:         noticeDispatchTotal,
@@ -344,6 +350,12 @@ func Init(scope string) error {
 		alertIngestNewIncidentTotal.WithLabelValues("unknown").Add(0)
 		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "dedup").Add(0)
 		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "burst").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("ok", "default").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("ok", "yaml").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("ok", "cli").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("error", "default").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("error", "yaml").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("error", "cli").Add(0)
 		noticeStreamReadTotal.WithLabelValues("ok").Add(0)
 		noticeStreamReadTotal.WithLabelValues("error").Add(0)
 		noticeStreamMessagesTotal.WithLabelValues("xadd").Add(0)
@@ -505,6 +517,26 @@ func (m *Metrics) RecordAlertIngestPolicyBackendError(backend string, op string)
 		op = "unknown"
 	}
 	m.AlertIngestPolicyBackendErrorTotal.WithLabelValues(backend, op).Inc()
+}
+
+// RecordAlertingPolicyLoad records one external alerting policy load attempt.
+func (m *Metrics) RecordAlertingPolicyLoad(result string, source string) {
+	if m == nil || m.AlertingPolicyLoadTotal == nil {
+		return
+	}
+	result = strings.TrimSpace(strings.ToLower(result))
+	switch result {
+	case "ok", "error":
+	default:
+		result = "error"
+	}
+	source = strings.TrimSpace(strings.ToLower(source))
+	switch source {
+	case "cli", "yaml", "default":
+	default:
+		source = "default"
+	}
+	m.AlertingPolicyLoadTotal.WithLabelValues(result, source).Inc()
 }
 
 // RecordAIJobQueuePull records queue pull metrics for orchestrator polling.

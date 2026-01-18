@@ -2,11 +2,14 @@ package apiserver
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/handler"
 	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
+	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
@@ -18,6 +21,8 @@ import (
 )
 
 const serviceName = "rca-apiserver"
+
+var errServerNotInitialized = errors.New("server is not initialized")
 
 // Dependencies collects all components that need initialization but are not directly used
 // by the main server struct during runtime (e.g., sidecar processes, cache warmers).
@@ -31,6 +36,7 @@ type Config struct {
 	RedisOptions         redisx.RedisOptions
 	AlertingIngestPolicy alertingingest.PolicyConfig
 	AlertingRollout      alertingingest.RolloutConfig
+	AlertingPolicy       alertingpolicy.ExternalPolicyOptions
 	NoticeBaseURL        string
 	MCPPolicy            policy.MCPPolicyConfig
 }
@@ -51,6 +57,11 @@ type ServerConfig struct {
 
 // New creates and returns a new Server instance.
 func (cfg *Config) New(ctx context.Context) (*Server, error) {
+	_ = metrics.Init(serviceName)
+	if err := cfg.loadAlertingPolicy(); err != nil {
+		return nil, err
+	}
+
 	alertingingest.SetRuntimeConfig(alertingingest.RuntimeConfig{
 		Policy:  cfg.AlertingIngestPolicy,
 		Rollout: cfg.AlertingRollout,
@@ -73,6 +84,63 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	}
 
 	return s.Prepare(ctx)
+}
+
+func (cfg *Config) loadAlertingPolicy() error {
+	if cfg == nil {
+		alertingpolicy.SetRuntimeConfig(alertingpolicy.DefaultRuntimeConfig())
+		return nil
+	}
+
+	loadInput := alertingpolicy.ResolveLoadInput(cfg.AlertingPolicy)
+	policyCfg, activeSource, loadErr := alertingpolicy.Load(loadInput.Path, loadInput.Strict)
+	if loadErr != nil && loadInput.Strict {
+		recordAlertingPolicyLoadMetric("error", loadInput.Source)
+		slog.Error("alerting policy load failed",
+			"policy_path", loadInput.Path,
+			"strict", loadInput.Strict,
+			"source", loadInput.Source,
+			"err", loadErr,
+		)
+		return fmt.Errorf("strict alerting policy load failed: %w", loadErr)
+	}
+
+	result := "ok"
+	if loadErr != nil {
+		result = "error"
+	}
+	recordAlertingPolicyLoadMetric(result, loadInput.Source)
+	if loadErr != nil {
+		slog.Warn("alerting policy load fallback to default",
+			"policy_path", loadInput.Path,
+			"strict", loadInput.Strict,
+			"source", loadInput.Source,
+			"err", loadErr,
+		)
+	} else {
+		slog.Info("alerting policy loaded",
+			"policy_path", loadInput.Path,
+			"strict", loadInput.Strict,
+			"source", loadInput.Source,
+			"err", "",
+		)
+	}
+
+	alertingpolicy.SetRuntimeConfig(alertingpolicy.RuntimeConfig{
+		Policy:       policyCfg,
+		PolicyPath:   loadInput.Path,
+		Strict:       loadInput.Strict,
+		Source:       loadInput.Source,
+		ActiveSource: activeSource,
+	})
+	return nil
+}
+
+func recordAlertingPolicyLoadMetric(result string, source string) {
+	if metrics.M == nil {
+		return
+	}
+	metrics.M.RecordAlertingPolicyLoad(result, source)
 }
 
 func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) error {
@@ -119,6 +187,10 @@ func (s *Server) Prepare(ctx context.Context) (*Server, error) {
 // Run starts the server and listens for termination signals.
 // It gracefully shuts down the server upon receiving a termination signal from the context.
 func (s *Server) Run(ctx context.Context) error {
+	if s == nil || s.srv == nil {
+		return errServerNotInitialized
+	}
+
 	// Start the HTTP/gRPC server in a background goroutine.
 	go s.srv.RunOrDie(ctx)
 
@@ -133,7 +205,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Trigger graceful shutdown for all components.
 	s.srv.GracefulStop(shutdownCtx)
-	if s != nil && s.cfg != nil && s.cfg.Handler != nil {
+	if s.cfg != nil && s.cfg.Handler != nil {
 		if err := s.cfg.Handler.Close(); err != nil {
 			slog.Warn("server component close failed", "component", "handler.biz", "error", err)
 		}

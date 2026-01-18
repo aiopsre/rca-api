@@ -1132,3 +1132,25 @@ Done Definition
   - [x] Mode A：redis_on（主路径）
   - [x] Mode B：redis_down（验证 fail-open fallback）
   - [x] Mode C：redis_off（完全回 MySQL baseline）
+
+---
+
+## R4.x：外部告警触发策略文件（alerting_policy.yaml）加载与注入
+
+- Doc：`docs/devel/zh-CN/19_AlertingPolicy_External_Config.md`
+
+Done Definition：
+- 新增独立策略文件 `configs/alerting_policy.yaml` 的 schema（version/triggers/rules）并提供默认模板（run=false），确保默认行为与旧版一致
+- `configs/rca-apiserver.yaml` 新增 `alerting_policy.{enabled,path,strict}`，并支持 CLI `--alerting-policy-path/--alerting-policy-strict` 覆盖
+- 加载优先级：CLI > rca-apiserver.yaml > default（无文件）
+- strict=false（默认）：加载/解析失败自动回退默认策略并继续启动；strict=true：失败则启动失败
+- 新增回归脚本：`scripts/test_r4_L2_alerting_policy_config_path.sh` 覆盖 path 覆盖与 strict 行为；脚本满足 PASS/FAIL 格式与 FAIL 输出要求，且 `bash -n` 通过
+- 新增单测 2~4 个覆盖 loader 的默认/覆盖/strict 行为
+- `make test` / `make lint-new` 通过
+
+实施状态（2026-02-27）：
+- [x] 已新增 `configs/alerting_policy.yaml` 默认模板（run=false）
+- [x] 已新增 `alerting_policy.{enabled,path,strict}` 与 CLI 覆盖参数
+- [x] 已实现启动加载与 runtime 注入（仅注入不改消费方）
+- [x] 已补齐 `alerting_policy_load_total{result,source}` 与结构化日志字段
+- [x] 已新增回归脚本与 loader 单测

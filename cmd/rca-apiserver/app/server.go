@@ -137,6 +137,7 @@ func runWithPreparedOptions(
 		if err := applyFlagOverrides(cmd.Flags(), cliOverrides); err != nil {
 			return err
 		}
+		opts.MarkCLIFlagOverrides(cliOverrides)
 
 		// Complete the options by setting default values and deriving configurations.
 		if err := opts.Complete(); err != nil {

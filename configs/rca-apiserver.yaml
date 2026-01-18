@@ -82,6 +82,11 @@ alerting:
     allowed_services: []
     mode: observe
 
+alerting_policy:
+  enabled: true
+  path: "configs/alerting_policy.yaml"
+  strict: false
+
 notice_worker:
   poll_interval: 1s
   batch_size: 16
