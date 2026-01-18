@@ -1,12 +1,16 @@
 package handler
 
 import (
+	"errors"
+	"io"
 	"log/slog"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 	"go.opentelemetry.io/otel"
 
+	incidentbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
@@ -96,6 +100,28 @@ func (h *Handler) CreateIncidentVerificationRun(c *gin.Context) {
 	core.HandleAllRequest(c, h.biz.IncidentV1().CreateVerificationRun, h.val.ValidateCreateIncidentVerificationRunRequest)
 }
 
+func (h *Handler) TriggerIncidentScheduledRun(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	var req incidentbiz.TriggerScheduledRunRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req.IncidentID = strings.TrimSpace(c.Param("incidentID"))
+	resp, err := h.biz.IncidentV1().TriggerScheduledRun(c.Request.Context(), &req)
+	if err == nil && resp != nil && resp.JobID != nil && strings.TrimSpace(*resp.JobID) != "" {
+		h.jobQueueNotifier.Notify()
+		if h.jobQueueWakeup != nil {
+			_ = h.jobQueueWakeup.PublishAIJobQueueSignal(c.Request.Context())
+		}
+	}
+	core.WriteResponse(c, resp, err)
+}
+
 //nolint:dupl // Keep explicit bind/validate flow aligned with actions list endpoint.
 func (h *Handler) ListIncidentVerificationRuns(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeIncidentRead); err != nil {
@@ -133,5 +159,6 @@ func init() {
 		rg.GET("/:incidentID/actions", handler.ListIncidentActions)
 		rg.POST("/:incidentID/verification-runs", handler.CreateIncidentVerificationRun)
 		rg.GET("/:incidentID/verification-runs", handler.ListIncidentVerificationRuns)
+		rg.POST("/:incidentID/ai/scheduled-run", handler.TriggerIncidentScheduledRun)
 	})
 }

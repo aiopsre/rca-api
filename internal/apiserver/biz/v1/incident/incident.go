@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
@@ -60,6 +61,7 @@ type IncidentBiz interface {
 	ListActions(ctx context.Context, rq *apiv1.ListIncidentActionsRequest) (*apiv1.ListIncidentActionsResponse, error)
 	CreateVerificationRun(ctx context.Context, rq *apiv1.CreateIncidentVerificationRunRequest) (*apiv1.CreateIncidentVerificationRunResponse, error)
 	ListVerificationRuns(ctx context.Context, rq *apiv1.ListIncidentVerificationRunsRequest) (*apiv1.ListIncidentVerificationRunsResponse, error)
+	TriggerScheduledRun(ctx context.Context, rq *TriggerScheduledRunRequest) (*TriggerScheduledRunResponse, error)
 	Search(ctx context.Context, rq *SearchIncidentsRequest) (*SearchIncidentsResponse, error)
 	ListTimeline(ctx context.Context, rq *ListIncidentTimelineRequest) (*ListIncidentTimelineResponse, error)
 
@@ -73,7 +75,8 @@ type IncidentExpansion interface{}
 
 // incidentBiz 是 IncidentBiz 的实现
 type incidentBiz struct {
-	store store.IStore
+	store       store.IStore
+	runAIJobBiz aijobbiz.AIJobBiz
 }
 
 type SearchIncidentsRequest struct {
@@ -117,7 +120,10 @@ var _ IncidentBiz = (*incidentBiz)(nil)
 
 // New 创建 incidentBiz 实例（对齐 miniblog New(store) 风格）。:contentReference[oaicite:6]{index=6}
 func New(store store.IStore) *incidentBiz {
-	return &incidentBiz{store: store}
+	return &incidentBiz{
+		store:       store,
+		runAIJobBiz: aijobbiz.New(store),
+	}
 }
 
 // Create 创建事件单：把 CreateIncidentRequest 映射到 model.IncidentM，然后落库。
@@ -565,6 +571,7 @@ func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentReques
 		return nil, err
 	}
 	oldStatus := strings.ToLower(strings.TrimSpace(incidentM.Status))
+	oldSeverity := strings.TrimSpace(incidentM.Severity)
 	if rq.Status != nil {
 		newStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
 		if newStatus != "" {
@@ -594,6 +601,7 @@ func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentReques
 			"to_status":   incidentM.Status,
 		})
 	}
+	b.maybeTriggerOnEscalationAIJob(ctx, incidentM, oldSeverity)
 
 	return &apiv1.UpdateIncidentResponse{}, nil
 }

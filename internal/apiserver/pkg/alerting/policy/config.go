@@ -107,6 +107,7 @@ type RuleMatch struct {
 type TriggerAction struct {
 	Run                      bool   `json:"run" yaml:"run" mapstructure:"run"`
 	Pipeline                 string `json:"pipeline" yaml:"pipeline" mapstructure:"pipeline"`
+	WindowSeconds            int    `json:"window_seconds" yaml:"window_seconds" mapstructure:"window_seconds"`
 	CooldownSeconds          int    `json:"cooldown_seconds" yaml:"cooldown_seconds" mapstructure:"cooldown_seconds"`
 	DedupWindowSeconds       int    `json:"dedup_window_seconds" yaml:"dedup_window_seconds" mapstructure:"dedup_window_seconds"`
 	IdempotencyBucketSeconds int    `json:"idempotency_bucket_seconds" yaml:"idempotency_bucket_seconds" mapstructure:"idempotency_bucket_seconds"`
@@ -260,6 +261,9 @@ func normalizeRule(rule *TriggerRule) {
 	}
 	if rule.Action.CooldownSeconds < 0 {
 		rule.Action.CooldownSeconds = 0
+	}
+	if rule.Action.WindowSeconds < 0 {
+		rule.Action.WindowSeconds = 0
 	}
 	if rule.Action.DedupWindowSeconds < 0 {
 		rule.Action.DedupWindowSeconds = 0

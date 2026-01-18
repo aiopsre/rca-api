@@ -1154,3 +1154,27 @@ Done Definition：
 - [x] 已实现启动加载与 runtime 注入（仅注入不改消费方）
 - [x] 已补齐 `alerting_policy_load_total{result,source}` 与结构化日志字段
 - [x] 已新增回归脚本与 loader 单测
+
+---
+
+## R4.y：触发入口接入（RunPlan）与 policy 消费（不改 AIJob.Run）
+
+- Doc：`docs/devel/zh-CN/20_RunPlan_Trigger_EntryPoints.md`
+
+Done Definition：
+- 引入 RunPlan（上游决策产物），并在入口层将 RunPlan 转换为 RunAIJobRequest 调用 `AIJobV1().Run()`；`AIJob.Run()` 及其后续逻辑保持不变
+- 接入三条触发入口：on_ingest / on_escalation / scheduled
+  - 默认策略 run=false 时不触发（保持旧行为）；manual 入口不受影响
+- 明确并实现创建阶段字段初始化：Trigger/Pipeline/CreatedBy/TimeRange/IdempotencyKey（空串归一化）
+- TimeRange 初始化按 Doc 默认策略实现，并可由 policy action 覆盖
+- 增加最小观测：ai_job_trigger_attempt_total（含 trigger/decision/rule/source）
+- 新增回归脚本：`scripts/test_r4_L3_trigger_entrypoints_runplan.sh` 覆盖三入口触发/默认不触发/TimeRange 校验；满足 PASS/FAIL 与 FAIL 输出规范，且 `bash -n` 通过
+- 新增/更新 2~4 个单测覆盖 RunPlan 生成、枚举校验、TimeRange 与 idempotency bucket 行为
+- `make test` / `make lint-new` 通过
+
+实施状态（2026-02-27）：
+- [x] 已新增 RunPlan 与 evaluator（policy runtime 消费）
+- [x] 已接入 on_ingest / on_escalation / scheduled 三入口
+- [x] 已保持 manual 入口不受影响，且未改 `AIJob.Run()` 本体
+- [x] 已新增回归脚本 `scripts/test_r4_L3_trigger_entrypoints_runplan.sh`
+- [x] 已新增 RunPlan 关键单测（trigger 枚举、on_ingest 计划、scheduled bucket、idempotency 归一化）

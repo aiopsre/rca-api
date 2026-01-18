@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
@@ -86,6 +87,7 @@ type alertEventBiz struct {
 	store          store.IStore
 	ingestPipeline *alertingingest.Pipeline
 	rolloutConfig  alertingingest.RolloutConfig
+	runAIJobBiz    aijobbiz.AIJobBiz
 	closeOnce      sync.Once
 	closeErr       error
 }
@@ -114,6 +116,7 @@ func New(store store.IStore) *alertEventBiz {
 		store:          store,
 		ingestPipeline: pipeline,
 		rolloutConfig:  runtimeCfg.Rollout,
+		runAIJobBiz:    aijobbiz.New(store),
 	}
 }
 
@@ -393,6 +396,8 @@ func (b *alertEventBiz) ingest(ctx context.Context, rq *v1.IngestAlertEventReque
 	if isAdapterIngest && incidentCreated && metrics.M != nil {
 		metrics.M.RecordAlertIngestNewIncident(adapter)
 	}
+
+	b.maybeTriggerOnIngestAIJob(ctx, incidentID, in, mergeResult, silenced, suppressIncident)
 
 	// 6. 触发通知：如果创建了新事件且未被静默，发送事件创建通知
 	if incidentCreated && !silenced && incidentID != "" {
