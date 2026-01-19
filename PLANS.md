@@ -1178,3 +1178,21 @@ Done Definition：
 - [x] 已保持 manual 入口不受影响，且未改 `AIJob.Run()` 本体
 - [x] 已新增回归脚本 `scripts/test_r4_L3_trigger_entrypoints_runplan.sh`
 - [x] 已新增 RunPlan 关键单测（trigger 枚举、on_ingest 计划、scheduled bucket、idempotency 归一化）
+
+---
+
+## R4.z：on_ingest 入口硬拦截（silenced / suppressIncident）
+
+- Doc：`docs/devel/zh-CN/21_OnIngest_HardBlock_Silence_Suppress.md`
+
+Done Definition：
+- 在 on_ingest 触发入口（`biz/v1/alert_event` 的 `maybeTriggerOnIngestAIJob`）加入硬拦截：
+  - `silenced==true` -> 不 Evaluate，不调用 `AIJob.Run`
+  - `suppressIncident==true` -> 不 Evaluate，不调用 `AIJob.Run`
+- 增加最小观测：trigger attempt decision 新增 `blocked_silenced` / `blocked_suppress_incident`
+- 新增回归脚本：`scripts/test_r4_L4_on_ingest_hardblock_silence_suppress.sh` 覆盖：
+  - policy on_ingest run=true 的前提下，silence 命中不创建 AIJob
+  - policy on_ingest run=true 的前提下，suppressIncident=true 不创建 AIJob
+  - 脚本满足 PASS/FAIL 与 FAIL 输出规范；`bash -n` 通过
+- 新增/更新 2~4 个单测覆盖硬拦截行为（blocked 时不 Evaluate、不 Run）
+- `make test` / `make lint-new` 通过

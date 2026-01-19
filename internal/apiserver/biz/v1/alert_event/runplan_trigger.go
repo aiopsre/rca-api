@@ -9,9 +9,12 @@ import (
 	"strings"
 
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
+
+var evaluateOnIngestRunPlan = alertingpolicy.Evaluate
 
 func (b *alertEventBiz) maybeTriggerOnIngestAIJob(
 	ctx context.Context,
@@ -22,16 +25,36 @@ func (b *alertEventBiz) maybeTriggerOnIngestAIJob(
 	suppressIncident bool,
 ) {
 
-	if b == nil || b.runAIJobBiz == nil || in == nil {
-		return
-	}
-	incidentID = strings.TrimSpace(incidentID)
-	if incidentID == "" {
+	if b == nil || in == nil {
 		return
 	}
 
+	incidentID = strings.TrimSpace(incidentID)
+	if blockByIngestPolicy(ctx, incidentID, mergeResult, silenced, suppressIncident) {
+		return
+	}
+	if b.runAIJobBiz == nil || incidentID == "" {
+		return
+	}
+
+	plan, ok := evaluateOnIngestPlan(ctx, incidentID, in, mergeResult, silenced, suppressIncident)
+	if !ok {
+		return
+	}
+	b.triggerOnIngestAIJob(ctx, incidentID, plan)
+}
+
+func evaluateOnIngestPlan(
+	ctx context.Context,
+	incidentID string,
+	in *ingestInput,
+	mergeResult string,
+	silenced bool,
+	suppressIncident bool,
+) (alertingpolicy.RunPlan, bool) {
+
 	alertTime := in.lastSeenAt.UTC()
-	plan, err := alertingpolicy.Evaluate(ctx, alertingpolicy.EvaluateInput{
+	plan, err := evaluateOnIngestRunPlan(ctx, alertingpolicy.EvaluateInput{
 		Trigger:          alertingpolicy.TriggerOnIngest,
 		IncidentID:       incidentID,
 		IncidentSeverity: in.severity,
@@ -52,7 +75,7 @@ func (b *alertEventBiz) maybeTriggerOnIngestAIJob(
 			"suppress_incident", suppressIncident,
 			"error", err,
 		)
-		return
+		return alertingpolicy.RunPlan{}, false
 	}
 	if !plan.ShouldRun {
 		slog.InfoContext(ctx, "on_ingest run plan skipped",
@@ -63,9 +86,12 @@ func (b *alertEventBiz) maybeTriggerOnIngestAIJob(
 			"rule", plan.RuleName,
 			"policy_source", plan.PolicySource,
 		)
-		return
+		return alertingpolicy.RunPlan{}, false
 	}
+	return plan, true
+}
 
+func (b *alertEventBiz) triggerOnIngestAIJob(ctx context.Context, incidentID string, plan alertingpolicy.RunPlan) {
 	runReq, err := plan.ToRunAIJobRequest(incidentID)
 	if err != nil {
 		slog.WarnContext(ctx, "on_ingest run plan build request failed",
@@ -116,6 +142,49 @@ func (b *alertEventBiz) maybeTriggerOnIngestAIJob(
 	)
 }
 
+func blockByIngestPolicy(
+	ctx context.Context,
+	incidentID string,
+	mergeResult string,
+	silenced bool,
+	suppressIncident bool,
+) bool {
+
+	decision, blocked := resolveOnIngestBlockedDecision(silenced, suppressIncident)
+	if !blocked {
+		return false
+	}
+
+	recordOnIngestTriggerDecision(decision)
+	slog.InfoContext(ctx, "on_ingest run plan blocked",
+		"request_id", contextx.RequestID(ctx),
+		"incident_id", incidentID,
+		"trigger", alertingpolicy.TriggerOnIngest,
+		"decision", decision,
+		"merge_result", mergeResult,
+		"silenced", silenced,
+		"suppress_incident", suppressIncident,
+	)
+	return true
+}
+
+func resolveOnIngestBlockedDecision(silenced bool, suppressIncident bool) (string, bool) {
+	if silenced {
+		return alertingpolicyDecisionBlockedSilenced, true
+	}
+	if suppressIncident {
+		return alertingpolicyDecisionBlockedSuppressIncident, true
+	}
+	return "", false
+}
+
+func recordOnIngestTriggerDecision(decision string) {
+	if metrics.M == nil {
+		return
+	}
+	metrics.M.RecordAlertIngestPolicyDecision(decision, "on_ingest_trigger")
+}
+
 func parseMatchLabelsJSON(raw *string) map[string]string {
 	trimmed := strings.TrimSpace(derefString(raw))
 	if trimmed == "" {
@@ -141,7 +210,9 @@ func parseMatchLabelsJSON(raw *string) map[string]string {
 }
 
 const (
-	defaultCreatedBy                     = "system"
-	alertingpolicyDecisionAlreadyRunning = "already_running"
-	alertingpolicyDecisionError          = "error"
+	defaultCreatedBy                              = "system"
+	alertingpolicyDecisionAlreadyRunning          = "already_running"
+	alertingpolicyDecisionBlockedSilenced         = "blocked_silenced"
+	alertingpolicyDecisionBlockedSuppressIncident = "blocked_suppress_incident"
+	alertingpolicyDecisionError                   = "error"
 )
