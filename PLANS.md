@@ -1196,3 +1196,27 @@ Done Definition：
   - 脚本满足 PASS/FAIL 与 FAIL 输出规范；`bash -n` 通过
 - 新增/更新 2~4 个单测覆盖硬拦截行为（blocked 时不 Evaluate、不 Run）
 - `make test` / `make lint-new` 通过
+
+---
+
+## R4.zz：on_escalation 入口硬拦截（terminal / no-op）
+
+- Doc：`docs/devel/zh-CN/22_OnEscalation_HardBlock_Terminal_NoOp.md`
+
+Done Definition：
+- 在 on_escalation 触发入口（`biz/v1/incident` 的 `maybeTriggerOnEscalationAIJob` 或等价函数）加入硬拦截：
+  - incident 终态（resolved/closed）-> 不 Evaluate，不调用 `AIJob.Run`，decision=blocked_terminal_incident
+  - no-op escalation（无实质升级）-> 不 Evaluate，不调用 `AIJob.Run`，decision=blocked_noop_escalation
+- 增加最小观测：触发决策指标/日志新增上述 blocked decision（backend=on_escalation_trigger）
+- 新增回归脚本：`scripts/test_r4_L5_on_escalation_hardblock_terminal_noop.sh` 覆盖：
+  - policy on_escalation run=true 前提下，终态/no-op 不创建 AIJob
+  - 对照真实升级可创建 queued AIJob（可选但推荐）
+  - 脚本满足 PASS/FAIL 与 FAIL 输出规范；`bash -n` 通过
+- 新增/更新 2~4 个单测覆盖 blocked 时不 Evaluate、不 Run
+- `make test` / `make lint-new` 通过
+
+实施状态（2026-02-27）：
+- [x] 已在 `maybeTriggerOnEscalationAIJob` 入口前置 terminal/no-op 硬拦截（不 Evaluate、不 Run）
+- [x] 已补齐 blocked decision 日志与指标（backend=`on_escalation_trigger`）
+- [x] 已新增回归脚本 `scripts/test_r4_L5_on_escalation_hardblock_terminal_noop.sh`
+- [x] 已新增 incident 侧单测覆盖 terminal/no-op blocked 与未 blocked 继续路径

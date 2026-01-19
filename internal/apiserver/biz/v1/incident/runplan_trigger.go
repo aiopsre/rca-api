@@ -14,15 +14,21 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 const (
-	triggerDecisionAlreadyRunning = "already_running"
-	triggerDecisionError          = "error"
+	triggerDecisionAlreadyRunning        = "already_running"
+	triggerDecisionError                 = "error"
+	triggerDecisionBlockedTerminal       = "blocked_terminal_incident"
+	triggerDecisionBlockedNoopEscalation = "blocked_noop_escalation"
+	triggerDecisionBackendOnEscalation   = "on_escalation_trigger"
 )
+
+var evaluateOnIncidentRunPlan = alertingpolicy.Evaluate
 
 // TriggerScheduledRunRequest represents the scheduled trigger entrypoint request.
 type TriggerScheduledRunRequest struct {
@@ -48,8 +54,41 @@ type TriggerScheduledRunResponse struct {
 	TimeRangeEnd   *timestamppb.Timestamp `json:"timeRangeEnd,omitempty"`
 }
 
-func (b *incidentBiz) maybeTriggerOnEscalationAIJob(ctx context.Context, incident *model.IncidentM, oldSeverity string) {
+//nolint:gocognit,gocyclo // Keep explicit blocked/evaluate/run branches for trigger auditability.
+func (b *incidentBiz) maybeTriggerOnEscalationAIJob(
+	ctx context.Context,
+	incident *model.IncidentM,
+	oldStatus string,
+	oldSeverity string,
+	oldVersion string,
+) {
+
 	if b == nil || b.runAIJobBiz == nil || incident == nil {
+		return
+	}
+	if isClosedIncidentStatus(incident.Status) {
+		recordOnEscalationTriggerDecision(triggerDecisionBlockedTerminal)
+		slog.InfoContext(ctx, "on_escalation run plan blocked",
+			"request_id", contextx.RequestID(ctx),
+			"incident_id", incident.IncidentID,
+			"trigger", alertingpolicy.TriggerOnEscalation,
+			"decision", triggerDecisionBlockedTerminal,
+			"backend", triggerDecisionBackendOnEscalation,
+			"status", strings.ToLower(strings.TrimSpace(incident.Status)),
+		)
+		return
+	}
+	if isNoOpEscalation(oldStatus, incident.Status, oldSeverity, incident.Severity, oldVersion, derefString(incident.Version)) {
+		recordOnEscalationTriggerDecision(triggerDecisionBlockedNoopEscalation)
+		slog.InfoContext(ctx, "on_escalation run plan blocked",
+			"request_id", contextx.RequestID(ctx),
+			"incident_id", incident.IncidentID,
+			"trigger", alertingpolicy.TriggerOnEscalation,
+			"decision", triggerDecisionBlockedNoopEscalation,
+			"backend", triggerDecisionBackendOnEscalation,
+			"status", strings.ToLower(strings.TrimSpace(incident.Status)),
+			"severity", strings.ToLower(strings.TrimSpace(incident.Severity)),
+		)
 		return
 	}
 	if !isSeverityEscalated(oldSeverity, incident.Severity) {
@@ -174,7 +213,7 @@ func (b *incidentBiz) evaluateRunPlan(
 	if incident == nil {
 		return alertingpolicy.RunPlan{}, errorsx.ErrInvalidArgument
 	}
-	plan, err := alertingpolicy.Evaluate(ctx, alertingpolicy.EvaluateInput{
+	plan, err := evaluateOnIncidentRunPlan(ctx, alertingpolicy.EvaluateInput{
 		Trigger:          trigger,
 		IncidentID:       incident.IncidentID,
 		IncidentSeverity: incident.Severity,
@@ -326,4 +365,25 @@ func derefString(v *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*v)
+}
+
+func isNoOpEscalation(
+	oldStatus string,
+	newStatus string,
+	oldSeverity string,
+	newSeverity string,
+	oldVersion string,
+	newVersion string,
+) bool {
+
+	return strings.EqualFold(strings.TrimSpace(oldStatus), strings.TrimSpace(newStatus)) &&
+		strings.EqualFold(strings.TrimSpace(oldSeverity), strings.TrimSpace(newSeverity)) &&
+		strings.EqualFold(strings.TrimSpace(oldVersion), strings.TrimSpace(newVersion))
+}
+
+func recordOnEscalationTriggerDecision(decision string) {
+	if metrics.M == nil {
+		return
+	}
+	metrics.M.RecordAlertIngestPolicyDecision(decision, triggerDecisionBackendOnEscalation)
 }

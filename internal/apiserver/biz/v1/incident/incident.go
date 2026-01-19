@@ -572,6 +572,7 @@ func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentReques
 	}
 	oldStatus := strings.ToLower(strings.TrimSpace(incidentM.Status))
 	oldSeverity := strings.TrimSpace(incidentM.Severity)
+	oldVersion := derefString(incidentM.Version)
 	if rq.Status != nil {
 		newStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
 		if newStatus != "" {
@@ -601,7 +602,7 @@ func (b *incidentBiz) Update(ctx context.Context, rq *apiv1.UpdateIncidentReques
 			"to_status":   incidentM.Status,
 		})
 	}
-	b.maybeTriggerOnEscalationAIJob(ctx, incidentM, oldSeverity)
+	b.maybeTriggerOnEscalationAIJob(ctx, incidentM, oldStatus, oldSeverity, oldVersion)
 
 	return &apiv1.UpdateIncidentResponse{}, nil
 }
