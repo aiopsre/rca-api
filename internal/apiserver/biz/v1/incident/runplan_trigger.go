@@ -26,6 +26,9 @@ const (
 	triggerDecisionBlockedTerminal       = "blocked_terminal_incident"
 	triggerDecisionBlockedNoopEscalation = "blocked_noop_escalation"
 	triggerDecisionBackendOnEscalation   = "on_escalation_trigger"
+	triggerDecisionBackendScheduled      = "scheduled_trigger"
+	triggerDefaultPipeline               = "basic_rca"
+	triggerDefaultCreatedBySystem        = "system"
 )
 
 var evaluateOnIncidentRunPlan = alertingpolicy.Evaluate
@@ -183,6 +186,18 @@ func (b *incidentBiz) TriggerScheduledRun(
 	if err != nil {
 		return nil, err
 	}
+	return b.triggerScheduledRunWithIncident(ctx, incident, rq)
+}
+
+func (b *incidentBiz) triggerScheduledRunWithIncident(
+	ctx context.Context,
+	incident *model.IncidentM,
+	rq *TriggerScheduledRunRequest,
+) (*TriggerScheduledRunResponse, error) {
+
+	if resp, blocked := blockScheduledTerminalIncident(ctx, incident, rq); blocked {
+		return resp, nil
+	}
 
 	plan, err := b.evaluateScheduledRunPlan(ctx, incident, rq)
 	if err != nil {
@@ -193,7 +208,44 @@ func (b *incidentBiz) TriggerScheduledRun(
 	if !plan.ShouldRun {
 		return resp, nil
 	}
-	return b.runScheduledPlan(ctx, incidentID, plan, resp)
+	return b.runScheduledPlan(ctx, incident.IncidentID, plan, resp)
+}
+
+func blockScheduledTerminalIncident(
+	ctx context.Context,
+	incident *model.IncidentM,
+	rq *TriggerScheduledRunRequest,
+) (*TriggerScheduledRunResponse, bool) {
+
+	if incident == nil || !isClosedIncidentStatus(incident.Status) {
+		return nil, false
+	}
+	recordScheduledTriggerDecision(triggerDecisionBlockedTerminal)
+	schedulerName := ""
+	createdBy := ""
+	if rq != nil {
+		schedulerName = trimOptionalString(rq.SchedulerName)
+		createdBy = trimOptionalString(rq.CreatedBy)
+	}
+	if createdBy == "" {
+		createdBy = defaultCreatedByForScheduledTrigger(schedulerName)
+	}
+	slog.InfoContext(ctx, "scheduled run plan blocked",
+		"request_id", contextx.RequestID(ctx),
+		"incident_id", incident.IncidentID,
+		"trigger", alertingpolicy.TriggerScheduled,
+		"decision", triggerDecisionBlockedTerminal,
+		"backend", triggerDecisionBackendScheduled,
+		"status", strings.ToLower(strings.TrimSpace(incident.Status)),
+	)
+	return &TriggerScheduledRunResponse{
+		ShouldRun:    false,
+		Decision:     triggerDecisionBlockedTerminal,
+		Trigger:      alertingpolicy.TriggerScheduled,
+		Pipeline:     triggerDefaultPipeline,
+		CreatedBy:    createdBy,
+		PolicySource: alertingpolicy.CurrentRuntimeConfig().Source,
+	}, true
 }
 
 type runPlanOverrides struct {
@@ -386,4 +438,19 @@ func recordOnEscalationTriggerDecision(decision string) {
 		return
 	}
 	metrics.M.RecordAlertIngestPolicyDecision(decision, triggerDecisionBackendOnEscalation)
+}
+
+func recordScheduledTriggerDecision(decision string) {
+	if metrics.M == nil {
+		return
+	}
+	metrics.M.RecordAlertIngestPolicyDecision(decision, triggerDecisionBackendScheduled)
+}
+
+func defaultCreatedByForScheduledTrigger(schedulerName string) string {
+	schedulerName = strings.TrimSpace(schedulerName)
+	if schedulerName == "" {
+		return triggerDefaultCreatedBySystem
+	}
+	return "scheduler:" + schedulerName
 }

@@ -92,6 +92,81 @@ func TestMaybeTriggerOnEscalationAIJob_NotBlockedContinuesEvaluateAndRun(t *test
 	require.Equal(t, "incident-run", fake.lastRunRequest.GetIncidentID())
 }
 
+func TestTriggerScheduledRunWithIncident_BlockedWhenTerminal(t *testing.T) {
+	fake := &fakeAIJobBizForEscalationRunPlan{}
+	biz := &incidentBiz{runAIJobBiz: fake}
+	incident := &model.IncidentM{
+		IncidentID: "incident-scheduled-terminal",
+		Status:     "closed",
+		Severity:   "P1",
+	}
+	req := &TriggerScheduledRunRequest{
+		IncidentID:    incident.IncidentID,
+		SchedulerName: strPtrForTest("nightly"),
+	}
+
+	evalCalled := false
+	restore := withEvaluateOnIncidentRunPlanForTest(func(_ context.Context, _ alertingpolicy.EvaluateInput) (alertingpolicy.RunPlan, error) {
+		evalCalled = true
+		return alertingpolicy.RunPlan{}, nil
+	})
+	defer restore()
+
+	resp, err := biz.triggerScheduledRunWithIncident(context.Background(), incident, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.False(t, resp.ShouldRun)
+	require.Equal(t, triggerDecisionBlockedTerminal, resp.Decision)
+	require.Equal(t, alertingpolicy.TriggerScheduled, resp.Trigger)
+	require.False(t, evalCalled)
+	require.Equal(t, 0, fake.runCalls)
+}
+
+func TestTriggerScheduledRunWithIncident_NotTerminalContinuesEvaluateAndRun(t *testing.T) {
+	fake := &fakeAIJobBizForEscalationRunPlan{
+		runResp: &v1.RunAIJobResponse{JobID: "ai-job-scheduled-1"},
+	}
+	biz := &incidentBiz{runAIJobBiz: fake}
+	incident := &model.IncidentM{
+		IncidentID: "incident-scheduled-open",
+		Status:     "open",
+		Severity:   "P2",
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	req := &TriggerScheduledRunRequest{
+		IncidentID:    incident.IncidentID,
+		SchedulerName: strPtrForTest("hourly"),
+	}
+
+	evalCalled := false
+	restore := withEvaluateOnIncidentRunPlanForTest(func(_ context.Context, in alertingpolicy.EvaluateInput) (alertingpolicy.RunPlan, error) {
+		evalCalled = true
+		require.Equal(t, alertingpolicy.TriggerScheduled, in.Trigger)
+		return alertingpolicy.RunPlan{
+			ShouldRun:      true,
+			Decision:       "run",
+			Trigger:        alertingpolicy.TriggerScheduled,
+			Pipeline:       "basic_rca",
+			CreatedBy:      "scheduler:hourly",
+			TimeRangeStart: now.Add(-time.Hour),
+			TimeRangeEnd:   now,
+		}, nil
+	})
+	defer restore()
+
+	resp, err := biz.triggerScheduledRunWithIncident(context.Background(), incident, req)
+
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.ShouldRun)
+	require.Equal(t, "run", resp.Decision)
+	require.True(t, evalCalled)
+	require.Equal(t, 1, fake.runCalls)
+	require.NotNil(t, fake.lastRunRequest)
+	require.Equal(t, incident.IncidentID, fake.lastRunRequest.GetIncidentID())
+}
+
 func withEvaluateOnIncidentRunPlanForTest(
 	fn func(context.Context, alertingpolicy.EvaluateInput) (alertingpolicy.RunPlan, error),
 ) func() {
@@ -196,4 +271,9 @@ func (f *fakeAIJobBizForEscalationRunPlan) RecordToolCallAudit(
 	*aijobbiz.RecordToolCallAuditRequest,
 ) (string, error) {
 	return "", nil
+}
+
+func strPtrForTest(v string) *string {
+	value := v
+	return &value
 }

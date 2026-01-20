@@ -1220,3 +1220,34 @@ Done Definition：
 - [x] 已补齐 blocked decision 日志与指标（backend=`on_escalation_trigger`）
 - [x] 已新增回归脚本 `scripts/test_r4_L5_on_escalation_hardblock_terminal_noop.sh`
 - [x] 已新增 incident 侧单测覆盖 terminal/no-op blocked 与未 blocked 继续路径
+
+---
+
+## R4.zzz：scheduled 入口硬拦截（terminal incident）
+
+- Doc：`docs/devel/zh-CN/23_Scheduled_HardBlock_Terminal.md`
+
+Done Definition：
+- 在 scheduled 触发入口（`TriggerScheduledRun` 或等价函数）前置 terminal incident 硬拦截：
+  - `status in (resolved, closed)` -> 不 Evaluate，不调用 `AIJob.Run`，decision=`blocked_terminal_incident`
+- 复用现有触发决策计数器记录 blocked decision，backend=`scheduled_trigger`
+- 未命中 terminal 时保留原路径：`Evaluate -> RunPlan -> AIJob.Run`
+- 新增回归脚本：`scripts/test_r4_L6_scheduled_hardblock_terminal.sh` 覆盖 terminal blocked 与非 terminal 对照
+- 新增/更新 2~4 个单测覆盖 terminal blocked 与未 blocked 路径
+- `make test` / `make lint-new` 通过
+
+---
+
+## R4.zzz：scheduled 入口硬拦截（terminal incident）
+
+- Doc：`docs/devel/zh-CN/23_Scheduled_HardBlock_Terminal.md`
+
+Done Definition：
+- 在 scheduled 触发入口（`TriggerScheduledRun` 或等价函数）加入 terminal gate：
+  - incident 终态（resolved/closed）-> 不 Evaluate，不调用 `AIJob.Run`，decision=blocked_terminal_incident（backend=scheduled_trigger）
+- 新增回归脚本：`scripts/test_r4_L6_scheduled_hardblock_terminal.sh` 覆盖：
+  - policy scheduled run=true 前提下，终态 incident 不创建 AIJob
+  - 对照非终态 incident 可创建 queued AIJob（可选但推荐）
+  - 脚本满足 PASS/FAIL 与 FAIL 输出规范；`bash -n` 通过
+- 新增/更新 2~4 个单测覆盖 blocked 时不 Evaluate、不 Run
+- `make test` / `make lint-new` 通过
