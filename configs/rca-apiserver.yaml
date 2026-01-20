@@ -87,6 +87,14 @@ alerting_policy:
   path: "configs/alerting_policy.yaml"
   strict: false
 
+ai_job_longpoll:
+  poll_interval: 1s
+  watermark_cache_ttl: 1s
+  max_polling_waiters: 200
+  db_error_window: 20
+  db_error_rate_threshold: 0.5
+  db_error_min_samples: 6
+
 notice_worker:
   poll_interval: 1s
   batch_size: 16

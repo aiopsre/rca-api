@@ -13,6 +13,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 	genericoptions "github.com/onexstack/onexstack/pkg/options"
 	"github.com/onexstack/onexstack/pkg/server"
@@ -37,6 +38,7 @@ type Config struct {
 	AlertingIngestPolicy alertingingest.PolicyConfig
 	AlertingRollout      alertingingest.RolloutConfig
 	AlertingPolicy       alertingpolicy.ExternalPolicyOptions
+	AIJobLongPoll        queue.AdaptiveWaiterOptions
 	NoticeBaseURL        string
 	MCPPolicy            policy.MCPPolicyConfig
 }
@@ -81,6 +83,7 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	}
 	if s != nil && s.cfg != nil && s.cfg.Handler != nil {
 		s.cfg.Handler.ConfigureMCPPolicy(cfg.MCPPolicy)
+		s.cfg.Handler.ConfigureAdaptiveLongPollOptions(cfg.AIJobLongPoll)
 	}
 
 	return s.Prepare(ctx)

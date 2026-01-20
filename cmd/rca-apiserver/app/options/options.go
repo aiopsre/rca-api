@@ -14,6 +14,7 @@ import (
 	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 )
 
@@ -51,18 +52,57 @@ type ServerOptions struct {
 	Alerting AlertingOptions `json:"alerting" mapstructure:"alerting"`
 	// AlertingPolicy configures optional external trigger policy file loading.
 	AlertingPolicy alertingpolicy.ExternalPolicyOptions `json:"alerting_policy" mapstructure:"alerting_policy"`
+	// AIJobLongPoll configures adaptive long-poll waiter options for /v1/ai/jobs.
+	AIJobLongPoll AIJobLongPollOptions `json:"ai_job_longpoll" mapstructure:"ai_job_longpoll"`
 	// NoticeWorker configures notice-worker polling, limits, and redis limiter internals.
 	NoticeWorker NoticeWorkerOptions `json:"notice_worker" mapstructure:"notice_worker"`
 	// NoticeBaseURL is default links base_url when channel.baseURL is unset.
 	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
 	// MCPPolicy configures per-tool MCP governance limits and enable switches.
 	MCPPolicy policy.MCPPolicyConfig `json:"mcp" mapstructure:"mcp"`
+
+	aiJobLongPollYAMLSet queue.AdaptiveWaiterOptionSet `json:"-" mapstructure:"-"`
+	aiJobLongPollCLISet  queue.AdaptiveWaiterOptionSet `json:"-" mapstructure:"-"`
+	resolvedLongPollOpts queue.AdaptiveWaiterOptions   `json:"-" mapstructure:"-"`
 }
 
 // AlertingOptions contains alert ingest policy controls.
 type AlertingOptions struct {
 	IngestPolicy alertingingest.PolicyConfig  `json:"ingest_policy" mapstructure:"ingest_policy"`
 	Rollout      alertingingest.RolloutConfig `json:"rollout" mapstructure:"rollout"`
+}
+
+// AIJobLongPollOptions maps yaml/cli long-poll knobs to AdaptiveWaiterOptions.
+type AIJobLongPollOptions struct {
+	PollInterval         time.Duration `json:"poll_interval" mapstructure:"poll_interval"`
+	WatermarkCacheTTL    time.Duration `json:"watermark_cache_ttl" mapstructure:"watermark_cache_ttl"`
+	MaxPollingWaiters    int64         `json:"max_polling_waiters" mapstructure:"max_polling_waiters"`
+	DBErrorWindow        int           `json:"db_error_window" mapstructure:"db_error_window"`
+	DBErrorRateThreshold float64       `json:"db_error_rate_threshold" mapstructure:"db_error_rate_threshold"`
+	DBErrorMinSamples    int           `json:"db_error_min_samples" mapstructure:"db_error_min_samples"`
+}
+
+func newAIJobLongPollOptions() AIJobLongPollOptions {
+	defaults := queue.DefaultAdaptiveWaiterOptions()
+	return AIJobLongPollOptions{
+		PollInterval:         defaults.PollInterval,
+		WatermarkCacheTTL:    defaults.WatermarkCacheTTL,
+		MaxPollingWaiters:    defaults.MaxPollingWaiters,
+		DBErrorWindow:        defaults.DBErrorWindow,
+		DBErrorRateThreshold: defaults.DBErrorRateThreshold,
+		DBErrorMinSamples:    defaults.DBErrorMinSamples,
+	}
+}
+
+func (o AIJobLongPollOptions) toAdaptiveWaiterOptions() queue.AdaptiveWaiterOptions {
+	return queue.AdaptiveWaiterOptions{
+		PollInterval:         o.PollInterval,
+		WatermarkCacheTTL:    o.WatermarkCacheTTL,
+		MaxPollingWaiters:    o.MaxPollingWaiters,
+		DBErrorWindow:        o.DBErrorWindow,
+		DBErrorRateThreshold: o.DBErrorRateThreshold,
+		DBErrorMinSamples:    o.DBErrorMinSamples,
+	}
 }
 
 // NoticeWorkerRedisOptions configures redis-local knobs for notice-worker limiter.
@@ -97,6 +137,7 @@ func NewServerOptions() *ServerOptions {
 			Rollout:      alertingingest.DefaultRolloutConfig(),
 		},
 		AlertingPolicy: alertingpolicy.DefaultExternalPolicyOptions(),
+		AIJobLongPoll:  newAIJobLongPollOptions(),
 		NoticeWorker: NoticeWorkerOptions{
 			PollInterval:       1 * time.Second,
 			BatchSize:          16,
@@ -158,6 +199,12 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Alerting.Rollout.Mode, "alerting.rollout.mode", o.Alerting.Rollout.Mode, "Adapter ingest rollout mode: observe|enforce.")
 	fs.StringVar(&o.AlertingPolicy.Path, "alerting-policy-path", o.AlertingPolicy.Path, "Path to external alerting trigger policy yaml. Empty disables file loading.")
 	fs.BoolVar(&o.AlertingPolicy.Strict, "alerting-policy-strict", o.AlertingPolicy.Strict, "When true, alerting policy load/parse failure blocks startup.")
+	fs.DurationVar(&o.AIJobLongPoll.PollInterval, "ai-job-longpoll-poll-interval", o.AIJobLongPoll.PollInterval, "Adaptive long-poll Level2 polling interval.")
+	fs.DurationVar(&o.AIJobLongPoll.WatermarkCacheTTL, "ai-job-longpoll-watermark-cache-ttl", o.AIJobLongPoll.WatermarkCacheTTL, "Adaptive long-poll Level2 watermark cache ttl.")
+	fs.Int64Var(&o.AIJobLongPoll.MaxPollingWaiters, "ai-job-longpoll-max-polling-waiters", o.AIJobLongPoll.MaxPollingWaiters, "Adaptive long-poll Level3 max waiters allowed for DB polling.")
+	fs.IntVar(&o.AIJobLongPoll.DBErrorWindow, "ai-job-longpoll-db-error-window", o.AIJobLongPoll.DBErrorWindow, "Adaptive long-poll DB polling error-rate sliding window size.")
+	fs.Float64Var(&o.AIJobLongPoll.DBErrorRateThreshold, "ai-job-longpoll-db-error-rate-threshold", o.AIJobLongPoll.DBErrorRateThreshold, "Adaptive long-poll DB polling error-rate threshold for Level3 self-protect.")
+	fs.IntVar(&o.AIJobLongPoll.DBErrorMinSamples, "ai-job-longpoll-db-error-min-samples", o.AIJobLongPoll.DBErrorMinSamples, "Adaptive long-poll minimum DB polling samples before error-rate self-protect.")
 	fs.DurationVar(&o.NoticeWorker.PollInterval, "notice-worker-poll-interval", o.NoticeWorker.PollInterval, "Polling interval for notice worker.")
 	fs.IntVar(&o.NoticeWorker.BatchSize, "notice-worker-batch-size", o.NoticeWorker.BatchSize, "Batch size per notice worker claim.")
 	fs.DurationVar(&o.NoticeWorker.LockTimeout, "notice-worker-lock-timeout", o.NoticeWorker.LockTimeout, "Lock timeout before notice worker can reclaim deliveries.")
@@ -174,6 +221,7 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 // Complete completes all the required options.
 func (o *ServerOptions) Complete() error {
 	o.RedisOptions.ApplyDefaults()
+	o.resolveAdaptiveLongPollOptions()
 
 	// Keep notice-worker as source-of-truth for runtime limiter values while allowing
 	// redis.limiter profile to override default notice-worker values.
@@ -246,6 +294,7 @@ func (o *ServerOptions) validateNoticeWorkerOptions() []error {
 
 // Config builds an apiserver.Config based on ServerOptions.
 func (o *ServerOptions) Config() (*apiserver.Config, error) {
+	o.resolveAdaptiveLongPollOptions()
 	redisOpts := o.RedisOptions
 	redisOpts.ApplyDefaults()
 	return &apiserver.Config{
@@ -256,18 +305,51 @@ func (o *ServerOptions) Config() (*apiserver.Config, error) {
 		AlertingIngestPolicy: o.Alerting.IngestPolicy,
 		AlertingRollout:      o.Alerting.Rollout,
 		AlertingPolicy:       o.AlertingPolicy,
+		AIJobLongPoll:        o.resolvedLongPollOpts,
 		NoticeBaseURL:        strings.TrimSpace(o.NoticeBaseURL),
 		MCPPolicy:            o.MCPPolicy,
 	}, nil
 }
 
-// MarkCLIFlagOverrides marks which alerting policy options are explicitly set by CLI flags.
+// MarkCLIFlagOverrides marks which options are explicitly set by CLI flags.
 func (o *ServerOptions) MarkCLIFlagOverrides(overrides map[string]string) {
 	if o == nil || len(overrides) == 0 {
 		return
 	}
 	_, o.AlertingPolicy.PathSetByCLI = overrides["alerting-policy-path"]
 	_, o.AlertingPolicy.StrictSetByCLI = overrides["alerting-policy-strict"]
+	_, o.aiJobLongPollCLISet.PollInterval = overrides["ai-job-longpoll-poll-interval"]
+	_, o.aiJobLongPollCLISet.WatermarkCacheTTL = overrides["ai-job-longpoll-watermark-cache-ttl"]
+	_, o.aiJobLongPollCLISet.MaxPollingWaiters = overrides["ai-job-longpoll-max-polling-waiters"]
+	_, o.aiJobLongPollCLISet.DBErrorWindow = overrides["ai-job-longpoll-db-error-window"]
+	_, o.aiJobLongPollCLISet.DBErrorRateThreshold = overrides["ai-job-longpoll-db-error-rate-threshold"]
+	_, o.aiJobLongPollCLISet.DBErrorMinSamples = overrides["ai-job-longpoll-db-error-min-samples"]
+}
+
+// MarkConfigFileOverrides marks adaptive long-poll keys explicitly configured in yaml.
+func (o *ServerOptions) MarkConfigFileOverrides(inConfig func(string) bool) {
+	if o == nil || inConfig == nil {
+		return
+	}
+	o.aiJobLongPollYAMLSet.PollInterval = inConfig("ai_job_longpoll.poll_interval")
+	o.aiJobLongPollYAMLSet.WatermarkCacheTTL = inConfig("ai_job_longpoll.watermark_cache_ttl")
+	o.aiJobLongPollYAMLSet.MaxPollingWaiters = inConfig("ai_job_longpoll.max_polling_waiters")
+	o.aiJobLongPollYAMLSet.DBErrorWindow = inConfig("ai_job_longpoll.db_error_window")
+	o.aiJobLongPollYAMLSet.DBErrorRateThreshold = inConfig("ai_job_longpoll.db_error_rate_threshold")
+	o.aiJobLongPollYAMLSet.DBErrorMinSamples = inConfig("ai_job_longpoll.db_error_min_samples")
+}
+
+func (o *ServerOptions) resolveAdaptiveLongPollOptions() {
+	if o == nil {
+		return
+	}
+	yamlOpts := o.AIJobLongPoll.toAdaptiveWaiterOptions()
+	o.resolvedLongPollOpts = queue.ResolveAdaptiveWaiterOptions(
+		yamlOpts,
+		o.aiJobLongPollYAMLSet,
+		yamlOpts,
+		o.aiJobLongPollCLISet,
+	)
 }
 
 func isValidNoticeBaseURL(raw string) bool {

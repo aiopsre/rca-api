@@ -134,6 +134,9 @@ func runWithPreparedOptions(
 		if err := viper.Unmarshal(opts); err != nil {
 			return fmt.Errorf("failed to unmarshal configuration: %w", err)
 		}
+		opts.MarkConfigFileOverrides(func(key string) bool {
+			return viper.InConfig(key)
+		})
 		if err := applyFlagOverrides(cmd.Flags(), cliOverrides); err != nil {
 			return err
 		}

@@ -19,6 +19,8 @@ type Handler struct {
 	jobQueueWakeup   queue.AIJobQueueWakeup
 	longPollWaiter   *queue.AdaptiveWaiter
 	longPollOnce     sync.Once
+	longPollOpts     queue.AdaptiveWaiterOptions
+	longPollOptsSet  bool
 	mcpPolicies      mcpPolicyRegistry
 }
 
@@ -52,6 +54,8 @@ func NewHandlerWithQueueDeps(
 		val:              val,
 		jobQueueNotifier: jobQueueNotifier,
 		jobQueueWakeup:   jobQueueWakeup,
+		longPollOpts:     queue.ApplyAdaptiveWaiterEnvOverrides(queue.DefaultAdaptiveWaiterOptions()),
+		longPollOptsSet:  true,
 		mcpPolicies:      newMCPPolicyRegistry(),
 	}
 }
@@ -76,4 +80,15 @@ func (h *Handler) Close() error {
 		return nil
 	}
 	return h.biz.Close()
+}
+
+// ConfigureAdaptiveLongPollOptions injects resolved adaptive waiter options from server startup.
+func (h *Handler) ConfigureAdaptiveLongPollOptions(opts queue.AdaptiveWaiterOptions) {
+	if h == nil {
+		return
+	}
+	h.longPollOpts = opts
+	h.longPollOptsSet = true
+	h.longPollWaiter = nil
+	h.longPollOnce = sync.Once{}
 }

@@ -1276,3 +1276,43 @@ Done Definition：
 - [x] 已完成 Level 1/2/3 路径与 fallback reason 记录
 - [x] 已新增回归脚本 `scripts/test_r1_L2_longpoll_progressive_degrade.sh`
 - [x] 已新增 queue 单测覆盖 cache 降压、L3 跳过 polling、pubsub 健康防抖
+
+---
+
+
+## R1.y：Adaptive long-poll 参数接入 YAML + CLI（保持默认值不变）
+
+- Doc：`docs/devel/zh-CN/25_R1_Adaptive_LongPoll_Config_CLI.md`
+
+Done Definition：
+- 将 adaptive long-poll 参数从仅 env override 扩展为：
+  - `configs/rca-apiserver.yaml` 可配置
+  - CLI flags 可覆盖
+  - 保留 env override 兼容
+- 默认值保持不变（与 `DefaultAdaptiveWaiterOptions()` 完全一致）
+- 配置优先级明确且有单测覆盖：CLI > YAML > env > default
+- handler 初始化 adaptive waiter 使用“解析后的最终 options”（不再只依赖 env）
+- 新增回归脚本：`scripts/test_r1_L3_longpoll_adaptive_config_cli.sh`
+- 新增/更新 2~4 个单测覆盖默认值与覆盖优先级
+- `make test` / `make lint-new` 通过
+
+---
+
+## R1.y：adaptive long-poll 参数接入 YAML + CLI（保持默认值不变）
+
+- Doc：`docs/devel/zh-CN/25_R1_Adaptive_LongPoll_Config_CLI.md`
+
+Done Definition：
+- 在 `configs/rca-apiserver.yaml` 新增 `ai_job_longpoll` 配置块，仅包含现有 `AdaptiveWaiterOptions` 字段
+- 新增 CLI 覆盖参数：
+  - `--ai-job-longpoll-poll-interval`
+  - `--ai-job-longpoll-watermark-cache-ttl`
+  - `--ai-job-longpoll-max-polling-waiters`
+  - `--ai-job-longpoll-db-error-window`
+  - `--ai-job-longpoll-db-error-rate-threshold`
+  - `--ai-job-longpoll-db-error-min-samples`
+- 保留 env 兼容覆盖，优先级为 `CLI > YAML > env > default`
+- handler 初始化 adaptive waiter 使用最终解析 options（不再仅依赖 env）
+- 新增回归脚本：`scripts/test_r1_L3_longpoll_adaptive_config_cli.sh`
+- 新增/更新 2~4 个单测覆盖默认值不变、YAML 覆盖 env、CLI 覆盖 YAML
+- `make test` / `make lint-new` 通过

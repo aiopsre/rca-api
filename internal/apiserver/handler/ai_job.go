@@ -200,8 +200,10 @@ func (h *Handler) adaptiveWaiter() *queue.AdaptiveWaiter {
 		return nil
 	}
 	h.longPollOnce.Do(func() {
-		opts := queue.DefaultAdaptiveWaiterOptions()
-		opts = queue.ApplyAdaptiveWaiterEnvOverrides(opts)
+		opts := h.longPollOpts
+		if !h.longPollOptsSet {
+			opts = queue.ApplyAdaptiveWaiterEnvOverrides(queue.DefaultAdaptiveWaiterOptions())
+		}
 		h.longPollWaiter = queue.NewAdaptiveWaiter(
 			h.jobQueueNotifier,
 			h.jobQueueWakeup,
