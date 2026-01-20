@@ -1251,3 +1251,28 @@ Done Definition：
   - 脚本满足 PASS/FAIL 与 FAIL 输出规范；`bash -n` 通过
 - 新增/更新 2~4 个单测覆盖 blocked 时不 Evaluate、不 Run
 - `make test` / `make lint-new` 通过
+
+---
+
+## R1.x：AIJob Long Poll 渐进式降级（adaptive waiter + watermark cache）
+
+- Doc：`docs/devel/zh-CN/24_R1_Adaptive_LongPoll_Progressive_Degrade.md`
+
+Done Definition：
+- 在 `/v1/ai/jobs?wait_seconds=` long-poll 等待逻辑引入三级降级：
+  - Level 1：Redis Pub/Sub 唤醒（保持现有语义）
+  - Level 2：DB watermark polling（fallback），但使用实例级 watermark cache + 自适应 interval 控制 DB 压力
+  - Level 3：自我保护兜底（压力阈值触发时跳过 polling，仅等待超时/或仅 pubsub）
+- Pub/Sub Ready 判定增强：基于健康窗口 + hysteresis（防抖）
+- 避免 timer/GC 风暴：等待循环使用 ticker 或复用 timer（不在循环中频繁 time.After）
+- 复用现有观测：`ai_job_longpoll_wakeup_total` / `ai_job_longpoll_fallback_total`，并补充 L3 fallback reason
+- 新增回归脚本：`scripts/test_r1_L2_longpoll_progressive_degrade.sh`
+- 新增/更新 2~4 个单测覆盖 cache 降压、自我保护、pubsub 健康防抖
+- `make test` / `make lint-new` 通过
+
+实施状态（2026-02-28）：
+- [x] 已新增 adaptive waiter / watermark cache / pubsub health 三个组件
+- [x] 已在 `ListAIJobs` 接入 adaptive waiter，保持 list -> wait -> relist 结构
+- [x] 已完成 Level 1/2/3 路径与 fallback reason 记录
+- [x] 已新增回归脚本 `scripts/test_r1_L2_longpoll_progressive_degrade.sh`
+- [x] 已新增 queue 单测覆盖 cache 降压、L3 跳过 polling、pubsub 健康防抖

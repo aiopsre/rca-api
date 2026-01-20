@@ -15,17 +15,13 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const (
-	orchestratorInstanceIDHeader   = "X-Orchestrator-Instance-ID"
-	longPollDBCheckInterval        = 500 * time.Millisecond
-	wakeupSourceRedis              = "redis"
-	wakeupSourceDBWatermark        = "db_watermark"
-	wakeupSourceTimeout            = "timeout"
-	fallbackReasonRedisUnavailable = "redis_unavailable"
+	orchestratorInstanceIDHeader = "X-Orchestrator-Instance-ID"
 )
 
 func (h *Handler) RunIncidentAIJob(c *gin.Context) {
@@ -172,107 +168,55 @@ func (h *Handler) ListAIJobs(c *gin.Context) {
 		return
 	}
 
-	var wakeupSource string
-	if h.jobQueueWakeup != nil && h.jobQueueWakeup.Ready() {
-		resp, wakeupSource, err = h.longPollAIJobsViaRedisSignal(c.Request.Context(), req, waitSeconds)
-	} else {
-		if metrics.M != nil {
-			metrics.M.RecordAIJobLongPollFallback(fallbackReasonRedisUnavailable)
-		}
-		resp, wakeupSource, err = h.longPollAIJobsViaDBWatermark(c.Request.Context(), req, waitSeconds)
+	waiter := h.adaptiveWaiter()
+	if waiter == nil {
+		outcome = "error"
+		core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+		return
 	}
+
+	waitResult, waitErr := waiter.Wait(c.Request.Context(), time.Duration(waitSeconds)*time.Second)
+	if waitErr != nil {
+		outcome = "error"
+		core.WriteResponse(c, nil, waitErr)
+		return
+	}
+	if reason := strings.TrimSpace(waitResult.FallbackReason); reason != "" && metrics.M != nil {
+		metrics.M.RecordAIJobLongPollFallback(reason)
+	}
+
+	resp, err = h.biz.AIJobV1().List(c.Request.Context(), req)
 	if err != nil {
 		outcome = "error"
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	h.recordLongPollWake(c.Request.Context(), wakeupSource, waitSeconds)
+	h.recordLongPollWake(c.Request.Context(), waitResult.WakeupSource, waitSeconds)
 	core.WriteResponse(c, resp, nil)
 }
 
-func (h *Handler) longPollAIJobsViaRedisSignal(
-	ctx context.Context,
-	req *v1.ListAIJobsRequest,
-	waitSeconds int64,
-) (*v1.ListAIJobsResponse, string, error) {
-
-	// Close list->wait race: if queue changed before entering wait, this second list catches it.
-	notifierVersion := h.jobQueueNotifier.Version()
-	resp, err := h.biz.AIJobV1().List(ctx, req)
-	if err != nil {
-		return nil, "", err
+func (h *Handler) adaptiveWaiter() *queue.AdaptiveWaiter {
+	if h == nil || h.biz == nil {
+		return nil
 	}
-	if len(resp.GetJobs()) > 0 {
-		return resp, wakeupSourceRedis, nil
-	}
-
-	waitDur := time.Duration(waitSeconds) * time.Second
-	woke := h.jobQueueNotifier.Wait(ctx, notifierVersion, waitDur)
-	source := wakeupSourceTimeout
-	if woke {
-		source = wakeupSourceRedis
-	}
-
-	resp, err = h.biz.AIJobV1().List(ctx, req)
-	if err != nil {
-		return nil, "", err
-	}
-	return resp, source, nil
-}
-
-//nolint:gocognit // Fallback loop intentionally mirrors legacy B2 watermark polling flow.
-func (h *Handler) longPollAIJobsViaDBWatermark(
-	ctx context.Context,
-	req *v1.ListAIJobsRequest,
-	waitSeconds int64,
-) (*v1.ListAIJobsResponse, string, error) {
-
-	baselineVersion, err := h.biz.AIJobV1().QueueSignalVersion(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-
-	// Close list->baseline race: if queue changed before baseline read, this second list catches it.
-	resp, err := h.biz.AIJobV1().List(ctx, req)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(resp.GetJobs()) > 0 {
-		return resp, wakeupSourceDBWatermark, nil
-	}
-
-	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
-	notifierVersion := h.jobQueueNotifier.Version()
-	for ctx.Err() == nil {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		waitDur := longPollDBCheckInterval
-		waitDur = min(waitDur, remaining)
-		h.jobQueueNotifier.Wait(ctx, notifierVersion, waitDur)
-		notifierVersion = h.jobQueueNotifier.Version()
-
-		currentVersion, verErr := h.biz.AIJobV1().QueueSignalVersion(ctx)
-		if verErr != nil {
-			return nil, "", verErr
-		}
-		if currentVersion != baselineVersion {
-			resp, listErr := h.biz.AIJobV1().List(ctx, req)
-			if listErr != nil {
-				return nil, "", listErr
-			}
-			return resp, wakeupSourceDBWatermark, nil
-		}
-	}
-
-	return &v1.ListAIJobsResponse{
-		TotalCount: 0,
-		Jobs:       []*v1.AIJob{},
-	}, wakeupSourceTimeout, nil
+	h.longPollOnce.Do(func() {
+		opts := queue.DefaultAdaptiveWaiterOptions()
+		opts = queue.ApplyAdaptiveWaiterEnvOverrides(opts)
+		h.longPollWaiter = queue.NewAdaptiveWaiter(
+			h.jobQueueNotifier,
+			h.jobQueueWakeup,
+			h.biz.AIJobV1().QueueSignalVersion,
+			opts,
+		)
+	})
+	return h.longPollWaiter
 }
 
 func (h *Handler) recordLongPollWake(ctx context.Context, source string, waitSeconds int64) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		source = queue.LongPollWakeupSourceTimeout
+	}
 	if metrics.M != nil {
 		metrics.M.RecordAIJobLongPollWakeup(source)
 	}

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -28,8 +27,8 @@ type PubSubWakeup struct {
 	client *redis.Client
 	topic  string
 
-	ready atomic.Bool
-	once  sync.Once
+	once   sync.Once
+	health *PubSubHealth
 }
 
 var _ AIJobQueueWakeup = (*PubSubWakeup)(nil)
@@ -43,6 +42,7 @@ func NewPubSubWakeup(client *redis.Client, topic string) *PubSubWakeup {
 	return &PubSubWakeup{
 		client: client,
 		topic:  trimmedTopic,
+		health: NewPubSubHealth(PubSubHealthOptions{}),
 	}
 }
 
@@ -91,12 +91,12 @@ func (w *PubSubWakeup) Ready() bool {
 	if w == nil {
 		return false
 	}
-	return w.ready.Load()
+	return w.health.Ready(time.Now().UTC())
 }
 
 //nolint:gocognit,gocyclo // Subscription loop keeps reconnect and readiness transitions explicit.
 func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
-	defer w.setReady(false)
+	defer w.markFailure(time.Now().UTC())
 	defer func() {
 		if w.client != nil {
 			_ = w.client.Close()
@@ -104,11 +104,11 @@ func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
 	}()
 
 	backoff := redisSubscribeBackoffMin
-	w.setReady(false)
+	w.markFailure(time.Now().UTC())
 	for ctx.Err() == nil {
 		pubsub := w.client.Subscribe(ctx, w.topic)
 		if _, err := pubsub.Receive(ctx); err != nil {
-			w.setReady(false)
+			w.markFailure(time.Now().UTC())
 			_ = pubsub.Close()
 			slog.Error("redis subscribe ai job queue signal failed",
 				"topic", w.topic,
@@ -123,7 +123,7 @@ func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
 			continue
 		}
 
-		w.setReady(true)
+		w.markSuccess(time.Now().UTC())
 		backoff = redisSubscribeBackoffMin
 
 		channel := pubsub.Channel()
@@ -142,13 +142,14 @@ func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
 				if msg == nil {
 					continue
 				}
+				w.markSuccess(time.Now().UTC())
 				if onMessage != nil {
 					onMessage()
 				}
 			}
 		}
 
-		w.setReady(false)
+		w.markFailure(time.Now().UTC())
 		_ = pubsub.Close()
 		if ctx.Err() == nil {
 			slog.Error("redis subscribe ai job queue signal failed",
@@ -165,13 +166,32 @@ func (w *PubSubWakeup) subscribeLoop(ctx context.Context, onMessage func()) {
 	}
 }
 
-func (w *PubSubWakeup) setReady(ready bool) {
+func (w *PubSubWakeup) markSuccess(now time.Time) {
 	if w == nil {
 		return
 	}
-	w.ready.Store(ready)
+	if w.health != nil {
+		w.health.MarkSuccess(now)
+	}
+	w.updateMetrics(now)
+}
+
+func (w *PubSubWakeup) markFailure(now time.Time) {
+	if w == nil {
+		return
+	}
+	if w.health != nil {
+		w.health.MarkFailure(now)
+	}
+	w.updateMetrics(now)
+}
+
+func (w *PubSubWakeup) updateMetrics(now time.Time) {
+	if w == nil {
+		return
+	}
 	if metrics.M != nil {
-		metrics.M.SetRedisPubSubSubscribeState(w.topic, ready)
+		metrics.M.SetRedisPubSubSubscribeState(w.topic, w.health.Ready(now))
 	}
 }
 

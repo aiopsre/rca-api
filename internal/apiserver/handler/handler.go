@@ -2,6 +2,7 @@ package handler
 
 import (
 	"log/slog"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -16,6 +17,8 @@ type Handler struct {
 	val              *validation.Validator
 	jobQueueNotifier *queue.Notifier
 	jobQueueWakeup   queue.AIJobQueueWakeup
+	longPollWaiter   *queue.AdaptiveWaiter
+	longPollOnce     sync.Once
 	mcpPolicies      mcpPolicyRegistry
 }
 
