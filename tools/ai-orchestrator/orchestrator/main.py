@@ -4,13 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import os
 import socket
-import threading
 import time
 from typing import Any, Dict, List
 
 import requests
 
-from .graph import LeaseGuard, OrchestratorConfig, build_graph
+from .graph import OrchestratorConfig, build_graph
+from .runtime.runtime import OrchestratorRuntime
 from .state import GraphState
 from .tools_rca_api import RCAApiClient
 
@@ -154,31 +154,24 @@ def _detect_pubsub_ready(base_url: str, scopes: str, timeout_s: float = 2.0) -> 
 
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
-    if not client.start_job(job_id):
+    runtime = OrchestratorRuntime(
+        client=client,
+        job_id=job_id,
+        instance_id=settings.instance_id,
+        heartbeat_interval_seconds=settings.lease_heartbeat_interval_seconds,
+        log_func=_log,
+    )
+    if not runtime.start():
         if debug:
             _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
         return
 
-    lease_guard = LeaseGuard()
-    stop_event = threading.Event()
-
-    def heartbeat_loop() -> None:
-        while not stop_event.wait(settings.lease_heartbeat_interval_seconds):
-            ok, reason = client.renew_job_lease(job_id)
-            if ok:
-                continue
-            lease_guard.mark_lost(reason)
-            _log(f"lease heartbeat failed job={job_id} instance_id={settings.instance_id} reason={reason}")
-            stop_event.set()
-            return
-
-    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
-    heartbeat_thread.start()
-    state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
-    compiled_graph = build_graph(client, graph_cfg, lease_guard)
-    final_state = compiled_graph.invoke(state)
-    stop_event.set()
-    heartbeat_thread.join(timeout=2.0)
+    try:
+        state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
+        compiled_graph = build_graph(client, graph_cfg, runtime)
+        final_state = compiled_graph.invoke(state)
+    finally:
+        runtime.shutdown()
 
     if isinstance(final_state, dict):
         final_state = GraphState.model_validate(final_state)

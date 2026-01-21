@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from .mcp_client import MCPClient
+from .sdk.errors import OrchestratorErrorCategory, RCAApiError
 
 
 def _ts(seconds: int) -> Dict[str, int]:
@@ -40,6 +41,24 @@ def _extract_first(payload: Any, *keys: str) -> Optional[Any]:
                 if value is not None and value != "":
                     return value
     return None
+
+
+def _envelope_code_is_success(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return bool(value) is False
+    if isinstance(value, int):
+        return value == 0
+    if isinstance(value, float):
+        return int(value) == 0
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return True
+        if normalized == "0":
+            return True
+    return False
 
 
 class RCAApiClient:
@@ -85,29 +104,78 @@ class RCAApiClient:
     ) -> Dict[str, Any]:
         url = f"{self.base_url}{path}"
         request_timeout = self.timeout_s if timeout_s is None else max(float(timeout_s), 0.1)
-        response = self.session.request(
-            method=method.upper(),
-            url=url,
-            json=json_body,
-            params=params,
-            timeout=request_timeout,
-        )
+        try:
+            response = self.session.request(
+                method=method.upper(),
+                url=url,
+                json=json_body,
+                params=params,
+                timeout=request_timeout,
+            )
+        except requests.RequestException as exc:
+            raise RCAApiError.from_transport_error(method=method, path=path, cause=exc) from exc
 
         body_text = response.text.strip()
+        payload: dict[str, Any] | None = None
+        if body_text:
+            try:
+                parsed = response.json()
+            except json.JSONDecodeError as exc:
+                raise RCAApiError(
+                    category=OrchestratorErrorCategory.UNKNOWN,
+                    message=f"{method.upper()} {path} returned non-JSON body: {body_text}",
+                    method=method,
+                    path=path,
+                    http_status=response.status_code,
+                    body_text=body_text,
+                    cause=exc,
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise RCAApiError(
+                    category=OrchestratorErrorCategory.UNKNOWN,
+                    message=f"{method.upper()} {path} returned invalid JSON type: {type(parsed).__name__}",
+                    method=method,
+                    path=path,
+                    http_status=response.status_code,
+                    body_text=body_text,
+                )
+            payload = parsed
+
+        envelope_code = payload.get("code") if isinstance(payload, dict) else None
+        if envelope_code is None and isinstance(payload, dict):
+            envelope_code = payload.get("reason")
+        envelope_message = payload.get("message") if isinstance(payload, dict) else None
+        details = payload.get("details") if isinstance(payload, dict) else None
+        if details is None and isinstance(payload, dict):
+            details = payload.get("metadata")
+
         if not response.ok:
-            raise RuntimeError(f"{method.upper()} {path} failed: http={response.status_code}, body={body_text}")
+            raise RCAApiError.from_response(
+                method=method,
+                path=path,
+                http_status=response.status_code,
+                envelope_code=envelope_code,
+                envelope_message=envelope_message or body_text or f"http={response.status_code}",
+                details=details,
+                payload=payload,
+                body_text=body_text,
+            )
 
-        if not body_text:
-            return {}
-
-        try:
-            payload = response.json()
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"{method.upper()} {path} returned non-JSON body: {body_text}") from exc
+        if isinstance(payload, dict) and ("code" in payload) and not _envelope_code_is_success(envelope_code):
+            raise RCAApiError.from_response(
+                method=method,
+                path=path,
+                http_status=response.status_code,
+                envelope_code=envelope_code,
+                envelope_message=envelope_message or "business error",
+                details=details,
+                payload=payload,
+                body_text=body_text,
+            )
 
         if isinstance(payload, dict):
             return payload
-        raise RuntimeError(f"{method.upper()} {path} returned invalid JSON type: {type(payload).__name__}")
+        return {}
 
     def _mcp_call(
         self,
@@ -194,26 +262,22 @@ class RCAApiClient:
         return data
 
     def start_job(self, job_id: str) -> bool:
-        url = f"{self.base_url}/v1/ai/jobs/{job_id}/start"
         try:
-            response = self.session.request(
-                method="POST",
-                url=url,
-                timeout=self.timeout_s,
-            )
-        except requests.RequestException as exc:
-            raise RuntimeError(f"POST /v1/ai/jobs/{job_id}/start network error: {exc}") from exc
-        body_text = response.text.strip()
-        if response.status_code == 409:
-            return False
-        if not response.ok:
-            raise RuntimeError(f"POST /v1/ai/jobs/{job_id}/start failed: http={response.status_code}, body={body_text}")
-        return True
+            self._request("POST", f"/v1/ai/jobs/{job_id}/start")
+            return True
+        except RCAApiError as exc:
+            if exc.http_status == 409:
+                return False
+            if exc.category in {OrchestratorErrorCategory.CONFLICT, OrchestratorErrorCategory.OWNER_LOST}:
+                return False
+            raise
 
     def renew_job_lease(self, job_id: str) -> tuple[bool, str]:
         try:
             self._request("POST", f"/v1/ai/jobs/{job_id}/heartbeat")
             return True, ""
+        except RCAApiError as exc:
+            return False, f"{exc.category.value}: {exc}"
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
