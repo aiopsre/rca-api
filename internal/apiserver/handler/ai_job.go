@@ -238,6 +238,9 @@ func (h *Handler) StartAIJob(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
+	if !requireOrchestratorInstanceID(c) {
+		return
+	}
 
 	ctx := withOrchestratorInstanceID(c)
 	resp, err := h.biz.AIJobV1().Start(ctx, req)
@@ -258,8 +261,7 @@ func (h *Handler) RenewAIJobLease(c *gin.Context) {
 		return
 	}
 
-	if strings.TrimSpace(c.GetHeader(orchestratorInstanceIDHeader)) == "" {
-		core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+	if !requireOrchestratorInstanceID(c) {
 		return
 	}
 
@@ -284,8 +286,12 @@ func (h *Handler) CancelAIJob(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
+	if !requireOrchestratorInstanceID(c) {
+		return
+	}
 
-	resp, err := h.biz.AIJobV1().Cancel(c.Request.Context(), &req)
+	ctx := withOrchestratorInstanceID(c)
+	resp, err := h.biz.AIJobV1().Cancel(ctx, &req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -304,6 +310,9 @@ func (h *Handler) FinalizeAIJob(c *gin.Context) {
 	req.JobID = strings.TrimSpace(c.Param("jobID"))
 	if err := h.val.ValidateFinalizeAIJobRequest(c.Request.Context(), &req); err != nil {
 		core.WriteResponse(c, nil, err)
+		return
+	}
+	if !requireOrchestratorInstanceID(c) {
 		return
 	}
 
@@ -327,6 +336,9 @@ func (h *Handler) CreateAIToolCall(c *gin.Context) {
 	req.JobID = strings.TrimSpace(c.Param("jobID"))
 	if err := h.val.ValidateCreateAIToolCallRequest(c.Request.Context(), &req); err != nil {
 		core.WriteResponse(c, nil, err)
+		return
+	}
+	if !requireOrchestratorInstanceID(c) {
 		return
 	}
 
@@ -395,4 +407,12 @@ func withOrchestratorInstanceID(c *gin.Context) context.Context {
 		return ctx
 	}
 	return contextx.WithOrchestratorInstanceID(ctx, instanceID)
+}
+
+func requireOrchestratorInstanceID(c *gin.Context) bool {
+	if strings.TrimSpace(c.GetHeader(orchestratorInstanceIDHeader)) != "" {
+		return true
+	}
+	core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+	return false
 }

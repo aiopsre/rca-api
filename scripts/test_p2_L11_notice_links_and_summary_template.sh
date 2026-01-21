@@ -5,6 +5,7 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 CURL="${CURL:-curl}"
 SCOPES="${SCOPES:-*}"
 DEBUG="${DEBUG:-0}"
+ORCHESTRATOR_INSTANCE_ID="${ORCHESTRATOR_INSTANCE_ID:-test-instance}"
 WAIT_TIMEOUT_SEC="${WAIT_TIMEOUT_SEC:-60}"
 CHANNEL_LINKS_BASE_URL="${CHANNEL_LINKS_BASE_URL:-https://rca.example.test}"
 
@@ -66,6 +67,9 @@ http_json() {
 	cmd=("${CURL}" -sS -o "${tmp_body}" -w "%{http_code}" -X "${method}" "${url}" -H "Accept: application/json")
 	if [[ -n "${SCOPES}" ]]; then
 		cmd+=(-H "X-Scopes: ${SCOPES}")
+	fi
+	if [[ "${method}" == "POST" ]] && [[ "${url}" =~ /v1/ai/jobs/[^/]+/(start|tool-calls|finalize|cancel|heartbeat)$ ]]; then
+		cmd+=(-H "X-Orchestrator-Instance-ID: ${ORCHESTRATOR_INSTANCE_ID}")
 	fi
 	if [[ -n "${body}" ]]; then
 		cmd+=(-H "Content-Type: application/json" -d "${body}")

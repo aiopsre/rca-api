@@ -5,7 +5,6 @@ package ai_job
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -42,7 +41,6 @@ const (
 	defaultPipeline  = "basic_rca"
 	defaultTrigger   = "manual"
 	defaultCreatedBy = "system"
-	legacyLeaseOwner = "legacy"
 
 	defaultListLimit        = int64(20)
 	defaultToolLimit        = int64(50)
@@ -312,18 +310,17 @@ func (b *aiJobBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobs
 //nolint:gocognit,gocyclo,nestif // Existing state transition logic is intentionally explicit.
 func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
-	leaseOwner, explicitOwner := leaseOwnerFromContext(ctx)
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
 		}
 		if isTerminalStatus(job.Status) {
 			return errno.ErrAIJobInvalidTransition
-		}
-		// Preserve legacy idempotent semantics for callers without explicit lease owner.
-		if !explicitOwner && job.Status == jobStatusRunning {
-			return nil
 		}
 
 		now := time.Now().UTC()
@@ -332,14 +329,12 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 			return errno.ErrAIJobStartFailed
 		}
 		if rows == 0 {
-			if explicitOwner {
-				renewRows, renewErr := b.store.AIJob().RenewLease(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
-				if renewErr != nil {
-					return errno.ErrAIJobStartFailed
-				}
-				if renewRows == 1 {
-					return nil
-				}
+			renewRows, renewErr := b.store.AIJob().RenewLease(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
+			if renewErr != nil {
+				return errno.ErrAIJobStartFailed
+			}
+			if renewRows == 1 {
+				return nil
 			}
 			return errno.ErrAIJobInvalidTransition
 		}
@@ -370,9 +365,9 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 
 func (b *aiJobBiz) Renew(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
-	leaseOwner, explicitOwner := leaseOwnerFromContext(ctx)
-	if !explicitOwner {
-		return nil, errno.ErrAIJobInvalidTransition
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	now := time.Now().UTC()
@@ -390,8 +385,12 @@ func (b *aiJobBiz) Renew(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.CancelAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	reason := trimOptional(rq.Reason)
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
@@ -415,7 +414,14 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 		if reason != "" {
 			updates["error_message"] = reason
 		}
-		rows, err := b.store.AIJob().UpdateStatus(txCtx, jobID, []string{jobStatusQueued, jobStatusRunning}, updates)
+		leaseOwnerFilter := leaseOwner
+		rows, err := b.store.AIJob().UpdateStatusWithLeaseOwner(
+			txCtx,
+			jobID,
+			[]string{jobStatusQueued, jobStatusRunning},
+			&leaseOwnerFilter,
+			updates,
+		)
 		if err != nil {
 			return errno.ErrAIJobCancelFailed
 		}
@@ -454,10 +460,13 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	targetStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
-	leaseOwner, explicitOwner := leaseOwnerFromContext(ctx)
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var noticeReq *noticepkg.DispatchRequest
 
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
@@ -602,11 +611,8 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 			updates["evidence_ids_json"] = evidenceIDsJSON
 		}
 
-		var leaseOwnerFilter *string
-		if explicitOwner && targetStatus != jobStatusCanceled {
-			leaseOwnerFilter = &leaseOwner
-		}
-		rows, err := b.store.AIJob().UpdateStatusWithLeaseOwner(txCtx, jobID, fromStatuses, leaseOwnerFilter, updates)
+		leaseOwnerFilter := leaseOwner
+		rows, err := b.store.AIJob().UpdateStatusWithLeaseOwner(txCtx, jobID, fromStatuses, &leaseOwnerFilter, updates)
 		if err != nil {
 			return errno.ErrAIJobFinalizeFailed
 		}
@@ -1034,10 +1040,13 @@ func (b *aiJobBiz) runKBBestEffort(ctx context.Context, jobID string) {
 //nolint:gocognit,gocyclo,nestif // Existing tool-call write path is intentionally explicit for P0.
 func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
-	leaseOwner, explicitOwner := leaseOwnerFromContext(ctx)
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	outID := ""
 
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
@@ -1048,11 +1057,7 @@ func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRe
 
 		now := time.Now().UTC()
 		if job.Status == jobStatusQueued {
-			claimOwner := leaseOwner
-			if !explicitOwner {
-				claimOwner = buildLegacyLeaseOwner(txCtx)
-			}
-			rows, err := b.store.AIJob().ClaimQueued(txCtx, jobID, claimOwner, now, defaultAIJobLeaseTTL)
+			rows, err := b.store.AIJob().ClaimQueued(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
 			if err != nil {
 				return errno.ErrAIJobStartFailed
 			}
@@ -1071,7 +1076,7 @@ func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRe
 			if _, err := b.store.AIJobQueueSignal().Bump(txCtx, now); err != nil {
 				return errno.ErrAIJobStartFailed
 			}
-		} else if explicitOwner && job.Status == jobStatusRunning {
+		} else if job.Status == jobStatusRunning {
 			renewRows, renewErr := b.store.AIJob().RenewLease(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
 			if renewErr != nil {
 				return errno.ErrAIJobStartFailed
@@ -1293,19 +1298,12 @@ func normalizeCreatedBy(ctx context.Context, createdBy *string) string {
 	return defaultCreatedBy
 }
 
-func leaseOwnerFromContext(ctx context.Context) (string, bool) {
+func leaseOwnerFromContext(ctx context.Context) (string, error) {
 	owner := strings.TrimSpace(contextx.OrchestratorInstanceID(ctx))
-	if owner != "" {
-		return owner, true
+	if owner == "" {
+		return "", errorsx.ErrInvalidArgument
 	}
-	return buildLegacyLeaseOwner(ctx), false
-}
-
-func buildLegacyLeaseOwner(ctx context.Context) string {
-	if reqID := strings.TrimSpace(contextx.RequestID(ctx)); reqID != "" {
-		return fmt.Sprintf("%s:%s", legacyLeaseOwner, reqID)
-	}
-	return fmt.Sprintf("%s:%d", legacyLeaseOwner, time.Now().UTC().UnixNano())
+	return owner, nil
 }
 
 func normalizePipeline(v *string) string {

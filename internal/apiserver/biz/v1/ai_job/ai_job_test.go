@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/onexstack/onexstack/pkg/errorsx"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/driver/sqlite"
@@ -54,7 +55,7 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, runResp1.JobID, runResp2.JobID)
 
-	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
 		JobID:        runResp1.JobID,
 		Seq:          2,
 		NodeName:     "logs_specialist",
@@ -67,7 +68,7 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
 		JobID:       runResp1.JobID,
 		Seq:         1,
 		NodeName:    "metrics_specialist",
@@ -90,7 +91,7 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.Equal(t, int64(1), toolCalls.ToolCalls[0].Seq)
 	require.Equal(t, int64(2), toolCalls.ToolCalls[1].Seq)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp1.JobID,
 		Status:        "succeeded",
 		OutputSummary: ptrAIString("db connection pool exhausted"),
@@ -151,7 +152,7 @@ func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, runResp.JobID)
 
-	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
 		JobID:        runResp.JobID,
 		Seq:          1,
 		NodeName:     "synthesize",
@@ -163,7 +164,7 @@ func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -289,10 +290,10 @@ func TestAIJobFinalize_RejectsInvalidDiagnosis(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -325,10 +326,10 @@ func TestAIJobFinalize_MissingEvidenceTemplate(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -396,10 +397,10 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithHighConfidence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -442,10 +443,10 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithoutTopLevelMissingEvidence(t *t
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -489,7 +490,7 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithTooManyMissingEvidenceItems(t *
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
 	missing := make([]string, 0, maxMissingEvidenceItems+1)
@@ -512,7 +513,7 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithTooManyMissingEvidenceItems(t *
 		"missing_evidence":%s
 	}`, string(missingJSON))
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp.JobID,
 		Status:        "succeeded",
 		DiagnosisJSON: ptrAIString(diagnosis),
@@ -537,7 +538,7 @@ func TestAIJobFinalize_ConflictEvidenceTemplate(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
 	evidenceIDMetrics := createTestEvidence(t, s, incident.IncidentID, "metrics", "metrics spike")
@@ -575,7 +576,7 @@ func TestAIJobFinalize_ConflictEvidenceTemplate(t *testing.T) {
 		"next_steps":["re-run after aligned window evidence collection"]
 	}`, incident.IncidentID, evidenceIDMetrics, evidenceIDLogs, evidenceIDMetrics, evidenceIDLogs)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp.JobID,
 		Status:        "succeeded",
 		DiagnosisJSON: ptrAIString(diagnosis),
@@ -630,7 +631,7 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithHighConfidence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
 	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "metrics spike")
@@ -655,7 +656,7 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithHighConfidence(t *testing.T) {
 		]
 	}`, evidenceID, evidenceID)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp.JobID,
 		Status:        "succeeded",
 		DiagnosisJSON: ptrAIString(diagnosis),
@@ -680,7 +681,7 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithoutMissingEvidence(t *testing.
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
 	evidenceID := createTestEvidence(t, s, incident.IncidentID, "logs", "logs sample")
@@ -705,7 +706,7 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithoutMissingEvidence(t *testing.
 		]
 	}`, evidenceID, evidenceID)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp.JobID,
 		Status:        "succeeded",
 		DiagnosisJSON: ptrAIString(diagnosis),
@@ -730,7 +731,7 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithTooManyMissingEvidenceItems(t 
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
 	missing := make([]string, 0, maxMissingEvidenceItems+1)
@@ -753,7 +754,7 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithTooManyMissingEvidenceItems(t 
 		"missing_evidence":%s
 	}`, string(missingJSON))
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp.JobID,
 		Status:        "succeeded",
 		DiagnosisJSON: ptrAIString(diagnosis),
@@ -778,10 +779,10 @@ func TestAIJobFinalize_RejectsConflictEvidenceWithUnknownEvidenceID(t *testing.T
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -834,7 +835,7 @@ func TestAIJobList_QueuedOrderAndPagination(t *testing.T) {
 		TimeRangeEnd:   timestamppb.New(end),
 	})
 	require.NoError(t, err)
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: jobB.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: jobB.JobID})
 	require.NoError(t, err)
 
 	jobC, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
@@ -898,10 +899,10 @@ func TestAIJobFinalize_DiagnosisWrittenTriggersNoticeDelivery(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.GetJobID()})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.GetJobID()})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.GetJobID(),
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -967,7 +968,29 @@ func TestAIJobStart_MultiOwnerClaimAndRenew(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestAIJobStart_LegacyRunningIdempotent(t *testing.T) {
+func TestAIJobStart_SameOwnerIdempotent(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+func TestAIJobWriteOps_MissingOwnerRejected(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
 	biz := New(s)
@@ -983,10 +1006,32 @@ func TestAIJobStart_LegacyRunningIdempotent(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
-	require.NoError(t, err)
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
-	require.NoError(t, err)
+	_, err = biz.Renew(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+		JobID:       runResp.JobID,
+		Seq:         1,
+		NodeName:    "metrics_specialist",
+		ToolName:    "evidence.queryMetrics",
+		RequestJSON: `{"q":"up"}`,
+		Status:      "ok",
+		LatencyMs:   8,
+	})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "failed",
+	})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.Cancel(context.Background(), &v1.CancelAIJobRequest{
+		JobID: runResp.JobID,
+	})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
 }
 
 func TestAIJobList_ReclaimExpiredLeaseToQueued(t *testing.T) {
@@ -1165,6 +1210,10 @@ func parseAnyInt(t *testing.T, value any) int {
 		require.Failf(t, "parseAnyInt", "unsupported integer value type: %T", value)
 		return 0
 	}
+}
+
+func orchestratorCtx() context.Context {
+	return contextx.WithOrchestratorInstanceID(context.Background(), "test-instance")
 }
 
 func ptrAIString(v string) *string { return &v }

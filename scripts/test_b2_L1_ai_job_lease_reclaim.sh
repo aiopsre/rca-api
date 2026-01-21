@@ -5,6 +5,7 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 CURL="${CURL:-curl}"
 SCOPES="${SCOPES:-*}"
 DEBUG="${DEBUG:-0}"
+ORCHESTRATOR_INSTANCE_ID="${ORCHESTRATOR_INSTANCE_ID:-test-instance}"
 LEASE_EXPIRE_WAIT_SEC="${LEASE_EXPIRE_WAIT_SEC:-35}"
 WAIT_TIMEOUT_SEC="${WAIT_TIMEOUT_SEC:-240}"
 POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-1}"
@@ -70,7 +71,13 @@ http_json() {
 	if [[ -n "${SCOPES}" ]]; then
 		cmd+=(-H "X-Scopes: ${SCOPES}")
 	fi
-	if [[ -n "${instance_id}" ]]; then
+	if [[ "${method}" == "POST" ]] && [[ "${url}" =~ /v1/ai/jobs/[^/]+/(start|tool-calls|finalize|cancel|heartbeat)$ ]]; then
+		if [[ -n "${instance_id}" ]]; then
+			cmd+=(-H "X-Orchestrator-Instance-ID: ${instance_id}")
+		else
+			cmd+=(-H "X-Orchestrator-Instance-ID: ${ORCHESTRATOR_INSTANCE_ID}")
+		fi
+	elif [[ -n "${instance_id}" ]]; then
 		cmd+=(-H "X-Orchestrator-Instance-ID: ${instance_id}")
 	fi
 	if [[ -n "${body}" ]]; then
