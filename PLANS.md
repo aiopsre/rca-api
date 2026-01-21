@@ -1316,3 +1316,140 @@ Done Definition：
 - 新增回归脚本：`scripts/test_r1_L3_longpoll_adaptive_config_cli.sh`
 - 新增/更新 2~4 个单测覆盖默认值不变、YAML 覆盖 env、CLI 覆盖 YAML
 - `make test` / `make lint-new` 通过
+
+---
+
+## PLAN: Disable Legacy Orchestrator (Explicit Owner Only)
+
+### Scope Rules (Must Follow)
+
+#### Validation boundaries
+- `internal/apiserver/pkg/validation/*` validates only request BODY fields.
+- Do NOT add header checks into validation package.
+- Header enforcement must be done in handler; biz layer provides a safety net.
+
+#### Error consistency (Must Follow)
+- Missing header `X-Orchestrator-Instance-ID`:
+  - return `errorsx.ErrInvalidArgument` (handler first; biz also should return the same when applicable)
+- Owner/lease mismatch:
+  - For state updates (Finalize/Cancel/Start): return `errno.ErrAIJobInvalidTransition`
+  - For tool call renew failure in CreateToolCall (running): keep existing `errno.ErrAIToolCallStatusConflict`
+- Do NOT introduce new errno constants/enums.
+
+### Phase 1 — Handler 强制 Header（主入口防线）
+
+File: `internal/apiserver/handler/ai_job.go`
+
+Add mandatory header check for:
+- `StartAIJob`
+- `CreateAIToolCall`
+- `FinalizeAIJob`
+- `CancelAIJob`
+
+Rule:
+- If `X-Orchestrator-Instance-ID` is empty -> return `errorsx.ErrInvalidArgument`
+
+Note:
+- `RenewAIJobLease` already enforces this; keep behavior consistent.
+
+Acceptance:
+- All these endpoints fail without header.
+
+### Phase 2 — Biz 层移除 Legacy Owner（兜底防线）
+
+File: `internal/apiserver/biz/v1/ai_job/ai_job.go`
+
+- Remove legacy owner generation (`buildLegacyLeaseOwner`)
+- Modify `leaseOwnerFromContext(ctx)` to:
+  - return an error (mapped to `errorsx.ErrInvalidArgument`) when header is missing
+- Update call sites accordingly (avoid silent legacy fallback)
+
+Acceptance:
+- Even if a handler missed enforcement, biz can no longer generate legacy owner.
+
+### Phase 3 — Owner Gate 全覆盖（强互斥）
+
+#### 3.1 CreateToolCall
+File: `internal/apiserver/biz/v1/ai_job/ai_job.go`
+
+- queued:
+  - claim using explicit owner (handler ensures header)
+- running:
+  - must `RenewLease(jobID, owner, ...)`
+  - if renewRows == 0 -> return existing `errno.ErrAIToolCallStatusConflict`
+
+Acceptance:
+- non-owner running toolcall write fails with toolcall conflict.
+
+#### 3.2 Finalize
+File: `internal/apiserver/biz/v1/ai_job/ai_job.go`
+
+- Always enforce leaseOwnerFilter for ALL target statuses (including canceled)
+  - i.e., never allow `leaseOwnerFilter=nil`
+- rows == 0 -> return `errno.ErrAIJobInvalidTransition`
+
+Acceptance:
+- non-owner finalize fails with AIJobInvalidTransition.
+
+#### 3.3 Cancel
+File: `internal/apiserver/biz/v1/ai_job/ai_job.go`
+
+- Require owner match (use store update with lease owner filter)
+- rows == 0 -> return `errno.ErrAIJobInvalidTransition`
+
+Acceptance:
+- non-owner cancel fails with AIJobInvalidTransition.
+
+### Phase 4 — Scripts Update (Regression)
+
+All POST write calls to these endpoints must include:
+- `-H "X-Orchestrator-Instance-ID: test-instance"`
+
+Write endpoints:
+- `/start`
+- `/tool-calls` (POST)
+- `/finalize`
+- `/cancel`
+- `/heartbeat` (if present)
+
+Scripts containing `/start` and/or `/finalize` (from repo scan):
+- `scripts/test_ai_job_smoke.sh`
+- `scripts/test_b2_L1_ai_job_lease_reclaim.sh` (already supports header, ensure consistent usage)
+- `scripts/test_p1_L3_notice.sh`
+- `scripts/test_p1_L6_notice_selectors.sh`
+- `scripts/test_p2_L10_notice_template.sh`
+- `scripts/test_p2_L11_notice_links_and_summary_template.sh`
+
+Scripts containing `/tool-calls` (NOTE: only POST /v1/ai/jobs/:jobID/tool-calls needs header; MCP readonly GETs do not):
+- `scripts/test_a3_L1_evidence_plan_budget_and_ranking.sh`
+- `scripts/test_a4_L1_kb_writeback_and_retrieval.sh`
+- `scripts/test_a5_L1_verification_plan_recheck.sh`
+- `scripts/test_ai_job_smoke.sh`
+- `scripts/test_b1_L1_ai_job_multi_orchestrator_claim.sh`
+- `scripts/test_b2_L1_ai_job_lease_reclaim.sh`
+- `scripts/test_c1_L1_mcp_tools.sh` (verify: MCP calls may be GET; only POST toolcall needs header)
+- `scripts/test_c2_L1_orchestrator_mcp.sh`
+- `scripts/test_c4_L1_mcp_advanced_views.sh`
+- `scripts/test_c5_L1_mcp_policy_isolation_metrics.sh`
+- `scripts/test_c5plus_L1_toolcall_search_and_isolation_mode.sh`
+- `scripts/test_p0_L1.sh`
+- `scripts/test_p0_L2.sh`
+- `scripts/test_p0_L3_conflict_evidence.sh`
+- `scripts/test_p0_L4_2_storm.sh`
+- `scripts/test_p0_L5_quality_gate.sh`
+- `scripts/test_t6_L1_playbook_and_verification_linkage.sh`
+
+Acceptance:
+- All scripts pass after adding headers to relevant POSTs.
+
+### Phase 5 — Full Regression
+
+Run:
+- `scripts/test_*.sh`
+
+Verify:
+- Missing header -> `errorsx.ErrInvalidArgument`
+- Owner mismatch -> `errno.ErrAIJobInvalidTransition` (Finalize/Cancel/Start)
+- Toolcall renew failure -> `errno.ErrAIToolCallStatusConflict`
+- reclaim/long-poll/watermark behavior unchanged
+- notice + KB best-effort paths still work
