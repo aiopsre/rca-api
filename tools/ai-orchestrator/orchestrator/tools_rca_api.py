@@ -305,6 +305,26 @@ class RCAApiClient:
             body["evidenceIDs"] = [str(item).strip() for item in evidence_ids if str(item).strip()]
         self._request("POST", f"/v1/ai/jobs/{job_id}/tool-calls", json_body=body)
 
+    def list_tool_calls(
+        self,
+        job_id: str,
+        *,
+        limit: int = 200,
+        offset: int = 0,
+        seq: int | None = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "limit": max(int(limit), 1),
+            "offset": max(int(offset), 0),
+        }
+        if seq is not None:
+            params["seq"] = int(seq)
+        payload = self._request("GET", f"/v1/ai/jobs/{job_id}/tool-calls", params=params)
+        data = payload.get("data", payload)
+        if isinstance(data, dict):
+            return data
+        return {"totalCount": 0, "toolCalls": []}
+
     def finalize_job(
         self,
         job_id: str,
@@ -390,6 +410,42 @@ class RCAApiClient:
             idempotency_key=f"orchestrator-mcp-list-evidence-{uuid.uuid4().hex}",
         )
         return self._extract_mcp_output("list_incident_evidence", payload)
+
+    def create_incident_verification_run(
+        self,
+        *,
+        incident_id: str,
+        source: str,
+        step_index: int,
+        tool: str,
+        observed: str,
+        meets_expectation: bool,
+        params_json: Dict[str, Any] | str | None = None,
+        actor: str | None = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "incidentID": incident_id,
+            "source": source,
+            "stepIndex": int(step_index),
+            "tool": tool,
+            "observed": observed,
+            "meetsExpectation": bool(meets_expectation),
+        }
+        normalized_actor = str(actor or "").strip()
+        if normalized_actor:
+            body["actor"] = normalized_actor
+
+        if params_json is not None:
+            if isinstance(params_json, str):
+                body["paramsJSON"] = params_json
+            else:
+                body["paramsJSON"] = json.dumps(params_json, ensure_ascii=False, separators=(",", ":"))
+
+        payload = self._request("POST", f"/v1/incidents/{incident_id}/verification-runs", json_body=body)
+        data = payload.get("data", payload)
+        if isinstance(data, dict):
+            return data
+        return {}
 
     # datasource / evidence (P0 minimal)
     def ensure_datasource(self, ds_base_url: str) -> str:

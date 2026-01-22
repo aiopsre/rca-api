@@ -36,6 +36,9 @@ class Settings:
     a3_max_calls: int
     a3_max_total_bytes: int
     a3_max_total_latency_ms: int
+    run_verification: bool
+    post_finalize_observe: bool
+    verification_source: str
 
 
 def _env_int(name: str, default: int) -> int:
@@ -81,6 +84,9 @@ def load_settings() -> Settings:
         a3_max_calls=max(0, _env_int("A3_MAX_CALLS", 6)),
         a3_max_total_bytes=max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024)),
         a3_max_total_latency_ms=max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000)),
+        run_verification=_env_bool("RUN_VERIFICATION", False),
+        post_finalize_observe=_env_bool("POST_FINALIZE_OBSERVE", True),
+        verification_source=os.getenv("VERIFICATION_SOURCE", "ai_job").strip() or "ai_job",
     )
 
 
@@ -152,6 +158,12 @@ def _detect_pubsub_ready(base_url: str, scopes: str, timeout_s: float = 2.0) -> 
     return found, ready
 
 
+def _is_finalize_succeeded(state: GraphState) -> bool:
+    if not state.finalized:
+        return False
+    return not bool(str(state.last_error or "").strip())
+
+
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
     runtime = OrchestratorRuntime(
@@ -175,6 +187,47 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
     if isinstance(final_state, dict):
         final_state = GraphState.model_validate(final_state)
+
+    should_post_finalize = (
+        _is_finalize_succeeded(final_state)
+        and bool(str(final_state.incident_id or "").strip())
+        and (settings.post_finalize_observe or settings.run_verification)
+    )
+    snapshot = None
+    if should_post_finalize:
+        incident_id = str(final_state.incident_id or "").strip()
+        try:
+            snapshot = runtime.observe_post_finalize(incident_id=incident_id)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"post-finalize observe error: job={job_id} incident={incident_id} error={exc}")
+
+    if settings.run_verification and _is_finalize_succeeded(final_state):
+        incident_id = str(final_state.incident_id or "").strip()
+        if not incident_id:
+            _log(f"verification skipped: job={job_id} incident_id missing")
+        elif snapshot is None:
+            _log(f"verification skipped: job={job_id} post-finalize snapshot unavailable")
+        else:
+            verification_plan = snapshot.verification_plan
+            steps = verification_plan.get("steps") if isinstance(verification_plan, dict) else None
+            if not isinstance(steps, list) or not steps:
+                if debug:
+                    _log(f"[DEBUG] verification skipped: job={job_id} no verification_plan steps")
+            else:
+                try:
+                    results = runtime.run_verification(
+                        incident_id=incident_id,
+                        verification_plan=verification_plan,
+                        source=settings.verification_source,
+                    )
+                    _log(
+                        "verification completed "
+                        f"job={job_id} incident={incident_id} steps={len(results)} "
+                        f"source={settings.verification_source}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"verification run error: job={job_id} incident={incident_id} error={exc}")
+
     if debug:
         _log(
             "[DEBUG] "
@@ -210,7 +263,10 @@ def main() -> None:
         f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
         f"a3_max_calls={settings.a3_max_calls} "
         f"a3_max_total_bytes={settings.a3_max_total_bytes} "
-        f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
+        f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms} "
+        f"post_finalize_observe={int(settings.post_finalize_observe)} "
+        f"run_verification={int(settings.run_verification)} "
+        f"verification_source={settings.verification_source}"
     )
 
     poll_client = _new_client(settings)

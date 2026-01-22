@@ -17,9 +17,11 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.evidence_publisher import EvidencePublisher
+from orchestrator.runtime.post_finalize import PostFinalizeObserver
 from orchestrator.runtime.retry import RetryExecutor, RetryPolicy
 from orchestrator.runtime.runtime import OrchestratorRuntime
 from orchestrator.runtime.toolcall_reporter import ToolCallReporter
+from orchestrator.runtime.verification_runner import VerificationRunner
 from orchestrator.sdk.errors import OrchestratorErrorCategory, RCAApiError
 from orchestrator.tools_rca_api import RCAApiClient
 
@@ -91,6 +93,57 @@ class RCAApiClientRequestTest(unittest.TestCase):
         with self.assertRaises(RCAApiError) as ctx:
             client._request("POST", "/v1/ai/jobs/job-1/start")
         self.assertEqual(ctx.exception.category, OrchestratorErrorCategory.MISSING_OWNER)
+
+    def test_list_tool_calls_uses_expected_endpoint_and_params(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"totalCount": 1, "toolCalls": [{"seq": 2}]}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        response = client.list_tool_calls("job-abc", limit=20, offset=3, seq=2)
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["path"], "/v1/ai/jobs/job-abc/tool-calls")
+        self.assertEqual(captured["kwargs"]["params"], {"limit": 20, "offset": 3, "seq": 2})
+        self.assertEqual(response["totalCount"], 1)
+
+    def test_create_incident_verification_run_uses_expected_payload(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"run": {"runID": "run-1"}}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        response = client.create_incident_verification_run(
+            incident_id="inc-9",
+            source="ai_job",
+            step_index=1,
+            tool="mcp.query_logs",
+            params_json={"query": "error"},
+            observed="keyword matched",
+            meets_expectation=True,
+            actor="ai:job-9",
+        )
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/v1/incidents/inc-9/verification-runs")
+        body = captured["kwargs"]["json_body"]
+        self.assertEqual(body["incidentID"], "inc-9")
+        self.assertEqual(body["source"], "ai_job")
+        self.assertEqual(body["stepIndex"], 1)
+        self.assertEqual(body["tool"], "mcp.query_logs")
+        self.assertEqual(body["observed"], "keyword matched")
+        self.assertTrue(body["meetsExpectation"])
+        self.assertEqual(body["actor"], "ai:job-9")
+        self.assertEqual(body["paramsJSON"], '{"query":"error"}')
+        self.assertEqual(response["run"]["runID"], "run-1")
 
 
 class ToolCallReporterTest(unittest.TestCase):
@@ -294,6 +347,123 @@ class EvidencePublisherTest(unittest.TestCase):
         self.assertEqual(saves[0]["created_by"], "ai:job-789")
         self.assertEqual(saves[2]["job_id"], "job-789")
         self.assertEqual(saves[2]["created_by"], "ai:job-789")
+
+
+class PostFinalizeObserverTest(unittest.TestCase):
+    def test_observer_extracts_verification_plan_and_kb_refs(self) -> None:
+        class _FakeClient:
+            def get_incident(self, incident_id: str) -> dict[str, Any]:
+                self.incident_id = incident_id
+                return {
+                    "incidentID": incident_id,
+                    "diagnosisJSON": json.dumps(
+                        {"verification_plan": {"version": "a5", "steps": [{"tool": "mcp.query_metrics"}]}},
+                        ensure_ascii=False,
+                    ),
+                }
+
+            def list_tool_calls(self, job_id: str, *, limit: int = 200, offset: int = 0) -> dict[str, Any]:
+                self.job_id = job_id
+                self.calls = getattr(self, "calls", [])
+                self.calls.append({"limit": limit, "offset": offset})
+                if offset == 0:
+                    return {
+                        "totalCount": 2,
+                        "toolCalls": [
+                            {
+                                "seq": 2,
+                                "responseJSON": '{"kb_refs":[{"doc_id":"kb-1","patterns":[{"type":"keyword","value":"error"}]}]}',
+                            },
+                            {"seq": 1, "responseJSON": '{"status":"ok"}'},
+                        ],
+                    }
+                return {"totalCount": 2, "toolCalls": []}
+
+        operations: list[str] = []
+
+        def _execute_with_retry(operation: str, fn: Any) -> Any:
+            operations.append(operation)
+            return fn()
+
+        observer = PostFinalizeObserver(
+            client=_FakeClient(),
+            execute_with_retry=_execute_with_retry,
+            log_func=None,
+        )
+        snapshot = observer.observe(incident_id="inc-77", job_id="job-77")
+        self.assertEqual(operations, ["post_finalize.get_incident", "post_finalize.list_tool_calls"])
+        self.assertIsInstance(snapshot.verification_plan, dict)
+        self.assertEqual(snapshot.target_toolcall_seq, 2)
+        self.assertEqual(len(snapshot.kb_refs), 1)
+        self.assertEqual(snapshot.kb_refs[0]["doc_id"], "kb-1")
+
+
+class VerificationRunnerTest(unittest.TestCase):
+    def test_runner_executes_steps_and_publishes_verification_runs(self) -> None:
+        published: list[dict[str, Any]] = []
+        called_tools: list[str] = []
+
+        class _FakeMCPClient:
+            def call(self, *, tool: str, input_payload: dict[str, Any], idempotency_key: str | None = None) -> dict[str, Any]:
+                called_tools.append(tool)
+                if tool == "query_metrics":
+                    return {"output": {"queryResultJSON": '{"data":{"result":[{"value":[1,"2"]}]}}'}}
+                if tool == "query_logs":
+                    return {"output": {"queryResultJSON": '{"rows":[{"line":"error timeout"}]}'}}
+                return {"output": {"queryResultJSON": '{"data":{"result":[]}}'}}
+
+        class _FakeClient:
+            def __init__(self) -> None:
+                self.mcp_client = _FakeMCPClient()
+
+            def create_incident_verification_run(self, **kwargs: Any) -> dict[str, Any]:
+                published.append(kwargs)
+                return {"run": {"runID": f"run-{len(published)}"}}
+
+        operations: list[str] = []
+
+        def _execute_with_retry(operation: str, fn: Any) -> Any:
+            operations.append(operation)
+            return fn()
+
+        runner = VerificationRunner(
+            client=_FakeClient(),
+            execute_with_retry=_execute_with_retry,
+            log_func=None,
+        )
+        plan = {
+            "steps": [
+                {
+                    "tool": "mcp.query_metrics",
+                    "params": {"datasource_id": "ds-1", "expr": "sum(up)"},
+                    "expected": {"type": "exists"},
+                },
+                {
+                    "tool": "mcp.query_logs",
+                    "params": {"datasource_id": "ds-1", "query": "error"},
+                    "expected": {"type": "contains_keyword", "keyword": "timeout"},
+                },
+                {
+                    "tool": "mcp.query_metrics",
+                    "params": {"datasource_id": "ds-1", "expr": "sum(up)"},
+                    "expected": {"type": "threshold_below", "value": 0.1},
+                },
+            ]
+        }
+
+        results = runner.run(
+            incident_id="inc-55",
+            verification_plan=plan,
+            source="ai_job",
+            actor="ai:job-55",
+        )
+        self.assertEqual(called_tools, ["query_metrics", "query_logs", "query_metrics"])
+        self.assertEqual([item.meets_expectation for item in results], [True, True, False])
+        self.assertIn("unsupported expected.type", results[2].observed)
+        self.assertEqual(len(published), 3)
+        self.assertEqual([item["step_index"] for item in published], [1, 2, 3])
+        self.assertTrue(all(item["source"] == "ai_job" for item in published))
+        self.assertTrue(any(op.startswith("verification.publish") for op in operations))
 
 
 if __name__ == "__main__":

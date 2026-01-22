@@ -5,8 +5,10 @@ from typing import Any, Callable
 from ..tools_rca_api import RCAApiClient
 from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
+from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
 from .toolcall_reporter import ToolCallReporter
+from .verification_runner import VerificationRunner, VerificationStepResult
 
 
 class OrchestratorRuntime:
@@ -47,6 +49,16 @@ class OrchestratorRuntime:
             client=self._client,
             job_id=self._job_id,
             execute_with_retry=self._execute_with_retry,
+        )
+        self._post_finalize_observer = PostFinalizeObserver(
+            client=self._client,
+            execute_with_retry=self._execute_with_retry,
+            log_func=log_func,
+        )
+        self._verification_runner = VerificationRunner(
+            client=self._client,
+            execute_with_retry=self._execute_with_retry,
+            log_func=log_func,
         )
 
     def start(self) -> bool:
@@ -145,6 +157,23 @@ class OrchestratorRuntime:
 
     def lease_lost_reason(self) -> str:
         return self._lease_manager.lease_lost_reason()
+
+    def observe_post_finalize(self, *, incident_id: str) -> PostFinalizeSnapshot:
+        return self._post_finalize_observer.observe(incident_id=incident_id, job_id=self._job_id)
+
+    def run_verification(
+        self,
+        *,
+        incident_id: str,
+        verification_plan: dict[str, Any],
+        source: str = "ai_job",
+    ) -> list[VerificationStepResult]:
+        return self._verification_runner.run(
+            incident_id=incident_id,
+            verification_plan=verification_plan,
+            source=source,
+            actor=f"ai:{self._job_id}",
+        )
 
     def shutdown(self) -> None:
         self._lease_manager.shutdown()
