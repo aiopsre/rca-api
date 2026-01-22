@@ -270,20 +270,95 @@ def _ensure_quality_gate(state: GraphState) -> dict[str, Any]:
     }
 
 
-def load_job_and_start(state: GraphState, client: RCAApiClient, cfg: OrchestratorConfig) -> GraphState:
-    job = client.get_job(state.job_id)
-    state.incident_id = _extract_incident_id(job)
-    hints = _extract_input_hints(job)
-    state.input_hints = hints
-    state.force_no_evidence, state.force_conflict = _resolve_force_switches(hints, cfg)
-    state.a3_max_calls, state.a3_max_total_bytes, state.a3_max_total_latency_ms = _resolve_a3_budget(hints, cfg)
-    state.started = True
-    return state
+def _query_toolcall_response(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "result_size_bytes": _query_result_size_bytes(result),
+        "row_count": int(result.get("rowCount") or result.get("row_count") or 0),
+        "is_truncated": bool(result.get("isTruncated") or result.get("is_truncated")),
+        "no_data": _query_result_is_no_data(result),
+    }
 
 
-def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorConfig) -> GraphState:
+def load_job_and_start(
+    state: GraphState,
+    client: RCAApiClient,
+    cfg: OrchestratorConfig,
+    runtime: OrchestratorRuntime,
+) -> GraphState:
+    started_ms = int(time.time() * 1000)
+    request_payload = {
+        "job_id": state.job_id,
+        "instance_id": state.instance_id,
+        "action": "start_claim_and_load_job",
+    }
+    try:
+        job = client.get_job(state.job_id)
+        state.incident_id = _extract_incident_id(job)
+        hints = _extract_input_hints(job)
+        state.input_hints = hints
+        state.force_no_evidence, state.force_conflict = _resolve_force_switches(hints, cfg)
+        state.a3_max_calls, state.a3_max_total_bytes, state.a3_max_total_latency_ms = _resolve_a3_budget(hints, cfg)
+        state.started = True
+        runtime.report_tool_call(
+            node_name="load_job_and_start",
+            tool_name="job.start_claim",
+            request_json=request_payload,
+            response_json={
+                "status": "ok",
+                "incident_id": state.incident_id,
+                "heartbeat_initial": "active",
+            },
+            latency_ms=max(1, int(time.time() * 1000) - started_ms),
+            status="ok",
+        )
+        state.tool_calls_written += 1
+        return state
+    except Exception as exc:  # noqa: BLE001
+        try:
+            runtime.report_tool_call(
+                node_name="load_job_and_start",
+                tool_name="job.start_claim",
+                request_json=request_payload,
+                response_json={"status": "error"},
+                latency_ms=max(1, int(time.time() * 1000) - started_ms),
+                status="error",
+                error=str(exc)[:512],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        raise
+
+
+def collect_evidence(
+    state: GraphState,
+    client: RCAApiClient,
+    cfg: OrchestratorConfig,
+    runtime: OrchestratorRuntime,
+) -> GraphState:
     if not state.incident_id:
         raise RuntimeError("incident_id is required before collect_evidence")
+
+    def _report_action(
+        *,
+        tool_name: str,
+        request_json: dict[str, Any],
+        response_json: dict[str, Any] | None,
+        started_ms: int,
+        status: str,
+        error: str | None = None,
+        evidence_ids: list[str] | None = None,
+    ) -> None:
+        runtime.report_tool_call(
+            node_name="collect_evidence",
+            tool_name=tool_name,
+            request_json=request_json,
+            response_json=response_json,
+            latency_ms=max(1, int(time.time() * 1000) - started_ms),
+            status=status,
+            error=error,
+            evidence_ids=evidence_ids,
+        )
+        state.tool_calls_written += 1
 
     state.evidence_meta = []
     state.evidence_plan = {}
@@ -293,76 +368,191 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
             "collect error logs (5xx/timeout/panic/OOM) during the metric spike",
             "collect upstream/downstream traces or confirm tracing sampling/drop (RUN_QUERY=0 uses placeholders)",
         ]
-        metrics_id = client.save_mock_evidence(
+        metrics_raw = {
+            "source": "orchestrator",
+            "mode": "forced_conflict",
+            "dimension": "metrics",
+            "kind": "mock_conflict_signal",
+            "observed": "5xx and latency increased in the same time window",
+            "reason": "FORCE_CONFLICT=1",
+        }
+        metrics_started_ms = int(time.time() * 1000)
+        metrics_saved = runtime.save_mock_evidence(
             incident_id=state.incident_id,
+            node_name="collect_evidence",
+            kind="metrics",
             summary="FORCE_CONFLICT metrics placeholder: error rate spike observed.",
-            raw={
-                "source": "orchestrator",
+            raw=metrics_raw,
+            query_hash_source={
                 "mode": "forced_conflict",
-                "dimension": "metrics",
-                "kind": "mock_conflict_signal",
-                "observed": "5xx and latency increased in the same time window",
-                "reason": "FORCE_CONFLICT=1",
+                "kind": "metrics",
+                "query_text": "mock://orchestrator",
             },
         )
+        metrics_id = metrics_saved.evidence_id
         _append_evidence(state, metrics_id, source="metrics", no_data=False, conflict_hint=True)
+        _report_action(
+            tool_name="evidence.save_mock",
+            request_json={
+                "incident_id": state.incident_id,
+                "kind": "metrics",
+                "idempotency_key": metrics_saved.idempotency_key,
+                "created_by": metrics_saved.created_by,
+            },
+            response_json={"evidence_id": metrics_id, "status": "ok"},
+            started_ms=metrics_started_ms,
+            status="ok",
+            evidence_ids=[metrics_id],
+        )
 
-        logs_id = client.save_mock_evidence(
+        logs_raw = {
+            "source": "orchestrator",
+            "mode": "forced_conflict",
+            "dimension": "logs_traces",
+            "kind": "no_data",
+            "observed": "logs/traces do not corroborate metric anomaly in this window",
+            "reason": "FORCE_CONFLICT=1; datasource query skipped and placeholders persisted",
+        }
+        logs_started_ms = int(time.time() * 1000)
+        logs_saved = runtime.save_mock_evidence(
             incident_id=state.incident_id,
+            node_name="collect_evidence",
+            kind="logs",
             summary="FORCE_CONFLICT logs/trace placeholder: no corroborating error evidence.",
-            raw={
-                "source": "orchestrator",
+            raw=logs_raw,
+            query_hash_source={
                 "mode": "forced_conflict",
-                "dimension": "logs_traces",
-                "kind": "no_data",
-                "observed": "logs/traces do not corroborate metric anomaly in this window",
-                "reason": "FORCE_CONFLICT=1; datasource query skipped and placeholders persisted",
+                "kind": "logs",
+                "query_text": "mock://orchestrator",
             },
         )
+        logs_id = logs_saved.evidence_id
         _append_evidence(state, logs_id, source="logs", no_data=True, conflict_hint=True)
+        _report_action(
+            tool_name="evidence.save_mock",
+            request_json={
+                "incident_id": state.incident_id,
+                "kind": "logs",
+                "idempotency_key": logs_saved.idempotency_key,
+                "created_by": logs_saved.created_by,
+            },
+            response_json={"evidence_id": logs_id, "status": "ok"},
+            started_ms=logs_started_ms,
+            status="ok",
+            evidence_ids=[logs_id],
+        )
         return state
 
     if state.force_no_evidence:
         state.missing_evidence = ["logs", "traces"]
-        evidence_id = client.save_mock_evidence(
+        raw = {
+            "source": "orchestrator",
+            "mode": "forced_missing_evidence",
+            "kind": "no_data",
+            "missing": state.missing_evidence,
+            "reason": "FORCE_NO_EVIDENCE=1",
+        }
+        started_ms = int(time.time() * 1000)
+        saved = runtime.save_mock_evidence(
             incident_id=state.incident_id,
+            node_name="collect_evidence",
+            kind="metrics",
             summary="no evidence found (forced)",
-            raw={
-                "source": "orchestrator",
+            raw=raw,
+            query_hash_source={
                 "mode": "forced_missing_evidence",
-                "kind": "no_data",
-                "missing": state.missing_evidence,
-                "reason": "FORCE_NO_EVIDENCE=1",
+                "kind": "metrics",
+                "query_text": "mock://orchestrator",
             },
         )
+        evidence_id = saved.evidence_id
         _append_evidence(state, evidence_id, source="metrics", no_data=True)
+        _report_action(
+            tool_name="evidence.save_mock",
+            request_json={
+                "incident_id": state.incident_id,
+                "kind": "metrics",
+                "idempotency_key": saved.idempotency_key,
+                "created_by": saved.created_by,
+            },
+            response_json={"evidence_id": evidence_id, "status": "ok"},
+            started_ms=started_ms,
+            status="ok",
+            evidence_ids=[evidence_id],
+        )
         return state
 
     if not cfg.run_query:
         state.missing_evidence = []
-        metrics_id = client.save_mock_evidence(
+        metrics_raw = {
+            "source": "orchestrator",
+            "mode": "mock",
+            "kind": "metrics_signal",
+            "observed": "5xx and latency increased in the incident window",
+        }
+        metrics_started_ms = int(time.time() * 1000)
+        metrics_saved = runtime.save_mock_evidence(
             incident_id=state.incident_id,
+            node_name="collect_evidence",
+            kind="metrics",
             summary="P0 mock metrics evidence saved by orchestrator (RUN_QUERY=0).",
-            raw={
-                "source": "orchestrator",
+            raw=metrics_raw,
+            query_hash_source={
                 "mode": "mock",
-                "kind": "metrics_signal",
-                "observed": "5xx and latency increased in the incident window",
+                "kind": "metrics",
+                "query_text": "mock://orchestrator",
             },
         )
+        metrics_id = metrics_saved.evidence_id
         _append_evidence(state, metrics_id, source="metrics", no_data=False)
+        _report_action(
+            tool_name="evidence.save_mock",
+            request_json={
+                "incident_id": state.incident_id,
+                "kind": "metrics",
+                "idempotency_key": metrics_saved.idempotency_key,
+                "created_by": metrics_saved.created_by,
+            },
+            response_json={"evidence_id": metrics_id, "status": "ok"},
+            started_ms=metrics_started_ms,
+            status="ok",
+            evidence_ids=[metrics_id],
+        )
 
-        logs_id = client.save_mock_evidence(
+        logs_raw = {
+            "source": "orchestrator",
+            "mode": "mock",
+            "kind": "logs_signal",
+            "observed": "error logs align with metric spike in the same window",
+        }
+        logs_started_ms = int(time.time() * 1000)
+        logs_saved = runtime.save_mock_evidence(
             incident_id=state.incident_id,
+            node_name="collect_evidence",
+            kind="logs",
             summary="P0 mock logs evidence saved by orchestrator (RUN_QUERY=0).",
-            raw={
-                "source": "orchestrator",
+            raw=logs_raw,
+            query_hash_source={
                 "mode": "mock",
-                "kind": "logs_signal",
-                "observed": "error logs align with metric spike in the same window",
+                "kind": "logs",
+                "query_text": "mock://orchestrator",
             },
         )
+        logs_id = logs_saved.evidence_id
         _append_evidence(state, logs_id, source="logs", no_data=False)
+        _report_action(
+            tool_name="evidence.save_mock",
+            request_json={
+                "incident_id": state.incident_id,
+                "kind": "logs",
+                "idempotency_key": logs_saved.idempotency_key,
+                "created_by": logs_saved.created_by,
+            },
+            response_json={"evidence_id": logs_id, "status": "ok"},
+            started_ms=logs_started_ms,
+            status="ok",
+            evidence_ids=[logs_id],
+        )
         return state
 
     if not cfg.ds_base_url.strip():
@@ -417,6 +607,13 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
             query_expr = str(candidate.params.get("expr") or "sum(up)")
             step_seconds = max(_coerce_non_negative_int(candidate.params.get("step_seconds"), 30), 1)
             started_ms = int(time.time() * 1000)
+            query_request_payload = {
+                "datasource_id": datasource_id,
+                "promql": query_expr,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "step_seconds": step_seconds,
+            }
             try:
                 query_result = client.query_metrics(
                     datasource_id=datasource_id,
@@ -426,6 +623,14 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                     step_s=step_seconds,
                 )
             except Exception as exc:  # noqa: BLE001 - continue candidate iteration on query failures.
+                _report_action(
+                    tool_name="mcp.query_metrics",
+                    request_json=query_request_payload,
+                    response_json={"status": "error"},
+                    started_ms=started_ms,
+                    status="error",
+                    error=str(exc)[:512],
+                )
                 latency_ms = max(1, int(time.time() * 1000) - started_ms)
                 budget_tracker.record_query(result_bytes=0, latency_ms=latency_ms)
                 state.evidence_plan["used"] = budget_tracker.used_snapshot()
@@ -434,6 +639,13 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                 )
                 continue
 
+            _report_action(
+                tool_name="mcp.query_metrics",
+                request_json=query_request_payload,
+                response_json=_query_toolcall_response(query_result),
+                started_ms=started_ms,
+                status="ok",
+            )
             latency_ms = max(1, int(time.time() * 1000) - started_ms)
             budget_tracker.record_query(
                 result_bytes=_query_result_size_bytes(query_result),
@@ -445,13 +657,50 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                 "queryText": query_expr,
                 "queryJSON": "{}",
             }
-            evidence_id = client.save_evidence_from_query(
-                incident_id=state.incident_id,
-                kind="metrics",
-                query=query_request,
-                result=query_result,
-            )
+            save_started_ms = int(time.time() * 1000)
+            try:
+                published = runtime.save_evidence_from_query(
+                    incident_id=state.incident_id,
+                    node_name="collect_evidence",
+                    kind="metrics",
+                    query=query_request,
+                    result=query_result,
+                    query_hash_source=query_request,
+                )
+                evidence_id = published.evidence_id
+            except Exception as exc:  # noqa: BLE001
+                _report_action(
+                    tool_name="evidence.save_from_query",
+                    request_json={
+                        "incident_id": state.incident_id,
+                        "kind": "metrics",
+                        "query": query_request,
+                    },
+                    response_json={"status": "error"},
+                    started_ms=save_started_ms,
+                    status="error",
+                    error=str(exc)[:512],
+                )
+                raise
             _append_evidence(state, evidence_id, source="metrics", no_data=_query_result_is_no_data(query_result))
+            _report_action(
+                tool_name="evidence.save_from_query",
+                request_json={
+                    "incident_id": state.incident_id,
+                    "kind": "metrics",
+                    "query": query_request,
+                    "idempotency_key": published.idempotency_key,
+                    "created_by": published.created_by,
+                },
+                response_json={
+                    "status": "ok",
+                    "evidence_id": evidence_id,
+                    "no_data": _query_result_is_no_data(query_result),
+                },
+                started_ms=save_started_ms,
+                status="ok",
+                evidence_ids=[evidence_id],
+            )
             state.evidence_plan["executed"].append(candidate.name)
             continue
 
@@ -459,6 +708,13 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
             query_text = str(candidate.params.get("query") or '{job=~".+"} |= "error"')
             limit = max(_coerce_non_negative_int(candidate.params.get("limit"), 200), 1)
             started_ms = int(time.time() * 1000)
+            query_request_payload = {
+                "datasource_id": datasource_id,
+                "query": query_text,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "limit": limit,
+            }
             try:
                 query_result = client.query_logs(
                     datasource_id=datasource_id,
@@ -468,6 +724,14 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                     limit=limit,
                 )
             except Exception as exc:  # noqa: BLE001 - continue candidate iteration on query failures.
+                _report_action(
+                    tool_name="mcp.query_logs",
+                    request_json=query_request_payload,
+                    response_json={"status": "error"},
+                    started_ms=started_ms,
+                    status="error",
+                    error=str(exc)[:512],
+                )
                 latency_ms = max(1, int(time.time() * 1000) - started_ms)
                 budget_tracker.record_query(result_bytes=0, latency_ms=latency_ms)
                 state.evidence_plan["used"] = budget_tracker.used_snapshot()
@@ -476,6 +740,13 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                 )
                 continue
 
+            _report_action(
+                tool_name="mcp.query_logs",
+                request_json=query_request_payload,
+                response_json=_query_toolcall_response(query_result),
+                started_ms=started_ms,
+                status="ok",
+            )
             latency_ms = max(1, int(time.time() * 1000) - started_ms)
             budget_tracker.record_query(
                 result_bytes=_query_result_size_bytes(query_result),
@@ -487,13 +758,50 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                 "queryText": query_text,
                 "queryJSON": "{}",
             }
-            evidence_id = client.save_evidence_from_query(
-                incident_id=state.incident_id,
-                kind="logs",
-                query=query_request,
-                result=query_result,
-            )
+            save_started_ms = int(time.time() * 1000)
+            try:
+                published = runtime.save_evidence_from_query(
+                    incident_id=state.incident_id,
+                    node_name="collect_evidence",
+                    kind="logs",
+                    query=query_request,
+                    result=query_result,
+                    query_hash_source=query_request,
+                )
+                evidence_id = published.evidence_id
+            except Exception as exc:  # noqa: BLE001
+                _report_action(
+                    tool_name="evidence.save_from_query",
+                    request_json={
+                        "incident_id": state.incident_id,
+                        "kind": "logs",
+                        "query": query_request,
+                    },
+                    response_json={"status": "error"},
+                    started_ms=save_started_ms,
+                    status="error",
+                    error=str(exc)[:512],
+                )
+                raise
             _append_evidence(state, evidence_id, source="logs", no_data=_query_result_is_no_data(query_result))
+            _report_action(
+                tool_name="evidence.save_from_query",
+                request_json={
+                    "incident_id": state.incident_id,
+                    "kind": "logs",
+                    "query": query_request,
+                    "idempotency_key": published.idempotency_key,
+                    "created_by": published.created_by,
+                },
+                response_json={
+                    "status": "ok",
+                    "evidence_id": evidence_id,
+                    "no_data": _query_result_is_no_data(query_result),
+                },
+                started_ms=save_started_ms,
+                status="ok",
+                evidence_ids=[evidence_id],
+            )
             state.evidence_plan["executed"].append(candidate.name)
             continue
 
@@ -501,8 +809,11 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
 
     if not state.evidence_ids:
         state.missing_evidence = ["logs", "traces"]
-        fallback_id = client.save_mock_evidence(
+        fallback_started_ms = int(time.time() * 1000)
+        fallback_saved = runtime.save_mock_evidence(
             incident_id=state.incident_id,
+            node_name="collect_evidence",
+            kind="metrics",
             summary="A3 fallback mock evidence: all query candidates failed.",
             raw={
                 "source": "orchestrator",
@@ -510,8 +821,27 @@ def collect_evidence(state: GraphState, client: RCAApiClient, cfg: OrchestratorC
                 "kind": "no_data",
                 "reason": "all query candidates failed",
             },
+            query_hash_source={
+                "mode": "a3_fallback",
+                "kind": "metrics",
+                "query_text": "mock://orchestrator",
+            },
         )
+        fallback_id = fallback_saved.evidence_id
         _append_evidence(state, fallback_id, source="metrics", no_data=True)
+        _report_action(
+            tool_name="evidence.save_mock",
+            request_json={
+                "incident_id": state.incident_id,
+                "kind": "metrics",
+                "idempotency_key": fallback_saved.idempotency_key,
+                "created_by": fallback_saved.created_by,
+            },
+            response_json={"evidence_id": fallback_id, "status": "ok"},
+            started_ms=fallback_started_ms,
+            status="ok",
+            evidence_ids=[fallback_id],
+        )
         state.evidence_plan["skipped"].append({"name": "evidence.saveMockFallback", "reason": "all_queries_failed"})
     return state
 
@@ -526,53 +856,7 @@ def write_tool_calls(state: GraphState, runtime: OrchestratorRuntime) -> GraphSt
     missing_evidence = state.missing_evidence or ["logs", "traces"]
     quality_gate = _ensure_quality_gate(state)
 
-    if state.force_conflict:
-        collect_tool_name = "evidence.collectConflictPlaceholder"
-    elif state.force_no_evidence:
-        collect_tool_name = "evidence.collectPlaceholder"
-    else:
-        collect_tool_name = "mcp.query_metrics" if state.datasource_id else "evidence.saveMock"
-
     decision = str(quality_gate.get("decision") or "")
-    if decision == QUALITY_GATE_CONFLICT:
-        collect_response = {
-            "evidence_ids": state.evidence_ids,
-            "status": "conflict_signals",
-            "missing_evidence": missing_evidence,
-            "quality_gate": quality_gate,
-        }
-    elif decision == QUALITY_GATE_MISSING:
-        collect_response = {
-            "evidence_ids": [primary_evidence],
-            "status": "no_data",
-            "missing_evidence": missing_evidence,
-            "quality_gate": quality_gate,
-        }
-    else:
-        collect_response = {
-            "evidence_ids": state.evidence_ids,
-            "status": "ok",
-            "quality_gate": quality_gate,
-        }
-    if state.evidence_plan:
-        collect_response["evidence_plan"] = state.evidence_plan
-
-    started_ms = int(time.time() * 1000)
-    runtime.report_tool_call(
-        node_name="collect_evidence",
-        tool_name=collect_tool_name,
-        request_json={
-            "incident_id": state.incident_id,
-            "datasource_id": state.datasource_id,
-            "instance_id": state.instance_id,
-            "force_no_evidence": state.force_no_evidence,
-            "force_conflict": state.force_conflict,
-        },
-        response_json=collect_response,
-        latency_ms=max(1, int(time.time() * 1000) - started_ms),
-        status="ok",
-    )
-
     synthesize_request = {
         "incident_id": state.incident_id,
         "instance_id": state.instance_id,
@@ -625,15 +909,16 @@ def write_tool_calls(state: GraphState, runtime: OrchestratorRuntime) -> GraphSt
 
     started_ms = int(time.time() * 1000)
     runtime.report_tool_call(
-        node_name="synthesize",
+        node_name="write_tool_calls",
         tool_name="diagnosis.generate",
         request_json=synthesize_request,
         response_json=synthesize_response,
         latency_ms=max(1, int(time.time() * 1000) - started_ms),
         status="ok",
+        evidence_ids=state.evidence_ids,
     )
 
-    state.tool_calls_written = 2
+    state.tool_calls_written += 1
     return state
 
 
@@ -836,10 +1121,51 @@ def finalize_job(
     if not error_message and not state.evidence_ids:
         error_message = "finalize_job: no evidence was collected"
 
+    def _report_finalize(
+        *,
+        finalize_status: str,
+        call_status: str,
+        started_ms: int,
+        error: str | None = None,
+        request_error_message: str | None = None,
+    ) -> None:
+        runtime.report_tool_call(
+            node_name="finalize_job",
+            tool_name="ai_job.finalize",
+            request_json={
+                "job_id": state.job_id,
+                "status": finalize_status,
+                "evidence_ids": state.evidence_ids,
+                "error_message": request_error_message,
+            },
+            response_json={
+                "status": finalize_status,
+                "finalized": True,
+                "error": error,
+            },
+            latency_ms=max(1, int(time.time() * 1000) - started_ms),
+            status=call_status,
+            error=error,
+            evidence_ids=state.evidence_ids,
+        )
+        state.tool_calls_written += 1
+
     try:
         if error_message:
             state.last_error = error_message
-            runtime.finalize(status="failed", diagnosis_json=None, error_message=error_message[:8192])
+            started_ms = int(time.time() * 1000)
+            runtime.finalize(
+                status="failed",
+                diagnosis_json=None,
+                error_message=error_message[:8192],
+                evidence_ids=state.evidence_ids,
+            )
+            _report_finalize(
+                finalize_status="failed",
+                call_status="ok",
+                started_ms=started_ms,
+                request_error_message=error_message[:8192],
+            )
             state.finalized = True
             return state
 
@@ -853,7 +1179,19 @@ def finalize_job(
             diagnosis_json = _build_success_diagnosis(state)
 
         state.diagnosis_json = diagnosis_json
-        runtime.finalize(status="succeeded", diagnosis_json=diagnosis_json, error_message=None)
+        started_ms = int(time.time() * 1000)
+        runtime.finalize(
+            status="succeeded",
+            diagnosis_json=diagnosis_json,
+            error_message=None,
+            evidence_ids=state.evidence_ids,
+        )
+        _report_finalize(
+            finalize_status="succeeded",
+            call_status="ok",
+            started_ms=started_ms,
+            request_error_message=None,
+        )
         state.finalized = True
         return state
     except Exception as exc:  # noqa: BLE001
@@ -873,7 +1211,20 @@ def finalize_job(
 
         state.last_error = fallback
         try:
-            runtime.finalize(status="failed", diagnosis_json=None, error_message=fallback[:8192])
+            started_ms = int(time.time() * 1000)
+            runtime.finalize(
+                status="failed",
+                diagnosis_json=None,
+                error_message=fallback[:8192],
+                evidence_ids=state.evidence_ids,
+            )
+            _report_finalize(
+                finalize_status="failed",
+                call_status="error",
+                started_ms=started_ms,
+                error=str(exc)[:512],
+                request_error_message=fallback[:8192],
+            )
         except Exception:  # noqa: BLE001
             pass
         state.finalized = True
@@ -888,11 +1239,11 @@ def build_graph(
     builder = StateGraph(GraphState)
     builder.add_node(
         "load_job_and_start",
-        _guard("load_job_and_start", lambda s: load_job_and_start(s, client, cfg), runtime),
+        _guard("load_job_and_start", lambda s: load_job_and_start(s, client, cfg, runtime), runtime),
     )
     builder.add_node(
         "collect_evidence",
-        _guard("collect_evidence", lambda s: collect_evidence(s, client, cfg), runtime),
+        _guard("collect_evidence", lambda s: collect_evidence(s, client, cfg, runtime), runtime),
     )
     builder.add_node(
         "write_tool_calls",

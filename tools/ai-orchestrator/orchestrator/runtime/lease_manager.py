@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from typing import Any, Callable
 
 from ..tools_rca_api import RCAApiClient
 
@@ -13,11 +13,13 @@ class LeaseManager:
         heartbeat_interval_seconds: int,
         instance_id: str,
         log_func: Callable[[str], None] | None = None,
+        execute_with_retry: Callable[[str, Callable[[], Any]], Any] | None = None,
     ) -> None:
         self._client = client
         self._heartbeat_interval_seconds = max(1, int(heartbeat_interval_seconds))
         self._instance_id = str(instance_id).strip()
         self._log_func = log_func
+        self._execute_with_retry = execute_with_retry
 
         self._job_id = ""
         self._stop_event = threading.Event()
@@ -51,12 +53,18 @@ class LeaseManager:
                 job_id = self._job_id
             if not job_id:
                 return
-            ok, reason = self._client.renew_job_lease(job_id)
-            if ok:
-                continue
-            self._mark_lease_lost(reason)
-            self._stop_event.set()
-            return
+            try:
+                if self._execute_with_retry is not None:
+                    self._execute_with_retry(
+                        "job.heartbeat",
+                        lambda: self._client.renew_job_lease(job_id),
+                    )
+                else:
+                    self._client.renew_job_lease(job_id)
+            except Exception as exc:  # noqa: BLE001
+                self._mark_lease_lost(str(exc))
+                self._stop_event.set()
+                return
 
     def _mark_lease_lost(self, reason: str) -> None:
         with self._lock:

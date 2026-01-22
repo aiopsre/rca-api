@@ -272,14 +272,8 @@ class RCAApiClient:
                 return False
             raise
 
-    def renew_job_lease(self, job_id: str) -> tuple[bool, str]:
-        try:
-            self._request("POST", f"/v1/ai/jobs/{job_id}/heartbeat")
-            return True, ""
-        except RCAApiError as exc:
-            return False, f"{exc.category.value}: {exc}"
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+    def renew_job_lease(self, job_id: str) -> None:
+        self._request("POST", f"/v1/ai/jobs/{job_id}/heartbeat")
 
     def add_tool_call(
         self,
@@ -292,6 +286,7 @@ class RCAApiClient:
         latency_ms: int,
         status: str,
         error: str | None = None,
+        evidence_ids: list[str] | None = None,
     ) -> None:
         body: Dict[str, Any] = {
             "jobID": job_id,
@@ -306,6 +301,8 @@ class RCAApiClient:
             body["responseJSON"] = json.dumps(response_json, ensure_ascii=False, separators=(",", ":"))
         if error:
             body["errorMessage"] = error
+        if evidence_ids:
+            body["evidenceIDs"] = [str(item).strip() for item in evidence_ids if str(item).strip()]
         self._request("POST", f"/v1/ai/jobs/{job_id}/tool-calls", json_body=body)
 
     def finalize_job(
@@ -314,6 +311,7 @@ class RCAApiClient:
         status: str,
         diagnosis_json: Dict[str, Any] | None,
         error_message: str | None = None,
+        evidence_ids: list[str] | None = None,
     ) -> None:
         body: Dict[str, Any] = {
             "jobID": job_id,
@@ -323,6 +321,8 @@ class RCAApiClient:
             body["diagnosisJSON"] = json.dumps(diagnosis_json, ensure_ascii=False, separators=(",", ":"))
         if error_message:
             body["errorMessage"] = error_message
+        if evidence_ids:
+            body["evidenceIDs"] = [str(item).strip() for item in evidence_ids if str(item).strip()]
         # Finalization may include DB writes and incident writeback; allow a longer timeout to reduce false negatives.
         self._request("POST", f"/v1/ai/jobs/{job_id}/finalize", json_body=body, timeout_s=max(self.timeout_s, 30.0))
 
@@ -428,11 +428,20 @@ class RCAApiClient:
             raise RuntimeError(f"failed to parse datasource id from response: {created}")
         return ds_id
 
-    def save_mock_evidence(self, incident_id: str, summary: str, raw: Dict[str, Any]) -> str:
+    def save_mock_evidence(
+        self,
+        incident_id: str,
+        summary: str,
+        raw: Dict[str, Any],
+        *,
+        job_id: str | None = None,
+        idempotency_key: str | None = None,
+        created_by: str | None = None,
+    ) -> str:
         now_s = int(time.time())
         body = {
             "incidentID": incident_id,
-            "idempotencyKey": f"orchestrator-mock-{uuid.uuid4().hex}",
+            "idempotencyKey": (idempotency_key or f"orchestrator-mock-{uuid.uuid4().hex}"),
             "type": "metrics",
             "queryText": "mock://orchestrator",
             "queryJSON": "{}",
@@ -440,8 +449,11 @@ class RCAApiClient:
             "timeRangeEnd": _ts(now_s),
             "resultJSON": json.dumps(raw, ensure_ascii=False, separators=(",", ":")),
             "summary": summary,
-            "createdBy": "system",
+            "createdBy": created_by or "system",
         }
+        normalized_job_id = str(job_id or "").strip()
+        if normalized_job_id:
+            body["jobID"] = normalized_job_id
         payload = self._request("POST", f"/v1/incidents/{incident_id}/evidence", json_body=body)
         evidence_id = _extract_first(payload, "evidenceID", "evidence_id")
         if not isinstance(evidence_id, str) or not evidence_id:
@@ -491,7 +503,17 @@ class RCAApiClient:
         )
         return self._normalize_mcp_query_output("query_logs", payload)
 
-    def save_evidence_from_query(self, incident_id: str, kind: str, query: Dict[str, Any], result: Dict[str, Any]) -> str:
+    def save_evidence_from_query(
+        self,
+        incident_id: str,
+        kind: str,
+        query: Dict[str, Any],
+        result: Dict[str, Any],
+        *,
+        job_id: str | None = None,
+        idempotency_key: str | None = None,
+        created_by: str | None = None,
+    ) -> str:
         now_s = int(time.time())
         query_text = str(query.get("queryText") or query.get("query_text") or "orchestrator_query")
         query_json = json.dumps(query, ensure_ascii=False, separators=(",", ":"))
@@ -504,7 +526,7 @@ class RCAApiClient:
 
         body: Dict[str, Any] = {
             "incidentID": incident_id,
-            "idempotencyKey": f"orchestrator-query-{uuid.uuid4().hex}",
+            "idempotencyKey": (idempotency_key or f"orchestrator-query-{uuid.uuid4().hex}"),
             "type": kind,
             "queryText": query_text,
             "queryJSON": query_json,
@@ -512,8 +534,11 @@ class RCAApiClient:
             "timeRangeEnd": _ts(now_s),
             "resultJSON": result_json,
             "summary": f"orchestrator collected {kind} evidence",
-            "createdBy": "system",
+            "createdBy": created_by or "system",
         }
+        normalized_job_id = str(job_id or "").strip()
+        if normalized_job_id:
+            body["jobID"] = normalized_job_id
         datasource_id = str(query.get("datasourceID") or query.get("datasource_id") or "").strip()
         if datasource_id:
             body["datasourceID"] = datasource_id

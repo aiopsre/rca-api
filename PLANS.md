@@ -133,20 +133,131 @@
 
 ---
 
-## Phase B（后续扩展，非本次必须）
-> 先占位，给 Codex 后续迭代用。
+# Phase B：EvidencePublisher + 并发 seq + 重试矩阵 + LangGraph 细粒度 ToolCall 上报
 
-B1. EvidencePublisher 接入（Evidence 独立资源显式落库）
-- 复用 `tools_rca_api.py:save_mock_evidence/save_evidence_from_query`
-- Runtime 提供 `publish_evidence(...)` 并返回 evidence_id 列表
+唯一真实来源：本仓库代码。
 
-B2. ToolCall 并发 seq（线程安全 + 单调递增）
-- ToolCallReporter seq 改成原子自增 / lock
-- 对齐服务端幂等键 `(job_id, seq)` 不变
+前置（从代码上看必须满足）：
+- Orchestrator 必须能调用 rca-api：
+  - Job：`POST /v1/ai/jobs/:jobID/start|heartbeat|tool-calls|finalize`（`internal/apiserver/handler/ai_job.go:init()`）
+  - Evidence：`POST /v1/incidents/:incidentID/evidence`（`internal/apiserver/handler/evidence.go:init()`）
+- ToolCall 结构与 finalize/evidence 字段以 proto 为准：
+  - `pkg/api/apiserver/v1/ai_job.proto:CreateAIToolCallRequest`（含 `repeated evidenceIDs`）
+  - `pkg/api/apiserver/v1/ai_job.proto:FinalizeAIJobRequest`（含 `repeated evidenceIDs`）
+  - `pkg/api/apiserver/v1/evidence.proto:SaveEvidenceRequest`（含 `idempotencyKey/jobID/createdBy`）
 
-B3. 细粒度错误分类 -> 自动重试矩阵
-- 对 `RCAApiError` 分类后：仅对 retryable 类做指数退避
-- owner_lost 直接 fail-fast，停止 job
+---
 
-B4. 更深 LangGraph 集成（更多节点上报、更严格“节点不碰 HTTP”）
-- 所有节点对外仅调用 runtime 接口
+## B0（若尚未有底座）：引入 Runtime/Reporter 抽象（一次性）
+> 如果你本地已经完成 Phase A（SDK+Runtime），则跳过 B0。
+
+新增目录（建议）：
+- `tools/ai-orchestrator/orchestrator/runtime/`
+- `tools/ai-orchestrator/orchestrator/sdk/`
+
+目标：
+- LangGraph 节点不直接调用 HTTP client（当前 `graph.py:write_tool_calls` 直接 `client.add_tool_call`）
+- lease/start/toolcall/finalize 收敛到 runtime 层
+
+验收：
+- `tools/ai-orchestrator/orchestrator/graph.py` 内不再出现对 `RCAApiClient.add_tool_call/finalize_job` 的直接调用。
+
+---
+
+## B1：EvidencePublisher（稳定幂等 + job 绑定 + createdBy）
+改动文件：
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+  - 修改：
+    - `save_mock_evidence(self, incident_id, summary, raw, job_id=None, idempotency_key=None, created_by=None) -> str`
+    - `save_evidence_from_query(self, incident_id, kind, query, result, job_id=None, idempotency_key=None, created_by=None) -> str`
+  - 行为：
+    - 若传入 `idempotency_key` 则直接使用；否则维持旧 uuid 行为（兼容）
+
+新增文件（建议）：
+- `tools/ai-orchestrator/orchestrator/runtime/evidence_publisher.py`
+  - `class EvidencePublisher`：
+    - `publish_mock(incident_id, summary, raw, job_id, node_name, kind) -> evidence_id`
+    - `publish_from_query(incident_id, kind, query, result, job_id, node_name) -> evidence_id`
+    - 内部生成稳定 idempotencyKey，例如：
+      - `f"ai:{job_id}:{node_name}:{kind}:{sha256(query_json)[:16]}"`
+
+验收标准：
+- 同一 job+node+kind+query 重试两次，服务端只生成 1 条 evidence（依赖 `SaveEvidenceRequest.idempotencyKey`）。
+- evidence 存储带 `jobID=job_id`，`createdBy="ai:{job_id}"`（见 `pkg/api/apiserver/v1/evidence.proto:SaveEvidenceRequest`）。
+
+---
+
+## B2：并发 seq（线程安全 + 单调递增）
+改动文件（若已有 reporter）：
+- `tools/ai-orchestrator/orchestrator/runtime/toolcall_reporter.py`
+  - `next_seq()` 增加 `threading.Lock` 保护
+  - 允许 `report(..., evidence_ids: list[str] | None)`，写入 `CreateAIToolCallRequest.evidenceIDs` 字段
+
+若无 reporter（当前包状态）：
+- 在 `tools/ai-orchestrator/orchestrator/tools_rca_api.py:add_tool_call` 的调用方（graph 层）引入 seq allocator（不推荐长期方案；仅过渡）
+
+验收标准：
+- 并发 10 个线程同时 report 100 次 toolcall：seq 不重复、不回退。
+- 服务端仍以 `(job_id, seq)` 幂等（`internal/apiserver/biz/v1/ai_job/ai_job.go:CreateToolCall`）。
+
+---
+
+## B3：错误自动重试矩阵（仅 retryable）
+新增文件（建议）：
+- `tools/ai-orchestrator/orchestrator/runtime/retry.py`
+  - `class RetryPolicy`：max_attempts, base_backoff_s, max_backoff_s, jitter
+  - `def run_with_retry(fn, classify_error)`
+
+改动点：
+- 将重试应用在：
+  - `toolcall` 上报（POST tool-calls）
+  - evidence 保存（POST incidents/:id/evidence）
+  - finalize（POST finalize）
+  - heartbeat（按需；注意 owner/lease 丢失不重试）
+
+分类依据（从代码上看）：
+- owner/lease 冲突是 HTTP 409（`internal/pkg/errno/ai_job.go:ErrAIJobInvalidTransition`, `ErrAIToolCallStatusConflict`）
+- missing owner header：`internal/apiserver/handler/ai_job.go:requireOrchestratorInstanceID` 会写 `errorsx.ErrInvalidArgument`
+
+验收标准：
+- 模拟 transport timeout：会重试 N 次后失败。
+- 模拟 409：不重试，直接 fail-fast，并触发“停止后续写入”（如终止本 job 运行）。
+
+---
+
+## B4：LangGraph 更细粒度 ToolCall 上报（按节点/动作拆分）
+改动文件：
+- `tools/ai-orchestrator/orchestrator/graph.py`
+
+现状（从代码上看）：
+- `write_tool_calls` 节点集中写 2 条 toolcall（`seq=1/2`）
+- `collect_evidence` 内部会调用 `client.save_mock_evidence/save_evidence_from_query` 落库 evidence
+
+Phase B 目标：
+- 将 toolcall 上报下沉到：
+  - `load_job_and_start`：上报 start claim 结果（ok/owner_lost）
+  - `collect_evidence`：分别上报：
+    - query_metrics/query_logs（request/response/latency）
+    - save_evidence（写 evidenceIDs）
+  - `finalize_job`：上报 finalize，并在 finalize request 中写 `evidenceIDs=state.evidence_ids`
+
+实现方式（建议）：
+- 删除或弱化 `write_tool_calls` 节点，改为每个节点自身在关键点调用 `runtime.report_tool_call(...)`
+
+验收标准：
+- toolcalls 列表能看到每个节点/动作的记录（不再只有 2 条汇总）。
+- 每条 toolcall 如果产生了 evidence，则 `evidenceIDs` 非空并包含新增 evidenceID。
+- Finalize 请求携带 evidenceIDs（见 `pkg/api/apiserver/v1/ai_job.proto:FinalizeAIJobRequest`）。
+
+---
+
+## B5：集成测试/脚本
+新增测试（建议）：
+- `tools/ai-orchestrator/tests/test_evidence_idempotency.py`
+  - 验证 EvidencePublisher 稳定 idempotencyKey 生成
+- `tools/ai-orchestrator/tests/test_seq_concurrency.py`
+  - 多线程 seq 不冲突
+
+脚本（建议）：
+- `tools/ai-orchestrator/scripts/run_one_job_phaseB.sh`
+  - 启用并发与 query，观察 toolcall/evidence/finalize 写入效果
