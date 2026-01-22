@@ -261,3 +261,167 @@ Phase B 目标：
 脚本（建议）：
 - `tools/ai-orchestrator/scripts/run_one_job_phaseB.sh`
   - 启用并发与 query，观察 toolcall/evidence/finalize 写入效果
+
+
+---
+
+1/verification/plan.go: BuildPlan`
+
+**验收标准**
+
+* 无代码改动也可完成；产出为“确认记录”（在 PR 描述即可）。
+
+---
+
+## Phase C1 — SDK：补齐 PostFinalize 所需 API（RCAApiClient）
+
+**改动文件**
+
+* `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+
+**新增/修改函数**
+
+1. `def list_tool_calls(self, job_id: str, limit: int=200, offset: int=0, seq: int|None=None) -> dict`
+
+   * 调用：`self._request("GET", f"/v1/ai/jobs/{job_id}/tool-calls", params=...)`
+   * 与服务端路由对齐：`internal/apiserver/handler/ai_job.go: jobGroup.GET("/:jobID/tool-calls", handler.ListAIToolCalls)`
+2. `def create_incident_verification_run(self, incident_id: str, source: str, step_index: int, tool: str, observed: str, meets_expectation: bool, params_json: dict|None=None, actor: str|None=None) -> dict`
+
+   * 调用：`self._request("POST", f"/v1/incid# Phase C Plan — PostFinalize KBRefs/VerificationPlan Observer + VerificationRuns Executor
+
+## Phase C0 — 代码定位与约束确认（只读）
+
+**目的**：确保新增能力仍尽量限制在 `tools/ai-orchestrator` 内，复用 Phase B runtime 与 retry。
+
+* 参考实现与依赖点（只读确认）：
+
+  * `tools/ai-orchestrator/orchestrator/runtime/runtime.py: OrchestratorRuntime._execute_with_retry`（统一重试入口）
+  * `tools/ai-orchestrator/orchestrator/tools_rca_api.py: RCAApiClient._request`（统一 header/envelope/error 分类）
+  * 服务端路由：
+
+    * `internal/apiserver/handler/ai_job.go`：`GET /v1/ai/jobs/:jobID/tool-calls`
+    * `internal/apiserver/handler/incident.go`：`POST /v1/incidents/:incidentID/verification-runs`
+  * 服务端生成逻辑：
+
+    * `internal/apiserver/biz/v1/ai_job/ai_job.go: buildVerificationPlan / runKBBestEffort`
+    * `internal/apiserver/biz/vents/{incident_id}/verification-runs", json_body=...)`
+   * 与 proto 对齐：`pkg/api/apiserver/v1/incident.proto: CreateIncidentVerificationRunRequest`
+
+**验收标准**
+
+* 单元测试可 mock session.request，验证 path / method / payload 字段正确
+* `RCAApiError` 分类保持不变（仍由 `_request` 抛）
+
+---
+
+## Phase C2 — Runtime：PostFinalizeObserver（拉取 + 解析）
+
+**新增文件**
+
+* `tools/ai-orchestrator/orchestrator/runtime/post_finalize.py`
+* `tools/ai-orchestrator/orchestrator/runtime/__init__.py`（如需导出）
+
+**新增类型/函数**
+
+* `@dataclass class PostFinalizeSnapshot:`
+
+  * `verification_plan: dict|None`
+  * `kb_refs: list[dict]`（从 toolcall response_json 解析）
+  * `target_tool_call_seq: int|None`
+* `def fetch_post_finalize_snapshot(client: RCAApiClient, job_id: str, incident_id: str, retry: RetryExecutor, timeout_s: float) -> PostFinalizeSnapshot`
+
+  * `client.get_incident(incident_id)` 读取 `diagnosisJSON`
+  * `client.list_tool_calls(job_id)` 读取 toolcalls，并在每条 toolcall 的 `responseJSON` 中查找 `kb_refs`
+  * 读取行为可走 `retryable_transport / retryable_5xx / 429` 的 retry（复用 `RetryExecutor`）
+
+**与服务端字段对齐**
+
+* `kb_refs` 注入位置：`internal/apiserver/biz/v1/kb/kb.go: InjectRefsToToolCall` 会写入 toolcall response payload 的 `payload["kb_refs"]`
+* verification plan 注入位置：`internal/apiserver/biz/v1/ai_job/ai_job.go: injectVerificationPlanIntoDiagnosis` 写入 `payload["verification_plan"]`
+
+**验收标准**
+
+* 单元测试：给定 toolcalls 响应样例（包含/不包含 kb_refs）、incident diagnosisJSON（包含/不包含 verification_plan），解析结果正确
+
+---
+
+## Phase C3 — Runtime：VerificationRunner（执行 MCP + 写 verification-runs）
+
+**新增文件**
+
+* `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
+
+**新增类型/函数**
+
+* `@dataclass class VerificationStepResult:`
+
+  * `step_index: int`
+  * `tool: str`
+  * `params: dict`
+  * `observed: str`
+  * `meets_expectation: bool`
+  * `raw_output: dict|None`
+  * `error: str|None`
+* `def run_verification_plan(client: RCAApiClient, incident_id: str, plan: dict, source: str, retry: RetryExecutor) -> list[VerificationStepResult]`
+
+  * 解析 `plan["steps"]`（schema 来源：`internal/apiserver/biz/v1/verification/plan.go: Plan/Step`）
+  * 调用 `client._mcp_call(step["tool"], step["params"], idempotency_key=...)`（MCP client：`tools/ai-orchestrator/orchestrator/mcp_client.py: MCPClient.call`）
+  * 将每步结果写入：`client.create_incident_verification_run(...)`
+  * observed 生成规则（最小实现）：
+
+    * success：截取 output 的 compact json 前 N 字符（例如 512）
+    * error：写 error message 前 N 字符
+  * meetsExpectation（最小实现）：
+
+    * 先实现 `expected.type == "exists"`：只要 output 非空即 true
+    * `contains_keyword`：检查 output json 字符串是否包含 keyword
+    * 其他类型先 conservative：false，并把原因写入 observed
+    * expected 类型集合来源：`internal/apiserver/biz/v1/verification/plan.go: allowedExpectedTypes`
+
+**验收标准**
+
+* 单元测试：mock MCP 调用返回 payload，验证每一步都触发 `create_incident_verification_run`
+* 覆盖至少 `exists` 与 `contains_keyword` 两类 expected
+
+---
+
+## Phase C4 — main：挂接 Phase C（Finalize 后执行）
+
+**改动文件**
+
+* `tools/ai-orchestrator/orchestrator/main.py`
+
+**改动点**
+
+* 在 `_invoke_graph` 完成 `runtime.finalize(...)` 后（且 succeeded）：
+
+  1. 触发 `PostFinalizeObserver.fetch_post_finalize_snapshot`
+  2. 若 snapshot.verification_plan 存在且 steps 非空：调用 `run_verification_plan(...)`
+* 增加 env 开关（建议）：
+
+  * `RUN_VERIFICATION=1/0`（默认 0）
+  * `POST_FINALIZE_OBSERVE=1/0`（默认 1）
+  * `VERIFICATION_SOURCE`（默认 "playbook" 或 "ai_job"；字段来源：`incident.proto: source`）
+
+**验收标准**
+
+* `RUN_VERIFICATION=0` 时行为不变
+* `RUN_VERIFICATION=1` 且 verification_plan 存在时，会产生写入 verification-runs 的 HTTP 调用（可通过 mock / 端到端脚本验证）
+
+---
+
+## Phase C5 — 测试与脚本
+
+**改动文件**
+
+* `tools/ai-orchestrator/tests/test_runtime_sdk.py`（新增测试类/用例）
+
+**新增测试建议**
+
+* `PostFinalizeObserverTest`：kb_refs / verification_plan 解析
+* `VerificationRunnerTest`：expected.exists / contains_keyword 判断 + 写入 payload
+* `RCAApiClientVerificationRunTest`：verify endpoint path/payload
+
+**验收标准**
+
+* `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
