@@ -543,3 +543,143 @@ Phase B 目标：
 **验收标准**
 - 单测：构造 output 含 rowCount，below/above 判断正确
 - 不支持 field 时仍 conservative false，并写 observed reason
+
+---
+
+# Phase E Plan（一次性覆盖 E1~E4）：LangGraph 统一业务编排
+
+唯一真实来源：本仓库 tools/ai-orchestrator 代码。
+
+---
+
+## E0：准备与约束检查（只读）
+现状定位：
+- daemon：`orchestrator/main.py:_invoke_graph`
+- graph：`orchestrator/graph.py:build_graph` 当前线性四节点
+- runtime：`orchestrator/runtime/runtime.py` 已具备 observe/verification 接口（Phase C/D）
+- state：`orchestrator/state.py:GraphState`
+
+验收：
+- 无改动；作为执行前 checklist
+
+---
+
+## E1：observe/verification 入图（替换 main 的尾处理）
+### 改动文件
+- `tools/ai-orchestrator/orchestrator/graph.py`
+- `tools/ai-orchestrator/orchestrator/main.py`
+- `tools/ai-orchestrator/orchestrator/state.py`（如需在 state 中保存 snapshot/verification 汇总）
+- `tools/ai-orchestrator/tests/test_runtime_sdk.py`（新增 graph-level 测试）
+
+### 代码改动点
+1) graph 新增节点：
+- `post_finalize_observe(state, runtime, cfg) -> state`
+  - 调用：`runtime.observe_post_finalize(...)`（Phase D 支持 wait window）
+  - 将 snapshot 写入 state（例如 `state.input_hints["post_finalize_snapshot"]=...` 或新增字段）
+- `run_verification(state, runtime, cfg) -> state`
+  - 条件：cfg.RUN_VERIFICATION && snapshot.verification_plan.steps 存在
+  - 调用：`runtime.run_verification(...)`
+
+2) 修改 `graph.py:build_graph` 边：
+- 将 `finalize_job -> post_finalize_observe -> run_verification -> END`
+
+3) 修改 `main.py:_invoke_graph`
+- 移除 graph 之外的 observe/verification 调用
+- 保持：`runtime.start() -> graph.invoke -> runtime.shutdown()`
+
+### 验收标准
+- `POST_FINALIZE_OBSERVE=1` 时，graph 内会执行 observe 节点（可用 mock 验证调用 runtime.observe_post_finalize）
+- `RUN_VERIFICATION=1` 且 plan 存在时，graph 内会执行 verification 节点并写 verification-runs（mock client 验证）
+- main 仅负责 runtime 生命周期，不再有尾处理逻辑
+
+---
+
+## E2：拆分 collect_evidence 为多节点（细粒度 toolcall）
+### 改动文件
+- `tools/ai-orchestrator/orchestrator/graph.py`
+- `tools/ai-orchestrator/orchestrator/state.py`
+- `tools/ai-orchestrator/tests/test_runtime_sdk.py`
+
+### 具体拆分建议（保持现有语义）
+把现有 `graph.py:collect_evidence` 拆成：
+- `query_metrics`
+- `query_logs`
+- `merge_queries`
+- `save_evidence`（调用 runtime EvidencePublisher）
+- `rank_candidates`（调用 `evidence_plan.py:rank_candidates/build_candidates`）
+
+State 增加字段（示例）：
+- `metrics_query_output: dict|None`
+- `logs_query_output: dict|None`
+- `candidates: list[dict]`
+- `evidence_summary: dict`（复用现有 `quality_gate_evidence_summary` 也可）
+
+每个节点都必须：
+- 调用 `runtime.report_tool_call(node_name=<node>, tool_name=<action>, request_json/response_json, status, latency_ms, evidence_ids?)`
+
+### 验收标准
+- toolcalls 不再只有粗粒度 “collect_evidence” 节点写入，而是每个 action 都有对应 toolcall
+- evidence 保存动作的 toolcall 必须携带 `evidence_ids`
+- 保持 state.evidence_ids 的最终内容与原 collect_evidence 语义一致（在 FORCE_* 分支也一致）
+
+---
+
+## E3：metrics/logs fan-out/fan-in（并行 + merge）
+### 改动文件
+- `tools/ai-orchestrator/orchestrator/graph.py`
+- `tools/ai-orchestrator/orchestrator/state.py`
+- `tools/ai-orchestrator/tests/test_runtime_sdk.py`
+
+### 图结构改造
+- 在 `build_graph` 中将 `load_job_and_start` 之后 fan-out 到：
+  - `query_metrics`
+  - `query_logs`
+- 两个节点都指向 `merge_queries`
+- `merge_queries` 再进入 `save_evidence`
+
+并行安全约束（从代码上看必须明确）：
+- `query_metrics` 只写 `state.metrics_query_output` 等“专属字段”
+- `query_logs` 只写 `state.logs_query_output` 等“专属字段”
+- `merge_queries` 才统一写 `state.evidence_meta/state.missing_evidence/state.evidence_plan.executed`
+
+### 验收标准
+- 并发执行时 `SeqAllocator` 不产生重复 seq（已有并发测试可复用）
+- merge 结果稳定（同输入得到同 state 汇总）
+
+---
+
+## E4：Plan/Execute/Summarize/QualityGate 子图落地
+### 改动文件
+- `tools/ai-orchestrator/orchestrator/graph.py`
+- `tools/ai-orchestrator/orchestrator/state.py`
+- `tools/ai-orchestrator/orchestrator/evidence_plan.py`（仅在需要暴露/复用辅助函数时）
+- `tools/ai-orchestrator/tests/test_runtime_sdk.py`
+
+### 子图/节点定义
+新增节点（可以是平铺节点，也可以是子图函数封装）：
+- `plan`：基于 merge 结果生成候选/计划（写 `state.evidence_plan`）
+- `execute`：按计划执行 MCP steps（写 `state.evidence_ids/evidence_meta`，并 report toolcall）
+- `summarize`：生成 `state.diagnosis_json`
+- `quality_gate`：生成 `state.quality_gate_decision/reasons/summary`
+  - 并通过 `runtime.report_tool_call` 写入 toolcall response_json 的 `quality_gate` 与 `evidence_plan.executed`
+  - 兼容服务端依赖：`kb.ExtractQualityGateDecision` 与 `ai_job.buildVerificationPlan`（依赖路径见 `internal/apiserver/biz/v1/kb/kb.go` 与 `internal/apiserver/biz/v1/ai_job/ai_job.go`）
+
+然后：
+- `quality_gate -> finalize_job`
+
+### 验收标准
+- 最终 `runtime.finalize(...)` 的 diagnosis_json 与旧逻辑一致（或字段兼容）
+- toolcall 中仍包含 `quality_gate.decision` 与 `evidence_plan.executed`（服务端后处理依赖）
+- post-finalize observe 仍能获取 verification_plan/kb_refs（Phase C/D 功能不回退）
+
+---
+
+## E5：测试与脚本
+### 改动文件
+- `tools/ai-orchestrator/tests/test_runtime_sdk.py`
+- （可选）新增 `tools/ai-orchestrator/tests/test_graph_phaseE.py`
+
+新增测试覆盖：
+- graph 节点级：E1 observe/verification 入图（mock runtime 调用顺序）
+- 并行 merge：query_metrics/query_logs 分支输出后 merge 正确
+- plan/execute/summarize：输出 diagnosis_json + quality_gate 字段路径稳定
