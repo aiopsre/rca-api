@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import time
 from typing import Any, Callable
 
 from ..tools_rca_api import RCAApiClient
@@ -104,6 +105,47 @@ class PostFinalizeObserver:
                 f"verification_steps={step_count}"
             )
         return snapshot
+
+    def observe_with_wait(
+        self,
+        *,
+        incident_id: str,
+        job_id: str,
+        timeout_s: float,
+        interval_s: float = 0.5,
+        max_interval_s: float = 2.0,
+    ) -> PostFinalizeSnapshot:
+        timeout = max(float(timeout_s), 0.0)
+        wait_interval = max(float(interval_s), 0.05)
+        max_interval = max(float(max_interval_s), wait_interval)
+        started_at = time.monotonic()
+
+        snapshot = self.observe(incident_id=incident_id, job_id=job_id)
+        if self._has_expected_signals(snapshot) or timeout <= 0:
+            return snapshot
+
+        delay = wait_interval
+        while True:
+            remaining = timeout - (time.monotonic() - started_at)
+            if remaining <= 0:
+                return snapshot
+            sleep_seconds = min(delay, remaining)
+            time.sleep(max(sleep_seconds, 0.01))
+            snapshot = self.observe(incident_id=incident_id, job_id=job_id)
+            if self._has_expected_signals(snapshot):
+                if self._log_func is not None:
+                    self._log_func(
+                        "post_finalize observe_with_wait resolved "
+                        f"job_id={snapshot.job_id} incident_id={snapshot.incident_id}"
+                    )
+                return snapshot
+            delay = min(delay * 1.5, max_interval)
+
+    @staticmethod
+    def _has_expected_signals(snapshot: PostFinalizeSnapshot) -> bool:
+        has_plan = isinstance(snapshot.verification_plan, dict)
+        has_kb = bool(snapshot.kb_refs)
+        return has_plan or has_kb
 
     def _list_all_tool_calls(self, job_id: str) -> list[dict[str, Any]]:
         limit = 200

@@ -39,6 +39,13 @@ class Settings:
     run_verification: bool
     post_finalize_observe: bool
     verification_source: str
+    verification_max_steps: int
+    verification_max_total_latency_ms: int
+    verification_max_total_bytes: int
+    verification_dedupe_enabled: bool
+    post_finalize_wait_timeout_seconds: int
+    post_finalize_wait_interval_ms: int
+    post_finalize_wait_max_interval_ms: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -64,6 +71,15 @@ def load_settings() -> Settings:
     default_instance_id = f"{socket.gethostname()}-{os.getpid()}"
     lease_heartbeat_interval_seconds = _env_int("LEASE_HEARTBEAT_INTERVAL_SECONDS", 10)
     lease_heartbeat_interval_seconds = max(1, lease_heartbeat_interval_seconds)
+    a3_max_calls = max(0, _env_int("A3_MAX_CALLS", 6))
+    a3_max_total_bytes = max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024))
+    a3_max_total_latency_ms = max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000))
+    post_finalize_wait_timeout_seconds = max(0, _env_int("POST_FINALIZE_WAIT_TIMEOUT_SECONDS", 8))
+    post_finalize_wait_interval_ms = max(50, _env_int("POST_FINALIZE_WAIT_INTERVAL_MS", 500))
+    post_finalize_wait_max_interval_ms = max(
+        post_finalize_wait_interval_ms,
+        _env_int("POST_FINALIZE_WAIT_MAX_INTERVAL_MS", 2000),
+    )
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
@@ -81,12 +97,25 @@ def load_settings() -> Settings:
         debug=_env_bool("DEBUG", False),
         pull_limit=max(1, min(50, _env_int("PULL_LIMIT", 10))),
         long_poll_wait_seconds=long_poll_wait_seconds,
-        a3_max_calls=max(0, _env_int("A3_MAX_CALLS", 6)),
-        a3_max_total_bytes=max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024)),
-        a3_max_total_latency_ms=max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000)),
+        a3_max_calls=a3_max_calls,
+        a3_max_total_bytes=a3_max_total_bytes,
+        a3_max_total_latency_ms=a3_max_total_latency_ms,
         run_verification=_env_bool("RUN_VERIFICATION", False),
         post_finalize_observe=_env_bool("POST_FINALIZE_OBSERVE", True),
         verification_source=os.getenv("VERIFICATION_SOURCE", "ai_job").strip() or "ai_job",
+        verification_max_steps=max(0, _env_int("VERIFICATION_MAX_STEPS", 20)),
+        verification_max_total_latency_ms=max(
+            0,
+            _env_int("VERIFICATION_MAX_TOTAL_LATENCY_MS", a3_max_total_latency_ms),
+        ),
+        verification_max_total_bytes=max(
+            0,
+            _env_int("VERIFICATION_MAX_TOTAL_BYTES", a3_max_total_bytes),
+        ),
+        verification_dedupe_enabled=_env_bool("VERIFICATION_DEDUPE_ENABLED", True),
+        post_finalize_wait_timeout_seconds=post_finalize_wait_timeout_seconds,
+        post_finalize_wait_interval_ms=post_finalize_wait_interval_ms,
+        post_finalize_wait_max_interval_ms=post_finalize_wait_max_interval_ms,
     )
 
 
@@ -172,6 +201,10 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         instance_id=settings.instance_id,
         heartbeat_interval_seconds=settings.lease_heartbeat_interval_seconds,
         log_func=_log,
+        verification_max_steps=settings.verification_max_steps,
+        verification_max_total_latency_ms=settings.verification_max_total_latency_ms,
+        verification_max_total_bytes=settings.verification_max_total_bytes,
+        verification_dedupe_enabled=settings.verification_dedupe_enabled,
     )
     if not runtime.start():
         if debug:
@@ -197,7 +230,12 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     if should_post_finalize:
         incident_id = str(final_state.incident_id or "").strip()
         try:
-            snapshot = runtime.observe_post_finalize(incident_id=incident_id)
+            snapshot = runtime.observe_post_finalize(
+                incident_id=incident_id,
+                wait_timeout_s=float(settings.post_finalize_wait_timeout_seconds),
+                wait_interval_s=float(settings.post_finalize_wait_interval_ms) / 1000.0,
+                wait_max_interval_s=float(settings.post_finalize_wait_max_interval_ms) / 1000.0,
+            )
         except Exception as exc:  # noqa: BLE001
             _log(f"post-finalize observe error: job={job_id} incident={incident_id} error={exc}")
 
@@ -266,7 +304,14 @@ def main() -> None:
         f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms} "
         f"post_finalize_observe={int(settings.post_finalize_observe)} "
         f"run_verification={int(settings.run_verification)} "
-        f"verification_source={settings.verification_source}"
+        f"verification_source={settings.verification_source} "
+        f"verification_max_steps={settings.verification_max_steps} "
+        f"verification_max_total_latency_ms={settings.verification_max_total_latency_ms} "
+        f"verification_max_total_bytes={settings.verification_max_total_bytes} "
+        f"verification_dedupe_enabled={int(settings.verification_dedupe_enabled)} "
+        f"post_finalize_wait_timeout_seconds={settings.post_finalize_wait_timeout_seconds} "
+        f"post_finalize_wait_interval_ms={settings.post_finalize_wait_interval_ms} "
+        f"post_finalize_wait_max_interval_ms={settings.post_finalize_wait_max_interval_ms}"
     )
 
     poll_client = _new_client(settings)

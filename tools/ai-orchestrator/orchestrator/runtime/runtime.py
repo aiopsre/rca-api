@@ -8,7 +8,7 @@ from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
 from .toolcall_reporter import ToolCallReporter
-from .verification_runner import VerificationRunner, VerificationStepResult
+from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
 
 class OrchestratorRuntime:
@@ -21,6 +21,10 @@ class OrchestratorRuntime:
         heartbeat_interval_seconds: int,
         log_func: Callable[[str], None] | None = None,
         retry_policy: RetryPolicy | None = None,
+        verification_max_steps: int = 20,
+        verification_max_total_latency_ms: int = 0,
+        verification_max_total_bytes: int = 0,
+        verification_dedupe_enabled: bool = True,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
@@ -59,6 +63,12 @@ class OrchestratorRuntime:
             client=self._client,
             execute_with_retry=self._execute_with_retry,
             log_func=log_func,
+            budget=VerificationBudget(
+                max_steps=verification_max_steps,
+                max_total_latency_ms=verification_max_total_latency_ms,
+                max_total_bytes=verification_max_total_bytes,
+            ),
+            dedupe_enabled=verification_dedupe_enabled,
         )
 
     def start(self) -> bool:
@@ -158,7 +168,22 @@ class OrchestratorRuntime:
     def lease_lost_reason(self) -> str:
         return self._lease_manager.lease_lost_reason()
 
-    def observe_post_finalize(self, *, incident_id: str) -> PostFinalizeSnapshot:
+    def observe_post_finalize(
+        self,
+        *,
+        incident_id: str,
+        wait_timeout_s: float = 0.0,
+        wait_interval_s: float = 0.5,
+        wait_max_interval_s: float = 2.0,
+    ) -> PostFinalizeSnapshot:
+        if float(wait_timeout_s) > 0:
+            return self._post_finalize_observer.observe_with_wait(
+                incident_id=incident_id,
+                job_id=self._job_id,
+                timeout_s=wait_timeout_s,
+                interval_s=wait_interval_s,
+                max_interval_s=wait_max_interval_s,
+            )
         return self._post_finalize_observer.observe(incident_id=incident_id, job_id=self._job_id)
 
     def run_verification(

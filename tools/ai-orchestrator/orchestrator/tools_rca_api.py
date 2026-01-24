@@ -447,6 +447,23 @@ class RCAApiClient:
             return data
         return {}
 
+    def list_incident_verification_runs(
+        self,
+        incident_id: str,
+        *,
+        page: int = 1,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        params = {
+            "page": max(int(page), 1),
+            "limit": max(int(limit), 1),
+        }
+        payload = self._request("GET", f"/v1/incidents/{incident_id}/verification-runs", params=params)
+        data = payload.get("data", payload)
+        if isinstance(data, dict):
+            return data
+        return {"totalCount": 0, "runs": []}
+
     # datasource / evidence (P0 minimal)
     def ensure_datasource(self, ds_base_url: str) -> str:
         if not ds_base_url.strip():
