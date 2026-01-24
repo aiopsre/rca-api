@@ -124,6 +124,59 @@ class OrchestratorRuntime:
             ),
         )
 
+    def get_job(self, job_id: str | None = None) -> dict[str, Any]:
+        target_job_id = str(job_id or self._job_id).strip() or self._job_id
+        return self._execute_with_retry("job.get", lambda: self._client.get_job(target_job_id))
+
+    def get_incident(self, incident_id: str) -> dict[str, Any]:
+        normalized = str(incident_id).strip()
+        if not normalized:
+            raise RuntimeError("incident_id is required")
+        return self._execute_with_retry("incident.get", lambda: self._client.get_incident(normalized))
+
+    def ensure_datasource(self, ds_base_url: str) -> str:
+        return self._execute_with_retry("datasource.ensure", lambda: self._client.ensure_datasource(ds_base_url))
+
+    def query_metrics(
+        self,
+        *,
+        datasource_id: str,
+        promql: str,
+        start_ts: int,
+        end_ts: int,
+        step_s: int,
+    ) -> dict[str, Any]:
+        return self._execute_with_retry(
+            "query.metrics",
+            lambda: self._client.query_metrics(
+                datasource_id=datasource_id,
+                promql=promql,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                step_s=step_s,
+            ),
+        )
+
+    def query_logs(
+        self,
+        *,
+        datasource_id: str,
+        query: str,
+        start_ts: int,
+        end_ts: int,
+        limit: int,
+    ) -> dict[str, Any]:
+        return self._execute_with_retry(
+            "query.logs",
+            lambda: self._client.query_logs(
+                datasource_id=datasource_id,
+                query=query,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                limit=limit,
+            ),
+        )
+
     def save_mock_evidence(
         self,
         *,

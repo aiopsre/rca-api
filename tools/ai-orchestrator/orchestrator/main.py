@@ -187,12 +187,6 @@ def _detect_pubsub_ready(base_url: str, scopes: str, timeout_s: float = 2.0) -> 
     return found, ready
 
 
-def _is_finalize_succeeded(state: GraphState) -> bool:
-    if not state.finalized:
-        return False
-    return not bool(str(state.last_error or "").strip())
-
-
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
     runtime = OrchestratorRuntime(
@@ -220,51 +214,6 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
     if isinstance(final_state, dict):
         final_state = GraphState.model_validate(final_state)
-
-    should_post_finalize = (
-        _is_finalize_succeeded(final_state)
-        and bool(str(final_state.incident_id or "").strip())
-        and (settings.post_finalize_observe or settings.run_verification)
-    )
-    snapshot = None
-    if should_post_finalize:
-        incident_id = str(final_state.incident_id or "").strip()
-        try:
-            snapshot = runtime.observe_post_finalize(
-                incident_id=incident_id,
-                wait_timeout_s=float(settings.post_finalize_wait_timeout_seconds),
-                wait_interval_s=float(settings.post_finalize_wait_interval_ms) / 1000.0,
-                wait_max_interval_s=float(settings.post_finalize_wait_max_interval_ms) / 1000.0,
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log(f"post-finalize observe error: job={job_id} incident={incident_id} error={exc}")
-
-    if settings.run_verification and _is_finalize_succeeded(final_state):
-        incident_id = str(final_state.incident_id or "").strip()
-        if not incident_id:
-            _log(f"verification skipped: job={job_id} incident_id missing")
-        elif snapshot is None:
-            _log(f"verification skipped: job={job_id} post-finalize snapshot unavailable")
-        else:
-            verification_plan = snapshot.verification_plan
-            steps = verification_plan.get("steps") if isinstance(verification_plan, dict) else None
-            if not isinstance(steps, list) or not steps:
-                if debug:
-                    _log(f"[DEBUG] verification skipped: job={job_id} no verification_plan steps")
-            else:
-                try:
-                    results = runtime.run_verification(
-                        incident_id=incident_id,
-                        verification_plan=verification_plan,
-                        source=settings.verification_source,
-                    )
-                    _log(
-                        "verification completed "
-                        f"job={job_id} incident={incident_id} steps={len(results)} "
-                        f"source={settings.verification_source}"
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    _log(f"verification run error: job={job_id} incident={incident_id} error={exc}")
 
     if debug:
         _log(
@@ -324,6 +273,12 @@ def main() -> None:
         a3_max_calls=settings.a3_max_calls,
         a3_max_total_bytes=settings.a3_max_total_bytes,
         a3_max_total_latency_ms=settings.a3_max_total_latency_ms,
+        post_finalize_observe=settings.post_finalize_observe,
+        run_verification=settings.run_verification,
+        verification_source=settings.verification_source,
+        post_finalize_wait_timeout_seconds=settings.post_finalize_wait_timeout_seconds,
+        post_finalize_wait_interval_ms=settings.post_finalize_wait_interval_ms,
+        post_finalize_wait_max_interval_ms=settings.post_finalize_wait_max_interval_ms,
     )
 
     sleep_s = settings.poll_interval_ms / 1000.0
