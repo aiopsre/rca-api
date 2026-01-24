@@ -425,3 +425,121 @@ Phase B 目标：
 **验收标准**
 
 * `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+
+---
+
+# Phase D Plan：Verification 去重/预算/observed 规范化 + Post-Finalize 等待窗口
+
+唯一真实来源：本仓库代码（tools/ai-orchestrator + internal/apiserver + pkg/api protos）。
+
+---
+
+## D1：SDK 补齐 list verification-runs
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+
+**新增函数**
+- `RCAApiClient.list_incident_verification_runs(self, incident_id: str, page: int=1, limit: int=200) -> dict`
+  - HTTP：`GET /v1/incidents/{incident_id}/verification-runs?page=&limit=`
+  - 对齐：
+    - handler：`internal/apiserver/handler/incident.go: ListIncidentVerificationRuns`
+    - proto：`pkg/api/apiserver/v1/incident.proto: ListIncidentVerificationRunsResponse`（fields: totalCount, runs）
+
+**验收标准**
+- 单测 mock session.request，验证 path/method/query params
+- 返回解析兼容 `data/root`（与现有 `_request` envelope 兼容策略一致）
+
+---
+
+## D2：PostFinalizeObserver 增加 observe-with-wait
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/post_finalize.py`
+
+**新增/修改函数**
+- `PostFinalizeObserver.observe_with_wait(self, incident_id: str, job_id: str, timeout_s: float, interval_s: float) -> PostFinalizeSnapshot`
+  - 在 timeout 内循环：
+    - 调用现有 `observe`（或抽 `fetch_once`）
+    - 如果 snapshot.verification_plan 非空或 kb_refs 非空 → return
+    - 否则 sleep/backoff 后重试
+  - 所有 HTTP 调用仍通过 `execute_with_retry`
+
+**验收标准**
+- 单测：构造 client mock 让前 N 次没有 plan/kb_refs，后一次出现，确保 observe_with_wait 会等待并返回
+
+---
+
+## D3：VerificationRunner 去重（客户端侧）
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
+
+**新增逻辑**
+- 在 publish 前，若 `enable_dedupe=True`：
+  - 调用 `client.list_incident_verification_runs(incident_id, ...)` 拉取 runs
+  - 若存在 run 满足 `(source == verification_source && stepIndex == current && tool == tool)`：
+    - 不再 POST create
+    - 写 observed `{status:"skipped", reason:"deduped"}` 并继续下一步（或直接 continue）
+
+**验收标准**
+- 单测：mock list 返回包含同 stepIndex/tool 的 run，确保 create 不被调用
+- 单测：list 失败（retryable/非 retryable）时行为清晰（建议：list 失败则退化为不去重，仍尝试写入，并记录 log）
+
+---
+
+## D4：VerificationRunner 预算（max steps / total latency / total bytes）
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/main.py`
+- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+- `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
+
+**新增 Settings**
+- `VERIFICATION_MAX_STEPS`（默认 20）
+- `VERIFICATION_MAX_TOTAL_LATENCY_MS`（默认沿用 `a3_max_total_latency_ms` 或单独 env）
+- `VERIFICATION_MAX_TOTAL_BYTES`（默认沿用 `a3_max_total_bytes` 或单独 env）
+
+**新增逻辑**
+- runner 执行时累计：
+  - step_count
+  - total_latency_ms（按每次 MCP call wall time）
+  - total_bytes（按请求+响应 json dumps 的长度近似）
+- 超限时：
+  - 停止执行后续 steps
+  - 可选写入一条 verification-run：tool="verification.budget" observed=... meetsExpectation=false
+
+**验收标准**
+- 单测：给定 100 steps + max_steps=2 → 仅执行两步
+- 单测：latency/bytes 超限会提前停止并写 budget run（如果实现该 run）
+
+---
+
+## D5：Observed 结构化与 warnings 可观测
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`（如果需要让 create 返回 warnings 更容易消费）
+
+**新增/修改点**
+- observed 统一为 compact JSON string（<=512），客户端主动截断
+- `create_incident_verification_run` 返回的 `warnings`（proto: `CreateIncidentVerificationRunResponse.warnings`）：
+  - runner publish 后记录日志（或附加到 observed.sample/reason）
+
+**验收标准**
+- 单测：observed 超长会被截断到 <=512
+- 单测：mock create 返回 warnings，runner 会调用 log_func（或将 warnings 写入 observed）
+
+---
+
+## D6：Expected 类型补齐 threshold_below / threshold_above
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
+
+**新增逻辑**
+- 支持 expected.type：
+  - `threshold_below` / `threshold_above`（服务端允许类型：`internal/apiserver/biz/v1/verification/plan.go: allowedExpectedTypes`）
+- 从 MCP 输出中按 expected.field 提取数值：
+  - 简化规则：支持顶层字段与常见 `queryResultJSON.rowCount`（以当前 MCP 返回结构为准）
+- 比较：
+  - below：actual < expected.value
+  - above：actual > expected.value
+
+**验收标准**
+- 单测：构造 output 含 rowCount，below/above 判断正确
+- 不支持 field 时仍 conservative false，并写 observed reason
