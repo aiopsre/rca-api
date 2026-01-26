@@ -263,6 +263,65 @@ class GraphPhaseETest(unittest.TestCase):
         self.assertIsInstance(executed, list)
         self.assertGreaterEqual(len(executed), 1)
 
+    def test_phasee_lease_lost_skips_query_nodes_and_no_toolcall_write(self) -> None:
+        class _LeaseLostAtQueryRuntime(_FakeRuntime):
+            def __init__(self) -> None:
+                super().__init__()
+                self._lease_lost = False
+
+            def is_lease_lost(self) -> bool:
+                return self._lease_lost
+
+            def report_tool_call(
+                self,
+                *,
+                node_name: str,
+                tool_name: str,
+                request_json: dict[str, object],
+                response_json: dict[str, object] | None,
+                latency_ms: int,
+                status: str,
+                error: str | None = None,
+                evidence_ids: list[str] | None = None,
+            ) -> int:
+                result = super().report_tool_call(
+                    node_name=node_name,
+                    tool_name=tool_name,
+                    request_json=request_json,
+                    response_json=response_json,
+                    latency_ms=latency_ms,
+                    status=status,
+                    error=error,
+                    evidence_ids=evidence_ids,
+                )
+                if node_name == "plan_evidence":
+                    self._lease_lost = True
+                return result
+
+        runtime = _LeaseLostAtQueryRuntime()
+        graph = build_graph(
+            None,
+            OrchestratorConfig(
+                run_query=True,
+                ds_base_url="http://prometheus:9090",
+                auto_create_datasource=True,
+                run_verification=False,
+                post_finalize_observe=False,
+            ),
+            runtime,
+        )
+        out = graph.invoke(GraphState(job_id="job-lease", instance_id="orc-1", started=True))
+        if isinstance(out, dict):
+            out = GraphState.model_validate(out)
+
+        node_names = [item["node_name"] for item in runtime.tool_calls]
+        self.assertIn("plan_evidence", node_names)
+        self.assertNotIn("query_metrics", node_names)
+        self.assertNotIn("query_logs", node_names)
+        self.assertEqual(runtime.query_metrics_calls, 0)
+        self.assertEqual(runtime.query_logs_calls, 0)
+        self.assertIn("lease_lost", str(out.last_error or ""))
+
 
 if __name__ == "__main__":
     unittest.main()

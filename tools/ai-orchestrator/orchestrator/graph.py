@@ -1630,6 +1630,33 @@ def build_graph(
     cfg: OrchestratorConfig,
     runtime: OrchestratorRuntime,
 ):
+    guarded_query_metrics = _guard("query_metrics", lambda s: query_metrics_node(s, runtime), runtime)
+    guarded_query_logs = _guard("query_logs", lambda s: query_logs_node(s, runtime), runtime)
+
+    def _query_metrics_entry(state: GraphState) -> dict[str, Any]:
+        out = guarded_query_metrics(state)
+        if isinstance(out, GraphState):
+            return {
+                "metrics_query_status": "skipped",
+                "metrics_query_output": {},
+                "metrics_query_error": "guard_skipped",
+                "metrics_query_latency_ms": 0,
+                "metrics_query_result_size_bytes": 0,
+            }
+        return out
+
+    def _query_logs_entry(state: GraphState) -> dict[str, Any]:
+        out = guarded_query_logs(state)
+        if isinstance(out, GraphState):
+            return {
+                "logs_query_status": "skipped",
+                "logs_query_output": {},
+                "logs_query_error": "guard_skipped",
+                "logs_query_latency_ms": 0,
+                "logs_query_result_size_bytes": 0,
+            }
+        return out
+
     builder = StateGraph(GraphState)
     builder.add_node(
         "load_job_and_start",
@@ -1639,8 +1666,8 @@ def build_graph(
         "plan_evidence",
         _guard("plan_evidence", lambda s: plan_evidence(s, cfg, runtime), runtime),
     )
-    builder.add_node("query_metrics", lambda s: query_metrics_node(s, runtime))
-    builder.add_node("query_logs", lambda s: query_logs_node(s, runtime))
+    builder.add_node("query_metrics", _query_metrics_entry)
+    builder.add_node("query_logs", _query_logs_entry)
     builder.add_node(
         "merge_evidence",
         _guard("merge_evidence", lambda s: merge_evidence(s, cfg, runtime), runtime),
