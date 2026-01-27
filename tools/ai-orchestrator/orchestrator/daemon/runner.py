@@ -9,7 +9,7 @@ from ..graph import OrchestratorConfig
 from ..langgraph.registry import UnknownPipelineError, get_template_builder, normalize_pipeline
 from ..runtime.runtime import OrchestratorRuntime
 from ..state import GraphState
-from ..tooling import ToolInvoker, ToolsetConfig, build_tool_invoker, load_toolset_config_from_env
+from ..tooling import ToolInvoker, ToolsetConfig, build_tool_invoker, load_toolset_config, load_toolset_config_from_env
 from ..tools_rca_api import RCAApiClient
 from .health import detect_pubsub_ready
 from .settings import Settings, load_settings
@@ -101,14 +101,58 @@ def _load_toolset_config_cached(settings: Settings) -> ToolsetConfig:
     return loaded
 
 
-def _select_tool_invoker(settings: Settings, pipeline: str) -> tuple[ToolInvoker, str]:
-    config = _load_toolset_config_cached(settings)
-    normalized_pipeline = normalize_pipeline(pipeline)
-    toolset_id = str(config.pipelines.get(normalized_pipeline) or "").strip()
+def _select_tool_invoker(settings: Settings, client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str]:
+    if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
+        config = _load_toolset_config_cached(settings)
+        normalized_pipeline = normalize_pipeline(pipeline)
+        toolset_id = str(config.pipelines.get(normalized_pipeline) or "").strip()
+        if not toolset_id:
+            raise RuntimeError(f"pipeline={normalized_pipeline} has no mapped toolset")
+        invoker = build_tool_invoker(config, toolset_id)
+        return invoker, toolset_id
+    return _select_tool_invoker_via_server(client, pipeline)
+
+
+def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str]:
+    resolved = client.resolve_toolset(pipeline)
+    if not isinstance(resolved, dict):
+        raise RuntimeError("resolve_toolset returned invalid payload")
+
+    toolset_payload = resolved.get("toolset")
+    if not isinstance(toolset_payload, dict):
+        toolset_payload = resolved
+    if not isinstance(toolset_payload, dict):
+        raise RuntimeError("resolve_toolset payload missing toolset object")
+
+    toolset_id = _extract_toolset_id(toolset_payload)
     if not toolset_id:
-        raise RuntimeError(f"pipeline={normalized_pipeline} has no mapped toolset")
+        raise RuntimeError("resolve_toolset payload missing toolset_id")
+
+    providers = toolset_payload.get("providers")
+    if not isinstance(providers, list) or not providers:
+        raise RuntimeError(f"resolve_toolset payload has empty providers: toolset={toolset_id}")
+
+    normalized_pipeline = normalize_pipeline(pipeline)
+    config = load_toolset_config(
+        {
+            "pipelines": {normalized_pipeline: toolset_id},
+            "toolsets": {
+                toolset_id: {
+                    "providers": providers,
+                }
+            },
+        }
+    )
     invoker = build_tool_invoker(config, toolset_id)
     return invoker, toolset_id
+
+
+def _extract_toolset_id(toolset_payload: dict[str, Any]) -> str:
+    for key in ("toolsetID", "toolsetId", "toolset_id"):
+        value = str(toolset_payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
@@ -135,7 +179,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
     if not selection_error_message:
         try:
-            tool_invoker, selected_toolset_id = _select_tool_invoker(settings, selected_pipeline)
+            tool_invoker, selected_toolset_id = _select_tool_invoker(settings, client, selected_pipeline)
         except Exception as exc:  # noqa: BLE001
             _log(
                 "job="

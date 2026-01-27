@@ -72,6 +72,10 @@ def load_toolset_config_from_env(settings: Any) -> ToolsetConfig:
         payload = _decode_json(file_content, source=f"TOOLSET_CONFIG_PATH={path}")
     else:
         raise ValueError("toolset config is empty: set TOOLSET_CONFIG_JSON or TOOLSET_CONFIG_PATH")
+    return load_toolset_config(payload)
+
+
+def load_toolset_config(payload: Any) -> ToolsetConfig:
     return _parse_toolset_config(payload)
 
 
@@ -137,6 +141,8 @@ def _parse_provider(payload: Any, *, toolset_id: str, provider_index: int) -> Pr
         raise ValueError(f"provider.type is required: toolset={toolset_id} index={provider_index}")
 
     allow_tools_raw = payload.get("allow_tools")
+    if allow_tools_raw is None:
+        allow_tools_raw = payload.get("allowTools")
     if not isinstance(allow_tools_raw, list) or not allow_tools_raw:
         raise ValueError(
             f"provider.allow_tools must be non-empty list: toolset={toolset_id} index={provider_index}"
@@ -147,8 +153,12 @@ def _parse_provider(payload: Any, *, toolset_id: str, provider_index: int) -> Pr
     if not name:
         name = f"{provider_type}-{provider_index}"
 
-    timeout_s = _coerce_timeout(payload.get("timeout_s"), default=10.0)
-    base_url = str(payload.get("base_url") or "").strip()
+    timeout_raw = payload.get("timeout_s")
+    if timeout_raw is None:
+        timeout_raw = payload.get("timeoutSeconds")
+    timeout_s = _coerce_timeout(timeout_raw, default=10.0)
+
+    base_url = str(payload.get("base_url") or payload.get("baseURL") or "").strip()
     scopes = str(payload.get("scopes") or "").strip()
     module = str(payload.get("module") or "").strip()
     function = str(payload.get("function") or "call").strip() or "call"

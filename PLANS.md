@@ -268,3 +268,97 @@
 **验收**
 - `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
 - 行为回归：pipeline registry（unknown pipeline）fail-fast 语义保持不变
+
+---
+
+## Phase H：rca-api Toolset Registry（pipeline 绑定 + 只读下发）& orchestrator 对接
+
+> 目标：rca-api 提供 toolset 配置下发（不执行 tools）；orchestrator 在未设置本地 TOOLSET_CONFIG_* 时，从 server resolve toolset。
+
+### H1：新增 protobuf（server API message）
+
+**新增文件**
+- `pkg/api/apiserver/v1/orchestrator_toolset.proto`
+  - `message OrchestratorToolsetProvider`
+  - `message OrchestratorToolset`
+  - `message ResolveToolsetRequest`（query: pipeline）
+  - `message ResolveToolsetResponse`（toolset）
+
+**改动文件**
+- 运行 `make protoc`（依据 `Makefile:protoc` 会生成 `*.pb.go` 与 defaults/tag 注入）
+
+**验收**
+- `pkg/api/apiserver/v1/orchestrator_toolset.pb.go` 生成并可编译
+
+---
+
+### H2：server 侧配置读取（JSON env/path）
+
+**新增文件**
+- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
+  - `type ToolsetConfig`（与 orchestrator Phase G schema 对齐）
+  - `LoadFromEnv() (*ToolsetConfig, error)`
+  - `Resolve(pipeline string) (*OrchestratorToolset, error)`
+  - 支持 env：
+    - `RCA_TOOLSET_CONFIG_JSON`
+    - `RCA_TOOLSET_CONFIG_PATH`
+
+**验收**
+- `LoadFromEnv` 支持 JSON 直传与 file path
+- pipeline normalize 规则与 orchestrator `tooling/toolset_config.py:normalize_pipeline_key` 对齐（空值→basic_rca）
+
+---
+
+### H3：新增 biz + handler：/v1/orchestrator/toolsets/resolve
+
+**新增文件**
+- `internal/apiserver/biz/v1/orchestrator_toolset/toolset.go`
+  - `type OrchestratorToolsetBiz interface{ Resolve(ctx, req) (*resp, error) }`
+  - `func New(store store.IStore) OrchestratorToolsetBiz`
+  - 内部调用 `orchestratorcfg.LoadFromEnv().Resolve(req.pipeline)`
+- `internal/apiserver/handler/orchestrator_toolset.go`
+  - `func (h *Handler) ResolveOrchestratorToolset(c *gin.Context)`
+  - `func init()` 注册路由：
+    - `rg := v1.Group("/orchestrator", mws...)`
+    - `rg.GET("/toolsets/resolve", handler.ResolveOrchestratorToolset)`
+  - auth：`authz.RequireAnyScope(c, authz.ScopeAIRead)`
+
+**改动文件**
+- `internal/apiserver/biz/biz.go`
+  - `IBiz` 增加 `OrchestratorToolsetV1()`
+  - `biz` struct 增加 once+field，并在方法里 `orchestrator_toolset.New(b.store)`
+- `internal/apiserver/pkg/validation/` 新增 `orchestrator_toolset.go`
+  - `ValidateResolveToolsetRequest(...)`（pipeline 必填或允许空但 normalize）
+- `internal/apiserver/handler/handler.go` 无需改（沿用 registrar）
+
+**验收**
+- `GET /v1/orchestrator/toolsets/resolve?pipeline=basic_rca` 返回 toolset
+- 缺失 mapping 返回 404（或业务定义的 errno）
+- 无权限返回 403（permission denied）
+
+---
+
+### H4：orchestrator 对接 server resolve（无本地 config 时）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+  - `RCAApiClient.resolve_toolset(pipeline: str) -> dict`
+    - GET `/v1/orchestrator/toolsets/resolve`，query pipeline
+    - 兼容 envelope：payload.get("data", payload)
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 在 `_select_tool_invoker` 内：
+    - 若本地 `TOOLSET_CONFIG_*` 存在：沿用 Phase G（local）
+    - 否则：调用 `client.resolve_toolset(pipeline)`，并用返回内容构造 `ToolsetConfig` / ToolsetDefinition，再 build invoker
+  - resolve 失败：沿用 fail-fast finalize（graph build/invoke 前）
+
+**新增测试**
+- server：`internal/apiserver/handler/orchestrator_toolset_test.go`
+  - 覆盖 resolve success / missing mapping / invalid config
+- orchestrator：`tools/ai-orchestrator/tests/test_toolset_registry_phaseh.py`
+  - 覆盖 “无 TOOLSET_CONFIG_* → 调 client.resolve_toolset → build invoker”
+  - 覆盖 resolve 404 → fail-fast finalize & no graph invoke
+
+**验收**
+- `go test ./...` 通过
+- `python3 -m unittest discover -s tools/ai-orchestrator/tests -p 'test_*.py' -v` 通过
+

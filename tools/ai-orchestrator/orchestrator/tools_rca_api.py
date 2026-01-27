@@ -261,6 +261,17 @@ class RCAApiClient:
             return payload["job"]
         return data
 
+    def resolve_toolset(self, pipeline: str) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        normalized_pipeline = str(pipeline or "").strip()
+        if normalized_pipeline:
+            params["pipeline"] = normalized_pipeline
+        payload = self._request("GET", "/v1/orchestrator/toolsets/resolve", params=params or None)
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid resolve_toolset response")
+        return data
+
     def start_job(self, job_id: str) -> bool:
         try:
             self._request("POST", f"/v1/ai/jobs/{job_id}/start")

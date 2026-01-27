@@ -10,6 +10,7 @@ import (
 	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
+	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
 	"github.com/google/wire"
 
@@ -28,6 +29,7 @@ type IBiz interface {
 	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
+	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
 	SilenceV1() silencev1.SilenceBiz
 	NoticeV1() noticev1.NoticeBiz
 	Close() error
@@ -37,20 +39,22 @@ type IBiz interface {
 type biz struct {
 	store store.IStore
 
-	incidentOnce   sync.Once
-	incidentBiz    incidentv1.IncidentBiz
-	alertEventOnce sync.Once
-	alertEventBiz  alerteventv1.AlertEventBiz
-	datasourceOnce sync.Once
-	datasourceBiz  datasourcev1.DatasourceBiz
-	evidenceOnce   sync.Once
-	evidenceBiz    evidencev1.EvidenceBiz
-	aiJobOnce      sync.Once
-	aiJobBiz       aijobv1.AIJobBiz
-	silenceOnce    sync.Once
-	silenceBiz     silencev1.SilenceBiz
-	noticeOnce     sync.Once
-	noticeBiz      noticev1.NoticeBiz
+	incidentOnce            sync.Once
+	incidentBiz             incidentv1.IncidentBiz
+	alertEventOnce          sync.Once
+	alertEventBiz           alerteventv1.AlertEventBiz
+	datasourceOnce          sync.Once
+	datasourceBiz           datasourcev1.DatasourceBiz
+	evidenceOnce            sync.Once
+	evidenceBiz             evidencev1.EvidenceBiz
+	aiJobOnce               sync.Once
+	aiJobBiz                aijobv1.AIJobBiz
+	orchestratorToolsetOnce sync.Once
+	orchestratorToolsetBiz  orchestratortoolsetv1.ToolsetBiz
+	silenceOnce             sync.Once
+	silenceBiz              silencev1.SilenceBiz
+	noticeOnce              sync.Once
+	noticeBiz               noticev1.NoticeBiz
 
 	closeOnce sync.Once
 	closeErr  error
@@ -99,6 +103,13 @@ func (b *biz) AIJobV1() aijobv1.AIJobBiz {
 	return b.aiJobBiz
 }
 
+func (b *biz) OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz {
+	b.orchestratorToolsetOnce.Do(func() {
+		b.orchestratorToolsetBiz = orchestratortoolsetv1.New()
+	})
+	return b.orchestratorToolsetBiz
+}
+
 func (b *biz) SilenceV1() silencev1.SilenceBiz {
 	b.silenceOnce.Do(func() {
 		b.silenceBiz = silencev1.New(b.store)
@@ -124,6 +135,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.datasourceBiz)
 		errs = appendCloseIfSupported(errs, b.evidenceBiz)
 		errs = appendCloseIfSupported(errs, b.aiJobBiz)
+		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)
 		errs = appendCloseIfSupported(errs, b.silenceBiz)
 		errs = appendCloseIfSupported(errs, b.noticeBiz)
 		b.closeErr = errors.Join(errs...)
