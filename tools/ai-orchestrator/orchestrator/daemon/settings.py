@@ -36,6 +36,8 @@ class Settings:
     post_finalize_wait_timeout_seconds: int
     post_finalize_wait_interval_ms: int
     post_finalize_wait_max_interval_ms: int
+    toolset_config_path: str
+    toolset_config_json: str
 
 
 def _env_int(name: str, default: int) -> int:
@@ -106,4 +108,6 @@ def load_settings() -> Settings:
         post_finalize_wait_timeout_seconds=post_finalize_wait_timeout_seconds,
         post_finalize_wait_interval_ms=post_finalize_wait_interval_ms,
         post_finalize_wait_max_interval_ms=post_finalize_wait_max_interval_ms,
+        toolset_config_path=os.getenv("TOOLSET_CONFIG_PATH", "").strip(),
+        toolset_config_json=os.getenv("TOOLSET_CONFIG_JSON", "").strip(),
     )

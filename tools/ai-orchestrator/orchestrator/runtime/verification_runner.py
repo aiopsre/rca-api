@@ -251,12 +251,14 @@ class VerificationRunner:
         *,
         client: RCAApiClient,
         execute_with_retry: Callable[[str, Callable[[], Any]], Any],
+        call_tool: Callable[[str, dict[str, Any], str | None], dict[str, Any]],
         log_func: Callable[[str], None] | None = None,
         budget: VerificationBudget | None = None,
         dedupe_enabled: bool = True,
     ) -> None:
         self._client = client
         self._execute_with_retry = execute_with_retry
+        self._call_tool = call_tool
         self._log_func = log_func
         self._budget = (budget or VerificationBudget()).normalized()
         self._dedupe_enabled = bool(dedupe_enabled)
@@ -366,13 +368,10 @@ class VerificationRunner:
                 idempotency_key = (
                     f"orchestrator-verification-{normalized_incident_id}-{index}-{uuid.uuid4().hex}"
                 )
-                call_result = self._execute_with_retry(
-                    f"verification.call:{tool_name}:step={index}",
-                    lambda: self._client.mcp_client.call(
-                        tool=call_tool,
-                        input_payload=params_obj,
-                        idempotency_key=idempotency_key,
-                    ),
+                call_result = self._call_tool(
+                    call_tool,
+                    params_obj,
+                    idempotency_key,
                 )
             except Exception as exc:  # noqa: BLE001
                 call_error = str(exc)

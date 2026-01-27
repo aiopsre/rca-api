@@ -474,9 +474,15 @@ class VerificationRunnerTest(unittest.TestCase):
             operations.append(operation)
             return fn()
 
+        fake_client = _FakeClient()
         runner = VerificationRunner(
-            client=_FakeClient(),
+            client=fake_client,
             execute_with_retry=_execute_with_retry,
+            call_tool=lambda tool, params, idempotency_key=None: fake_client.mcp_client.call(
+                tool=tool,
+                input_payload=params,
+                idempotency_key=idempotency_key,
+            ),
             log_func=None,
             dedupe_enabled=False,
         )
@@ -544,9 +550,15 @@ class VerificationRunnerTest(unittest.TestCase):
                 published.append(kwargs)
                 return {"run": {"runID": f"run-{len(published)}"}}
 
+        fake_client = _FakeClient()
         runner = VerificationRunner(
-            client=_FakeClient(),
+            client=fake_client,
             execute_with_retry=lambda _op, fn: fn(),
+            call_tool=lambda tool, params, idempotency_key=None: fake_client.mcp_client.call(
+                tool=tool,
+                input_payload=params,
+                idempotency_key=idempotency_key,
+            ),
             log_func=None,
             dedupe_enabled=True,
         )
@@ -588,9 +600,15 @@ class VerificationRunnerTest(unittest.TestCase):
                 return {"run": {"runID": f"run-{len(published)}"}, "warnings": ["TRUNCATED_TEXT"]}
 
         logs: list[str] = []
+        fake_client = _FakeClient()
         runner = VerificationRunner(
-            client=_FakeClient(),
+            client=fake_client,
             execute_with_retry=lambda _op, fn: fn(),
+            call_tool=lambda tool, params, idempotency_key=None: fake_client.mcp_client.call(
+                tool=tool,
+                input_payload=params,
+                idempotency_key=idempotency_key,
+            ),
             log_func=lambda msg: logs.append(msg),
             budget=VerificationBudget(max_steps=1, max_total_latency_ms=0, max_total_bytes=0),
             dedupe_enabled=False,

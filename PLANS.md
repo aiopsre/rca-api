@@ -166,3 +166,105 @@
 
 **验收**
 - `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+
+---
+
+## Phase G：Toolset Registry（Multi MCP Servers + Skills，pipeline-only）
+
+> 目标：将 “工具执行面” 从 `RCAApiClient.mcp_client` 解耦出来，允许 orchestrator 侧自由接入多个 MCP Server 与 Skills，并只按 `AIJob.pipeline` 选择 toolset。
+>
+> 实施状态（2026-03-05）：
+> - 已完成 G1~G4 代码落地（`tools/ai-orchestrator`）
+> - 验证 runner 已改为通过 runtime 注入的 `call_tool`
+> - pipeline/template 与 pipeline/toolset 选择均保持 fail-fast 语义
+
+### G1：新增 toolset 配置与解析（不引入新依赖）
+
+**新增文件**
+- `tools/ai-orchestrator/orchestrator/tooling/__init__.py`
+- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
+  - `ToolsetConfig` / `ProviderConfig` / `load_toolset_config_from_env(...)`
+  - 支持 env：
+    - `TOOLSET_CONFIG_PATH`
+    - `TOOLSET_CONFIG_JSON`
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/daemon/settings.py`
+  - 新增 settings 字段：
+    - `toolset_config_path: str`
+    - `toolset_config_json: str`
+  - `load_settings()` 读取上述 env（默认空）
+
+**验收**
+- 无新增第三方依赖（仅 stdlib）
+- `python3 -m unittest ...` 全绿
+
+---
+
+### G2：新增 ToolInvoker + Providers（MCP HTTP / Skills）
+
+**新增文件**
+- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
+  - `class ToolInvokeError(Exception)`
+  - `class ToolInvoker`
+    - `call(tool: str, input: dict, idempotency_key: str | None) -> dict`
+    - tool allowlist 校验
+    - provider 路由（按 toolset providers 顺序或显式映射）
+- `tools/ai-orchestrator/orchestrator/tooling/providers/__init__.py`
+- `tools/ai-orchestrator/orchestrator/tooling/providers/mcp_http.py`
+  - `class MCPHttpProvider`
+    - POST `{base_url}/v1/mcp/tools/call`
+    - 复用 `mcp_client.py` 的 retryable 语义（可复制 `_is_retryable`，避免再依赖 `tool_registry.py:get_tool`）
+- `tools/ai-orchestrator/orchestrator/tooling/providers/skills.py`
+  - `class SkillsProvider`
+    - 从 `module` 动态 import，要求暴露 `call(tool, input, idempotency_key) -> dict`
+    - 默认 fail-fast（除非返回中显式标记 retryable）
+
+**验收**
+- invoker 对未知 tool / tool 不在 allowlist：fail-fast（抛稳定异常）
+- provider 对调用失败：返回可判定 retryable 的错误（供 runtime 重试执行器判断）
+
+---
+
+### G3：Runtime 注入 invoker，并改造 verification runner 走 runtime.call_tool
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+  - `OrchestratorRuntime.__init__(...)` 新增参数：`tool_invoker: ToolInvoker | None`
+  - 新增方法：
+    - `call_tool(tool: str, params: dict, idempotency_key: str | None = None) -> dict`
+      - 内部必须走 `_execute_with_retry(...)` 以保持与写操作一致的重试矩阵
+- `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
+  - `VerificationRunner.__init__` 新增参数：
+    - `call_tool: Callable[[str, dict, str | None], dict]`
+  - `run(...)` 内将 `self._client.mcp_client.call(...)` 替换为 `call_tool(...)`
+  - 仍保留 `_normalize_tool_name` 对 `mcp.` 前缀兼容
+
+**验收**
+- verification runner 不再引用 `RCAApiClient.mcp_client`（可通过 grep/测试断言）
+- 原有 dedupe/budget/observed<=512 语义不变
+
+---
+
+### G4：runner 按 pipeline 选择 toolset，并 fail-fast 缺失配置
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 在 pipeline 选模板成功后、invoke graph 前：
+    - 加载 toolset config（一次加载可缓存到进程级，避免每 job 读文件）
+    - `toolset_id = pipelines[pipeline_normalized]`（pipeline-only）
+    - 构造 invoker 并注入 `OrchestratorRuntime(...)`
+  - 缺失 pipeline->toolset 映射 / toolset 不存在：fail-fast
+    - 记录日志：`job_id/pipeline/toolset_id`
+    - `runtime.finalize(status="failed", error_message="toolset_selection_failed: ...")`
+    - 不进入 graph，不执行 query/save，不写 toolcall
+
+**新增测试**
+- `tools/ai-orchestrator/tests/test_toolset_registry_phaseg.py`
+  1) `test_pipeline_selects_toolset_and_builds_invoker`
+  2) `test_unknown_toolset_fail_fast_no_graph_invoke`
+  3) `test_verification_runner_uses_runtime_call_tool_not_client_mcp`
+
+**验收**
+- `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+- 行为回归：pipeline registry（unknown pipeline）fail-fast 语义保持不变

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ..tools_rca_api import RCAApiClient
 from .evidence_publisher import EvidencePublishResult, EvidencePublisher
@@ -9,6 +9,9 @@ from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
 from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
+
+if TYPE_CHECKING:
+    from ..tooling.invoker import ToolInvoker
 
 
 class OrchestratorRuntime:
@@ -25,10 +28,12 @@ class OrchestratorRuntime:
         verification_max_total_latency_ms: int = 0,
         verification_max_total_bytes: int = 0,
         verification_dedupe_enabled: bool = True,
+        tool_invoker: ToolInvoker | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
         self._instance_id = str(instance_id).strip()
+        self._tool_invoker = tool_invoker
         if not self._job_id:
             raise RuntimeError("job_id is required")
 
@@ -62,6 +67,7 @@ class OrchestratorRuntime:
         self._verification_runner = VerificationRunner(
             client=self._client,
             execute_with_retry=self._execute_with_retry,
+            call_tool=self.call_tool,
             log_func=log_func,
             budget=VerificationBudget(
                 max_steps=verification_max_steps,
@@ -76,6 +82,31 @@ class OrchestratorRuntime:
 
     def _execute_with_retry(self, operation: str, fn: Callable[[], Any]) -> Any:
         return self._retry_executor.run(operation, fn)
+
+    def call_tool(
+        self,
+        tool: str,
+        params: dict[str, Any] | None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_tool = str(tool).strip()
+        if not normalized_tool:
+            raise RuntimeError("tool is required")
+
+        def _call() -> dict[str, Any]:
+            if self._tool_invoker is not None:
+                return self._tool_invoker.call(
+                    tool=normalized_tool,
+                    input_payload=params,
+                    idempotency_key=idempotency_key,
+                )
+            return self._client.mcp_client.call(
+                tool=normalized_tool,
+                input_payload=params,
+                idempotency_key=idempotency_key,
+            )
+
+        return self._execute_with_retry(f"tool.call:{normalized_tool}", _call)
 
     def report_tool_call(
         self,

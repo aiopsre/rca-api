@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 from typing import Any
 
 from ..graph import OrchestratorConfig
-from ..langgraph.registry import UnknownPipelineError, get_template_builder
+from ..langgraph.registry import UnknownPipelineError, get_template_builder, normalize_pipeline
 from ..runtime.runtime import OrchestratorRuntime
 from ..state import GraphState
+from ..tooling import ToolInvoker, ToolsetConfig, build_tool_invoker, load_toolset_config_from_env
 from ..tools_rca_api import RCAApiClient
 from .health import detect_pubsub_ready
 from .settings import Settings, load_settings
+
+_TOOLSET_CONFIG_CACHE_LOCK = threading.Lock()
+_TOOLSET_CONFIG_CACHE_KEY: tuple[str, str] | None = None
+_TOOLSET_CONFIG_CACHE_VALUE: ToolsetConfig | None = None
+_TOOLSET_CONFIG_CACHE_ERROR: Exception | None = None
 
 
 def _log(msg: str) -> None:
@@ -64,8 +71,79 @@ def _new_client(settings: Settings) -> RCAApiClient:
     )
 
 
+def _load_toolset_config_cached(settings: Settings) -> ToolsetConfig:
+    global _TOOLSET_CONFIG_CACHE_KEY
+    global _TOOLSET_CONFIG_CACHE_VALUE
+    global _TOOLSET_CONFIG_CACHE_ERROR
+
+    cache_key = (settings.toolset_config_path.strip(), settings.toolset_config_json.strip())
+    with _TOOLSET_CONFIG_CACHE_LOCK:
+        if _TOOLSET_CONFIG_CACHE_KEY == cache_key:
+            if _TOOLSET_CONFIG_CACHE_ERROR is not None:
+                raise _TOOLSET_CONFIG_CACHE_ERROR
+            if _TOOLSET_CONFIG_CACHE_VALUE is None:
+                raise RuntimeError("toolset config cache is empty")
+            return _TOOLSET_CONFIG_CACHE_VALUE
+
+    try:
+        loaded = load_toolset_config_from_env(settings)
+    except Exception as exc:  # noqa: BLE001
+        with _TOOLSET_CONFIG_CACHE_LOCK:
+            _TOOLSET_CONFIG_CACHE_KEY = cache_key
+            _TOOLSET_CONFIG_CACHE_VALUE = None
+            _TOOLSET_CONFIG_CACHE_ERROR = exc
+        raise
+
+    with _TOOLSET_CONFIG_CACHE_LOCK:
+        _TOOLSET_CONFIG_CACHE_KEY = cache_key
+        _TOOLSET_CONFIG_CACHE_VALUE = loaded
+        _TOOLSET_CONFIG_CACHE_ERROR = None
+    return loaded
+
+
+def _select_tool_invoker(settings: Settings, pipeline: str) -> tuple[ToolInvoker, str]:
+    config = _load_toolset_config_cached(settings)
+    normalized_pipeline = normalize_pipeline(pipeline)
+    toolset_id = str(config.pipelines.get(normalized_pipeline) or "").strip()
+    if not toolset_id:
+        raise RuntimeError(f"pipeline={normalized_pipeline} has no mapped toolset")
+    invoker = build_tool_invoker(config, toolset_id)
+    return invoker, toolset_id
+
+
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
+    selected_pipeline = ""
+    template_builder = None
+    tool_invoker = None
+    selected_toolset_id = ""
+    selection_error_message = ""
+
+    try:
+        prefetched_job = client.get_job(job_id)
+        selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
+        template_builder = get_template_builder(selected_pipeline)
+    except UnknownPipelineError as exc:
+        _log(
+            f"job={job_id} template selection failed: "
+            f"pipeline={selected_pipeline or '<empty>'} error={exc}"
+        )
+        selection_error_message = str(exc)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} prefetch job for template selection failed: {exc}")
+        selection_error_message = f"template_selection_prefetch_failed: {exc}"
+
+    if not selection_error_message:
+        try:
+            tool_invoker, selected_toolset_id = _select_tool_invoker(settings, selected_pipeline)
+        except Exception as exc:  # noqa: BLE001
+            _log(
+                "job="
+                f"{job_id} toolset selection failed: pipeline={normalize_pipeline(selected_pipeline)} "
+                f"toolset={selected_toolset_id or '<empty>'} error={exc}"
+            )
+            selection_error_message = f"toolset_selection_failed: {exc}"
+
     runtime = OrchestratorRuntime(
         client=client,
         job_id=job_id,
@@ -76,51 +154,44 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         verification_max_total_latency_ms=settings.verification_max_total_latency_ms,
         verification_max_total_bytes=settings.verification_max_total_bytes,
         verification_dedupe_enabled=settings.verification_dedupe_enabled,
+        tool_invoker=tool_invoker,
     )
     if not runtime.start():
         if debug:
             _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
         return
 
-    selected_pipeline = ""
-    try:
-        prefetched_job = runtime.get_job(job_id)
-        selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
-        template_builder = get_template_builder(selected_pipeline)
-    except UnknownPipelineError as exc:
-        _log(
-            f"job={job_id} template selection failed: "
-            f"pipeline={selected_pipeline or '<empty>'} error={exc}"
-        )
+    if selection_error_message:
         try:
             runtime.finalize(
                 status="failed",
                 diagnosis_json=None,
-                error_message=str(exc),
+                error_message=selection_error_message,
                 evidence_ids=[],
             )
         except Exception as finalize_exc:  # noqa: BLE001
-            _log(f"job={job_id} finalize after template selection failure error: {finalize_exc}")
+            _log(f"job={job_id} finalize after template/toolset selection failure error: {finalize_exc}")
         runtime.shutdown()
         return
-    except Exception as exc:  # noqa: BLE001
-        _log(f"job={job_id} prefetch job for template selection failed: {exc}")
+
+    if template_builder is None:
+        _log(f"job={job_id} template selection failed: pipeline={selected_pipeline or '<empty>'} error=empty_builder")
         try:
             runtime.finalize(
                 status="failed",
                 diagnosis_json=None,
-                error_message=f"template_selection_prefetch_failed: {exc}",
+                error_message="template_selection_failed: empty_builder",
                 evidence_ids=[],
             )
         except Exception as finalize_exc:  # noqa: BLE001
-            _log(f"job={job_id} finalize after template prefetch failure error: {finalize_exc}")
+            _log(f"job={job_id} finalize after empty template builder error: {finalize_exc}")
         runtime.shutdown()
         return
 
     if debug:
         _log(
             f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
-            f"template={template_builder.__name__}"
+            f"template={template_builder.__name__} toolset={selected_toolset_id or '<none>'}"
         )
 
     try:

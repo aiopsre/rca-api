@@ -63,6 +63,11 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
             post_finalize_wait_timeout_seconds=8,
             post_finalize_wait_interval_ms=500,
             post_finalize_wait_max_interval_ms=2000,
+            toolset_config_path="",
+            toolset_config_json=(
+                '{"pipelines":{"basic_rca":"default"},'
+                '"toolsets":{"default":{"providers":[{"type":"skills","module":"json","allow_tools":["query_logs"]}]}}}'
+            ),
         )
 
     def test_unknown_pipeline_fail_fast_without_query_or_toolcall_write(self) -> None:
@@ -124,7 +129,16 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
             def shutdown(self) -> None:
                 self.shutdown_calls += 1
 
-        with mock.patch.object(runner_module, "_new_client", return_value=object()), mock.patch.object(
+        class _FakeClient:
+            @staticmethod
+            def get_job(job_id: str) -> dict[str, object]:
+                return {
+                    "jobID": job_id,
+                    "incidentID": "inc-unknown",
+                    "pipeline": "unknown_pipeline",
+                }
+
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
             runner_module, "OrchestratorRuntime", _FakeRuntime
         ):
             runner_module._invoke_graph(
@@ -136,7 +150,7 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
 
         runtime = _FakeRuntime.instances[-1]
         self.assertEqual(runtime.start_calls, 1)
-        self.assertEqual(runtime.get_job_calls, 1)
+        self.assertEqual(runtime.get_job_calls, 0)
         self.assertEqual(runtime.query_metrics_calls, 0)
         self.assertEqual(runtime.query_logs_calls, 0)
         self.assertEqual(runtime.report_tool_call_calls, 0)
@@ -148,4 +162,3 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
