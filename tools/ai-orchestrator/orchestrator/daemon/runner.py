@@ -4,7 +4,8 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from typing import Any
 
-from ..graph import OrchestratorConfig, build_graph
+from ..graph import OrchestratorConfig
+from ..langgraph.registry import UnknownPipelineError, get_template_builder
 from ..runtime.runtime import OrchestratorRuntime
 from ..state import GraphState
 from ..tools_rca_api import RCAApiClient
@@ -25,6 +26,31 @@ def _extract_jobs(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _extract_job_id(job_obj: dict[str, Any]) -> str:
     return str(job_obj.get("jobID") or job_obj.get("job_id") or "").strip()
+
+
+def _extract_pipeline(job_payload: dict[str, Any]) -> str:
+    if not isinstance(job_payload, dict):
+        return ""
+
+    candidates: list[dict[str, Any]] = [job_payload]
+    data = job_payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+        nested = data.get("job")
+        if isinstance(nested, dict):
+            candidates.append(nested)
+
+    nested_job = job_payload.get("job")
+    if isinstance(nested_job, dict):
+        candidates.append(nested_job)
+
+    for candidate in candidates:
+        if "pipeline" in candidate:
+            value = candidate.get("pipeline")
+            if value is None:
+                return ""
+            return str(value).strip()
+    return ""
 
 
 def _new_client(settings: Settings) -> RCAApiClient:
@@ -56,9 +82,50 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
         return
 
+    selected_pipeline = ""
+    try:
+        prefetched_job = runtime.get_job(job_id)
+        selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
+        template_builder = get_template_builder(selected_pipeline)
+    except UnknownPipelineError as exc:
+        _log(
+            f"job={job_id} template selection failed: "
+            f"pipeline={selected_pipeline or '<empty>'} error={exc}"
+        )
+        try:
+            runtime.finalize(
+                status="failed",
+                diagnosis_json=None,
+                error_message=str(exc),
+                evidence_ids=[],
+            )
+        except Exception as finalize_exc:  # noqa: BLE001
+            _log(f"job={job_id} finalize after template selection failure error: {finalize_exc}")
+        runtime.shutdown()
+        return
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} prefetch job for template selection failed: {exc}")
+        try:
+            runtime.finalize(
+                status="failed",
+                diagnosis_json=None,
+                error_message=f"template_selection_prefetch_failed: {exc}",
+                evidence_ids=[],
+            )
+        except Exception as finalize_exc:  # noqa: BLE001
+            _log(f"job={job_id} finalize after template prefetch failure error: {finalize_exc}")
+        runtime.shutdown()
+        return
+
+    if debug:
+        _log(
+            f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
+            f"template={template_builder.__name__}"
+        )
+
     try:
         state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
-        compiled_graph = build_graph(client, graph_cfg, runtime)
+        compiled_graph = template_builder(runtime, graph_cfg)
         final_state = compiled_graph.invoke(state)
     finally:
         runtime.shutdown()
