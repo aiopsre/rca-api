@@ -429,3 +429,97 @@
 
 **验收**
 - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+
+---
+
+## Phase J：Toolset Chain（仅 orchestrator；本地 pipelines 支持 list；invoker chain；观测扩展）
+
+> 目标：只改 tools/ai-orchestrator，让本地配置支持 pipeline -> toolsets[]，invoker 支持 chain 路由，Phase I 观测记录链路。
+
+### J1：本地配置 schema 扩展（pipelines 支持 list）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
+  - 扩展 `ToolsetConfig.pipelines` 的解析：
+    - 支持值为 `str` 或 `list[str]`
+  - 新增：
+    - `get_toolset_chain(pipeline: str) -> list[str]`
+      - 若 pipelines[pipeline] 是 str -> [str]
+      - 若是 list[str] -> 原样返回（过滤空串，normalize id）
+  - 保持现有 normalize 规则：pipeline 空值 -> `basic_rca`
+
+**验收**
+- 兼容旧 JSON（string 写法）
+- 新 JSON（list 写法）可正确返回有序 chain
+
+---
+
+### J2：实现 ToolInvokerChain（first-match 路由 + meta）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
+  - 新增：
+    - `class ToolInvokerChain`
+      - `call(tool, input, idempotency_key=None) -> dict`
+  - 调整：
+    - `build_tool_invoker(...)` 支持输入为：
+      - 单 `ToolsetDefinition`（返回 ToolInvoker）
+      - 多 `ToolsetDefinition`（返回 ToolInvokerChain）
+  - meta：
+    - 返回 dict 中 `_tooling_meta` 除 provider_id/provider_type 外，新增：
+      - `resolved_from_toolset_id`
+
+**验收**
+- tool 在 toolset[1] 才 allow 时也能成功执行
+- tool 在 toolset[0] 和 toolset[1] 都 allow 时命中 toolset[0]
+- allowlist 全不命中时仍抛 `ToolInvokeError(reason="allow_tools_denied")`
+
+---
+
+### J3：runner 选择 toolset chain（仅本地 override 分支）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 本期仅扩展本地 config 分支：
+    - `_select_tool_invoker(...)` 在 local override 时：
+      - 从 config 解析 toolset chain ids（J1 新方法）
+      - 构造 toolset definitions 列表并 build invoker chain
+      - 返回 `(invoker, toolsets_ids, source="local_override")`
+  - server resolve 分支保持单 toolset（Phase H），返回 toolsets_ids=[toolset_id]
+
+**验收**
+- local override 能返回 toolsets_ids list
+- server resolve 仍返回长度 1 list，不改语义
+
+---
+
+### J4：观测扩展（toolset.select + tool.invoke）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - `_report_toolset_selection_observation(...)`：
+    - 记录 `toolsets`（list）
+- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+  - `call_tool(...)` 观测上报中加入：
+    - `resolved_from_toolset_id`（来自 `_tooling_meta`）
+
+**验收**
+- `toolset.select` 的 response_json 包含 toolsets list
+- `tool.invoke` 的 response_json 包含 resolved_from_toolset_id
+
+---
+
+### J5：新增单测
+
+**新增文件**
+- `tools/ai-orchestrator/tests/test_toolset_chain_phasej.py`
+
+**用例**
+1) `test_toolset_config_parses_pipeline_toolset_chain_list`
+2) `test_invoker_chain_routes_to_second_toolset_when_first_denies`
+3) `test_invoker_chain_prefers_first_toolset_on_conflict`
+4) `test_runner_toolset_select_observation_includes_toolsets_chain`
+5) `test_runtime_tool_invoke_observation_includes_resolved_from_toolset_id`
+
+**验收**
+- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿

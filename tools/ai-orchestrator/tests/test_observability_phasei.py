@@ -133,8 +133,8 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         self.assertEqual(params["pipeline"], "basic_rca")
         self.assertEqual(params["template"], "_fake_builder")
         response = observed["response"]
-        self.assertEqual(response["toolset_id"], "skills_obs")
-        self.assertEqual(response["source"], "local_config")
+        self.assertEqual(response["toolsets"], ["skills_obs"])
+        self.assertEqual(response["source"], "local_override")
         self.assertEqual(len(response["providers"]), 1)
         self.assertEqual(response["providers"][0]["provider_type"], "skills")
 

@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 from .providers.mcp_http import MCPHttpProvider
 from .providers.skills import SkillsProvider
-from .toolset_config import ToolsetConfig, normalize_tool_name
+from .toolset_config import ToolsetConfig, ToolsetDefinition, normalize_tool_name
 
 TOOLING_META_KEY = "_tooling_meta"
 
@@ -61,6 +61,7 @@ class ToolInvoker:
     def provider_summaries(self) -> list[dict[str, Any]]:
         return [
             {
+                "toolset_id": self._toolset_id,
                 "provider_id": binding.name,
                 "provider_type": binding.provider_type,
                 "allow_tools_count": len(binding.allow_tools),
@@ -80,24 +81,15 @@ class ToolInvoker:
             raise ToolInvokeError("tool name is required")
 
         normalized_input = input_payload if isinstance(input_payload, dict) else {}
-        for binding in self._providers:
-            if not binding.allows(normalized_tool):
-                continue
-            result = binding.provider.call(
-                tool=normalized_tool,
-                input_payload=normalized_input,
-                idempotency_key=idempotency_key,
-            )
-            if not isinstance(result, dict):
-                raise RuntimeError(
-                    f"tool provider must return dict: toolset={self._toolset_id} provider={binding.name}"
-                )
-            out = dict(result)
-            out[TOOLING_META_KEY] = {
-                "provider_id": binding.name,
-                "provider_type": binding.provider_type,
-            }
-            return out
+        result = _call_with_bindings(
+            toolset_id=self._toolset_id,
+            providers=self._providers,
+            tool=normalized_tool,
+            input_payload=normalized_input,
+            idempotency_key=idempotency_key,
+        )
+        if result is not None:
+            return result
 
         raise ToolInvokeError(
             f"tool={normalized_tool} is not allowed in toolset={self._toolset_id}",
@@ -106,8 +98,69 @@ class ToolInvoker:
         )
 
 
+class ToolInvokerChain:
+    def __init__(self, *, toolset_invokers: list[ToolInvoker]) -> None:
+        if not toolset_invokers:
+            raise ValueError("toolset_invokers is required")
+        self._toolset_invokers = tuple(toolset_invokers)
+
+    @property
+    def toolset_ids(self) -> list[str]:
+        return [invoker.toolset_id for invoker in self._toolset_invokers]
+
+    def provider_summaries(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for invoker in self._toolset_invokers:
+            for item in invoker.provider_summaries():
+                if isinstance(item, dict):
+                    out.append(dict(item))
+        return out
+
+    def call(
+        self,
+        *,
+        tool: str,
+        input_payload: dict[str, Any] | None,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_tool = normalize_tool_name(tool)
+        if not normalized_tool:
+            raise ToolInvokeError("tool name is required")
+        normalized_input = input_payload if isinstance(input_payload, dict) else {}
+        for invoker in self._toolset_invokers:
+            try:
+                return invoker.call(
+                    tool=normalized_tool,
+                    input_payload=normalized_input,
+                    idempotency_key=idempotency_key,
+                )
+            except ToolInvokeError as exc:
+                if exc.reason == "allow_tools_denied":
+                    continue
+                raise
+        chain = ",".join(self.toolset_ids)
+        raise ToolInvokeError(
+            f"tool={normalized_tool} is not allowed in toolset_chain={chain}",
+            retryable=False,
+            reason="allow_tools_denied",
+        )
+
+
 def build_tool_invoker(config: ToolsetConfig, toolset_id: str) -> ToolInvoker:
     toolset = config.get_toolset(toolset_id)
+    providers = _build_provider_bindings(toolset)
+    return ToolInvoker(toolset_id=toolset.toolset_id, providers=providers)
+
+
+def build_tool_invoker_chain(config: ToolsetConfig, toolset_ids: list[str]) -> ToolInvokerChain:
+    normalized_ids = [str(item).strip() for item in toolset_ids if str(item).strip()]
+    if not normalized_ids:
+        raise ValueError("toolset_ids is required")
+    invokers = [build_tool_invoker(config, toolset_id) for toolset_id in normalized_ids]
+    return ToolInvokerChain(toolset_invokers=invokers)
+
+
+def _build_provider_bindings(toolset: ToolsetDefinition) -> list[_ProviderBinding]:
     providers: list[_ProviderBinding] = []
     for provider_cfg in toolset.providers:
         provider_type = provider_cfg.provider_type
@@ -135,4 +188,32 @@ def build_tool_invoker(config: ToolsetConfig, toolset_id: str) -> ToolInvoker:
                 provider=provider,
             )
         )
-    return ToolInvoker(toolset_id=toolset.toolset_id, providers=providers)
+    return providers
+
+
+def _call_with_bindings(
+    *,
+    toolset_id: str,
+    providers: tuple[_ProviderBinding, ...] | list[_ProviderBinding],
+    tool: str,
+    input_payload: dict[str, Any],
+    idempotency_key: str | None,
+) -> dict[str, Any] | None:
+    for binding in providers:
+        if not binding.allows(tool):
+            continue
+        result = binding.provider.call(
+            tool=tool,
+            input_payload=input_payload,
+            idempotency_key=idempotency_key,
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError(f"tool provider must return dict: toolset={toolset_id} provider={binding.name}")
+        out = dict(result)
+        out[TOOLING_META_KEY] = {
+            "provider_id": binding.name,
+            "provider_type": binding.provider_type,
+            "resolved_from_toolset_id": toolset_id,
+        }
+        return out
+    return None

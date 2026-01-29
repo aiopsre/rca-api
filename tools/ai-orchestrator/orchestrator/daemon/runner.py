@@ -9,7 +9,15 @@ from ..graph import OrchestratorConfig
 from ..langgraph.registry import UnknownPipelineError, get_template_builder, normalize_pipeline
 from ..runtime.runtime import OrchestratorRuntime
 from ..state import GraphState
-from ..tooling import ToolInvoker, ToolsetConfig, build_tool_invoker, load_toolset_config, load_toolset_config_from_env
+from ..tooling import (
+    ToolInvoker,
+    ToolInvokerChain,
+    ToolsetConfig,
+    build_tool_invoker,
+    build_tool_invoker_chain,
+    load_toolset_config,
+    load_toolset_config_from_env,
+)
 from ..tools_rca_api import RCAApiClient
 from .health import detect_pubsub_ready
 from .settings import Settings, load_settings
@@ -101,19 +109,20 @@ def _load_toolset_config_cached(settings: Settings) -> ToolsetConfig:
     return loaded
 
 
-def _select_tool_invoker(settings: Settings, client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str, str]:
+def _select_tool_invoker(
+    settings: Settings,
+    client: RCAApiClient,
+    pipeline: str,
+) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
     if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
         config = _load_toolset_config_cached(settings)
-        normalized_pipeline = normalize_pipeline(pipeline)
-        toolset_id = str(config.pipelines.get(normalized_pipeline) or "").strip()
-        if not toolset_id:
-            raise RuntimeError(f"pipeline={normalized_pipeline} has no mapped toolset")
-        invoker = build_tool_invoker(config, toolset_id)
-        return invoker, toolset_id, "local_config"
+        toolset_ids = config.get_toolset_chain(pipeline)
+        invoker = build_tool_invoker_chain(config, toolset_ids)
+        return invoker, toolset_ids, "local_override"
     return _select_tool_invoker_via_server(client, pipeline)
 
 
-def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str, str]:
+def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, list[str], str]:
     resolved = client.resolve_toolset(pipeline)
     if not isinstance(resolved, dict):
         raise RuntimeError("resolve_toolset returned invalid payload")
@@ -144,7 +153,7 @@ def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tupl
         }
     )
     invoker = build_tool_invoker(config, toolset_id)
-    return invoker, toolset_id, "server_resolve"
+    return invoker, [toolset_id], "server_resolve"
 
 
 def _report_toolset_selection_observation(
@@ -153,9 +162,9 @@ def _report_toolset_selection_observation(
     job_id: str,
     pipeline: str,
     template_builder: Any,
-    toolset_id: str,
+    toolsets: list[str],
     toolset_source: str,
-    tool_invoker: ToolInvoker | None,
+    tool_invoker: ToolInvoker | ToolInvokerChain | None,
 ) -> None:
     report_observation = getattr(runtime, "report_observation", None)
     if not callable(report_observation):
@@ -183,7 +192,7 @@ def _report_toolset_selection_observation(
             },
             response={
                 "status": "ok",
-                "toolset_id": str(toolset_id).strip(),
+                "toolsets": [str(item).strip() for item in toolsets if str(item).strip()],
                 "source": str(toolset_source).strip(),
                 "providers": providers,
             },
@@ -206,7 +215,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     selected_pipeline = ""
     template_builder = None
     tool_invoker = None
-    selected_toolset_id = ""
+    selected_toolsets: list[str] = []
     selected_toolset_source = ""
     selection_error_message = ""
 
@@ -226,14 +235,14 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
     if not selection_error_message:
         try:
-            tool_invoker, selected_toolset_id, selected_toolset_source = _select_tool_invoker(
+            tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
                 settings, client, selected_pipeline
             )
         except Exception as exc:  # noqa: BLE001
             _log(
                 "job="
                 f"{job_id} toolset selection failed: pipeline={normalize_pipeline(selected_pipeline)} "
-                f"toolset={selected_toolset_id or '<empty>'} error={exc}"
+                f"toolsets={selected_toolsets or ['<empty>']} error={exc}"
             )
             selection_error_message = f"toolset_selection_failed: {exc}"
 
@@ -286,15 +295,16 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         job_id=job_id,
         pipeline=selected_pipeline,
         template_builder=template_builder,
-        toolset_id=selected_toolset_id,
+        toolsets=selected_toolsets,
         toolset_source=selected_toolset_source,
         tool_invoker=tool_invoker,
     )
 
     if debug:
+        selected_toolsets_text = ",".join(selected_toolsets) if selected_toolsets else "<none>"
         _log(
             f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
-            f"template={template_builder.__name__} toolset={selected_toolset_id or '<none>'}"
+            f"template={template_builder.__name__} toolsets={selected_toolsets_text}"
         )
 
     try:

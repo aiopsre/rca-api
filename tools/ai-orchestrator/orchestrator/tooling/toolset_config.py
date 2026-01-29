@@ -40,15 +40,26 @@ class ToolsetDefinition:
 
 @dataclass(frozen=True)
 class ToolsetConfig:
-    pipelines: dict[str, str]
+    pipelines: dict[str, tuple[str, ...]]
     toolsets: dict[str, ToolsetDefinition]
 
     def resolve_toolset_id(self, pipeline: str | None) -> str:
+        return self.get_toolset_chain(pipeline)[0]
+
+    def get_toolset_chain(self, pipeline: str | None) -> list[str]:
         normalized_pipeline = normalize_pipeline_key(pipeline)
-        toolset_id = str(self.pipelines.get(normalized_pipeline) or "").strip()
-        if not toolset_id:
+        raw = self.pipelines.get(normalized_pipeline)
+        if raw is None:
             raise ValueError(f"pipeline={normalized_pipeline} is not mapped to any toolset")
-        return toolset_id
+        if isinstance(raw, str):
+            toolset_id = str(raw).strip()
+            if not toolset_id:
+                raise ValueError(f"pipeline={normalized_pipeline} is not mapped to any toolset")
+            return [toolset_id]
+        chain = [str(item).strip() for item in raw if str(item).strip()]
+        if not chain:
+            raise ValueError(f"pipeline={normalized_pipeline} is not mapped to any toolset")
+        return chain
 
     def get_toolset(self, toolset_id: str) -> ToolsetDefinition:
         normalized_id = str(toolset_id).strip()
@@ -105,13 +116,17 @@ def _parse_toolset_config(payload: Any) -> ToolsetConfig:
     if not isinstance(toolsets_raw, dict):
         raise ValueError("toolset config requires object field: toolsets")
 
-    pipelines: dict[str, str] = {}
+    pipelines: dict[str, tuple[str, ...]] = {}
     for raw_pipeline, raw_toolset_id in pipelines_raw.items():
         pipeline = normalize_pipeline_key(str(raw_pipeline))
-        toolset_id = str(raw_toolset_id or "").strip()
-        if not toolset_id:
+        if isinstance(raw_toolset_id, list):
+            toolset_chain = [str(item).strip() for item in raw_toolset_id if str(item).strip()]
+        else:
+            single = str(raw_toolset_id or "").strip()
+            toolset_chain = [single] if single else []
+        if not toolset_chain:
             raise ValueError(f"toolset mapping is empty for pipeline={pipeline}")
-        pipelines[pipeline] = toolset_id
+        pipelines[pipeline] = tuple(toolset_chain)
 
     toolsets: dict[str, ToolsetDefinition] = {}
     for raw_toolset_id, raw_toolset_payload in toolsets_raw.items():

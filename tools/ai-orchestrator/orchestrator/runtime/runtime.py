@@ -15,7 +15,7 @@ from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
 if TYPE_CHECKING:
-    from ..tooling.invoker import ToolInvoker
+    from ..tooling.invoker import ToolInvoker, ToolInvokerChain
 
 
 _OBSERVED_MAX_LEN = 512
@@ -95,7 +95,7 @@ class OrchestratorRuntime:
         verification_max_total_latency_ms: int = 0,
         verification_max_total_bytes: int = 0,
         verification_dedupe_enabled: bool = True,
-        tool_invoker: ToolInvoker | None = None,
+        tool_invoker: ToolInvoker | ToolInvokerChain | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
@@ -240,6 +240,7 @@ class OrchestratorRuntime:
         started_at = time.monotonic()
         provider_id = ""
         provider_type = ""
+        resolved_from_toolset_id = ""
         normalized_params = params if isinstance(params, dict) else {}
 
         self._log(
@@ -270,12 +271,21 @@ class OrchestratorRuntime:
             if isinstance(meta, dict):
                 provider_id = str(meta.get("provider_id") or "").strip()
                 provider_type = str(meta.get("provider_type") or "").strip()
+                resolved_from_toolset_id = str(meta.get("resolved_from_toolset_id") or "").strip()
+            if not resolved_from_toolset_id and self._tool_invoker is not None:
+                if hasattr(self._tool_invoker, "toolset_id"):
+                    resolved_from_toolset_id = str(getattr(self._tool_invoker, "toolset_id") or "").strip()
+                elif hasattr(self._tool_invoker, "toolset_ids"):
+                    raw_ids = getattr(self._tool_invoker, "toolset_ids")
+                    if isinstance(raw_ids, list) and raw_ids:
+                        resolved_from_toolset_id = str(raw_ids[0] or "").strip()
             latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
             observation = {
                 "status": "ok",
                 "latency_ms": latency_ms,
                 "provider_id": provider_id or "rca_api_mcp",
                 "provider_type": provider_type or "mcp_api",
+                "resolved_from_toolset_id": resolved_from_toolset_id,
                 "result_summary": _summarize_tool_result(tool_result),
             }
             self._report_observation_best_effort(
@@ -291,7 +301,8 @@ class OrchestratorRuntime:
             self._log(
                 "tool invoke done "
                 f"job={self._job_id} tool={normalized_tool} status=ok latency_ms={latency_ms} "
-                f"provider_id={observation['provider_id']} provider_type={observation['provider_type']}"
+                f"provider_id={observation['provider_id']} provider_type={observation['provider_type']} "
+                f"resolved_from_toolset_id={observation['resolved_from_toolset_id']}"
             )
             return tool_result
         except ToolInvokeError as exc:
@@ -310,6 +321,7 @@ class OrchestratorRuntime:
                     "latency_ms": latency_ms,
                     "provider_id": provider_id,
                     "provider_type": provider_type,
+                    "resolved_from_toolset_id": resolved_from_toolset_id,
                     "error_category": category,
                     "retryable": bool(exc.retryable),
                     "error": _trim_text(exc),
@@ -336,6 +348,7 @@ class OrchestratorRuntime:
                     "latency_ms": latency_ms,
                     "provider_id": provider_id,
                     "provider_type": provider_type,
+                    "resolved_from_toolset_id": resolved_from_toolset_id,
                     "error_category": category,
                     "error": _trim_text(exc),
                 },
