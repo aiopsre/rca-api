@@ -101,7 +101,7 @@ def _load_toolset_config_cached(settings: Settings) -> ToolsetConfig:
     return loaded
 
 
-def _select_tool_invoker(settings: Settings, client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str]:
+def _select_tool_invoker(settings: Settings, client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str, str]:
     if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
         config = _load_toolset_config_cached(settings)
         normalized_pipeline = normalize_pipeline(pipeline)
@@ -109,11 +109,11 @@ def _select_tool_invoker(settings: Settings, client: RCAApiClient, pipeline: str
         if not toolset_id:
             raise RuntimeError(f"pipeline={normalized_pipeline} has no mapped toolset")
         invoker = build_tool_invoker(config, toolset_id)
-        return invoker, toolset_id
+        return invoker, toolset_id, "local_config"
     return _select_tool_invoker_via_server(client, pipeline)
 
 
-def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str]:
+def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, str, str]:
     resolved = client.resolve_toolset(pipeline)
     if not isinstance(resolved, dict):
         raise RuntimeError("resolve_toolset returned invalid payload")
@@ -144,7 +144,53 @@ def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tupl
         }
     )
     invoker = build_tool_invoker(config, toolset_id)
-    return invoker, toolset_id
+    return invoker, toolset_id, "server_resolve"
+
+
+def _report_toolset_selection_observation(
+    *,
+    runtime: OrchestratorRuntime,
+    job_id: str,
+    pipeline: str,
+    template_builder: Any,
+    toolset_id: str,
+    toolset_source: str,
+    tool_invoker: ToolInvoker | None,
+) -> None:
+    report_observation = getattr(runtime, "report_observation", None)
+    if not callable(report_observation):
+        return
+
+    providers: list[dict[str, Any]] = []
+    if tool_invoker is not None:
+        provider_summaries = getattr(tool_invoker, "provider_summaries", None)
+        if callable(provider_summaries):
+            try:
+                raw = provider_summaries()
+                if isinstance(raw, list):
+                    providers = [item for item in raw if isinstance(item, dict)]
+            except Exception:  # noqa: BLE001
+                providers = []
+
+    template_name = str(getattr(template_builder, "__name__", type(template_builder).__name__) or "unknown")
+    try:
+        report_observation(
+            tool="toolset.select",
+            node_name="runner.pre_graph",
+            params={
+                "pipeline": normalize_pipeline(pipeline),
+                "template": template_name,
+            },
+            response={
+                "status": "ok",
+                "toolset_id": str(toolset_id).strip(),
+                "source": str(toolset_source).strip(),
+                "providers": providers,
+            },
+            evidence_ids=[],
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} pre-graph toolset observation failed: {exc}")
 
 
 def _extract_toolset_id(toolset_payload: dict[str, Any]) -> str:
@@ -161,6 +207,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     template_builder = None
     tool_invoker = None
     selected_toolset_id = ""
+    selected_toolset_source = ""
     selection_error_message = ""
 
     try:
@@ -179,7 +226,9 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
     if not selection_error_message:
         try:
-            tool_invoker, selected_toolset_id = _select_tool_invoker(settings, client, selected_pipeline)
+            tool_invoker, selected_toolset_id, selected_toolset_source = _select_tool_invoker(
+                settings, client, selected_pipeline
+            )
         except Exception as exc:  # noqa: BLE001
             _log(
                 "job="
@@ -231,6 +280,16 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             _log(f"job={job_id} finalize after empty template builder error: {finalize_exc}")
         runtime.shutdown()
         return
+
+    _report_toolset_selection_observation(
+        runtime=runtime,
+        job_id=job_id,
+        pipeline=selected_pipeline,
+        template_builder=template_builder,
+        toolset_id=selected_toolset_id,
+        toolset_source=selected_toolset_source,
+        tool_invoker=tool_invoker,
+    )
 
     if debug:
         _log(

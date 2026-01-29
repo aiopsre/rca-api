@@ -7,6 +7,8 @@ from .providers.mcp_http import MCPHttpProvider
 from .providers.skills import SkillsProvider
 from .toolset_config import ToolsetConfig, normalize_tool_name
 
+TOOLING_META_KEY = "_tooling_meta"
+
 
 class ToolProvider(Protocol):
     def call(
@@ -20,14 +22,16 @@ class ToolProvider(Protocol):
 
 
 class ToolInvokeError(RuntimeError):
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
+    def __init__(self, message: str, *, retryable: bool = False, reason: str = "") -> None:
         super().__init__(message)
         self.retryable = bool(retryable)
+        self.reason = str(reason).strip()
 
 
 @dataclass(frozen=True)
 class _ProviderBinding:
     name: str
+    provider_type: str
     allow_tools: frozenset[str]
     provider: ToolProvider
 
@@ -54,6 +58,16 @@ class ToolInvoker:
     def toolset_id(self) -> str:
         return self._toolset_id
 
+    def provider_summaries(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "provider_id": binding.name,
+                "provider_type": binding.provider_type,
+                "allow_tools_count": len(binding.allow_tools),
+            }
+            for binding in self._providers
+        ]
+
     def call(
         self,
         *,
@@ -69,15 +83,26 @@ class ToolInvoker:
         for binding in self._providers:
             if not binding.allows(normalized_tool):
                 continue
-            return binding.provider.call(
+            result = binding.provider.call(
                 tool=normalized_tool,
                 input_payload=normalized_input,
                 idempotency_key=idempotency_key,
             )
+            if not isinstance(result, dict):
+                raise RuntimeError(
+                    f"tool provider must return dict: toolset={self._toolset_id} provider={binding.name}"
+                )
+            out = dict(result)
+            out[TOOLING_META_KEY] = {
+                "provider_id": binding.name,
+                "provider_type": binding.provider_type,
+            }
+            return out
 
         raise ToolInvokeError(
             f"tool={normalized_tool} is not allowed in toolset={self._toolset_id}",
             retryable=False,
+            reason="allow_tools_denied",
         )
 
 
@@ -105,6 +130,7 @@ def build_tool_invoker(config: ToolsetConfig, toolset_id: str) -> ToolInvoker:
         providers.append(
             _ProviderBinding(
                 name=provider_cfg.name,
+                provider_type=provider_type,
                 allow_tools=frozenset(provider_cfg.allow_tools),
                 provider=provider,
             )

@@ -362,3 +362,70 @@
 - `go test ./...` 通过
 - `python3 -m unittest discover -s tools/ai-orchestrator/tests -p 'test_*.py' -v` 通过
 
+---
+
+## Phase I：运维可观测（Toolset/Provider/Tool Invoke）
+
+> 目标：不改业务语义，仅补齐“job级 toolset 选择 + tool invoke”的可观测输出（日志 + toolcalls）。
+
+### I1：runtime 增加通用观测上报（report_observation）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+  - 新增方法：
+    - `report_observation(tool: str, node_name: str, params: dict, response: dict, evidence_ids: list[str] | None = None)`
+      - 内部直接调用现有 `report_tool_call(...)`
+      - 必须尊重 lease-lost：若 `is_lease_lost()` 或 runtime 未 start，则仅记录日志不写 toolcall
+  - 修改 `call_tool(...)`：
+    - 在调用前/后统计 latency_ms
+    - 捕获 `ToolInvokeError` / `RCAApiError` / `Exception` 并映射 `error_category`
+    - 调用 `report_observation(tool="tool.invoke" 或 "tool.invoke_rejected", ...)`
+
+**验收**
+- call_tool 不改变返回/异常语义，仅新增观测 side-effect
+- unit tests 覆盖 latency_ms 与 error_category 字段存在
+
+---
+
+### I2：runner 上报 toolset.select（pre-graph）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - toolset 选择成功后、build graph 前：
+    - 调用 `runtime.report_observation(tool="toolset.select", node_name="runner.pre_graph", ...)`
+    - 包含 pipeline/template/toolset_id/source/providers 摘要
+
+**验收**
+- toolset.select 在 graph build 前写入 toolcall（best-effort）
+- toolset selection failed 时保留原 fail-fast finalize，额外记录日志（可选尽力上报 toolcall）
+
+---
+
+### I3：ToolInvoker 暴露路由决策（provider_id/type）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
+  - `ToolInvoker.call(...)` 返回时附带 meta：
+    - 方式 A：返回 `(result, meta)`（需要最小改动链路）
+    - 方式 B：result 内加入 `_meta` 字段（不污染业务字段时更好）
+  - meta 至少包含：
+    - provider_id
+    - provider_type
+
+> 选择其中一种，但要保持对 provider 返回 dict 的兼容。
+
+**验收**
+- runtime.call_tool 能拿到 provider_id/provider_type 并上报
+
+---
+
+### I4：新增测试
+
+**新增/改动文件**
+- `tools/ai-orchestrator/tests/test_observability_phasei.py`（新增）
+  - `test_runner_emits_toolset_select_toolcall_pre_graph`
+  - `test_runtime_call_tool_emits_tool_invoke_with_provider_meta`
+  - `test_tool_not_allowed_emits_tool_invoke_rejected_and_raises`
+
+**验收**
+- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿

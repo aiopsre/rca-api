@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import time
 from typing import TYPE_CHECKING, Any, Callable
 
+from ..sdk.errors import RCAApiError
+from ..tooling.invoker import TOOLING_META_KEY, ToolInvokeError
 from ..tools_rca_api import RCAApiClient
 from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
@@ -12,6 +16,69 @@ from .verification_runner import VerificationBudget, VerificationRunner, Verific
 
 if TYPE_CHECKING:
     from ..tooling.invoker import ToolInvoker
+
+
+_OBSERVED_MAX_LEN = 512
+
+
+def _trim_text(value: Any, *, max_len: int = 160) -> str:
+    text = str(value).strip()
+    if len(text) <= max_len:
+        return text
+    return f"{text[: max_len - 3]}..."
+
+
+def _compact_observation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:  # noqa: BLE001
+        return {
+            "status": "error",
+            "reason": "observed_serialization_failed",
+        }
+
+    if len(raw) <= _OBSERVED_MAX_LEN:
+        return payload
+
+    fallback = {
+        "status": str(payload.get("status") or "truncated"),
+        "reason": "observed_exceeds_limit",
+        "original_length": len(raw),
+    }
+    compact = json.dumps(fallback, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if len(compact) <= _OBSERVED_MAX_LEN:
+        return fallback
+    return {
+        "status": "truncated",
+        "reason": "observed_exceeds_limit",
+    }
+
+
+def _summarize_tool_result(payload: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "result_type": "dict",
+        "keys": sorted(str(key) for key in payload.keys())[:8],
+    }
+    output = payload.get("output")
+    if isinstance(output, dict):
+        summary["output_keys"] = sorted(str(key) for key in output.keys())[:8]
+    elif output is not None:
+        summary["output_type"] = type(output).__name__
+    return summary
+
+
+def _error_category(exc: Exception) -> str:
+    if isinstance(exc, RCAApiError):
+        return exc.category.value
+    if isinstance(exc, ToolInvokeError):
+        if exc.reason:
+            return exc.reason
+        if exc.retryable:
+            return "retryable_tool_invoke_error"
+        return "tool_invoke_error"
+    if bool(getattr(exc, "retryable", False)):
+        return "retryable_error"
+    return "unknown"
 
 
 class OrchestratorRuntime:
@@ -33,7 +100,9 @@ class OrchestratorRuntime:
         self._client = client
         self._job_id = str(job_id).strip()
         self._instance_id = str(instance_id).strip()
+        self._log_func = log_func
         self._tool_invoker = tool_invoker
+        self._started = False
         if not self._job_id:
             raise RuntimeError("job_id is required")
 
@@ -68,7 +137,7 @@ class OrchestratorRuntime:
             client=self._client,
             execute_with_retry=self._execute_with_retry,
             call_tool=self.call_tool,
-            log_func=log_func,
+            log_func=self._log_func,
             budget=VerificationBudget(
                 max_steps=verification_max_steps,
                 max_total_latency_ms=verification_max_total_latency_ms,
@@ -78,10 +147,86 @@ class OrchestratorRuntime:
         )
 
     def start(self) -> bool:
-        return self._execute_with_retry("job.start", lambda: self._lease_manager.start(self._job_id))
+        claimed = self._execute_with_retry("job.start", lambda: self._lease_manager.start(self._job_id))
+        self._started = bool(claimed)
+        return self._started
 
     def _execute_with_retry(self, operation: str, fn: Callable[[], Any]) -> Any:
         return self._retry_executor.run(operation, fn)
+
+    def _log(self, message: str) -> None:
+        if self._log_func is not None:
+            self._log_func(message)
+
+    def report_observation(
+        self,
+        *,
+        tool: str,
+        node_name: str,
+        params: dict[str, Any] | None,
+        response: dict[str, Any] | None,
+        evidence_ids: list[str] | None = None,
+    ) -> int | None:
+        normalized_tool = str(tool).strip() or "observation"
+        normalized_node = str(node_name).strip() or "runtime"
+        if not self._started:
+            self._log(
+                "observation skipped "
+                f"job={self._job_id} node={normalized_node} tool={normalized_tool} reason=runtime_not_started"
+            )
+            return None
+        if self.is_lease_lost():
+            self._log(
+                "observation skipped "
+                f"job={self._job_id} node={normalized_node} tool={normalized_tool} "
+                f"reason=lease_lost lease_reason={self.lease_lost_reason()}"
+            )
+            return None
+
+        request_json = params if isinstance(params, dict) else {}
+        response_json = response if isinstance(response, dict) else {}
+
+        status = str(response_json.get("status") or "ok").strip() or "ok"
+        latency_raw = response_json.get("latency_ms", 0)
+        try:
+            latency_ms = max(int(latency_raw), 0)
+        except (TypeError, ValueError):
+            latency_ms = 0
+        error_text = str(response_json.get("error") or "").strip() or None
+
+        return self.report_tool_call(
+            node_name=normalized_node,
+            tool_name=normalized_tool,
+            request_json=_compact_observation_payload(request_json),
+            response_json=_compact_observation_payload(response_json),
+            latency_ms=latency_ms,
+            status=status,
+            error=error_text,
+            evidence_ids=evidence_ids,
+        )
+
+    def _report_observation_best_effort(
+        self,
+        *,
+        tool: str,
+        node_name: str,
+        params: dict[str, Any] | None,
+        response: dict[str, Any] | None,
+        evidence_ids: list[str] | None = None,
+    ) -> None:
+        try:
+            self.report_observation(
+                tool=tool,
+                node_name=node_name,
+                params=params,
+                response=response,
+                evidence_ids=evidence_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._log(
+                "observation report failed "
+                f"job={self._job_id} node={node_name} tool={tool} error={_trim_text(exc)}"
+            )
 
     def call_tool(
         self,
@@ -92,21 +237,115 @@ class OrchestratorRuntime:
         normalized_tool = str(tool).strip()
         if not normalized_tool:
             raise RuntimeError("tool is required")
+        started_at = time.monotonic()
+        provider_id = ""
+        provider_type = ""
+        normalized_params = params if isinstance(params, dict) else {}
+
+        self._log(
+            "tool invoke start "
+            f"job={self._job_id} tool={normalized_tool} "
+            f"invoker={int(self._tool_invoker is not None)} idempotency_key={idempotency_key or ''}"
+        )
 
         def _call() -> dict[str, Any]:
             if self._tool_invoker is not None:
                 return self._tool_invoker.call(
                     tool=normalized_tool,
-                    input_payload=params,
+                    input_payload=normalized_params,
                     idempotency_key=idempotency_key,
                 )
             return self._client.mcp_client.call(
                 tool=normalized_tool,
-                input_payload=params,
+                input_payload=normalized_params,
                 idempotency_key=idempotency_key,
             )
 
-        return self._execute_with_retry(f"tool.call:{normalized_tool}", _call)
+        try:
+            raw_result = self._execute_with_retry(f"tool.call:{normalized_tool}", _call)
+            if not isinstance(raw_result, dict):
+                raise RuntimeError(f"tool={normalized_tool} returned non-dict payload")
+            tool_result = dict(raw_result)
+            meta = tool_result.pop(TOOLING_META_KEY, None)
+            if isinstance(meta, dict):
+                provider_id = str(meta.get("provider_id") or "").strip()
+                provider_type = str(meta.get("provider_type") or "").strip()
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            observation = {
+                "status": "ok",
+                "latency_ms": latency_ms,
+                "provider_id": provider_id or "rca_api_mcp",
+                "provider_type": provider_type or "mcp_api",
+                "result_summary": _summarize_tool_result(tool_result),
+            }
+            self._report_observation_best_effort(
+                tool="tool.invoke",
+                node_name="runtime.call_tool",
+                params={
+                    "tool": normalized_tool,
+                    "idempotency_key": idempotency_key or "",
+                    "params": normalized_params,
+                },
+                response=observation,
+            )
+            self._log(
+                "tool invoke done "
+                f"job={self._job_id} tool={normalized_tool} status=ok latency_ms={latency_ms} "
+                f"provider_id={observation['provider_id']} provider_type={observation['provider_type']}"
+            )
+            return tool_result
+        except ToolInvokeError as exc:
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            category = _error_category(exc)
+            observation_tool = "tool.invoke_rejected" if category == "allow_tools_denied" else "tool.invoke"
+            self._report_observation_best_effort(
+                tool=observation_tool,
+                node_name="runtime.call_tool",
+                params={
+                    "tool": normalized_tool,
+                    "idempotency_key": idempotency_key or "",
+                },
+                response={
+                    "status": "error",
+                    "latency_ms": latency_ms,
+                    "provider_id": provider_id,
+                    "provider_type": provider_type,
+                    "error_category": category,
+                    "retryable": bool(exc.retryable),
+                    "error": _trim_text(exc),
+                },
+            )
+            self._log(
+                "tool invoke failed "
+                f"job={self._job_id} tool={normalized_tool} status=error latency_ms={latency_ms} "
+                f"error_category={category} error={_trim_text(exc)}"
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            category = _error_category(exc)
+            self._report_observation_best_effort(
+                tool="tool.invoke",
+                node_name="runtime.call_tool",
+                params={
+                    "tool": normalized_tool,
+                    "idempotency_key": idempotency_key or "",
+                },
+                response={
+                    "status": "error",
+                    "latency_ms": latency_ms,
+                    "provider_id": provider_id,
+                    "provider_type": provider_type,
+                    "error_category": category,
+                    "error": _trim_text(exc),
+                },
+            )
+            self._log(
+                "tool invoke failed "
+                f"job={self._job_id} tool={normalized_tool} status=error latency_ms={latency_ms} "
+                f"error_category={category} error={_trim_text(exc)}"
+            )
+            raise
 
     def report_tool_call(
         self,
@@ -285,4 +524,5 @@ class OrchestratorRuntime:
         )
 
     def shutdown(self) -> None:
+        self._started = False
         self._lease_manager.shutdown()
