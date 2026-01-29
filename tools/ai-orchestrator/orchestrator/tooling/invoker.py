@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Protocol
 
 from .providers.mcp_http import MCPHttpProvider
@@ -8,6 +9,8 @@ from .providers.skills import SkillsProvider
 from .toolset_config import ToolsetConfig, ToolsetDefinition, normalize_tool_name
 
 TOOLING_META_KEY = "_tooling_meta"
+_LOGGER = logging.getLogger(__name__)
+_CHAIN_SUMMARY_MAX_LEN = 160
 
 
 class ToolProvider(Protocol):
@@ -127,7 +130,8 @@ class ToolInvokerChain:
         if not normalized_tool:
             raise ToolInvokeError("tool name is required")
         normalized_input = input_payload if isinstance(input_payload, dict) else {}
-        for invoker in self._toolset_invokers:
+        total = len(self._toolset_invokers)
+        for index, invoker in enumerate(self._toolset_invokers, start=1):
             try:
                 return invoker.call(
                     tool=normalized_tool,
@@ -136,11 +140,19 @@ class ToolInvokerChain:
                 )
             except ToolInvokeError as exc:
                 if exc.reason == "allow_tools_denied":
+                    _LOGGER.debug(
+                        "toolset chain denied tool=%s toolset=%s hop=%d/%d reason=%s",
+                        normalized_tool,
+                        invoker.toolset_id,
+                        index,
+                        total,
+                        exc.reason or "allow_tools_denied",
+                    )
                     continue
                 raise
-        chain = ",".join(self.toolset_ids)
+        chain = _summarize_toolset_chain(self.toolset_ids)
         raise ToolInvokeError(
-            f"tool={normalized_tool} is not allowed in toolset_chain={chain}",
+            f"tool={normalized_tool} denied by toolset_chain={chain}",
             retryable=False,
             reason="allow_tools_denied",
         )
@@ -217,3 +229,17 @@ def _call_with_bindings(
         }
         return out
     return None
+
+
+def _summarize_toolset_chain(toolset_ids: list[str]) -> str:
+    normalized = [str(item).strip() for item in toolset_ids if str(item).strip()]
+    if not normalized:
+        return "<empty>"
+    if len(normalized) <= 4:
+        summary = ",".join(normalized)
+    else:
+        head = ",".join(normalized[:4])
+        summary = f"{head},...(+{len(normalized) - 4})"
+    if len(summary) <= _CHAIN_SUMMARY_MAX_LEN:
+        return summary
+    return f"{summary[: _CHAIN_SUMMARY_MAX_LEN - 3]}..."

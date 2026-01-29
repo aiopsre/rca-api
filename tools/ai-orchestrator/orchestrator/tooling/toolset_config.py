@@ -52,14 +52,40 @@ class ToolsetConfig:
         if raw is None:
             raise ValueError(f"pipeline={normalized_pipeline} is not mapped to any toolset")
         if isinstance(raw, str):
-            toolset_id = str(raw).strip()
+            chain = [raw]
+        elif isinstance(raw, (list, tuple)):
+            chain = list(raw)
+        else:
+            raise ValueError(f"pipeline={normalized_pipeline} has invalid toolset mapping type={type(raw).__name__}")
+
+        normalized_chain: list[str] = []
+        for index, item in enumerate(chain, start=1):
+            toolset_id = str(item).strip()
             if not toolset_id:
-                raise ValueError(f"pipeline={normalized_pipeline} is not mapped to any toolset")
-            return [toolset_id]
-        chain = [str(item).strip() for item in raw if str(item).strip()]
-        if not chain:
-            raise ValueError(f"pipeline={normalized_pipeline} is not mapped to any toolset")
-        return chain
+                raise ValueError(f"pipeline={normalized_pipeline} has empty toolset_id at index={index}")
+            if toolset_id not in self.toolsets:
+                raise ValueError(f"pipeline={normalized_pipeline} references missing toolset_id={toolset_id}")
+            normalized_chain.append(toolset_id)
+        if not normalized_chain:
+            raise ValueError(f"pipeline={normalized_pipeline} has empty toolset chain")
+        if len(normalized_chain) != len(chain):
+            raise ValueError(f"pipeline={normalized_pipeline} contains invalid empty toolset_id entries")
+        return normalized_chain
+
+    def validate_references(self) -> None:
+        for pipeline, chain in self.pipelines.items():
+            if not chain:
+                raise ValueError(f"pipeline={pipeline} has empty toolset chain")
+            for index, toolset_id in enumerate(chain, start=1):
+                normalized_toolset_id = str(toolset_id).strip()
+                if not normalized_toolset_id:
+                    raise ValueError(f"pipeline={pipeline} has empty toolset_id at index={index}")
+                if normalized_toolset_id not in self.toolsets:
+                    raise ValueError(f"pipeline={pipeline} references missing toolset_id={normalized_toolset_id}")
+                if normalized_toolset_id != toolset_id:
+                    raise ValueError(
+                        f"pipeline={pipeline} has non-normalized toolset_id at index={index}: {toolset_id!r}"
+                    )
 
     def get_toolset(self, toolset_id: str) -> ToolsetDefinition:
         normalized_id = str(toolset_id).strip()
@@ -120,12 +146,30 @@ def _parse_toolset_config(payload: Any) -> ToolsetConfig:
     for raw_pipeline, raw_toolset_id in pipelines_raw.items():
         pipeline = normalize_pipeline_key(str(raw_pipeline))
         if isinstance(raw_toolset_id, list):
-            toolset_chain = [str(item).strip() for item in raw_toolset_id if str(item).strip()]
+            toolset_chain: list[str] = []
+            for index, item in enumerate(raw_toolset_id, start=1):
+                if not isinstance(item, str):
+                    raise ValueError(
+                        f"pipeline={pipeline} has invalid toolset_id type at index={index}: {type(item).__name__}"
+                    )
+                normalized_item = item.strip()
+                if not normalized_item:
+                    raise ValueError(f"pipeline={pipeline} has empty toolset_id at index={index}")
+                toolset_chain.append(normalized_item)
+        elif isinstance(raw_toolset_id, str):
+            single = raw_toolset_id.strip()
+            if not single:
+                raise ValueError(f"pipeline={pipeline} has empty toolset chain")
+            toolset_chain = [single]
         else:
-            single = str(raw_toolset_id or "").strip()
-            toolset_chain = [single] if single else []
+            if raw_toolset_id is None:
+                raise ValueError(f"pipeline={pipeline} has empty toolset chain")
+            raise ValueError(
+                f"pipeline={pipeline} has invalid toolset mapping type={type(raw_toolset_id).__name__}: "
+                "expected string or list[string]"
+            )
         if not toolset_chain:
-            raise ValueError(f"toolset mapping is empty for pipeline={pipeline}")
+            raise ValueError(f"pipeline={pipeline} has empty toolset chain")
         pipelines[pipeline] = tuple(toolset_chain)
 
     toolsets: dict[str, ToolsetDefinition] = {}
@@ -144,7 +188,9 @@ def _parse_toolset_config(payload: Any) -> ToolsetConfig:
             providers.append(_parse_provider(provider_raw, toolset_id=toolset_id, provider_index=index))
         toolsets[toolset_id] = ToolsetDefinition(toolset_id=toolset_id, providers=tuple(providers))
 
-    return ToolsetConfig(pipelines=pipelines, toolsets=toolsets)
+    config = ToolsetConfig(pipelines=pipelines, toolsets=toolsets)
+    config.validate_references()
+    return config
 
 
 def _parse_provider(payload: Any, *, toolset_id: str, provider_index: int) -> ProviderConfig:

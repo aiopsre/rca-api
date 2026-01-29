@@ -27,7 +27,7 @@ class ToolsetChainConfigTest(unittest.TestCase):
         config = load_toolset_config(
             {
                 "pipelines": {
-                    "basic_rca": ["ts_a", "", "ts_b"],
+                    "basic_rca": ["ts_a", "ts_b"],
                 },
                 "toolsets": {
                     "ts_a": {
@@ -45,6 +45,40 @@ class ToolsetChainConfigTest(unittest.TestCase):
         )
         self.assertEqual(config.get_toolset_chain("basic_rca"), ["ts_a", "ts_b"])
         self.assertEqual(config.resolve_toolset_id("basic_rca"), "ts_a")
+
+    def test_missing_toolset_id_fail_fast(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pipeline=basic_rca references missing toolset_id=ts_missing"):
+            load_toolset_config(
+                {
+                    "pipelines": {
+                        "basic_rca": ["ts_a", "ts_missing"],
+                    },
+                    "toolsets": {
+                        "ts_a": {
+                            "providers": [
+                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                            ]
+                        },
+                    },
+                }
+            )
+
+    def test_empty_chain_fail_fast(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pipeline=basic_rca has empty toolset chain"):
+            load_toolset_config(
+                {
+                    "pipelines": {
+                        "basic_rca": [],
+                    },
+                    "toolsets": {
+                        "ts_a": {
+                            "providers": [
+                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                            ]
+                        },
+                    },
+                }
+            )
 
 
 class ToolInvokerChainRoutingTest(unittest.TestCase):
@@ -269,6 +303,106 @@ class RunnerChainObservationTest(unittest.TestCase):
         self.assertEqual(observed["response"]["toolsets"], ["ts_a", "ts_b"])
         self.assertEqual(observed["response"]["source"], "local_override")
 
+    def test_runner_missing_toolset_id_fail_fast_before_graph(self) -> None:
+        self._assert_runner_fail_fast(
+            toolset_config_json=json.dumps(
+                {
+                    "pipelines": {"basic_rca": ["ts_a", "ts_missing"]},
+                    "toolsets": {
+                        "ts_a": {
+                            "providers": [
+                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                            ]
+                        },
+                    },
+                }
+            ),
+            expected_error="pipeline=basic_rca references missing toolset_id=ts_missing",
+        )
+
+    def test_runner_empty_chain_fail_fast_before_graph(self) -> None:
+        self._assert_runner_fail_fast(
+            toolset_config_json=json.dumps(
+                {
+                    "pipelines": {"basic_rca": []},
+                    "toolsets": {
+                        "ts_a": {
+                            "providers": [
+                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                            ]
+                        },
+                    },
+                }
+            ),
+            expected_error="pipeline=basic_rca has empty toolset chain",
+        )
+
+    def _assert_runner_fail_fast(self, *, toolset_config_json: str, expected_error: str) -> None:
+        graph_invoked = {"count": 0}
+
+        class _FakeClient:
+            @staticmethod
+            def get_job(job_id: str) -> dict[str, str]:
+                return {"jobID": job_id, "incidentID": "inc-j-runner-fail", "pipeline": "basic_rca"}
+
+        class _FakeRuntime:
+            instances: list["_FakeRuntime"] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                self.finalize_calls: list[dict[str, object]] = []
+                self.shutdown_calls = 0
+                _FakeRuntime.instances.append(self)
+
+            @staticmethod
+            def start() -> bool:
+                return True
+
+            def finalize(
+                self,
+                *,
+                status: str,
+                diagnosis_json: dict[str, object] | None,
+                error_message: str | None = None,
+                evidence_ids: list[str] | None = None,
+            ) -> None:
+                self.finalize_calls.append(
+                    {
+                        "status": status,
+                        "diagnosis_json": diagnosis_json,
+                        "error_message": error_message,
+                        "evidence_ids": evidence_ids or [],
+                    }
+                )
+
+            def shutdown(self) -> None:
+                self.shutdown_calls += 1
+
+        class _UnexpectedGraph:
+            def invoke(self, _state: object) -> dict[str, object]:
+                graph_invoked["count"] += 1
+                return {"job_id": "job-unexpected", "started": True}
+
+        def _unexpected_builder(*_: object) -> _UnexpectedGraph:
+            return _UnexpectedGraph()
+
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+            runner_module, "OrchestratorRuntime", _FakeRuntime
+        ), mock.patch.object(runner_module, "get_template_builder", return_value=_unexpected_builder):
+            runner_module._invoke_graph(
+                self._settings(toolset_config_json),
+                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                "job-j-runner-fail",
+                debug=False,
+            )
+
+        runtime = _FakeRuntime.instances[-1]
+        self.assertEqual(graph_invoked["count"], 0)
+        self.assertEqual(runtime.shutdown_calls, 1)
+        self.assertEqual(len(runtime.finalize_calls), 1)
+        self.assertEqual(runtime.finalize_calls[0]["status"], "failed")
+        self.assertIn("toolset_selection_failed:", str(runtime.finalize_calls[0]["error_message"]))
+        self.assertIn(expected_error, str(runtime.finalize_calls[0]["error_message"]))
+
 
 class RuntimeChainObservationTest(unittest.TestCase):
     def test_runtime_tool_invoke_observation_contains_resolved_from_toolset_id(self) -> None:
@@ -353,6 +487,8 @@ class RuntimeChainObservationTest(unittest.TestCase):
         call = client.tool_calls[0]
         self.assertEqual(call["tool_name"], "tool.invoke")
         self.assertEqual(call["response_json"]["resolved_from_toolset_id"], "ts_2")
+        self.assertEqual(call["response_json"]["toolset_chain"], ["ts_1", "ts_2"])
+        self.assertEqual(call["response_json"]["route_policy"], "first_match")
 
 
 if __name__ == "__main__":

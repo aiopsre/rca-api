@@ -523,3 +523,68 @@
 
 **验收**
 - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+
+---
+
+## Phase J+：Toolset Chain Hardening（仅 orchestrator）
+
+### J+1：配置校验与错误信息增强
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
+  - 在 `get_toolset_chain(...)` 或解析阶段增加校验：
+    - chain 不能为空
+    - 元素必须为非空字符串（trim 后）
+    - 引用的 toolset_id 必须存在于 `toolsets` 字典
+  - 报错信息需包含：pipeline、toolset_id、available_toolsets（可选简化为 count）
+
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - local override 分支在 build invoker chain 前显式调用校验（若 toolset_config 已做则只捕获异常并包装 error_message）
+
+**验收**
+- bad config 会在 graph build/invoke 前 fail-fast（保持既有语义）
+- finalize 的 error_message 包含定位信息（pipeline + missing id）
+
+---
+
+### J+2：观测增强（tool.invoke 增加 toolset_chain / route_policy）
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+  - 在 `call_tool` 的 tool.invoke 观测 response_json 加字段：
+    - `toolset_chain`：来自 runtime 持有的 `toolsets`（由 runner 注入）
+    - `route_policy="first_match"`
+
+> 注意：不新增额外 toolcall；只是在现有 tool.invoke 观测里补字段。
+
+**验收**
+- tool.invoke 的观测能单条复盘链路
+
+---
+
+### J+3：chain 路由 debug 日志与最终 deny 摘要
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
+  - `ToolInvokerChain.call(...)`：
+    - 捕获 allow_tools_denied 时记录 debug 日志：tool、toolset_id、provider_count
+    - 最终 deny 时抛 `ToolInvokeError`，message 包含 tool 与 chain 摘要（但注意长度控制）
+
+**验收**
+- 多级尝试过程可通过日志定位
+- 最终 deny 的错误信息可用于用户/运维排查
+
+---
+
+### J+4：新增单测（负例与观测字段）
+
+**新增/改动文件**
+- `tools/ai-orchestrator/tests/test_toolset_chain_phasej.py`（追加用例）
+  - `test_config_chain_missing_toolset_id_fail_fast`
+  - `test_config_chain_empty_fail_fast`
+  - `test_invoker_chain_logs_and_raises_with_chain_summary_on_final_deny`
+  - `test_runtime_tool_invoke_observation_includes_toolset_chain`
+
+**验收**
+- 全量单测通过：
+  - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`

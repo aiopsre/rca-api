@@ -158,6 +158,19 @@ class OrchestratorRuntime:
         if self._log_func is not None:
             self._log_func(message)
 
+    def _current_toolset_chain(self) -> list[str]:
+        if self._tool_invoker is None:
+            return []
+        if hasattr(self._tool_invoker, "toolset_ids"):
+            raw = getattr(self._tool_invoker, "toolset_ids")
+            if isinstance(raw, list):
+                return [str(item).strip() for item in raw if str(item).strip()]
+        if hasattr(self._tool_invoker, "toolset_id"):
+            raw_single = str(getattr(self._tool_invoker, "toolset_id") or "").strip()
+            if raw_single:
+                return [raw_single]
+        return []
+
     def report_observation(
         self,
         *,
@@ -241,6 +254,7 @@ class OrchestratorRuntime:
         provider_id = ""
         provider_type = ""
         resolved_from_toolset_id = ""
+        toolset_chain = self._current_toolset_chain()
         normalized_params = params if isinstance(params, dict) else {}
 
         self._log(
@@ -286,6 +300,8 @@ class OrchestratorRuntime:
                 "provider_id": provider_id or "rca_api_mcp",
                 "provider_type": provider_type or "mcp_api",
                 "resolved_from_toolset_id": resolved_from_toolset_id,
+                "toolset_chain": toolset_chain,
+                "route_policy": "first_match",
                 "result_summary": _summarize_tool_result(tool_result),
             }
             self._report_observation_best_effort(
@@ -322,6 +338,8 @@ class OrchestratorRuntime:
                     "provider_id": provider_id,
                     "provider_type": provider_type,
                     "resolved_from_toolset_id": resolved_from_toolset_id,
+                    "toolset_chain": toolset_chain,
+                    "route_policy": "first_match",
                     "error_category": category,
                     "retryable": bool(exc.retryable),
                     "error": _trim_text(exc),
@@ -349,6 +367,8 @@ class OrchestratorRuntime:
                     "provider_id": provider_id,
                     "provider_type": provider_type,
                     "resolved_from_toolset_id": resolved_from_toolset_id,
+                    "toolset_chain": toolset_chain,
+                    "route_policy": "first_match",
                     "error_category": category,
                     "error": _trim_text(exc),
                 },
