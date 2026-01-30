@@ -23,8 +23,15 @@ def normalize_pipeline(pipeline: str | None) -> str:
     return normalized
 
 
-def get_template_builder(pipeline: str | None) -> TemplateBuilder:
-    normalized = normalize_pipeline(pipeline)
+def normalize_template_id(template_id: str | None) -> str:
+    normalized = str(template_id or "").strip().lower()
+    if not normalized:
+        return "basic_rca"
+    return normalized
+
+
+def get_template_builder(template_id: str | None) -> TemplateBuilder:
+    normalized = normalize_template_id(template_id)
     if normalized == "basic_rca":
         return build_basic_rca_graph
     raise UnknownPipelineError(normalized)

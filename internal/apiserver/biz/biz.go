@@ -10,6 +10,7 @@ import (
 	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
+	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
 	orchestratortemplatev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_template"
 	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
@@ -30,6 +31,7 @@ type IBiz interface {
 	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
+	OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz
 	OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz
 	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
 	SilenceV1() silencev1.SilenceBiz
@@ -51,6 +53,8 @@ type biz struct {
 	evidenceBiz              evidencev1.EvidenceBiz
 	aiJobOnce                sync.Once
 	aiJobBiz                 aijobv1.AIJobBiz
+	orchestratorStrategyOnce sync.Once
+	orchestratorStrategyBiz  orchestratorstrategyv1.StrategyBiz
 	orchestratorTemplateOnce sync.Once
 	orchestratorTemplateBiz  orchestratortemplatev1.TemplateBiz
 	orchestratorToolsetOnce  sync.Once
@@ -107,6 +111,13 @@ func (b *biz) AIJobV1() aijobv1.AIJobBiz {
 	return b.aiJobBiz
 }
 
+func (b *biz) OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz {
+	b.orchestratorStrategyOnce.Do(func() {
+		b.orchestratorStrategyBiz = orchestratorstrategyv1.New()
+	})
+	return b.orchestratorStrategyBiz
+}
+
 func (b *biz) OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz {
 	b.orchestratorTemplateOnce.Do(func() {
 		b.orchestratorTemplateBiz = orchestratortemplatev1.New()
@@ -146,6 +157,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.datasourceBiz)
 		errs = appendCloseIfSupported(errs, b.evidenceBiz)
 		errs = appendCloseIfSupported(errs, b.aiJobBiz)
+		errs = appendCloseIfSupported(errs, b.orchestratorStrategyBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorTemplateBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)
 		errs = appendCloseIfSupported(errs, b.silenceBiz)

@@ -930,3 +930,154 @@
 **回归**
 - `go test ./...`
 - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`
+
+
+---
+
+## Phase L1：组合策略 Resolve（pipeline -> template_id + toolsets[]）
+
+### L1-1：新增 proto / swagger
+
+**新增文件**
+- `pkg/api/apiserver/v1/orchestrator_strategy.proto`
+
+**定义建议**
+- `OrchestratorStrategy`
+  - `pipeline`
+  - `templateID`
+  - `repeated OrchestratorToolset toolsets`
+- `ResolveOrchestratorStrategyRequest`
+  - `pipeline`
+- `ResolveOrchestratorStrategyResponse`
+  - `strategy`
+
+**生成文件**
+- `pkg/api/apiserver/v1/orchestrator_strategy.pb.go`
+- `pkg/api/apiserver/v1/orchestrator_strategy.pb.defaults.go`
+- `api/openapi/apiserver/v1/orchestrator_strategy.swagger.json`
+
+**验收**
+- `make protoc` 后编译通过
+
+---
+
+### L1-2：server config 支持 pipeline -> {template_id, toolsets[]}
+
+**新增文件**
+- `internal/apiserver/pkg/orchestratorcfg/strategy_config.go`
+
+**实现内容**
+- 读取 env：
+  - `RCA_STRATEGY_CONFIG_JSON`
+  - `RCA_STRATEGY_CONFIG_PATH`
+- schema：
+  - `pipelines: { "<pipeline>": { "template_id": "...", "toolsets": ["..."] } }`
+  - `toolsets: { "<toolset_id>": { "providers": [...] } }`
+- 新增：
+  - `NormalizePipeline(...)`
+  - `ResolveStrategy(pipeline string) (*v1.OrchestratorStrategy, error)`
+- 规则：
+  - pipeline normalize 后查配置
+  - template_id 必填
+  - toolsets chain 非空
+  - 每个 toolset_id 必须存在
+
+**验收**
+- 旧的 toolset_config.go 不删除（Phase K API 仍保留）
+- 新 config 对策略独立生效
+
+---
+
+### L1-3：strategy resolve 时校验 template_id 已注册
+
+**依赖**
+- Phase L0 Redis template registry：
+  - `internal/apiserver/pkg/orchestratorregistry/template_registry.go`
+
+**实现要求**
+- `ResolveStrategy(...)` 或 biz 层在返回前校验：
+  - `template_id` 必须出现在 template registry list 中
+- 若 template 未注册：
+  - 返回稳定 errno（建议新增 `ErrOrchestratorStrategyTemplateNotRegistered`）
+
+**新增文件**
+- `internal/pkg/errno/orchestrator_strategy.go`
+
+**验收**
+- template_id 未注册时，resolve 返回 404/409（按你们 errno 风格定一种）
+
+---
+
+### L1-4：新增 biz + handler
+
+**新增文件**
+- `internal/apiserver/biz/v1/orchestrator_strategy/strategy.go`
+- `internal/apiserver/handler/orchestrator_strategy.go`
+- `internal/apiserver/pkg/validation/orchestrator_strategy.go`
+
+**改动文件**
+- `internal/apiserver/biz/biz.go`
+  - 新增 `IBiz.OrchestratorStrategyV1()`
+  - `biz` 增加 once + field
+
+**路由**
+- `GET /v1/orchestrator/strategies/resolve`
+
+**权限**
+- 建议复用 `ai.read`
+
+**验收**
+- handler 单测覆盖：
+  - resolve success
+  - pipeline missing mapping
+  - template not registered
+  - invalid config
+
+---
+
+### L1-5：orchestrator runner 改为先 resolve strategy，再选 template + toolsets chain
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+  - 新增 `resolve_strategy(pipeline: str) -> dict`
+- `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
+  - `get_template_builder(...)` 改为以 `template_id` 为 key
+  - 新增/保留：
+    - `list_template_ids()`
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 新增 `_resolve_strategy_via_server(...)`
+  - `_invoke_graph(...)` 流程改为：
+    1) get_job -> pipeline
+    2) local override 若存在：仍只覆盖 toolsets，不覆盖 template（建议本 Phase 保持 template 来自 server）
+    3) resolve strategy -> template_id + toolsets[]
+    4) `get_template_builder(template_id)`
+    5) build invoker chain
+    6) 观测中补充 `template_id`
+- 观测：
+  - `toolset.select` response_json 增加 `template_id`
+
+**验收**
+- server resolve 成功时，runner 不再直接用 pipeline 选模板
+- template_id 不存在本地 registry 时 fail-fast finalize failed
+
+---
+
+### L1-6：测试
+
+**新增/改动文件**
+- Go：
+  - `internal/apiserver/handler/orchestrator_strategy_test.go`
+- Python：
+  - `tools/ai-orchestrator/tests/test_strategy_resolve_phasel1.py`
+
+**Python 用例建议**
+1. server 返回 `{template_id, toolsets[]}` 时：
+   - runner 用 template_id 选 builder
+   - invoker chain 可命中第二个 toolset
+2. template_id 未注册 / 本地不存在时：
+   - fail-fast finalize before graph
+3. `toolset.select` 观测包含 `template_id`
+
+**回归**
+- `go test ./...`
+- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`

@@ -272,6 +272,20 @@ class RCAApiClient:
             raise RuntimeError("invalid resolve_toolset response")
         return data
 
+    def resolve_strategy(self, pipeline: str) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        normalized_pipeline = str(pipeline or "").strip()
+        if normalized_pipeline:
+            params["pipeline"] = normalized_pipeline
+        payload = self._request("GET", "/v1/orchestrator/strategies/resolve", params=params or None)
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid resolve_strategy response")
+        strategy = data.get("strategy", data)
+        if not isinstance(strategy, dict):
+            raise RuntimeError("invalid resolve_strategy strategy payload")
+        return strategy
+
     def register_templates(self, instance_id: str, templates: list[dict[str, Any]]) -> Dict[str, Any]:
         normalized_instance_id = str(instance_id or "").strip()
         if not normalized_instance_id:

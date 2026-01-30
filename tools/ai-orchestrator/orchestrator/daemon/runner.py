@@ -141,29 +141,11 @@ def _select_tool_invoker_via_server(
     normalized_pipeline = normalize_pipeline(pipeline)
     toolsets_payload = resolved.get("toolsets")
     if isinstance(toolsets_payload, list) and toolsets_payload:
-        toolset_ids: list[str] = []
-        toolsets: dict[str, dict[str, Any]] = {}
-        for index, toolset_item in enumerate(toolsets_payload, start=1):
-            if not isinstance(toolset_item, dict):
-                raise RuntimeError(f"resolve_toolset payload has invalid toolsets[{index}] type")
-            toolset_id = _extract_toolset_id(toolset_item)
-            if not toolset_id:
-                raise RuntimeError(f"resolve_toolset payload missing toolset_id at toolsets[{index}]")
-            if toolset_id in toolsets:
-                raise RuntimeError(f"resolve_toolset payload duplicated toolset_id={toolset_id}")
-            providers = toolset_item.get("providers")
-            if not isinstance(providers, list) or not providers:
-                raise RuntimeError(f"resolve_toolset payload has empty providers: toolset={toolset_id}")
-            toolset_ids.append(toolset_id)
-            toolsets[toolset_id] = {"providers": providers}
-
-        config = load_toolset_config(
-            {
-                "pipelines": {normalized_pipeline: toolset_ids},
-                "toolsets": toolsets,
-            }
+        invoker, toolset_ids = _build_tool_invoker_chain_from_toolsets_payload(
+            normalized_pipeline=normalized_pipeline,
+            toolsets_payload=toolsets_payload,
+            payload_name="resolve_toolset",
         )
-        invoker = build_tool_invoker_chain(config, toolset_ids)
         return invoker, toolset_ids, "server_resolve"
 
     toolset_payload = resolved.get("toolset")
@@ -194,11 +176,89 @@ def _select_tool_invoker_via_server(
     return invoker, [toolset_id], "server_resolve"
 
 
+def _supports_strategy_resolve(client: RCAApiClient) -> bool:
+    return callable(getattr(client, "resolve_strategy", None))
+
+
+def _resolve_strategy_via_server(client: RCAApiClient, pipeline: str) -> dict[str, Any]:
+    resolved = client.resolve_strategy(pipeline)
+    if not isinstance(resolved, dict):
+        raise RuntimeError("resolve_strategy returned invalid payload")
+    strategy = resolved.get("strategy")
+    if isinstance(strategy, dict):
+        return strategy
+    return resolved
+
+
+def _build_tool_invoker_chain_from_toolsets_payload(
+    *,
+    normalized_pipeline: str,
+    toolsets_payload: list[Any],
+    payload_name: str,
+) -> tuple[ToolInvokerChain, list[str]]:
+    toolset_ids: list[str] = []
+    toolsets: dict[str, dict[str, Any]] = {}
+    for index, toolset_item in enumerate(toolsets_payload, start=1):
+        if not isinstance(toolset_item, dict):
+            raise RuntimeError(f"{payload_name} payload has invalid toolsets[{index}] type")
+        toolset_id = _extract_toolset_id(toolset_item)
+        if not toolset_id:
+            raise RuntimeError(f"{payload_name} payload missing toolset_id at toolsets[{index}]")
+        if toolset_id in toolsets:
+            raise RuntimeError(f"{payload_name} payload duplicated toolset_id={toolset_id}")
+        providers = toolset_item.get("providers")
+        if not isinstance(providers, list) or not providers:
+            raise RuntimeError(f"{payload_name} payload has empty providers: toolset={toolset_id}")
+        toolset_ids.append(toolset_id)
+        toolsets[toolset_id] = {"providers": providers}
+
+    config = load_toolset_config(
+        {
+            "pipelines": {normalized_pipeline: toolset_ids},
+            "toolsets": toolsets,
+        }
+    )
+    invoker = build_tool_invoker_chain(config, toolset_ids)
+    return invoker, toolset_ids
+
+
+def _extract_template_id(strategy_payload: dict[str, Any]) -> str:
+    for key in ("templateID", "templateId", "template_id"):
+        value = str(strategy_payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _build_tool_invoker_from_strategy(
+    settings: Settings,
+    client: RCAApiClient,
+    *,
+    pipeline: str,
+    strategy_payload: dict[str, Any],
+) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
+    # Keep local override semantics from Phase H/J for toolsets only.
+    if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
+        return _select_tool_invoker(settings, client, pipeline)
+
+    normalized_pipeline = normalize_pipeline(pipeline)
+    toolsets_payload = strategy_payload.get("toolsets")
+    if not isinstance(toolsets_payload, list) or not toolsets_payload:
+        raise RuntimeError("resolve_strategy payload missing non-empty toolsets")
+    invoker, toolset_ids = _build_tool_invoker_chain_from_toolsets_payload(
+        normalized_pipeline=normalized_pipeline,
+        toolsets_payload=toolsets_payload,
+        payload_name="resolve_strategy",
+    )
+    return invoker, toolset_ids, "strategy_resolve"
+
+
 def _report_toolset_selection_observation(
     *,
     runtime: OrchestratorRuntime,
     job_id: str,
     pipeline: str,
+    template_id: str,
     template_builder: Any,
     toolsets: list[str],
     toolset_source: str,
@@ -230,6 +290,7 @@ def _report_toolset_selection_observation(
             },
             response={
                 "status": "ok",
+                "template_id": str(template_id).strip(),
                 "toolsets": [str(item).strip() for item in toolsets if str(item).strip()],
                 "source": str(toolset_source).strip(),
                 "providers": providers,
@@ -297,6 +358,7 @@ def _register_templates_if_due(
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
     selected_pipeline = ""
+    selected_template_id = ""
     template_builder = None
     tool_invoker = None
     selected_toolsets: list[str] = []
@@ -306,29 +368,45 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     try:
         prefetched_job = client.get_job(job_id)
         selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
-        template_builder = get_template_builder(selected_pipeline)
-    except UnknownPipelineError as exc:
-        _log(
-            f"job={job_id} template selection failed: "
-            f"pipeline={selected_pipeline or '<empty>'} error={exc}"
-        )
-        selection_error_message = str(exc)
-    except Exception as exc:  # noqa: BLE001
-        _log(f"job={job_id} prefetch job for template selection failed: {exc}")
-        selection_error_message = f"template_selection_prefetch_failed: {exc}"
-
-    if not selection_error_message:
-        try:
+        if _supports_strategy_resolve(client):
+            strategy_payload = _resolve_strategy_via_server(client, selected_pipeline)
+            selected_template_id = _extract_template_id(strategy_payload)
+            if not selected_template_id:
+                raise RuntimeError("resolve_strategy payload missing template_id")
+            template_builder = get_template_builder(selected_template_id)
+            tool_invoker, selected_toolsets, selected_toolset_source = _build_tool_invoker_from_strategy(
+                settings,
+                client,
+                pipeline=selected_pipeline,
+                strategy_payload=strategy_payload,
+            )
+        else:
+            selected_template_id = normalize_pipeline(selected_pipeline)
+            template_builder = get_template_builder(selected_template_id)
             tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
                 settings, client, selected_pipeline
             )
-        except Exception as exc:  # noqa: BLE001
+    except UnknownPipelineError as exc:
+        _log(
+            f"job={job_id} template selection failed: "
+            f"pipeline={selected_pipeline or '<empty>'} template_id={selected_template_id or '<empty>'} error={exc}"
+        )
+        selection_error_message = f"template_selection_failed: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        if selected_pipeline:
             _log(
                 "job="
-                f"{job_id} toolset selection failed: pipeline={normalize_pipeline(selected_pipeline)} "
-                f"toolsets={selected_toolsets or ['<empty>']} error={exc}"
+                f"{job_id} strategy/toolset selection failed: pipeline={normalize_pipeline(selected_pipeline)} "
+                f"template_id={selected_template_id or '<empty>'} toolsets={selected_toolsets or ['<empty>']} "
+                f"error={exc}"
             )
-            selection_error_message = f"toolset_selection_failed: {exc}"
+            if _supports_strategy_resolve(client):
+                selection_error_message = f"strategy_selection_failed: {exc}"
+            else:
+                selection_error_message = f"toolset_selection_failed: {exc}"
+        else:
+            _log(f"job={job_id} prefetch job for strategy/template selection failed: {exc}")
+            selection_error_message = f"template_selection_prefetch_failed: {exc}"
 
     runtime = OrchestratorRuntime(
         client=client,
@@ -378,6 +456,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         runtime=runtime,
         job_id=job_id,
         pipeline=selected_pipeline,
+        template_id=selected_template_id,
         template_builder=template_builder,
         toolsets=selected_toolsets,
         toolset_source=selected_toolset_source,
@@ -388,6 +467,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         selected_toolsets_text = ",".join(selected_toolsets) if selected_toolsets else "<none>"
         _log(
             f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
+            f"template_id={selected_template_id or '<empty>'} "
             f"template={template_builder.__name__} toolsets={selected_toolsets_text}"
         )
 
