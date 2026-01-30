@@ -1,1083 +1,394 @@
-# Refactor Plan：模块化 Daemon 与 LangGraph（不改行为）
+# RCA Orchestrator Branch Closeout Plan
+
+本文件用于**收口当前分支**，不再继续扩展架构能力，而是将已经完成的控制面与执行面能力稳定下来，完成最终验证、文档整理与交接。
+
+本分支以 **Phase L1** 为截止点。
 
 ---
 
-## Phase R1：引入 langgraph/ 目录并迁移纯配置与纯 helper
-**新增文件**
-- `tools/ai-orchestrator/orchestrator/langgraph/__init__.py`
-- `tools/ai-orchestrator/orchestrator/langgraph/config.py`
-- `tools/ai-orchestrator/orchestrator/langgraph/helpers.py`
+# 一、分支目标
 
-**迁移内容（从 graph.py）**
-- `class OrchestratorConfig`
-- `_extract_incident_id/_extract_input_hints/_resolve_force_switches/_resolve_a3_budget/...`
-- `_query_result_* / _ordered_unique_strings / _append_evidence` 等不依赖 LangGraph builder 的 helper
+本分支已经完成从“单模板 + 单 toolset”向“平台声明策略、orchestrator 执行模板与 toolset chain”的演进。
 
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/graph.py`（更新引用）
-- `tools/ai-orchestrator/orchestrator/main.py`（如有直接引用 OrchestratorConfig）
+当前最终目标不是继续增加功能，而是确保以下能力稳定可用：
 
-**验收**
-- import 无循环
-- 运行 `python3 -m unittest ...` 全绿
-
----
-
-## Phase R2：迁移 reporting + quality_gate + diagnosis
-**新增文件**
-- `orchestrator/langgraph/reporting.py`（迁移 `_report_node_action`）
-- `orchestrator/langgraph/quality_gate.py`（迁移质量门槛相关函数）
-- `orchestrator/langgraph/diagnosis.py`（迁移 diagnosis 构造相关函数）
-
-**改动**
-- `graph.py` 中节点代码改为从这些模块 import 对应函数
-
-**验收**
-- `test_runtime_sdk.py`、`test_graph_phasee.py` 全绿
+1. `AIJob.pipeline` 作为唯一触发信号；
+2. `rca-api` 作为控制面，负责：
+   - template registry
+   - strategy resolve
+   - toolsets resolve（兼容旧路径）
+3. `orchestrator` 作为执行面，负责：
+   - template builder 选择
+   - ToolInvoker / ToolInvokerChain
+   - LangGraph 执行
+   - runtime / lease / seq / toolcall / finalize
+4. Redis 作为 template registry 的强依赖；
+5. E2E 链路可运行，可观测，可 fail-fast。
 
 ---
 
-## Phase R3：迁移 guard + nodes（保留 query entry 归一化）
-**新增文件**
-- `orchestrator/langgraph/guard.py`（迁移 `_guard`、`_is_finalize_succeeded` 等）
-- `orchestrator/langgraph/nodes.py`（迁移所有节点函数）
-  - 必须保留你们 patch 中的：
-    - query 节点走 `_guard`
-    - `_query_metrics_entry/_query_logs_entry` 将 guard 短路返回归一为 dict patch（避免 fan-out 冲突）
+# 二、最终执行架构
 
-**改动**
-- `graph.py` 变薄：只 re-export `OrchestratorConfig/build_graph`
+完整执行链路如下：
 
-**验收**
-- 重点跑：`tests/test_graph_phasee.py::test_phasee_lease_lost_skips_query_nodes_and_no_toolcall_write`
-- 全测试通过
+```text
+AIJob.pipeline
+        ↓
+rca-api /v1/orchestrator/strategies/resolve
+        ↓
+template_id + toolsets[]
+        ↓
+orchestrator:
+  get_template_builder(template_id)
+  + ToolInvokerChain(toolsets[])
+        ↓
+LangGraph execution
+        ↓
+tool.invoke / finalize / notice / KB
+```
 
----
+关键边界：
 
-## Phase R4：迁移 build_graph 到 builder.py
-**新增文件**
-- `orchestrator/langgraph/builder.py`（迁移 `build_graph(...)`）
-  - 只负责 add_node/add_edge/compile
-  - 节点函数从 `langgraph.nodes` 引用
-  - guard 从 `langgraph.guard` 引用
-
-**改动**
-- `orchestrator/graph.py`：
-  - `from orchestrator.langgraph.config import OrchestratorConfig`
-  - `from orchestrator.langgraph.builder import build_graph`
-
-**验收**
-- 代码结构完成：graph.py 不再包含节点逻辑
-- tests 全绿
+- **pipeline**：仍为 string key，不资源化；
+- **template 定义**：只存在于 orchestrator 代码；
+- **template_id 注册**：由 orchestrator 上报到 rca-api；
+- **strategy 声明**：由 rca-api 配置并 resolve 下发；
+- **toolsets 执行**：始终由 orchestrator 执行，不在 rca-api 执行 tools。
 
 ---
 
-## Phase R5：daemon 模块化（settings + runner）
-**新增文件**
-- `orchestrator/daemon/__init__.py`
-- `orchestrator/daemon/settings.py`（迁移 Settings/load_settings/_env_*）
-- `orchestrator/daemon/runner.py`（迁移 `_invoke_graph`）
-- （可选）`orchestrator/daemon/health.py`（迁移 detect/parse）
-
-**改动**
-- `orchestrator/main.py` 变薄：只保留 `main()`，调用 `load_settings()` 与 `runner.run_once/run_forever`
-
-**验收**
-- `python3 -m orchestrator.main` 能启动（基本 smoke）
-- tests 全绿
-
-
----
-
-## Phase F：多模板 registry（Pipeline-only 选择）
-
-### F1：新增 templates 目录与 basic_rca 模板 builder
-**新增文件**
-- `tools/ai-orchestrator/orchestrator/langgraph/templates/__init__.py`
-- `tools/ai-orchestrator/orchestrator/langgraph/templates/basic_rca.py`
-
-**实现内容**
-- 在 `basic_rca.py` 中提供：
-  - `build_basic_rca_graph(runtime: OrchestratorRuntime, cfg: OrchestratorConfig)`
-- 其内部应复用现有 wiring（可直接从当前 `langgraph/builder.py:build_graph` 迁移或包装调用）
-- 保持 query guard patch 语义不变（query entry 归一化仍生效）
-
-**验收**
-- basic_rca 模板运行行为不变（回归现有 tests）
-
----
-
-### F2：新增 registry（pipeline -> builder）
-**新增文件**
-- `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
-
-**实现内容**
-- 定义：
-  - `class UnknownPipelineError(Exception)`
-  - `get_template_builder(pipeline: str) -> Callable[[OrchestratorRuntime, OrchestratorConfig], Any]`
-- registry 至少包含：
-  - `"basic_rca" -> build_basic_rca_graph`
-- pipeline 规范化：
-  - `pipeline = (pipeline or "").strip().lower()`
-  - 空值按 `"basic_rca"` 处理（匹配 server 默认语义）
-
-**验收**
-- unknown pipeline 抛 `UnknownPipelineError`
-
----
-
-### F3：daemon 按 job.pipeline 选择模板（只看 pipeline）
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-
-**实现内容**
-- 在 `_invoke_graph(...)` 中，在 build graph 前读取 job：
-  - `job = runtime.get_job(job_id)`
-  - 从 job 中解析 `pipeline` 字段（需要兼容可能的 `pipeline`/`Pipeline`/`data.pipeline` 包裹；你们 SDK 已做过 envelope 兼容解析）
-- 选择模板：
-  - `builder = get_template_builder(pipeline)`
-  - `compiled_graph = builder(runtime, graph_cfg)`
-- unknown pipeline 处理（本期 fail-fast）：
-  - 记录日志（包含 job_id + pipeline）
-  - 将 `state.last_error` 设置为明确错误，并调用 `runtime.finalize(status="failed", ...)` 或按现有失败路径终止（需与现有 finalize 语义一致）
-
-**验收**
-- pipeline=basic_rca 正常执行
-- pipeline=unknown 不执行 query/save 等节点
-
----
-
-### F4：测试补充
-**新增/改动文件**
-- `tools/ai-orchestrator/tests/test_graph_template_registry.py`（推荐新增）
-  或在已有 `tests/test_graph_phasee.py` 扩展
-
-**测试用例**
-1) `test_pipeline_basic_rca_selects_basic_builder`
-- fake runtime.get_job 返回 pipeline=basic_rca
-- 断言 runner 选择 basic builder（可通过 monkeypatch registry 的 builder spy）
-
-2) `test_pipeline_unknown_fail_fast`
-- fake runtime.get_job 返回 pipeline=unknown
-- 断言：
-  - 未调用 build_basic_rca_graph
-  - 未调用 runtime.query_metrics/query_logs
-  - 产生明确错误（state.last_error / 日志 / finalize failed）
-
-**验收**
-- `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
-
----
-
-## Phase G：Toolset Registry（Multi MCP Servers + Skills，pipeline-only）
-
-> 目标：将 “工具执行面” 从 `RCAApiClient.mcp_client` 解耦出来，允许 orchestrator 侧自由接入多个 MCP Server 与 Skills，并只按 `AIJob.pipeline` 选择 toolset。
->
-> 实施状态（2026-03-05）：
-> - 已完成 G1~G4 代码落地（`tools/ai-orchestrator`）
-> - 验证 runner 已改为通过 runtime 注入的 `call_tool`
-> - pipeline/template 与 pipeline/toolset 选择均保持 fail-fast 语义
-
-### G1：新增 toolset 配置与解析（不引入新依赖）
-
-**新增文件**
-- `tools/ai-orchestrator/orchestrator/tooling/__init__.py`
-- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
-  - `ToolsetConfig` / `ProviderConfig` / `load_toolset_config_from_env(...)`
-  - 支持 env：
-    - `TOOLSET_CONFIG_PATH`
-    - `TOOLSET_CONFIG_JSON`
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/daemon/settings.py`
-  - 新增 settings 字段：
-    - `toolset_config_path: str`
-    - `toolset_config_json: str`
-  - `load_settings()` 读取上述 env（默认空）
-
-**验收**
-- 无新增第三方依赖（仅 stdlib）
-- `python3 -m unittest ...` 全绿
-
----
-
-### G2：新增 ToolInvoker + Providers（MCP HTTP / Skills）
-
-**新增文件**
-- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
-  - `class ToolInvokeError(Exception)`
-  - `class ToolInvoker`
-    - `call(tool: str, input: dict, idempotency_key: str | None) -> dict`
-    - tool allowlist 校验
-    - provider 路由（按 toolset providers 顺序或显式映射）
-- `tools/ai-orchestrator/orchestrator/tooling/providers/__init__.py`
-- `tools/ai-orchestrator/orchestrator/tooling/providers/mcp_http.py`
-  - `class MCPHttpProvider`
-    - POST `{base_url}/v1/mcp/tools/call`
-    - 复用 `mcp_client.py` 的 retryable 语义（可复制 `_is_retryable`，避免再依赖 `tool_registry.py:get_tool`）
-- `tools/ai-orchestrator/orchestrator/tooling/providers/skills.py`
-  - `class SkillsProvider`
-    - 从 `module` 动态 import，要求暴露 `call(tool, input, idempotency_key) -> dict`
-    - 默认 fail-fast（除非返回中显式标记 retryable）
-
-**验收**
-- invoker 对未知 tool / tool 不在 allowlist：fail-fast（抛稳定异常）
-- provider 对调用失败：返回可判定 retryable 的错误（供 runtime 重试执行器判断）
-
----
-
-### G3：Runtime 注入 invoker，并改造 verification runner 走 runtime.call_tool
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
-  - `OrchestratorRuntime.__init__(...)` 新增参数：`tool_invoker: ToolInvoker | None`
-  - 新增方法：
-    - `call_tool(tool: str, params: dict, idempotency_key: str | None = None) -> dict`
-      - 内部必须走 `_execute_with_retry(...)` 以保持与写操作一致的重试矩阵
-- `tools/ai-orchestrator/orchestrator/runtime/verification_runner.py`
-  - `VerificationRunner.__init__` 新增参数：
-    - `call_tool: Callable[[str, dict, str | None], dict]`
-  - `run(...)` 内将 `self._client.mcp_client.call(...)` 替换为 `call_tool(...)`
-  - 仍保留 `_normalize_tool_name` 对 `mcp.` 前缀兼容
-
-**验收**
-- verification runner 不再引用 `RCAApiClient.mcp_client`（可通过 grep/测试断言）
-- 原有 dedupe/budget/observed<=512 语义不变
-
----
-
-### G4：runner 按 pipeline 选择 toolset，并 fail-fast 缺失配置
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 在 pipeline 选模板成功后、invoke graph 前：
-    - 加载 toolset config（一次加载可缓存到进程级，避免每 job 读文件）
-    - `toolset_id = pipelines[pipeline_normalized]`（pipeline-only）
-    - 构造 invoker 并注入 `OrchestratorRuntime(...)`
-  - 缺失 pipeline->toolset 映射 / toolset 不存在：fail-fast
-    - 记录日志：`job_id/pipeline/toolset_id`
-    - `runtime.finalize(status="failed", error_message="toolset_selection_failed: ...")`
-    - 不进入 graph，不执行 query/save，不写 toolcall
-
-**新增测试**
-- `tools/ai-orchestrator/tests/test_toolset_registry_phaseg.py`
-  1) `test_pipeline_selects_toolset_and_builds_invoker`
-  2) `test_unknown_toolset_fail_fast_no_graph_invoke`
-  3) `test_verification_runner_uses_runtime_call_tool_not_client_mcp`
-
-**验收**
-- `python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
-- 行为回归：pipeline registry（unknown pipeline）fail-fast 语义保持不变
-
----
-
-## Phase H：rca-api Toolset Registry（pipeline 绑定 + 只读下发）& orchestrator 对接
-
-> 目标：rca-api 提供 toolset 配置下发（不执行 tools）；orchestrator 在未设置本地 TOOLSET_CONFIG_* 时，从 server resolve toolset。
-
-### H1：新增 protobuf（server API message）
-
-**新增文件**
-- `pkg/api/apiserver/v1/orchestrator_toolset.proto`
-  - `message OrchestratorToolsetProvider`
-  - `message OrchestratorToolset`
-  - `message ResolveToolsetRequest`（query: pipeline）
-  - `message ResolveToolsetResponse`（toolset）
-
-**改动文件**
-- 运行 `make protoc`（依据 `Makefile:protoc` 会生成 `*.pb.go` 与 defaults/tag 注入）
-
-**验收**
-- `pkg/api/apiserver/v1/orchestrator_toolset.pb.go` 生成并可编译
-
----
-
-### H2：server 侧配置读取（JSON env/path）
-
-**新增文件**
-- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
-  - `type ToolsetConfig`（与 orchestrator Phase G schema 对齐）
-  - `LoadFromEnv() (*ToolsetConfig, error)`
-  - `Resolve(pipeline string) (*OrchestratorToolset, error)`
-  - 支持 env：
-    - `RCA_TOOLSET_CONFIG_JSON`
-    - `RCA_TOOLSET_CONFIG_PATH`
-
-**验收**
-- `LoadFromEnv` 支持 JSON 直传与 file path
-- pipeline normalize 规则与 orchestrator `tooling/toolset_config.py:normalize_pipeline_key` 对齐（空值→basic_rca）
-
----
-
-### H3：新增 biz + handler：/v1/orchestrator/toolsets/resolve
-
-**新增文件**
-- `internal/apiserver/biz/v1/orchestrator_toolset/toolset.go`
-  - `type OrchestratorToolsetBiz interface{ Resolve(ctx, req) (*resp, error) }`
-  - `func New(store store.IStore) OrchestratorToolsetBiz`
-  - 内部调用 `orchestratorcfg.LoadFromEnv().Resolve(req.pipeline)`
-- `internal/apiserver/handler/orchestrator_toolset.go`
-  - `func (h *Handler) ResolveOrchestratorToolset(c *gin.Context)`
-  - `func init()` 注册路由：
-    - `rg := v1.Group("/orchestrator", mws...)`
-    - `rg.GET("/toolsets/resolve", handler.ResolveOrchestratorToolset)`
-  - auth：`authz.RequireAnyScope(c, authz.ScopeAIRead)`
-
-**改动文件**
-- `internal/apiserver/biz/biz.go`
-  - `IBiz` 增加 `OrchestratorToolsetV1()`
-  - `biz` struct 增加 once+field，并在方法里 `orchestrator_toolset.New(b.store)`
-- `internal/apiserver/pkg/validation/` 新增 `orchestrator_toolset.go`
-  - `ValidateResolveToolsetRequest(...)`（pipeline 必填或允许空但 normalize）
-- `internal/apiserver/handler/handler.go` 无需改（沿用 registrar）
-
-**验收**
-- `GET /v1/orchestrator/toolsets/resolve?pipeline=basic_rca` 返回 toolset
-- 缺失 mapping 返回 404（或业务定义的 errno）
-- 无权限返回 403（permission denied）
-
----
-
-### H4：orchestrator 对接 server resolve（无本地 config 时）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
-  - `RCAApiClient.resolve_toolset(pipeline: str) -> dict`
-    - GET `/v1/orchestrator/toolsets/resolve`，query pipeline
-    - 兼容 envelope：payload.get("data", payload)
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 在 `_select_tool_invoker` 内：
-    - 若本地 `TOOLSET_CONFIG_*` 存在：沿用 Phase G（local）
-    - 否则：调用 `client.resolve_toolset(pipeline)`，并用返回内容构造 `ToolsetConfig` / ToolsetDefinition，再 build invoker
-  - resolve 失败：沿用 fail-fast finalize（graph build/invoke 前）
-
-**新增测试**
-- server：`internal/apiserver/handler/orchestrator_toolset_test.go`
-  - 覆盖 resolve success / missing mapping / invalid config
-- orchestrator：`tools/ai-orchestrator/tests/test_toolset_registry_phaseh.py`
-  - 覆盖 “无 TOOLSET_CONFIG_* → 调 client.resolve_toolset → build invoker”
-  - 覆盖 resolve 404 → fail-fast finalize & no graph invoke
-
-**验收**
-- `go test ./...` 通过
-- `python3 -m unittest discover -s tools/ai-orchestrator/tests -p 'test_*.py' -v` 通过
-
----
-
-## Phase I：运维可观测（Toolset/Provider/Tool Invoke）
-
-> 目标：不改业务语义，仅补齐“job级 toolset 选择 + tool invoke”的可观测输出（日志 + toolcalls）。
-
-### I1：runtime 增加通用观测上报（report_observation）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
-  - 新增方法：
-    - `report_observation(tool: str, node_name: str, params: dict, response: dict, evidence_ids: list[str] | None = None)`
-      - 内部直接调用现有 `report_tool_call(...)`
-      - 必须尊重 lease-lost：若 `is_lease_lost()` 或 runtime 未 start，则仅记录日志不写 toolcall
-  - 修改 `call_tool(...)`：
-    - 在调用前/后统计 latency_ms
-    - 捕获 `ToolInvokeError` / `RCAApiError` / `Exception` 并映射 `error_category`
-    - 调用 `report_observation(tool="tool.invoke" 或 "tool.invoke_rejected", ...)`
-
-**验收**
-- call_tool 不改变返回/异常语义，仅新增观测 side-effect
-- unit tests 覆盖 latency_ms 与 error_category 字段存在
-
----
-
-### I2：runner 上报 toolset.select（pre-graph）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - toolset 选择成功后、build graph 前：
-    - 调用 `runtime.report_observation(tool="toolset.select", node_name="runner.pre_graph", ...)`
-    - 包含 pipeline/template/toolset_id/source/providers 摘要
-
-**验收**
-- toolset.select 在 graph build 前写入 toolcall（best-effort）
-- toolset selection failed 时保留原 fail-fast finalize，额外记录日志（可选尽力上报 toolcall）
-
----
-
-### I3：ToolInvoker 暴露路由决策（provider_id/type）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
-  - `ToolInvoker.call(...)` 返回时附带 meta：
-    - 方式 A：返回 `(result, meta)`（需要最小改动链路）
-    - 方式 B：result 内加入 `_meta` 字段（不污染业务字段时更好）
-  - meta 至少包含：
-    - provider_id
-    - provider_type
-
-> 选择其中一种，但要保持对 provider 返回 dict 的兼容。
-
-**验收**
-- runtime.call_tool 能拿到 provider_id/provider_type 并上报
-
----
-
-### I4：新增测试
-
-**新增/改动文件**
-- `tools/ai-orchestrator/tests/test_observability_phasei.py`（新增）
-  - `test_runner_emits_toolset_select_toolcall_pre_graph`
-  - `test_runtime_call_tool_emits_tool_invoke_with_provider_meta`
-  - `test_tool_not_allowed_emits_tool_invoke_rejected_and_raises`
-
-**验收**
-- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
-
----
-
-## Phase J：Toolset Chain（仅 orchestrator；本地 pipelines 支持 list；invoker chain；观测扩展）
-
-> 目标：只改 tools/ai-orchestrator，让本地配置支持 pipeline -> toolsets[]，invoker 支持 chain 路由，Phase I 观测记录链路。
-
-### J1：本地配置 schema 扩展（pipelines 支持 list）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
-  - 扩展 `ToolsetConfig.pipelines` 的解析：
-    - 支持值为 `str` 或 `list[str]`
-  - 新增：
-    - `get_toolset_chain(pipeline: str) -> list[str]`
-      - 若 pipelines[pipeline] 是 str -> [str]
-      - 若是 list[str] -> 原样返回（过滤空串，normalize id）
-  - 保持现有 normalize 规则：pipeline 空值 -> `basic_rca`
-
-**验收**
-- 兼容旧 JSON（string 写法）
-- 新 JSON（list 写法）可正确返回有序 chain
-
----
-
-### J2：实现 ToolInvokerChain（first-match 路由 + meta）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
-  - 新增：
-    - `class ToolInvokerChain`
-      - `call(tool, input, idempotency_key=None) -> dict`
-  - 调整：
-    - `build_tool_invoker(...)` 支持输入为：
-      - 单 `ToolsetDefinition`（返回 ToolInvoker）
-      - 多 `ToolsetDefinition`（返回 ToolInvokerChain）
-  - meta：
-    - 返回 dict 中 `_tooling_meta` 除 provider_id/provider_type 外，新增：
-      - `resolved_from_toolset_id`
-
-**验收**
-- tool 在 toolset[1] 才 allow 时也能成功执行
-- tool 在 toolset[0] 和 toolset[1] 都 allow 时命中 toolset[0]
-- allowlist 全不命中时仍抛 `ToolInvokeError(reason="allow_tools_denied")`
-
----
-
-### J3：runner 选择 toolset chain（仅本地 override 分支）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 本期仅扩展本地 config 分支：
-    - `_select_tool_invoker(...)` 在 local override 时：
-      - 从 config 解析 toolset chain ids（J1 新方法）
-      - 构造 toolset definitions 列表并 build invoker chain
-      - 返回 `(invoker, toolsets_ids, source="local_override")`
-  - server resolve 分支保持单 toolset（Phase H），返回 toolsets_ids=[toolset_id]
-
-**验收**
-- local override 能返回 toolsets_ids list
-- server resolve 仍返回长度 1 list，不改语义
-
----
-
-### J4：观测扩展（toolset.select + tool.invoke）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - `_report_toolset_selection_observation(...)`：
-    - 记录 `toolsets`（list）
-- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
-  - `call_tool(...)` 观测上报中加入：
-    - `resolved_from_toolset_id`（来自 `_tooling_meta`）
-
-**验收**
-- `toolset.select` 的 response_json 包含 toolsets list
-- `tool.invoke` 的 response_json 包含 resolved_from_toolset_id
-
----
-
-### J5：新增单测
-
-**新增文件**
-- `tools/ai-orchestrator/tests/test_toolset_chain_phasej.py`
-
-**用例**
-1) `test_toolset_config_parses_pipeline_toolset_chain_list`
-2) `test_invoker_chain_routes_to_second_toolset_when_first_denies`
-3) `test_invoker_chain_prefers_first_toolset_on_conflict`
-4) `test_runner_toolset_select_observation_includes_toolsets_chain`
-5) `test_runtime_tool_invoke_observation_includes_resolved_from_toolset_id`
-
-**验收**
-- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
-
----
-
-## Phase J+：Toolset Chain Hardening（仅 orchestrator）
-
-### J+1：配置校验与错误信息增强
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
-  - 在 `get_toolset_chain(...)` 或解析阶段增加校验：
-    - chain 不能为空
-    - 元素必须为非空字符串（trim 后）
-    - 引用的 toolset_id 必须存在于 `toolsets` 字典
-  - 报错信息需包含：pipeline、toolset_id、available_toolsets（可选简化为 count）
-
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - local override 分支在 build invoker chain 前显式调用校验（若 toolset_config 已做则只捕获异常并包装 error_message）
-
-**验收**
-- bad config 会在 graph build/invoke 前 fail-fast（保持既有语义）
-- finalize 的 error_message 包含定位信息（pipeline + missing id）
-
----
-
-### J+2：观测增强（tool.invoke 增加 toolset_chain / route_policy）
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
-  - 在 `call_tool` 的 tool.invoke 观测 response_json 加字段：
-    - `toolset_chain`：来自 runtime 持有的 `toolsets`（由 runner 注入）
-    - `route_policy="first_match"`
-
-> 注意：不新增额外 toolcall；只是在现有 tool.invoke 观测里补字段。
-
-**验收**
-- tool.invoke 的观测能单条复盘链路
-
----
-
-### J+3：chain 路由 debug 日志与最终 deny 摘要
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
-  - `ToolInvokerChain.call(...)`：
-    - 捕获 allow_tools_denied 时记录 debug 日志：tool、toolset_id、provider_count
-    - 最终 deny 时抛 `ToolInvokeError`，message 包含 tool 与 chain 摘要（但注意长度控制）
-
-**验收**
-- 多级尝试过程可通过日志定位
-- 最终 deny 的错误信息可用于用户/运维排查
-
----
-
-### J+4：新增单测（负例与观测字段）
-
-**新增/改动文件**
-- `tools/ai-orchestrator/tests/test_toolset_chain_phasej.py`（追加用例）
-  - `test_config_chain_missing_toolset_id_fail_fast`
-  - `test_config_chain_empty_fail_fast`
-  - `test_invoker_chain_logs_and_raises_with_chain_summary_on_final_deny`
-  - `test_runtime_tool_invoke_observation_includes_toolset_chain`
-
-**验收**
-- 全量单测通过：
-  - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`
-
----
-
-## Phase K：Server Resolve 支持 Toolsets Chain（pipeline-only；不资源化；兼容 Phase H）
-
-### K1：扩展 proto / swagger（兼容旧字段）
-
-**修改文件**
-- `pkg/api/apiserver/v1/orchestrator_toolset.proto`
-  - `ResolveToolsetResponse` 新增：
-    - `repeated OrchestratorToolset toolsets = 3;`
-  - 保留原字段 `toolset = 2` 不变
-
-**生成文件（按仓库惯例更新/重跑生成）**
-- `pkg/api/apiserver/v1/orchestrator_toolset.pb.go`
-- `pkg/api/apiserver/v1/orchestrator_toolset.pb.defaults.go`
-- `api/openapi/apiserver/v1/orchestrator_toolset.swagger.json`
-
-**验收**
-- 编译通过
-- swagger/json 里出现 toolsets 数组字段
-
----
-
-### K2：server config resolver 支持 pipelines: string | list[string]
-
-**修改文件**
-- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
-  - 现状：`toolsetConfig.Pipelines map[string]string`
-  - 改造为支持 string 或 list 的解析（建议用 `map[string]json.RawMessage` 或自定义 Unmarshal）
-  - 新增函数：
-    - `ResolveChain(pipeline string) ([]*v1.OrchestratorToolset, error)`
-      - normalize pipeline
-      - 读取 pipelines 映射，解析 toolset_id 或 toolset_id 列表（保持顺序）
-      - 对每个 toolset_id 构造 `*v1.OrchestratorToolset`（沿用 `normalizeProvider(...)`）
-      - 校验：chain 非空；每个 toolset_id 存在；providers 非空
-  - 保留旧函数：
-    - `Resolve(pipeline string) (*v1.OrchestratorToolset, error)` 作为兼容封装：返回 `ResolveChain(...)[0]`
-
-**验收**
-- 兼容旧配置 JSON（string）
-- 支持新配置 JSON（list）
-- 错误语义沿用：
-  - `ErrInvalidConfig`
-  - `ErrToolsetNotFound`
-
----
-
-### K3：handler/biz 返回 toolsets[] 并填 toolset=toolsets[0]
-
-**修改文件**
-- `internal/apiserver/biz/v1/orchestrator_toolset/toolset.go`
-  - `(*toolsetBiz).Resolve(...)` 改为调用 `orchestratorcfg.ResolveChain(...)`
-- `internal/apiserver/handler/orchestrator_toolset.go`
-  - `ResolveOrchestratorToolset(...)` 组装响应：
-    - `pipeline`：normalized
-    - `toolsets`：full chain
-    - `toolset`：toolsets[0]
-
-**更新/新增测试**
-- `internal/apiserver/handler/orchestrator_toolset_test.go`
-  - 新增覆盖：
-    - pipelines string -> toolsets len=1 + toolset=first
-    - pipelines list -> toolsets len=2（顺序一致）+ toolset=first
-    - 缺失映射 -> 404（沿用 `internal/pkg/errno/orchestrator_toolset.go` 的 not found）
-    - invalid config -> 500 或 400（按现有 errno 映射）
-
-**验收**
-- `go test ./...` 全绿
-
----
-
-### K4：orchestrator server resolve 分支解析 toolsets[] 并构造 ToolInvokerChain
-
-**修改文件**
-- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
-  - `resolve_toolset(...)` 保持接口不变（返回 dict），但文档/注释说明可能包含 `toolsets`
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 修改 `_select_tool_invoker_via_server(...)`：
-    - 优先解析 `resolved["toolsets"]`（list[dict]）
-      - 每个元素提取 toolset_id + providers
-      - 构造本地 `load_toolset_config(...)` payload：
-        - `pipelines: { normalized_pipeline: [toolset_id...] }`
-        - `toolsets: { toolset_id: { providers: [...] } }`
-      - 调用 `build_tool_invoker_chain(config, toolset_ids)`
-      - 返回 `(invoker_chain, toolset_ids, "server_resolve")`
-    - 若不存在 toolsets 或为空：回退旧逻辑（toolset 单个）
-  - 保持 fail-fast：解析/构造失败要在 graph build 前 finalize failed（现有逻辑不变）
-
-**新增/更新测试**
-- `tools/ai-orchestrator/tests/test_toolset_registry_phaseh.py` 或新增 `test_toolset_resolve_chain_phasek.py`
-  - 覆盖 server resolve 返回 toolsets[] 时：
-    - 能构造 chain 并路由到第二个 toolset
-    - `toolset.select` 观测里仍为 `toolsets=[...]`（Phase J+ 已是 list）
-
-**验收**
-- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
-
----
-
-## Phase K：Server Resolve 支持 Toolsets Chain（pipeline-only；不资源化；兼容 Phase H）
-
-### K1：扩展 ResolveToolsetResponse（新增 toolsets[]，保留 toolset）
-
-**修改文件**
-- `pkg/api/apiserver/v1/orchestrator_toolset.proto`
-  - `ResolveToolsetResponse` 新增字段：
-    - `repeated OrchestratorToolset toolsets = <next_id>;`
-  - 保留原字段 `toolset` 不变
-
-**生成文件（按仓库惯例更新）**
-- `pkg/api/apiserver/v1/orchestrator_toolset.pb.go`
-- `pkg/api/apiserver/v1/orchestrator_toolset.pb.defaults.go`
-- `api/openapi/apiserver/v1/orchestrator_toolset.swagger.json`
-
-**验收**
-- 编译通过；swagger/json 出现 `toolsets` 数组字段
-
----
-
-### K2：server config 解析支持 pipelines: string | list[string]
-
-**修改文件**
-- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
-  - 增加对 pipelines 映射 value 的解析：
-    - string -> 单 toolset_id
-    - list[string] -> toolset_id chain（保序）
-  - 新增函数：
-    - `ResolveChain(pipeline string) ([]*v1.OrchestratorToolset, error)`
-      - normalize pipeline（沿用 NormalizePipeline）
-      - 解析 toolset_id 或 toolset_id list
-      - 对每个 toolset_id 构造 `*v1.OrchestratorToolset`
-      - 校验 chain 非空、引用存在、providers 非空
-  - 保留旧函数：
-    - `Resolve(pipeline string) (*v1.OrchestratorToolset, error)`：返回 `ResolveChain(...)[0]`（兼容旧调用点）
-
-**验收**
-- 旧配置 JSON（string）可用
-- 新配置 JSON（list）可用且顺序保留
-- 错误语义沿用：
-  - `ErrInvalidConfig`
-  - `ErrToolsetNotFound`
-
----
-
-### K3：biz/handler 返回 toolsets[]，并兼容填 toolset=toolsets[0]
-
-**修改文件**
-- `internal/apiserver/biz/v1/orchestrator_toolset/toolset.go`
-  - `Resolve(...)` 改为调用 `orchestratorcfg.ResolveChain(...)`
-- `internal/apiserver/handler/orchestrator_toolset.go`
-  - `ResolveOrchestratorToolset(...)` 组装 response：
-    - `pipeline`：normalized
-    - `toolsets`：full chain
-    - `toolset`：toolsets[0]（兼容旧客户端）
-
-**更新测试**
-- `internal/apiserver/handler/orchestrator_toolset_test.go`
-  - 覆盖：
-    - pipelines string -> toolsets 长度=1，toolset=toolsets[0]
-    - pipelines list -> toolsets 长度=2（顺序一致），toolset=toolsets[0]
-    - missing mapping -> 404（not found）
-    - invalid config -> 400/500（按 errno 现有映射）
-
-**验收**
-- `go test ./...` 全绿
-
----
-
-### K4：orchestrator server resolve 分支消费 toolsets[] 并构造 ToolInvokerChain
-
-**修改文件**
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 修改 `_select_tool_invoker_via_server(...)`：
-    1) 优先解析 `resolved["toolsets"]`（非空 list）：
-       - 提取每个 toolset 的 `toolset_id` 与 `providers`
-       - 构造本地 payload：
-         - `pipelines: { normalized_pipeline: [toolset_id...] }`
-         - `toolsets: { toolset_id: { providers: [...] } }`
-       - `load_toolset_config(payload)` -> `build_tool_invoker_chain(...)`
-       - 返回 `(invoker_chain, toolsets_ids, source="server_resolve")`
-    2) 若无 toolsets 或为空：回退旧 `toolset` 单对象逻辑
-  - 保持 fail-fast：解析/构造失败在 graph build 前 finalize failed
-
-**测试**
-- 新增或更新 Python 测试（建议新增）：
-  - `tools/ai-orchestrator/tests/test_toolset_resolve_chain_phasek.py`
-    - server resolve 返回 toolsets[] 时能路由到第二个 toolset
-    - toolset.select 观测仍为 toolsets list
-
-**验收**
-- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
-
-
----
-
-## Phase L0：Template Registry（Redis 强依赖版）
-
-> 目标：让 rca-api 维护 template_id 的注册表，供后续 Phase L1 组合策略 resolve 做合法性校验。Redis 为强依赖，不做降级。
-
-### L0-1：新增 proto（register/list）
-
-**新增文件**
-- `pkg/api/apiserver/v1/orchestrator_template.proto`
-
-**定义建议**
-- `OrchestratorTemplate`
-  - `templateID`
-  - `version`
-- `RegisterOrchestratorTemplatesRequest`
-  - `instanceID`
-  - `templates[]`
-- `RegisterOrchestratorTemplatesResponse`
-  - `count`
-- `ListOrchestratorTemplatesRequest`
-- `OrchestratorTemplateEntry`
-  - `templateID`
-  - `version`
-  - `instances[]`（可选；最小实现可不带）
-- `ListOrchestratorTemplatesResponse`
-  - `templates[]`
-
-**生成文件**
-- `pkg/api/apiserver/v1/orchestrator_template.pb.go`
-- `pkg/api/apiserver/v1/orchestrator_template.pb.defaults.go`
-- `api/openapi/apiserver/v1/orchestrator_template.swagger.json`
-
-**验收**
-- `make protoc` 后编译通过
-
----
-
-### L0-2：Redis 强依赖初始化
-
-**改动文件**
-- `cmd/rca-apiserver/app/server.go`
-- 如有需要，配合：
-  - `internal/apiserver/pkg/redisx/...`
-
-**实现要求**
-- 若 `redis.enabled=false`：启动失败（返回明确错误）
-- 若 Redis connect/ping 失败：启动失败
-- 不允许“registry 用到 Redis 时再临时发现不可用”
-
-**验收**
-- 本地/测试环境未启 Redis 时，apiserver 启动失败
-- 启 Redis 后正常启动
-
----
-
-### L0-3：新增 Redis registry 实现
-
-**新增文件**
-- `internal/apiserver/pkg/orchestratorregistry/template_registry.go`
-
-**建议实现**
-- `type TemplateRegistry interface`
-  - `Register(ctx, instanceID string, templates []*v1.OrchestratorTemplate) error`
-  - `List(ctx) ([]*v1.OrchestratorTemplateEntry, error)`
-- `type redisTemplateRegistry struct`
-  - 基于 `redisx.Client`
-- key 设计：
-  - `rca:orchestrator:templates:instance:<instance_id>`
-- TTL：
-  - 120s（常量）
-
-**实现策略**
-- Register:
-  - 按 instance 维度写一份 JSON blob
-  - `SETEX`
-- List:
-  - `SCAN rca:orchestrator:templates:instance:*`
-  - 反序列化聚合去重
-
-**验收**
-- register 后 list 可见
-- TTL 过期后自动消失
-
----
-
-### L0-4：新增 biz + handler
-
-**新增文件**
-- `internal/apiserver/biz/v1/orchestrator_template/template.go`
-- `internal/apiserver/handler/orchestrator_template.go`
-- `internal/apiserver/pkg/validation/orchestrator_template.go`
-- `internal/pkg/errno/orchestrator_template.go`
-
-**改动文件**
-- `internal/apiserver/biz/biz.go`
-  - `IBiz` 新增 `OrchestratorTemplateV1()`
-  - `biz` 新增 once + field + accessor
-
-**路由**
+# 三、已完成阶段概览
+
+## Phase A-D：基础 orchestrator runtime 与 graph
+已完成：
+- Runtime
+- LeaseManager
+- ToolCallReporter
+- EvidencePublisher
+- Retry matrix
+- 基本 graph 执行链路
+
+## Phase E：LangGraph 稳定性与 guard
+已完成：
+- graph fan-out / fan-in
+- query 节点 lease-lost guard
+- finalize / observe / verification 等流程串接
+
+## Phase F：模块化
+已完成：
+- `daemon/`
+- `runtime/`
+- `langgraph/`
+- `tooling/`
+- 薄入口保留兼容
+
+## Phase G：Toolset runtime
+已完成：
+- `ToolInvoker`
+- `MCP HTTP Provider`
+- `Skills Provider`
+- `allow_tools` 执行边界
+- `toolset` 本地配置模型
+
+## Phase H：平台 toolset resolve
+已完成：
+- `GET /v1/orchestrator/toolsets/resolve`
+- pipeline-only 的 toolset 配置解析
+- orchestrator 无本地 override 时从 server 获取 toolset
+
+## Phase I：Observability
+已完成：
+- `toolset.select`
+- `tool.invoke`
+- provider / latency / error category / route info 观测
+
+## Phase J / J+：Toolset Chain + Hardening
+已完成：
+- 本地 `pipelines` 支持 `str | list[str]`
+- `ToolInvokerChain`
+- `first_match` 规则
+- 严格 fail-fast 配置校验
+- `toolset_chain` / `resolved_from_toolset_id` / `route_policy`
+
+## Phase K：server resolve 下发 `toolsets[]`
+已完成：
+- rca-api 支持 `toolsets[]`
+- 保留 `toolset` 兼容旧客户端
+- orchestrator server resolve 分支构造 `ToolInvokerChain`
+
+## Phase L0：Template Registry（Redis 强依赖）
+已完成：
 - `POST /v1/orchestrator/templates/register`
 - `GET /v1/orchestrator/templates`
+- Redis 强依赖，不降级
+- orchestrator 启动注册 + 60s 刷新
 
-**权限**
-- 推荐复用现有 `authz.ScopeAIRead` / `ScopeAIRun` 中更合适的一个：
-  - register：建议 `ai.run`（执行者上报）
-  - list：建议 `ai.read`
-- 若你们想减少范围，也可先都用 `ai.read`，但要在 doc 里写清楚
-
-**验收**
-- handler 单测覆盖：
-  - register success
-  - invalid request 400
-  - redis unavailable 500
-  - list success
-
----
-
-### L0-5：orchestrator 启动注册模板
-
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
-  - 新增 `list_template_ids() -> list[str]`
-- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
-  - 新增 `register_templates(instance_id: str, templates: list[dict]) -> dict`
-- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 新增模板注册逻辑：
-    - 启动时 best-effort 注册一次
-    - 后台每 60 秒刷新一次（可简单实现为时间戳检查，不必新线程复杂化）
-  - 注册失败：
-    - 记录明确错误日志
-    - 不影响单个 job 执行（L0 只做 registry 建立，不做 strategy resolve）
-
-**验收**
-- 启动 orchestrator 后，list API 可见 `basic_rca`
-- Python 单测覆盖 register 调用路径
-
----
-
-### L0-6：测试与回归
-
-**新增/改动测试**
-- `internal/apiserver/handler/orchestrator_template_test.go`
-- `tools/ai-orchestrator/tests/test_template_registry_phasel0.py`
-
-**回归**
-- `go test ./...`
-- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`
-
-
----
-
-## Phase L1：组合策略 Resolve（pipeline -> template_id + toolsets[]）
-
-### L1-1：新增 proto / swagger
-
-**新增文件**
-- `pkg/api/apiserver/v1/orchestrator_strategy.proto`
-
-**定义建议**
-- `OrchestratorStrategy`
-  - `pipeline`
-  - `templateID`
-  - `repeated OrchestratorToolset toolsets`
-- `ResolveOrchestratorStrategyRequest`
-  - `pipeline`
-- `ResolveOrchestratorStrategyResponse`
-  - `strategy`
-
-**生成文件**
-- `pkg/api/apiserver/v1/orchestrator_strategy.pb.go`
-- `pkg/api/apiserver/v1/orchestrator_strategy.pb.defaults.go`
-- `api/openapi/apiserver/v1/orchestrator_strategy.swagger.json`
-
-**验收**
-- `make protoc` 后编译通过
-
----
-
-### L1-2：server config 支持 pipeline -> {template_id, toolsets[]}
-
-**新增文件**
-- `internal/apiserver/pkg/orchestratorcfg/strategy_config.go`
-
-**实现内容**
-- 读取 env：
-  - `RCA_STRATEGY_CONFIG_JSON`
-  - `RCA_STRATEGY_CONFIG_PATH`
-- schema：
-  - `pipelines: { "<pipeline>": { "template_id": "...", "toolsets": ["..."] } }`
-  - `toolsets: { "<toolset_id>": { "providers": [...] } }`
-- 新增：
-  - `NormalizePipeline(...)`
-  - `ResolveStrategy(pipeline string) (*v1.OrchestratorStrategy, error)`
-- 规则：
-  - pipeline normalize 后查配置
-  - template_id 必填
-  - toolsets chain 非空
-  - 每个 toolset_id 必须存在
-
-**验收**
-- 旧的 toolset_config.go 不删除（Phase K API 仍保留）
-- 新 config 对策略独立生效
-
----
-
-### L1-3：strategy resolve 时校验 template_id 已注册
-
-**依赖**
-- Phase L0 Redis template registry：
-  - `internal/apiserver/pkg/orchestratorregistry/template_registry.go`
-
-**实现要求**
-- `ResolveStrategy(...)` 或 biz 层在返回前校验：
-  - `template_id` 必须出现在 template registry list 中
-- 若 template 未注册：
-  - 返回稳定 errno（建议新增 `ErrOrchestratorStrategyTemplateNotRegistered`）
-
-**新增文件**
-- `internal/pkg/errno/orchestrator_strategy.go`
-
-**验收**
-- template_id 未注册时，resolve 返回 404/409（按你们 errno 风格定一种）
-
----
-
-### L1-4：新增 biz + handler
-
-**新增文件**
-- `internal/apiserver/biz/v1/orchestrator_strategy/strategy.go`
-- `internal/apiserver/handler/orchestrator_strategy.go`
-- `internal/apiserver/pkg/validation/orchestrator_strategy.go`
-
-**改动文件**
-- `internal/apiserver/biz/biz.go`
-  - 新增 `IBiz.OrchestratorStrategyV1()`
-  - `biz` 增加 once + field
-
-**路由**
+## Phase L1：Strategy Resolve
+已完成：
 - `GET /v1/orchestrator/strategies/resolve`
-
-**权限**
-- 建议复用 `ai.read`
-
-**验收**
-- handler 单测覆盖：
-  - resolve success
-  - pipeline missing mapping
-  - template not registered
-  - invalid config
+- `pipeline -> template_id + toolsets[]`
+- resolve 时校验 `template_id` 必须已在 template registry 注册
+- orchestrator 改为：
+  - `pipeline -> resolve_strategy -> template_id -> builder`
+  - 不再直接 `get_template_builder(pipeline)`
 
 ---
 
-### L1-5：orchestrator runner 改为先 resolve strategy，再选 template + toolsets chain
+# 四、当前代码结构（最终形态）
 
-**改动文件**
-- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
-  - 新增 `resolve_strategy(pipeline: str) -> dict`
-- `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
-  - `get_template_builder(...)` 改为以 `template_id` 为 key
-  - 新增/保留：
-    - `list_template_ids()`
+## 1. rca-api 控制面
+
+关键文件：
+
+- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
+- `internal/apiserver/pkg/orchestratorcfg/strategy_config.go`
+- `internal/apiserver/pkg/orchestratorregistry/template_registry.go`
+
+关键 handler：
+
+- `internal/apiserver/handler/orchestrator_toolset.go`
+- `internal/apiserver/handler/orchestrator_strategy.go`
+- `internal/apiserver/handler/orchestrator_template.go`
+
+对应 API：
+
+- `GET  /v1/orchestrator/toolsets/resolve`
+- `GET  /v1/orchestrator/strategies/resolve`
+- `POST /v1/orchestrator/templates/register`
+- `GET  /v1/orchestrator/templates`
+
+## 2. orchestrator 执行面
+
+关键文件：
+
 - `tools/ai-orchestrator/orchestrator/daemon/runner.py`
-  - 新增 `_resolve_strategy_via_server(...)`
-  - `_invoke_graph(...)` 流程改为：
-    1) get_job -> pipeline
-    2) local override 若存在：仍只覆盖 toolsets，不覆盖 template（建议本 Phase 保持 template 来自 server）
-    3) resolve strategy -> template_id + toolsets[]
-    4) `get_template_builder(template_id)`
-    5) build invoker chain
-    6) 观测中补充 `template_id`
-- 观测：
-  - `toolset.select` response_json 增加 `template_id`
+- `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+- `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
+- `tools/ai-orchestrator/orchestrator/tooling/toolset_config.py`
+- `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
+- `tools/ai-orchestrator/orchestrator/langgraph/templates/basic_rca.py`
 
-**验收**
-- server resolve 成功时，runner 不再直接用 pipeline 选模板
-- template_id 不存在本地 registry 时 fail-fast finalize failed
+关键行为：
+
+- runner 启动时注册 template registry
+- runner 每 60 秒刷新 template registry
+- runner 先 resolve strategy，再选 template + toolsets
+- runtime 统一负责 toolcall / observation / retry / lease semantics
 
 ---
 
-### L1-6：测试
+# 五、最终收口原则
 
-**新增/改动文件**
-- Go：
-  - `internal/apiserver/handler/orchestrator_strategy_test.go`
-- Python：
-  - `tools/ai-orchestrator/tests/test_strategy_resolve_phasel1.py`
+本分支从现在开始进入 **maintenance mode**。
 
-**Python 用例建议**
-1. server 返回 `{template_id, toolsets[]}` 时：
-   - runner 用 template_id 选 builder
-   - invoker chain 可命中第二个 toolset
-2. template_id 未注册 / 本地不存在时：
-   - fail-fast finalize before graph
-3. `toolset.select` 观测包含 `template_id`
+允许的改动：
 
-**回归**
-- `go test ./...`
-- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`
+1. bug fix
+2. 测试修复
+3. 文档补充
+4. E2E 验证脚本
+5. 观测字段小修（不改变 schema 核心语义）
+
+不允许的改动：
+
+1. 新 API
+2. 新 provider 类型
+3. 新 graph 抽象模型
+4. pipeline 资源化
+5. strategy CRUD
+6. remediation 自动修复
+7. 灰度 / AB / 流量路由
+8. 新模板能力扩展（本分支不做）
+
+---
+
+# 六、必须完成的最终收尾任务
+
+## 任务 1：冻结范围
+- 明确 Phase L1 为本分支截止点；
+- 不再增加新的 Phase；
+- 仅接受稳定性修复。
+
+## 任务 2：跑通 E2E 黄金路径
+至少完成一次真实链路验证：
+
+1. 启动 Redis
+2. 启动 rca-apiserver
+3. 注册 template（L0）
+4. 配置 strategy（L1）
+5. 启动 orchestrator
+6. 拉起 job
+7. 验证：
+   - strategy resolve 成功
+   - template builder 选择成功
+   - toolsets chain 构造成功
+   - `toolset.select` 观测存在
+   - `tool.invoke` 观测存在
+   - finalize 成功
+
+## 任务 3：保留文档
+本分支至少保留以下文档：
+
+- `48_D12_Branch_Closeout_Orchestrator_Strategy_And_Registry.md`
+- `49_D13_Orchestrator_Strategy_E2E_Checklist.md`
+- `50_D14_Orchestrator_Config_Matrix.md`
+- `51_D15_Code_Reading_Map_After_L1.md`
+
+---
+
+# 七、必须保持的核心语义
+
+以下语义不得被后续收尾改动破坏：
+
+## 1. pipeline-only
+- 模板与 strategy resolve 的输入都只看 `AIJob.pipeline`
+- 不引入额外 job 字段作为选择信号
+
+## 2. ToolInvokerChain
+- `first_match`
+- 仅 `allow_tools_denied` 才 fallback
+- provider 运行异常不 fallback
+
+## 3. fail-fast
+以下场景必须在 graph build/invoke 前失败：
+
+- unknown pipeline
+- strategy resolve failed
+- template_id 未注册
+- template_id 本地无 builder
+- 空 toolset chain
+- toolset config 非法
+
+## 4. lease / ownership
+- lease-lost 后不得继续写 toolcall
+- runtime 未 start 不得写 toolcall
+
+## 5. Redis 强依赖
+- `redis.enabled=false` → rca-apiserver 启动失败
+- Redis connect/ping 失败 → 启动失败
+- template registry 不允许降级为内存
+
+---
+
+# 八、E2E 必测场景
+
+## 场景 A：最小成功链路
+配置：
+
+- pipeline: `basic_rca`
+- template_id: `basic_rca`
+- toolsets: `["default"]`
+
+验证：
+
+- `GET /v1/orchestrator/strategies/resolve` 返回成功
+- orchestrator 正确选中 `basic_rca` builder
+- `toolset.select` 包含 `template_id=basic_rca`
+- `tool.invoke` 记录 provider / toolset_chain / resolved_from_toolset_id
+- job finalize 成功
+
+## 场景 B：toolset chain 路由
+配置：
+
+- toolsets: `["logs_only","metrics_only"]`
+
+验证：
+
+- `query_logs` 命中 `logs_only`
+- `query_metrics` 命中 `metrics_only`
+- `tool.invoke.route_policy == "first_match"`
+
+## 场景 C：template registry 缺失
+不注册 template 时：
+
+- `GET /v1/orchestrator/strategies/resolve?pipeline=...`
+- 返回 `template not registered`
+- orchestrator fail-fast，不进入 graph
+
+## 场景 D：template builder 缺失
+平台下发合法已注册 template_id，但 orchestrator 本地无 builder：
+
+- runner fail-fast finalize failed
+- 不进入 graph build/invoke
+
+---
+
+# 九、最终回归命令
+
+## Go
+```bash
+make protoc
+go test ./...
+```
+
+## Python
+```bash
+cd tools/ai-orchestrator
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+```
+
+## 手工 smoke
+按：
+- `49_D13_Orchestrator_Strategy_E2E_Checklist.md`
+
+---
+
+# 十、当前已知限制（保留在 closeout 中）
+
+1. `strategy.toolsets` 必须为 list，不能是 string
+2. template registry 只同步 `template_id/version/instance`，不同步 graph 内容
+3. `/v1/orchestrator/toolsets/resolve` 仍保留，仅用于兼容
+4. 当前真实模板可能仍主要是 `basic_rca`
+5. verification 可以关闭，不作为当前主路径强依赖
+6. template registry 是“活跃实例视角”，依赖 TTL 刷新
+
+---
+
+# 十一、下一阶段（不在本分支实现）
+
+本分支结束后，后续能力应在新分支开展，例如：
+
+- 第二个真实模板（验证多模板不是 only-one）
+- strategy registry 管理增强
+- remediation / playbook / SOP integration
+- 灰度与流量路由
+- pipeline 资源化（若未来确有必要）
+
+这些都**不在本分支继续做**。
+
+---
+
+# 十二、代码阅读入口
+
+推荐阅读顺序：
+
+1. `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+2. `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+3. `internal/apiserver/pkg/orchestratorcfg/strategy_config.go`
+4. `internal/apiserver/pkg/orchestratorregistry/template_registry.go`
+5. `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
+6. `tools/ai-orchestrator/orchestrator/langgraph/templates/basic_rca.py`
+7. `tools/ai-orchestrator/orchestrator/tooling/invoker.py`
+8. `tools/ai-orchestrator/orchestrator/runtime/runtime.py`
+
+辅助文档：
+- `50_D14_Orchestrator_Config_Matrix.md`
+- `51_D15_Code_Reading_Map_After_L1.md`
+
+---
+
+# 十三、状态结论
+
+本分支到此为止：
+
+```text
+Phase L1 COMPLETE
+```
+
+状态：
+
+```text
+maintenance mode
+```
+
+可合并，可交接，可停止新增架构能力。

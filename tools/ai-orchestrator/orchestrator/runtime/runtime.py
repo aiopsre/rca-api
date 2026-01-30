@@ -81,6 +81,19 @@ def _error_category(exc: Exception) -> str:
     return "unknown"
 
 
+def _is_toolcall_status_conflict(exc: RCAApiError) -> bool:
+    if not isinstance(exc, RCAApiError):
+        return False
+    if int(exc.http_status or 0) != 409:
+        return False
+    envelope_code = str(exc.envelope_code or "").strip().lower()
+    message = str(exc).strip().lower()
+    return (
+        "aitoolcallstatusconflict" in envelope_code
+        or "can only be written for queued/running jobs" in message
+    )
+
+
 class OrchestratorRuntime:
     def __init__(
         self,
@@ -393,20 +406,30 @@ class OrchestratorRuntime:
         evidence_ids: list[str] | None = None,
     ) -> int:
         seq = self._toolcall_reporter.allocate_seq()
-        return self._execute_with_retry(
-            f"tool_call.report:{node_name}:{tool_name}:seq={seq}",
-            lambda: self._toolcall_reporter.report(
-                node_name=node_name,
-                tool_name=tool_name,
-                request_json=request_json,
-                response_json=response_json,
-                latency_ms=latency_ms,
-                status=status,
-                error=error,
-                evidence_ids=evidence_ids,
-                seq=seq,
-            ),
-        )
+        try:
+            return self._execute_with_retry(
+                f"tool_call.report:{node_name}:{tool_name}:seq={seq}",
+                lambda: self._toolcall_reporter.report(
+                    node_name=node_name,
+                    tool_name=tool_name,
+                    request_json=request_json,
+                    response_json=response_json,
+                    latency_ms=latency_ms,
+                    status=status,
+                    error=error,
+                    evidence_ids=evidence_ids,
+                    seq=seq,
+                ),
+            )
+        except RCAApiError as exc:
+            if _is_toolcall_status_conflict(exc):
+                self._log(
+                    "toolcall report skipped "
+                    f"job={self._job_id} node={node_name} tool={tool_name} seq={seq} "
+                    "reason=job_status_conflict_after_finalize"
+                )
+                return seq
+            raise
 
     def finalize(
         self,
