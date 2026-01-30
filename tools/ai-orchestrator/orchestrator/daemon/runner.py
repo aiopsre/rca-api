@@ -6,7 +6,12 @@ import time
 from typing import Any
 
 from ..graph import OrchestratorConfig
-from ..langgraph.registry import UnknownPipelineError, get_template_builder, normalize_pipeline
+from ..langgraph.registry import (
+    UnknownPipelineError,
+    get_template_builder,
+    list_template_ids,
+    normalize_pipeline,
+)
 from ..runtime.runtime import OrchestratorRuntime
 from ..state import GraphState
 from ..tooling import (
@@ -26,6 +31,9 @@ _TOOLSET_CONFIG_CACHE_LOCK = threading.Lock()
 _TOOLSET_CONFIG_CACHE_KEY: tuple[str, str] | None = None
 _TOOLSET_CONFIG_CACHE_VALUE: ToolsetConfig | None = None
 _TOOLSET_CONFIG_CACHE_ERROR: Exception | None = None
+_TEMPLATE_REGISTRY_LOCK = threading.Lock()
+_TEMPLATE_REGISTRY_LAST_ATTEMPT_TS = 0.0
+_TEMPLATE_REGISTRY_REFRESH_SECONDS = 60.0
 
 
 def _log(msg: str) -> None:
@@ -240,6 +248,52 @@ def _extract_toolset_id(toolset_payload: dict[str, Any]) -> str:
     return ""
 
 
+def _build_template_registration_payload() -> list[dict[str, str]]:
+    payload: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_template_id in list_template_ids():
+        template_id = str(raw_template_id or "").strip()
+        if not template_id or template_id in seen:
+            continue
+        seen.add(template_id)
+        payload.append(
+            {
+                "templateID": template_id,
+                "version": "",
+            }
+        )
+    return payload
+
+
+def _register_templates_if_due(
+    *,
+    settings: Settings,
+    client: RCAApiClient,
+    force: bool = False,
+) -> None:
+    global _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS
+
+    now = time.time()
+    with _TEMPLATE_REGISTRY_LOCK:
+        if not force and _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS > 0:
+            if (now - _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS) < _TEMPLATE_REGISTRY_REFRESH_SECONDS:
+                return
+        _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS = now
+
+    try:
+        templates = _build_template_registration_payload()
+        if not templates:
+            return
+        client.register_templates(settings.instance_id, templates)
+        if settings.debug:
+            _log(
+                "[DEBUG] template registry refreshed "
+                f"instance_id={settings.instance_id} template_count={len(templates)}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"template registry refresh failed: {exc}")
+
+
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
     selected_pipeline = ""
@@ -396,6 +450,7 @@ def main() -> None:
     )
 
     poll_client = _new_client(settings)
+    _register_templates_if_due(settings=settings, client=poll_client, force=True)
     graph_cfg = OrchestratorConfig(
         run_query=settings.run_query,
         force_no_evidence=settings.force_no_evidence,
@@ -417,6 +472,7 @@ def main() -> None:
     wait_seconds = 0
     while True:
         try:
+            _register_templates_if_due(settings=settings, client=poll_client, force=False)
             listed = poll_client.list_jobs(
                 status="queued",
                 limit=settings.pull_limit,

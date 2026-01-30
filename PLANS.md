@@ -780,3 +780,153 @@
 
 **验收**
 - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+
+
+---
+
+## Phase L0：Template Registry（Redis 强依赖版）
+
+> 目标：让 rca-api 维护 template_id 的注册表，供后续 Phase L1 组合策略 resolve 做合法性校验。Redis 为强依赖，不做降级。
+
+### L0-1：新增 proto（register/list）
+
+**新增文件**
+- `pkg/api/apiserver/v1/orchestrator_template.proto`
+
+**定义建议**
+- `OrchestratorTemplate`
+  - `templateID`
+  - `version`
+- `RegisterOrchestratorTemplatesRequest`
+  - `instanceID`
+  - `templates[]`
+- `RegisterOrchestratorTemplatesResponse`
+  - `count`
+- `ListOrchestratorTemplatesRequest`
+- `OrchestratorTemplateEntry`
+  - `templateID`
+  - `version`
+  - `instances[]`（可选；最小实现可不带）
+- `ListOrchestratorTemplatesResponse`
+  - `templates[]`
+
+**生成文件**
+- `pkg/api/apiserver/v1/orchestrator_template.pb.go`
+- `pkg/api/apiserver/v1/orchestrator_template.pb.defaults.go`
+- `api/openapi/apiserver/v1/orchestrator_template.swagger.json`
+
+**验收**
+- `make protoc` 后编译通过
+
+---
+
+### L0-2：Redis 强依赖初始化
+
+**改动文件**
+- `cmd/rca-apiserver/app/server.go`
+- 如有需要，配合：
+  - `internal/apiserver/pkg/redisx/...`
+
+**实现要求**
+- 若 `redis.enabled=false`：启动失败（返回明确错误）
+- 若 Redis connect/ping 失败：启动失败
+- 不允许“registry 用到 Redis 时再临时发现不可用”
+
+**验收**
+- 本地/测试环境未启 Redis 时，apiserver 启动失败
+- 启 Redis 后正常启动
+
+---
+
+### L0-3：新增 Redis registry 实现
+
+**新增文件**
+- `internal/apiserver/pkg/orchestratorregistry/template_registry.go`
+
+**建议实现**
+- `type TemplateRegistry interface`
+  - `Register(ctx, instanceID string, templates []*v1.OrchestratorTemplate) error`
+  - `List(ctx) ([]*v1.OrchestratorTemplateEntry, error)`
+- `type redisTemplateRegistry struct`
+  - 基于 `redisx.Client`
+- key 设计：
+  - `rca:orchestrator:templates:instance:<instance_id>`
+- TTL：
+  - 120s（常量）
+
+**实现策略**
+- Register:
+  - 按 instance 维度写一份 JSON blob
+  - `SETEX`
+- List:
+  - `SCAN rca:orchestrator:templates:instance:*`
+  - 反序列化聚合去重
+
+**验收**
+- register 后 list 可见
+- TTL 过期后自动消失
+
+---
+
+### L0-4：新增 biz + handler
+
+**新增文件**
+- `internal/apiserver/biz/v1/orchestrator_template/template.go`
+- `internal/apiserver/handler/orchestrator_template.go`
+- `internal/apiserver/pkg/validation/orchestrator_template.go`
+- `internal/pkg/errno/orchestrator_template.go`
+
+**改动文件**
+- `internal/apiserver/biz/biz.go`
+  - `IBiz` 新增 `OrchestratorTemplateV1()`
+  - `biz` 新增 once + field + accessor
+
+**路由**
+- `POST /v1/orchestrator/templates/register`
+- `GET /v1/orchestrator/templates`
+
+**权限**
+- 推荐复用现有 `authz.ScopeAIRead` / `ScopeAIRun` 中更合适的一个：
+  - register：建议 `ai.run`（执行者上报）
+  - list：建议 `ai.read`
+- 若你们想减少范围，也可先都用 `ai.read`，但要在 doc 里写清楚
+
+**验收**
+- handler 单测覆盖：
+  - register success
+  - invalid request 400
+  - redis unavailable 500
+  - list success
+
+---
+
+### L0-5：orchestrator 启动注册模板
+
+**改动文件**
+- `tools/ai-orchestrator/orchestrator/langgraph/registry.py`
+  - 新增 `list_template_ids() -> list[str]`
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+  - 新增 `register_templates(instance_id: str, templates: list[dict]) -> dict`
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 新增模板注册逻辑：
+    - 启动时 best-effort 注册一次
+    - 后台每 60 秒刷新一次（可简单实现为时间戳检查，不必新线程复杂化）
+  - 注册失败：
+    - 记录明确错误日志
+    - 不影响单个 job 执行（L0 只做 registry 建立，不做 strategy resolve）
+
+**验收**
+- 启动 orchestrator 后，list API 可见 `basic_rca`
+- Python 单测覆盖 register 调用路径
+
+---
+
+### L0-6：测试与回归
+
+**新增/改动测试**
+- `internal/apiserver/handler/orchestrator_template_test.go`
+- `tools/ai-orchestrator/tests/test_template_registry_phasel0.py`
+
+**回归**
+- `go test ./...`
+- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`

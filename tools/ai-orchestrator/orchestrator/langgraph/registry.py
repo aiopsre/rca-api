@@ -29,3 +29,6 @@ def get_template_builder(pipeline: str | None) -> TemplateBuilder:
         return build_basic_rca_graph
     raise UnknownPipelineError(normalized)
 
+
+def list_template_ids() -> list[str]:
+    return ["basic_rca"]

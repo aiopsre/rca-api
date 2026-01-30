@@ -272,6 +272,22 @@ class RCAApiClient:
             raise RuntimeError("invalid resolve_toolset response")
         return data
 
+    def register_templates(self, instance_id: str, templates: list[dict[str, Any]]) -> Dict[str, Any]:
+        normalized_instance_id = str(instance_id or "").strip()
+        if not normalized_instance_id:
+            raise RuntimeError("instance_id is required")
+        if not isinstance(templates, list) or not templates:
+            raise RuntimeError("templates is required")
+        body = {
+            "instanceID": normalized_instance_id,
+            "templates": templates,
+        }
+        payload = self._request("POST", "/v1/orchestrator/templates/register", json_body=body)
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid register_templates response")
+        return data
+
     def start_job(self, job_id: str) -> bool:
         try:
             self._request("POST", f"/v1/ai/jobs/{job_id}/start")

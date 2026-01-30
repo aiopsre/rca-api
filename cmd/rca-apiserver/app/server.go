@@ -10,6 +10,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/cli/cli"
 	"github.com/onexstack/onexstack/pkg/core"
 	"github.com/onexstack/onexstack/pkg/version"
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -18,6 +19,7 @@ import (
 	"github.com/aiopsre/rca-api/cmd/rca-apiserver/app/options"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/orchestratorregistry"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
@@ -83,21 +85,50 @@ func NewAPIServerCommand() *cobra.Command {
 // run contains the main logic for initializing and running the server.
 func run(ctx context.Context, opts *options.ServerOptions) error {
 	logAPIServerRedisProfile(opts)
+	redisClient, err := ensureRedisStrongDependency(ctx, opts)
+	if err != nil {
+		return err
+	}
+	if err := orchestratorregistry.ConfigureRedisClient(redisClient); err != nil {
+		_ = redisClient.Close()
+		return fmt.Errorf("redis strong dependency check failed: %w", err)
+	}
 
 	// Retrieve the application configuration from the parsed options.
 	cfg, err := opts.Config()
 	if err != nil {
+		_ = redisClient.Close()
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	// Create a new server instance based on the configuration.
 	server, err := cfg.New(ctx)
 	if err != nil {
+		_ = redisClient.Close()
 		return fmt.Errorf("failed to create server: %w", err)
 	}
 
 	// Run the server until the context is canceled or an error occurs.
+	defer func() { _ = redisClient.Close() }()
 	return server.Run(ctx)
+}
+
+func ensureRedisStrongDependency(ctx context.Context, opts *options.ServerOptions) (*redis.Client, error) {
+	if opts == nil {
+		return nil, fmt.Errorf("redis strong dependency check failed: nil options")
+	}
+
+	redisOpts := opts.RedisOptions
+	redisOpts.ApplyDefaults()
+	if !redisOpts.Enabled {
+		return nil, fmt.Errorf("redis strong dependency check failed: redis.enabled must be true")
+	}
+
+	redisClient, err := redisx.NewClient(ctx, redisOpts)
+	if err != nil {
+		return nil, fmt.Errorf("redis strong dependency check failed: %w", err)
+	}
+	return redisClient, nil
 }
 
 func newNoticeWorkerCommand(opts *options.ServerOptions) *cobra.Command {
