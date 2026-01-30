@@ -122,10 +122,41 @@ def _select_tool_invoker(
     return _select_tool_invoker_via_server(client, pipeline)
 
 
-def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tuple[ToolInvoker, list[str], str]:
+def _select_tool_invoker_via_server(
+    client: RCAApiClient,
+    pipeline: str,
+) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
     resolved = client.resolve_toolset(pipeline)
     if not isinstance(resolved, dict):
         raise RuntimeError("resolve_toolset returned invalid payload")
+
+    normalized_pipeline = normalize_pipeline(pipeline)
+    toolsets_payload = resolved.get("toolsets")
+    if isinstance(toolsets_payload, list) and toolsets_payload:
+        toolset_ids: list[str] = []
+        toolsets: dict[str, dict[str, Any]] = {}
+        for index, toolset_item in enumerate(toolsets_payload, start=1):
+            if not isinstance(toolset_item, dict):
+                raise RuntimeError(f"resolve_toolset payload has invalid toolsets[{index}] type")
+            toolset_id = _extract_toolset_id(toolset_item)
+            if not toolset_id:
+                raise RuntimeError(f"resolve_toolset payload missing toolset_id at toolsets[{index}]")
+            if toolset_id in toolsets:
+                raise RuntimeError(f"resolve_toolset payload duplicated toolset_id={toolset_id}")
+            providers = toolset_item.get("providers")
+            if not isinstance(providers, list) or not providers:
+                raise RuntimeError(f"resolve_toolset payload has empty providers: toolset={toolset_id}")
+            toolset_ids.append(toolset_id)
+            toolsets[toolset_id] = {"providers": providers}
+
+        config = load_toolset_config(
+            {
+                "pipelines": {normalized_pipeline: toolset_ids},
+                "toolsets": toolsets,
+            }
+        )
+        invoker = build_tool_invoker_chain(config, toolset_ids)
+        return invoker, toolset_ids, "server_resolve"
 
     toolset_payload = resolved.get("toolset")
     if not isinstance(toolset_payload, dict):
@@ -141,7 +172,6 @@ def _select_tool_invoker_via_server(client: RCAApiClient, pipeline: str) -> tupl
     if not isinstance(providers, list) or not providers:
         raise RuntimeError(f"resolve_toolset payload has empty providers: toolset={toolset_id}")
 
-    normalized_pipeline = normalize_pipeline(pipeline)
     config = load_toolset_config(
         {
             "pipelines": {normalized_pipeline: toolset_id},

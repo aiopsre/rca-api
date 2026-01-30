@@ -36,4 +36,5 @@ message ResolveToolsetRequest {
 message ResolveToolsetResponse {
   string pipeline = 1;
   OrchestratorToolset toolset = 2;
+  repeated OrchestratorToolset toolsets = 3;
 }

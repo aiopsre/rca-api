@@ -231,6 +231,7 @@ type ResolveToolsetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pipeline      string                 `protobuf:"bytes,1,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
 	Toolset       *OrchestratorToolset   `protobuf:"bytes,2,opt,name=toolset,proto3" json:"toolset,omitempty"`
+	Toolsets      []*OrchestratorToolset `protobuf:"bytes,3,rep,name=toolsets,proto3" json:"toolsets,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -279,6 +280,13 @@ func (x *ResolveToolsetResponse) GetToolset() *OrchestratorToolset {
 	return nil
 }
 
+func (x *ResolveToolsetResponse) GetToolsets() []*OrchestratorToolset {
+	if x != nil {
+		return x.Toolsets
+	}
+	return nil
+}
+
 var File_apiserver_v1_orchestrator_toolset_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_orchestrator_toolset_proto_rawDesc = "" +
@@ -307,10 +315,11 @@ const file_apiserver_v1_orchestrator_toolset_proto_rawDesc = "" +
 	"\tproviders\x18\x02 \x03(\v2).apiserver.v1.OrchestratorToolsetProviderR\tproviders\"E\n" +
 	"\x15ResolveToolsetRequest\x12\x1f\n" +
 	"\bpipeline\x18\x01 \x01(\tH\x00R\bpipeline\x88\x01\x01B\v\n" +
-	"\t_pipeline\"q\n" +
+	"\t_pipeline\"\xb0\x01\n" +
 	"\x16ResolveToolsetResponse\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12;\n" +
-	"\atoolset\x18\x02 \x01(\v2!.apiserver.v1.OrchestratorToolsetR\atoolsetB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\atoolset\x18\x02 \x01(\v2!.apiserver.v1.OrchestratorToolsetR\atoolset\x12=\n" +
+	"\btoolsets\x18\x03 \x03(\v2!.apiserver.v1.OrchestratorToolsetR\btoolsetsB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_orchestrator_toolset_proto_rawDescOnce sync.Once
@@ -334,11 +343,12 @@ var file_apiserver_v1_orchestrator_toolset_proto_goTypes = []any{
 var file_apiserver_v1_orchestrator_toolset_proto_depIdxs = []int32{
 	0, // 0: apiserver.v1.OrchestratorToolset.providers:type_name -> apiserver.v1.OrchestratorToolsetProvider
 	1, // 1: apiserver.v1.ResolveToolsetResponse.toolset:type_name -> apiserver.v1.OrchestratorToolset
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	1, // 2: apiserver.v1.ResolveToolsetResponse.toolsets:type_name -> apiserver.v1.OrchestratorToolset
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_apiserver_v1_orchestrator_toolset_proto_init() }

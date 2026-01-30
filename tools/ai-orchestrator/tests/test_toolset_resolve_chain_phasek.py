@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+import pathlib
+import sys
+import types
+import unittest
+from unittest import mock
+
+
+TESTS_DIR = pathlib.Path(__file__).resolve().parent
+PROJECT_DIR = TESTS_DIR.parent
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from orchestrator.daemon import runner as runner_module
+from orchestrator.daemon.settings import Settings
+from orchestrator.graph import OrchestratorConfig
+
+
+class ToolsetResolveChainPhaseKTest(unittest.TestCase):
+    @staticmethod
+    def _settings() -> Settings:
+        return Settings(
+            base_url="http://127.0.0.1:5555",
+            scopes="*",
+            mcp_scopes="*",
+            mcp_verify_remote_tools=False,
+            instance_id="orc-phasek",
+            poll_interval_ms=1000,
+            lease_heartbeat_interval_seconds=10,
+            concurrency=1,
+            run_query=True,
+            force_no_evidence=False,
+            force_conflict=False,
+            ds_base_url="http://prometheus:9090",
+            auto_create_datasource=True,
+            debug=False,
+            pull_limit=10,
+            long_poll_wait_seconds=20,
+            a3_max_calls=6,
+            a3_max_total_bytes=2 * 1024 * 1024,
+            a3_max_total_latency_ms=8000,
+            run_verification=False,
+            post_finalize_observe=False,
+            verification_source="ai_job",
+            verification_max_steps=20,
+            verification_max_total_latency_ms=8000,
+            verification_max_total_bytes=2 * 1024 * 1024,
+            verification_dedupe_enabled=True,
+            post_finalize_wait_timeout_seconds=8,
+            post_finalize_wait_interval_ms=500,
+            post_finalize_wait_max_interval_ms=2000,
+            toolset_config_path="",
+            toolset_config_json="",
+        )
+
+    def test_server_toolsets_chain_routes_to_second_toolset(self) -> None:
+        module_one = "_phasek_skill_mod_one"
+        module_two = "_phasek_skill_mod_two"
+        called_tools: list[str] = []
+        mod_one = types.ModuleType(module_one)
+        mod_two = types.ModuleType(module_two)
+
+        def _call_one(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+            called_tools.append(f"one:{tool}")
+            return {"output": {"from": "one", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
+
+        def _call_two(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+            called_tools.append(f"two:{tool}")
+            return {"output": {"from": "two", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
+
+        mod_one.call = _call_one  # type: ignore[attr-defined]
+        mod_two.call = _call_two  # type: ignore[attr-defined]
+        sys.modules[module_one] = mod_one
+        sys.modules[module_two] = mod_two
+
+        class _FakeClient:
+            @staticmethod
+            def resolve_toolset(_pipeline: str) -> dict[str, object]:
+                return {
+                    "pipeline": "basic_rca",
+                    "toolsets": [
+                        {
+                            "toolsetID": "ts_one",
+                            "providers": [
+                                {
+                                    "type": "skills",
+                                    "module": module_one,
+                                    "allowTools": ["query_metrics"],
+                                }
+                            ],
+                        },
+                        {
+                            "toolsetID": "ts_two",
+                            "providers": [
+                                {
+                                    "type": "skills",
+                                    "module": module_two,
+                                    "allowTools": ["query_logs"],
+                                }
+                            ],
+                        },
+                    ],
+                }
+
+        try:
+            invoker, toolsets, source = runner_module._select_tool_invoker_via_server(_FakeClient(), "basic_rca")
+            result = invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
+        finally:
+            del sys.modules[module_one]
+            del sys.modules[module_two]
+
+        self.assertEqual(source, "server_resolve")
+        self.assertEqual(toolsets, ["ts_one", "ts_two"])
+        self.assertEqual(result["output"]["from"], "two")
+        self.assertEqual(called_tools, ["two:query_logs"])
+
+    def test_runner_toolset_select_observation_keeps_toolsets_list_for_server_source(self) -> None:
+        module_one = "_phasek_obs_mod_one"
+        module_two = "_phasek_obs_mod_two"
+        mod_one = types.ModuleType(module_one)
+        mod_two = types.ModuleType(module_two)
+        mod_one.call = lambda *_args, **_kwargs: {"output": {"from": "one"}}  # type: ignore[attr-defined]
+        mod_two.call = lambda *_args, **_kwargs: {"output": {"from": "two"}}  # type: ignore[attr-defined]
+        sys.modules[module_one] = mod_one
+        sys.modules[module_two] = mod_two
+
+        class _FakeClient:
+            @staticmethod
+            def get_job(job_id: str) -> dict[str, str]:
+                return {"jobID": job_id, "incidentID": "inc-k", "pipeline": "basic_rca"}
+
+            @staticmethod
+            def resolve_toolset(_pipeline: str) -> dict[str, object]:
+                return {
+                    "pipeline": "basic_rca",
+                    "toolsets": [
+                        {
+                            "toolsetID": "ts_one",
+                            "providers": [
+                                {
+                                    "type": "skills",
+                                    "module": module_one,
+                                    "allowTools": ["query_metrics"],
+                                }
+                            ],
+                        },
+                        {
+                            "toolsetID": "ts_two",
+                            "providers": [
+                                {
+                                    "type": "skills",
+                                    "module": module_two,
+                                    "allowTools": ["query_logs"],
+                                }
+                            ],
+                        },
+                    ],
+                }
+
+        class _FakeRuntime:
+            instances: list["_FakeRuntime"] = []
+
+            def __init__(self, **kwargs: object) -> None:
+                self.tool_invoker = kwargs.get("tool_invoker")
+                self.report_observation_calls: list[dict[str, object]] = []
+                self.start_calls = 0
+                self.shutdown_calls = 0
+                _FakeRuntime.instances.append(self)
+
+            def start(self) -> bool:
+                self.start_calls += 1
+                return True
+
+            def report_observation(self, **kwargs: object) -> int:
+                self.report_observation_calls.append(kwargs)
+                return len(self.report_observation_calls)
+
+            def shutdown(self) -> None:
+                self.shutdown_calls += 1
+
+        class _FakeGraph:
+            def invoke(self, _state: object) -> dict[str, object]:
+                return {"job_id": "job-k", "started": True, "finalized": True}
+
+        def _fake_builder(_runtime: _FakeRuntime, _cfg: OrchestratorConfig) -> _FakeGraph:
+            return _FakeGraph()
+
+        try:
+            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+                runner_module, "OrchestratorRuntime", _FakeRuntime
+            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
+                runner_module._invoke_graph(
+                    self._settings(),
+                    OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                    "job-k",
+                    debug=False,
+                )
+        finally:
+            del sys.modules[module_one]
+            del sys.modules[module_two]
+
+        runtime = _FakeRuntime.instances[-1]
+        self.assertEqual(runtime.start_calls, 1)
+        self.assertEqual(runtime.shutdown_calls, 1)
+        self.assertEqual(len(runtime.report_observation_calls), 1)
+        observed = runtime.report_observation_calls[0]
+        self.assertEqual(observed["tool"], "toolset.select")
+        self.assertEqual(observed["response"]["source"], "server_resolve")
+        self.assertEqual(observed["response"]["toolsets"], ["ts_one", "ts_two"])
+
+
+if __name__ == "__main__":
+    unittest.main()

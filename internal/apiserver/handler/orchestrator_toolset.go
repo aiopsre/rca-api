@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
+
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 func (h *Handler) ResolveOrchestratorToolset(c *gin.Context) {
@@ -12,7 +15,29 @@ func (h *Handler) ResolveOrchestratorToolset(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	core.HandleQueryRequest(c, h.biz.OrchestratorToolsetV1().Resolve, h.val.ValidateResolveToolsetRequest)
+	core.HandleQueryRequest(c, h.resolveOrchestratorToolsetQuery, h.val.ValidateResolveToolsetRequest)
+}
+
+func (h *Handler) resolveOrchestratorToolsetQuery(
+	ctx context.Context,
+	req *v1.ResolveToolsetRequest,
+) (*v1.ResolveToolsetResponse, error) {
+	resp, err := h.biz.OrchestratorToolsetV1().Resolve(ctx, req)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+
+	if len(resp.Toolsets) > 0 {
+		if resp.Toolset == nil {
+			resp.Toolset = resp.Toolsets[0]
+		}
+		return resp, nil
+	}
+
+	if resp.Toolset != nil {
+		resp.Toolsets = []*v1.OrchestratorToolset{resp.Toolset}
+	}
+	return resp, nil
 }
 
 func init() {

@@ -37,7 +37,7 @@ func (b *toolsetBiz) Resolve(ctx context.Context, req *v1.ResolveToolsetRequest)
 	}
 
 	normalizedPipeline := orchestratorcfg.NormalizePipeline(req.GetPipeline())
-	toolset, err := orchestratorcfg.Resolve(normalizedPipeline)
+	toolsets, err := orchestratorcfg.ResolveChain(normalizedPipeline)
 	if err != nil {
 		switch {
 		case errors.Is(err, orchestratorcfg.ErrToolsetNotFound):
@@ -48,9 +48,13 @@ func (b *toolsetBiz) Resolve(ctx context.Context, req *v1.ResolveToolsetRequest)
 			return nil, errno.ErrInternal
 		}
 	}
+	if len(toolsets) == 0 {
+		return nil, errno.ErrOrchestratorToolsetNotFound
+	}
 
 	return &v1.ResolveToolsetResponse{
 		Pipeline: normalizedPipeline,
-		Toolset:  toolset,
+		Toolset:  toolsets[0],
+		Toolsets: toolsets,
 	}, nil
 }

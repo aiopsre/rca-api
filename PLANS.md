@@ -588,3 +588,195 @@
 **验收**
 - 全量单测通过：
   - `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v`
+
+---
+
+## Phase K：Server Resolve 支持 Toolsets Chain（pipeline-only；不资源化；兼容 Phase H）
+
+### K1：扩展 proto / swagger（兼容旧字段）
+
+**修改文件**
+- `pkg/api/apiserver/v1/orchestrator_toolset.proto`
+  - `ResolveToolsetResponse` 新增：
+    - `repeated OrchestratorToolset toolsets = 3;`
+  - 保留原字段 `toolset = 2` 不变
+
+**生成文件（按仓库惯例更新/重跑生成）**
+- `pkg/api/apiserver/v1/orchestrator_toolset.pb.go`
+- `pkg/api/apiserver/v1/orchestrator_toolset.pb.defaults.go`
+- `api/openapi/apiserver/v1/orchestrator_toolset.swagger.json`
+
+**验收**
+- 编译通过
+- swagger/json 里出现 toolsets 数组字段
+
+---
+
+### K2：server config resolver 支持 pipelines: string | list[string]
+
+**修改文件**
+- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
+  - 现状：`toolsetConfig.Pipelines map[string]string`
+  - 改造为支持 string 或 list 的解析（建议用 `map[string]json.RawMessage` 或自定义 Unmarshal）
+  - 新增函数：
+    - `ResolveChain(pipeline string) ([]*v1.OrchestratorToolset, error)`
+      - normalize pipeline
+      - 读取 pipelines 映射，解析 toolset_id 或 toolset_id 列表（保持顺序）
+      - 对每个 toolset_id 构造 `*v1.OrchestratorToolset`（沿用 `normalizeProvider(...)`）
+      - 校验：chain 非空；每个 toolset_id 存在；providers 非空
+  - 保留旧函数：
+    - `Resolve(pipeline string) (*v1.OrchestratorToolset, error)` 作为兼容封装：返回 `ResolveChain(...)[0]`
+
+**验收**
+- 兼容旧配置 JSON（string）
+- 支持新配置 JSON（list）
+- 错误语义沿用：
+  - `ErrInvalidConfig`
+  - `ErrToolsetNotFound`
+
+---
+
+### K3：handler/biz 返回 toolsets[] 并填 toolset=toolsets[0]
+
+**修改文件**
+- `internal/apiserver/biz/v1/orchestrator_toolset/toolset.go`
+  - `(*toolsetBiz).Resolve(...)` 改为调用 `orchestratorcfg.ResolveChain(...)`
+- `internal/apiserver/handler/orchestrator_toolset.go`
+  - `ResolveOrchestratorToolset(...)` 组装响应：
+    - `pipeline`：normalized
+    - `toolsets`：full chain
+    - `toolset`：toolsets[0]
+
+**更新/新增测试**
+- `internal/apiserver/handler/orchestrator_toolset_test.go`
+  - 新增覆盖：
+    - pipelines string -> toolsets len=1 + toolset=first
+    - pipelines list -> toolsets len=2（顺序一致）+ toolset=first
+    - 缺失映射 -> 404（沿用 `internal/pkg/errno/orchestrator_toolset.go` 的 not found）
+    - invalid config -> 500 或 400（按现有 errno 映射）
+
+**验收**
+- `go test ./...` 全绿
+
+---
+
+### K4：orchestrator server resolve 分支解析 toolsets[] 并构造 ToolInvokerChain
+
+**修改文件**
+- `tools/ai-orchestrator/orchestrator/tools_rca_api.py`
+  - `resolve_toolset(...)` 保持接口不变（返回 dict），但文档/注释说明可能包含 `toolsets`
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 修改 `_select_tool_invoker_via_server(...)`：
+    - 优先解析 `resolved["toolsets"]`（list[dict]）
+      - 每个元素提取 toolset_id + providers
+      - 构造本地 `load_toolset_config(...)` payload：
+        - `pipelines: { normalized_pipeline: [toolset_id...] }`
+        - `toolsets: { toolset_id: { providers: [...] } }`
+      - 调用 `build_tool_invoker_chain(config, toolset_ids)`
+      - 返回 `(invoker_chain, toolset_ids, "server_resolve")`
+    - 若不存在 toolsets 或为空：回退旧逻辑（toolset 单个）
+  - 保持 fail-fast：解析/构造失败要在 graph build 前 finalize failed（现有逻辑不变）
+
+**新增/更新测试**
+- `tools/ai-orchestrator/tests/test_toolset_registry_phaseh.py` 或新增 `test_toolset_resolve_chain_phasek.py`
+  - 覆盖 server resolve 返回 toolsets[] 时：
+    - 能构造 chain 并路由到第二个 toolset
+    - `toolset.select` 观测里仍为 `toolsets=[...]`（Phase J+ 已是 list）
+
+**验收**
+- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿
+
+---
+
+## Phase K：Server Resolve 支持 Toolsets Chain（pipeline-only；不资源化；兼容 Phase H）
+
+### K1：扩展 ResolveToolsetResponse（新增 toolsets[]，保留 toolset）
+
+**修改文件**
+- `pkg/api/apiserver/v1/orchestrator_toolset.proto`
+  - `ResolveToolsetResponse` 新增字段：
+    - `repeated OrchestratorToolset toolsets = <next_id>;`
+  - 保留原字段 `toolset` 不变
+
+**生成文件（按仓库惯例更新）**
+- `pkg/api/apiserver/v1/orchestrator_toolset.pb.go`
+- `pkg/api/apiserver/v1/orchestrator_toolset.pb.defaults.go`
+- `api/openapi/apiserver/v1/orchestrator_toolset.swagger.json`
+
+**验收**
+- 编译通过；swagger/json 出现 `toolsets` 数组字段
+
+---
+
+### K2：server config 解析支持 pipelines: string | list[string]
+
+**修改文件**
+- `internal/apiserver/pkg/orchestratorcfg/toolset_config.go`
+  - 增加对 pipelines 映射 value 的解析：
+    - string -> 单 toolset_id
+    - list[string] -> toolset_id chain（保序）
+  - 新增函数：
+    - `ResolveChain(pipeline string) ([]*v1.OrchestratorToolset, error)`
+      - normalize pipeline（沿用 NormalizePipeline）
+      - 解析 toolset_id 或 toolset_id list
+      - 对每个 toolset_id 构造 `*v1.OrchestratorToolset`
+      - 校验 chain 非空、引用存在、providers 非空
+  - 保留旧函数：
+    - `Resolve(pipeline string) (*v1.OrchestratorToolset, error)`：返回 `ResolveChain(...)[0]`（兼容旧调用点）
+
+**验收**
+- 旧配置 JSON（string）可用
+- 新配置 JSON（list）可用且顺序保留
+- 错误语义沿用：
+  - `ErrInvalidConfig`
+  - `ErrToolsetNotFound`
+
+---
+
+### K3：biz/handler 返回 toolsets[]，并兼容填 toolset=toolsets[0]
+
+**修改文件**
+- `internal/apiserver/biz/v1/orchestrator_toolset/toolset.go`
+  - `Resolve(...)` 改为调用 `orchestratorcfg.ResolveChain(...)`
+- `internal/apiserver/handler/orchestrator_toolset.go`
+  - `ResolveOrchestratorToolset(...)` 组装 response：
+    - `pipeline`：normalized
+    - `toolsets`：full chain
+    - `toolset`：toolsets[0]（兼容旧客户端）
+
+**更新测试**
+- `internal/apiserver/handler/orchestrator_toolset_test.go`
+  - 覆盖：
+    - pipelines string -> toolsets 长度=1，toolset=toolsets[0]
+    - pipelines list -> toolsets 长度=2（顺序一致），toolset=toolsets[0]
+    - missing mapping -> 404（not found）
+    - invalid config -> 400/500（按 errno 现有映射）
+
+**验收**
+- `go test ./...` 全绿
+
+---
+
+### K4：orchestrator server resolve 分支消费 toolsets[] 并构造 ToolInvokerChain
+
+**修改文件**
+- `tools/ai-orchestrator/orchestrator/daemon/runner.py`
+  - 修改 `_select_tool_invoker_via_server(...)`：
+    1) 优先解析 `resolved["toolsets"]`（非空 list）：
+       - 提取每个 toolset 的 `toolset_id` 与 `providers`
+       - 构造本地 payload：
+         - `pipelines: { normalized_pipeline: [toolset_id...] }`
+         - `toolsets: { toolset_id: { providers: [...] } }`
+       - `load_toolset_config(payload)` -> `build_tool_invoker_chain(...)`
+       - 返回 `(invoker_chain, toolsets_ids, source="server_resolve")`
+    2) 若无 toolsets 或为空：回退旧 `toolset` 单对象逻辑
+  - 保持 fail-fast：解析/构造失败在 graph build 前 finalize failed
+
+**测试**
+- 新增或更新 Python 测试（建议新增）：
+  - `tools/ai-orchestrator/tests/test_toolset_resolve_chain_phasek.py`
+    - server resolve 返回 toolsets[] 时能路由到第二个 toolset
+    - toolset.select 观测仍为 toolsets list
+
+**验收**
+- `cd tools/ai-orchestrator && python3 -m unittest discover -s tests -p 'test_*.py' -v` 全绿

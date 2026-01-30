@@ -27,7 +27,7 @@ var (
 )
 
 type toolsetConfig struct {
-	Pipelines map[string]string   `json:"pipelines"`
+	Pipelines map[string][]string
 	Toolsets  map[string]toolsetV `json:"toolsets"`
 }
 
@@ -58,35 +58,58 @@ func NormalizePipeline(pipeline string) string {
 
 // Resolve returns one resolved toolset for the input pipeline from server-side config.
 func Resolve(pipeline string) (*v1.OrchestratorToolset, error) {
+	toolsets, err := ResolveChain(pipeline)
+	if err != nil {
+		return nil, err
+	}
+	if len(toolsets) == 0 {
+		return nil, fmt.Errorf("%w: pipeline=%s", ErrToolsetNotFound, NormalizePipeline(pipeline))
+	}
+	return toolsets[0], nil
+}
+
+// ResolveChain returns resolved toolset chain (ordered) for the input pipeline from server-side config.
+func ResolveChain(pipeline string) ([]*v1.OrchestratorToolset, error) {
 	cfg, err := loadConfigFromEnv()
 	if err != nil {
 		return nil, err
 	}
 
 	normalizedPipeline := NormalizePipeline(pipeline)
-	toolsetID := strings.TrimSpace(cfg.Pipelines[normalizedPipeline])
-	if toolsetID == "" {
+	toolsetIDs, ok := cfg.Pipelines[normalizedPipeline]
+	if !ok || len(toolsetIDs) == 0 {
 		return nil, fmt.Errorf("%w: pipeline=%s", ErrToolsetNotFound, normalizedPipeline)
 	}
 
-	toolsetPayload, ok := cfg.Toolsets[toolsetID]
-	if !ok {
-		return nil, fmt.Errorf("%w: toolset=%s", ErrToolsetNotFound, toolsetID)
-	}
-	if len(toolsetPayload.Providers) == 0 {
-		return nil, invalidConfigf("toolset=%s has empty providers", toolsetID)
-	}
-
-	out := &v1.OrchestratorToolset{
-		ToolsetID: toolsetID,
-		Providers: make([]*v1.OrchestratorToolsetProvider, 0, len(toolsetPayload.Providers)),
-	}
-	for index, provider := range toolsetPayload.Providers {
-		normalizedProvider, normalizeErr := normalizeProvider(provider, toolsetID, index+1)
-		if normalizeErr != nil {
-			return nil, normalizeErr
+	out := make([]*v1.OrchestratorToolset, 0, len(toolsetIDs))
+	for chainIndex, rawToolsetID := range toolsetIDs {
+		toolsetID := strings.TrimSpace(rawToolsetID)
+		if toolsetID == "" {
+			return nil, invalidConfigf("pipeline=%s has empty toolset_id at index=%d", normalizedPipeline, chainIndex+1)
 		}
-		out.Providers = append(out.Providers, normalizedProvider)
+		toolsetPayload, exists := cfg.Toolsets[toolsetID]
+		if !exists {
+			return nil, invalidConfigf("pipeline=%s references missing toolset_id=%s", normalizedPipeline, toolsetID)
+		}
+		if len(toolsetPayload.Providers) == 0 {
+			return nil, invalidConfigf("pipeline=%s toolset=%s has empty providers", normalizedPipeline, toolsetID)
+		}
+
+		resolved := &v1.OrchestratorToolset{
+			ToolsetID: toolsetID,
+			Providers: make([]*v1.OrchestratorToolsetProvider, 0, len(toolsetPayload.Providers)),
+		}
+		for index, provider := range toolsetPayload.Providers {
+			normalizedProvider, normalizeErr := normalizeProvider(provider, toolsetID, index+1)
+			if normalizeErr != nil {
+				return nil, normalizeErr
+			}
+			resolved.Providers = append(resolved.Providers, normalizedProvider)
+		}
+		out = append(out, resolved)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: pipeline=%s", ErrToolsetNotFound, normalizedPipeline)
 	}
 	return out, nil
 }
@@ -109,28 +132,34 @@ func loadConfigFromEnv() (*toolsetConfig, error) {
 		return nil, invalidConfigf("both %s and %s are empty", envToolsetConfigJSON, envToolsetConfigPath)
 	}
 
-	cfg := &toolsetConfig{}
-	if err := json.Unmarshal(rawBytes, cfg); err != nil {
+	rawCfg := struct {
+		Pipelines map[string]any      `json:"pipelines"`
+		Toolsets  map[string]toolsetV `json:"toolsets"`
+	}{}
+	if err := json.Unmarshal(rawBytes, &rawCfg); err != nil {
 		return nil, invalidConfigf("json decode failed: %v", err)
 	}
-	if cfg.Pipelines == nil || len(cfg.Pipelines) == 0 {
+	if rawCfg.Pipelines == nil || len(rawCfg.Pipelines) == 0 {
 		return nil, invalidConfigf("pipelines is empty")
 	}
-	if cfg.Toolsets == nil || len(cfg.Toolsets) == 0 {
+	if rawCfg.Toolsets == nil || len(rawCfg.Toolsets) == 0 {
 		return nil, invalidConfigf("toolsets is empty")
 	}
 
-	normalizedPipelines := make(map[string]string, len(cfg.Pipelines))
-	for pipeline, toolsetID := range cfg.Pipelines {
+	normalizedPipelines := make(map[string][]string, len(rawCfg.Pipelines))
+	for pipeline, mapping := range rawCfg.Pipelines {
 		normalizedPipeline := NormalizePipeline(pipeline)
-		normalizedToolsetID := strings.TrimSpace(toolsetID)
-		if normalizedToolsetID == "" {
-			return nil, invalidConfigf("pipeline=%s mapped toolset_id is empty", normalizedPipeline)
+		normalizedChain, normalizeErr := normalizePipelineToolsetChain(normalizedPipeline, mapping)
+		if normalizeErr != nil {
+			return nil, normalizeErr
 		}
-		normalizedPipelines[normalizedPipeline] = normalizedToolsetID
+		normalizedPipelines[normalizedPipeline] = normalizedChain
 	}
-	cfg.Pipelines = normalizedPipelines
 
+	cfg := &toolsetConfig{
+		Pipelines: normalizedPipelines,
+		Toolsets:  rawCfg.Toolsets,
+	}
 	return cfg, nil
 }
 
@@ -196,6 +225,40 @@ func normalizeProvider(provider providerV, toolsetID string, index int) (*v1.Orc
 
 func invalidConfigf(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidConfig, fmt.Sprintf(format, args...))
+}
+
+func normalizePipelineToolsetChain(pipeline string, raw any) ([]string, error) {
+	switch value := raw.(type) {
+	case string:
+		toolsetID := strings.TrimSpace(value)
+		if toolsetID == "" {
+			return nil, invalidConfigf("pipeline=%s mapped toolset_id is empty", pipeline)
+		}
+		return []string{toolsetID}, nil
+	case []any:
+		if len(value) == 0 {
+			return nil, invalidConfigf("pipeline=%s mapped toolset chain is empty", pipeline)
+		}
+		chain := make([]string, 0, len(value))
+		for index, item := range value {
+			toolsetID, ok := item.(string)
+			if !ok {
+				return nil, invalidConfigf(
+					"pipeline=%s mapped toolset_id at index=%d must be string",
+					pipeline,
+					index+1,
+				)
+			}
+			normalizedToolsetID := strings.TrimSpace(toolsetID)
+			if normalizedToolsetID == "" {
+				return nil, invalidConfigf("pipeline=%s mapped toolset_id is empty at index=%d", pipeline, index+1)
+			}
+			chain = append(chain, normalizedToolsetID)
+		}
+		return chain, nil
+	default:
+		return nil, invalidConfigf("pipeline=%s mapped value has invalid type=%T", pipeline, raw)
+	}
 }
 
 func ptrString(v string) *string {
