@@ -20,6 +20,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
@@ -1349,23 +1350,7 @@ func isDuplicateKeyError(err error) bool {
 }
 
 func normalizeStringSlice(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, item := range in {
-		trimmed := strings.TrimSpace(item)
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
+	return runtimecontract.NormalizeStringList(in)
 }
 
 func mergeStringSlices(left, right []string) []string {

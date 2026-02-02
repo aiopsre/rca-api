@@ -13,6 +13,7 @@ import (
 	incidentbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
@@ -97,7 +98,15 @@ func (h *Handler) CreateIncidentVerificationRun(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	core.HandleAllRequest(c, h.biz.IncidentV1().CreateVerificationRun, h.val.ValidateCreateIncidentVerificationRunRequest)
+	var req v1.CreateIncidentVerificationRunRequest
+	if err := core.ShouldBindAll(c, &req, h.val.ValidateCreateIncidentVerificationRunRequest); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	contractReq := runtimecontract.VerificationReportRequestFromAPI(&req)
+	resp, err := h.biz.IncidentV1().CreateVerificationRun(c.Request.Context(), contractReq.ToAPIRequest())
+	core.WriteResponse(c, resp, err)
 }
 
 func (h *Handler) TriggerIncidentScheduledRun(c *gin.Context) {

@@ -16,6 +16,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
@@ -231,18 +232,20 @@ func (h *Handler) StartAIJob(c *gin.Context) {
 		return
 	}
 
-	req := &v1.StartAIJobRequest{
-		JobID: strings.TrimSpace(c.Param("jobID")),
-	}
+	contractReq := runtimecontract.NewClaimStartRequest(
+		c.Param("jobID"),
+		c.GetHeader(orchestratorInstanceIDHeader),
+	)
+	req := contractReq.ToAPIRequest()
 	if err := h.val.ValidateStartAIJobRequest(c.Request.Context(), req); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	if !requireOrchestratorInstanceID(c) {
+	if !requireOrchestratorInstanceIDValue(c, contractReq.OrchestratorInstanceID) {
 		return
 	}
 
-	ctx := withOrchestratorInstanceID(c)
+	ctx := withOrchestratorInstanceIDValue(c.Request.Context(), contractReq.OrchestratorInstanceID)
 	resp, err := h.biz.AIJobV1().Start(ctx, req)
 	core.WriteResponse(c, resp, err)
 }
@@ -253,19 +256,21 @@ func (h *Handler) RenewAIJobLease(c *gin.Context) {
 		return
 	}
 
-	req := &v1.StartAIJobRequest{
-		JobID: strings.TrimSpace(c.Param("jobID")),
-	}
+	contractReq := runtimecontract.NewRenewHeartbeatRequest(
+		c.Param("jobID"),
+		c.GetHeader(orchestratorInstanceIDHeader),
+	)
+	req := contractReq.ToAPIRequest()
 	if err := h.val.ValidateStartAIJobRequest(c.Request.Context(), req); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
 
-	if !requireOrchestratorInstanceID(c) {
+	if !requireOrchestratorInstanceIDValue(c, contractReq.OrchestratorInstanceID) {
 		return
 	}
 
-	ctx := withOrchestratorInstanceID(c)
+	ctx := withOrchestratorInstanceIDValue(c.Request.Context(), contractReq.OrchestratorInstanceID)
 	resp, err := h.biz.AIJobV1().Renew(ctx, req)
 	core.WriteResponse(c, resp, err)
 }
@@ -308,16 +313,18 @@ func (h *Handler) FinalizeAIJob(c *gin.Context) {
 		return
 	}
 	req.JobID = strings.TrimSpace(c.Param("jobID"))
-	if err := h.val.ValidateFinalizeAIJobRequest(c.Request.Context(), &req); err != nil {
+	contractReq := runtimecontract.FinalizeRequestFromAPI(&req, c.GetHeader(orchestratorInstanceIDHeader))
+	apiReq := contractReq.ToAPIRequest()
+	if err := h.val.ValidateFinalizeAIJobRequest(c.Request.Context(), apiReq); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	if !requireOrchestratorInstanceID(c) {
+	if !requireOrchestratorInstanceIDValue(c, contractReq.OrchestratorInstanceID) {
 		return
 	}
 
-	ctx := withOrchestratorInstanceID(c)
-	resp, err := h.biz.AIJobV1().Finalize(ctx, &req)
+	ctx := withOrchestratorInstanceIDValue(c.Request.Context(), contractReq.OrchestratorInstanceID)
+	resp, err := h.biz.AIJobV1().Finalize(ctx, apiReq)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -334,16 +341,18 @@ func (h *Handler) CreateAIToolCall(c *gin.Context) {
 		return
 	}
 	req.JobID = strings.TrimSpace(c.Param("jobID"))
-	if err := h.val.ValidateCreateAIToolCallRequest(c.Request.Context(), &req); err != nil {
+	contractReq := runtimecontract.ToolCallReportRequestFromAPI(&req, c.GetHeader(orchestratorInstanceIDHeader))
+	apiReq := contractReq.ToAPIRequest()
+	if err := h.val.ValidateCreateAIToolCallRequest(c.Request.Context(), apiReq); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	if !requireOrchestratorInstanceID(c) {
+	if !requireOrchestratorInstanceIDValue(c, contractReq.OrchestratorInstanceID) {
 		return
 	}
 
-	ctx := withOrchestratorInstanceID(c)
-	resp, err := h.biz.AIJobV1().CreateToolCall(ctx, &req)
+	ctx := withOrchestratorInstanceIDValue(c.Request.Context(), contractReq.OrchestratorInstanceID)
+	resp, err := h.biz.AIJobV1().CreateToolCall(ctx, apiReq)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -403,14 +412,23 @@ func init() {
 func withOrchestratorInstanceID(c *gin.Context) context.Context {
 	ctx := c.Request.Context()
 	instanceID := strings.TrimSpace(c.GetHeader(orchestratorInstanceIDHeader))
-	if instanceID == "" {
+	return withOrchestratorInstanceIDValue(ctx, instanceID)
+}
+
+func withOrchestratorInstanceIDValue(ctx context.Context, instanceID string) context.Context {
+	trimmed := strings.TrimSpace(instanceID)
+	if trimmed == "" {
 		return ctx
 	}
-	return contextx.WithOrchestratorInstanceID(ctx, instanceID)
+	return contextx.WithOrchestratorInstanceID(ctx, trimmed)
 }
 
 func requireOrchestratorInstanceID(c *gin.Context) bool {
-	if strings.TrimSpace(c.GetHeader(orchestratorInstanceIDHeader)) != "" {
+	return requireOrchestratorInstanceIDValue(c, c.GetHeader(orchestratorInstanceIDHeader))
+}
+
+func requireOrchestratorInstanceIDValue(c *gin.Context, instanceID string) bool {
+	if strings.TrimSpace(instanceID) != "" {
 		return true
 	}
 	core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)

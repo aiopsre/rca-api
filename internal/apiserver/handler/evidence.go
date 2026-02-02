@@ -7,6 +7,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/core"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
@@ -57,6 +58,7 @@ func (h *Handler) SaveIncidentEvidence(c *gin.Context) {
 			req.IdempotencyKey = &headerKey
 		}
 	}
+	req = *runtimecontract.EvidencePublishRequestFromAPI(&req).ToAPIRequest()
 
 	resp, err := h.biz.EvidenceV1().Save(c.Request.Context(), &req)
 	core.WriteResponse(c, resp, err)
