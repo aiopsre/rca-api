@@ -23,6 +23,7 @@ from orchestrator.runtime.runtime import OrchestratorRuntime
 from orchestrator.runtime.toolcall_reporter import ToolCallReporter
 from orchestrator.runtime.verification_runner import VerificationBudget, VerificationRunner
 from orchestrator.sdk.errors import OrchestratorErrorCategory, RCAApiError
+from orchestrator.sdk.runtime_contract import EvidencePublishRequest, ToolCallReportRequest, VerificationReportRequest
 from orchestrator.tools_rca_api import RCAApiClient
 
 
@@ -161,6 +162,197 @@ class RCAApiClientRequestTest(unittest.TestCase):
         self.assertEqual(captured["path"], "/v1/incidents/inc-9/verification-runs")
         self.assertEqual(captured["kwargs"]["params"], {"page": 3, "limit": 50})
         self.assertEqual(response["totalCount"], 1)
+
+    def test_add_tool_call_uses_expected_payload(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"toolCallID": "tc-1"}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        client.add_tool_call(
+            job_id="job-9",
+            seq=3,
+            node_name="collect",
+            tool_name="mcp.query_metrics",
+            request_json={"incident_id": "inc-9"},
+            response_json={"status": "ok"},
+            latency_ms=7,
+            status="OK",
+            error=" ",
+            evidence_ids=["evidence-1", " evidence-1 ", "evidence-2"],
+        )
+
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/v1/ai/jobs/job-9/tool-calls")
+        body = captured["kwargs"]["json_body"]
+        self.assertEqual(body["jobID"], "job-9")
+        self.assertEqual(body["seq"], 3)
+        self.assertEqual(body["nodeName"], "collect")
+        self.assertEqual(body["toolName"], "mcp.query_metrics")
+        self.assertEqual(body["requestJSON"], '{"incident_id":"inc-9"}')
+        self.assertEqual(body["responseJSON"], '{"status":"ok"}')
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["latencyMs"], 7)
+        self.assertEqual(body["evidenceIDs"], ["evidence-1", "evidence-2"])
+
+    def test_finalize_job_uses_expected_payload(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"code": 0}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        client.finalize_job(
+            job_id="job-33",
+            status="SUCCEEDED",
+            diagnosis_json={"summary": "ok"},
+            error_message=" ",
+            evidence_ids=["evidence-1", " evidence-1 ", "evidence-2"],
+        )
+
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/v1/ai/jobs/job-33/finalize")
+        body = captured["kwargs"]["json_body"]
+        self.assertEqual(body["jobID"], "job-33")
+        self.assertEqual(body["status"], "succeeded")
+        self.assertEqual(body["diagnosisJSON"], '{"summary":"ok"}')
+        self.assertEqual(body["evidenceIDs"], ["evidence-1", "evidence-2"])
+        self.assertNotIn("errorMessage", body)
+        self.assertEqual(captured["kwargs"]["timeout_s"], 30.0)
+
+    def test_save_mock_evidence_uses_expected_payload(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"evidenceID": "evidence-77"}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        evidence_id = client.save_mock_evidence(
+            incident_id="inc-77",
+            summary="mock summary",
+            raw={"value": 1},
+            job_id="job-77",
+            idempotency_key="idem-77",
+            created_by="ai:job-77",
+        )
+        self.assertEqual(evidence_id, "evidence-77")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/v1/incidents/inc-77/evidence")
+        body = captured["kwargs"]["json_body"]
+        self.assertEqual(body["incidentID"], "inc-77")
+        self.assertEqual(body["idempotencyKey"], "idem-77")
+        self.assertEqual(body["type"], "metrics")
+        self.assertEqual(body["queryText"], "mock://orchestrator")
+        self.assertEqual(body["queryJSON"], "{}")
+        self.assertEqual(body["resultJSON"], '{"value":1}')
+        self.assertEqual(body["jobID"], "job-77")
+        self.assertEqual(body["createdBy"], "ai:job-77")
+
+    def test_save_evidence_from_query_uses_expected_payload(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"evidenceID": "evidence-88"}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        evidence_id = client.save_evidence_from_query(
+            incident_id="inc-88",
+            kind="LOGS",
+            query={"queryText": "{app=\"demo\"}", "datasourceID": "ds-1"},
+            result={"queryResultJSON": '{"rows":[1]}'},
+            job_id="job-88",
+            idempotency_key="idem-88",
+            created_by="ai:job-88",
+        )
+        self.assertEqual(evidence_id, "evidence-88")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/v1/incidents/inc-88/evidence")
+        body = captured["kwargs"]["json_body"]
+        self.assertEqual(body["incidentID"], "inc-88")
+        self.assertEqual(body["idempotencyKey"], "idem-88")
+        self.assertEqual(body["type"], "logs")
+        self.assertEqual(body["queryText"], '{app="demo"}')
+        self.assertEqual(body["queryJSON"], '{"datasourceID":"ds-1","queryText":"{app=\\"demo\\"}"}')
+        self.assertEqual(body["resultJSON"], '{"rows":[1]}')
+        self.assertEqual(body["summary"], "orchestrator collected LOGS evidence")
+        self.assertEqual(body["jobID"], "job-88")
+        self.assertEqual(body["datasourceID"], "ds-1")
+        self.assertEqual(body["createdBy"], "ai:job-88")
+
+
+class RuntimeContractModelTest(unittest.TestCase):
+    def test_toolcall_request_normalizes_payload(self) -> None:
+        request = ToolCallReportRequest(
+            job_id=" job-1 ",
+            seq=2,
+            node_name=" collect ",
+            tool_name=" mcp.query_logs ",
+            request_json={"incident_id": "inc-1"},
+            response_json={"status": "ok"},
+            latency_ms=-1,
+            status=" OK ",
+            error_message=" timeout ",
+            evidence_ids=["evidence-1", " evidence-1 ", "evidence-2"],
+        )
+        body = request.to_api_body()
+        self.assertEqual(body["jobID"], "job-1")
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["latencyMs"], 0)
+        self.assertEqual(body["errorMessage"], "timeout")
+        self.assertEqual(body["evidenceIDs"], ["evidence-1", "evidence-2"])
+
+    def test_verification_request_supports_dict_params(self) -> None:
+        request = VerificationReportRequest(
+            incident_id="inc-1",
+            source="AI_JOB",
+            step_index=1,
+            tool="mcp.query_logs",
+            observed="matched",
+            meets_expectation=True,
+            params_json={"query": "error"},
+            actor="ai:job-1",
+        )
+        body = request.to_api_body()
+        self.assertEqual(body["incidentID"], "inc-1")
+        self.assertEqual(body["source"], "ai_job")
+        self.assertEqual(body["paramsJSON"], '{"query":"error"}')
+
+    def test_evidence_publish_request_for_query_extracts_fields(self) -> None:
+        request = EvidencePublishRequest.for_query(
+            incident_id="inc-2",
+            kind="LOGS",
+            query={"queryText": "error", "datasource_id": "ds-2"},
+            result={"queryResultJSON": '{"rows":[1]}'},
+            job_id="job-2",
+            idempotency_key="idem-2",
+            created_by="ai:job-2",
+            now_seconds=1800,
+        )
+        body = request.to_api_body(fallback_idempotency_key="fallback")
+        self.assertEqual(body["incidentID"], "inc-2")
+        self.assertEqual(body["idempotencyKey"], "idem-2")
+        self.assertEqual(body["type"], "logs")
+        self.assertEqual(body["queryText"], "error")
+        self.assertEqual(body["datasourceID"], "ds-2")
+        self.assertEqual(body["jobID"], "job-2")
+        self.assertEqual(body["createdBy"], "ai:job-2")
 
 
 class ToolCallReporterTest(unittest.TestCase):
