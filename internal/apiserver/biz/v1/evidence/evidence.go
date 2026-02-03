@@ -10,8 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
-	"net/url"
 	"strings"
 	"time"
 
@@ -20,8 +18,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
-	"github.com/aiopsre/rca-api/internal/apiserver/pkg/clients"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	integrationds "github.com/aiopsre/rca-api/internal/apiserver/pkg/integrations/datasource"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
@@ -37,13 +35,6 @@ const (
 	defaultListLimit        = int64(20)
 	defaultEvidenceCreator  = "system"
 )
-
-// EvidenceDatasourceClient defines read-only datasource query primitives.
-type EvidenceDatasourceClient interface {
-	QueryPrometheusRange(ctx context.Context, ds *model.DatasourceM, promql string, start, end time.Time, stepSeconds int64) (map[string]any, int64, error)
-	QueryLokiRange(ctx context.Context, ds *model.DatasourceM, queryText string, start, end time.Time, limit int64) (map[string]any, int64, error)
-	QueryElasticsearch(ctx context.Context, ds *model.DatasourceM, queryText string, queryJSON *string, start, end time.Time, limit int64) (map[string]any, int64, error)
-}
 
 // EvidenceBiz defines evidence use-cases.
 //
@@ -66,7 +57,7 @@ type evidenceBiz struct {
 	store      store.IStore
 	guardrails policy.EvidenceGuardrails
 	limiter    *policy.DatasourceRateLimiter
-	client     EvidenceDatasourceClient
+	adapter    integrationds.QueryAdapter
 }
 
 type SearchEvidenceRequest struct {
@@ -89,16 +80,16 @@ var _ EvidenceBiz = (*evidenceBiz)(nil)
 // New creates evidence biz with default guardrails.
 func New(store store.IStore) *evidenceBiz {
 	guardrails := policy.DefaultEvidenceGuardrails()
-	return NewWithDeps(store, guardrails, clients.NewDatasourceHTTPClient())
+	return NewWithDeps(store, guardrails, integrationds.NewHTTPAdapter())
 }
 
 // NewWithDeps creates evidence biz with injected dependencies for tests.
-func NewWithDeps(store store.IStore, guardrails policy.EvidenceGuardrails, client EvidenceDatasourceClient) *evidenceBiz {
+func NewWithDeps(store store.IStore, guardrails policy.EvidenceGuardrails, adapter integrationds.QueryAdapter) *evidenceBiz {
 	return &evidenceBiz{
 		store:      store,
 		guardrails: guardrails,
 		limiter:    policy.NewDatasourceRateLimiter(guardrails),
-		client:     client,
+		adapter:    adapter,
 	}
 }
 
@@ -118,10 +109,7 @@ func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsReque
 		outcome = "failed"
 		return nil, err
 	}
-	if datasource.Type != "prometheus" {
-		outcome = "failed"
-		return nil, errno.ErrDatasourceUnsupportedType
-	}
+	datasourceType = strings.ToLower(strings.TrimSpace(datasource.Type))
 	if !b.limiter.Allow(rq.GetDatasourceID()) {
 		outcome = "rate_limited"
 		return nil, errno.ErrEvidenceRateLimited
@@ -144,10 +132,17 @@ func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsReque
 	}
 
 	timeout := b.guardrails.ClampDatasourceTimeout(datasource.TimeoutMs)
-	queryCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	result, rowCount, err := b.client.QueryPrometheusRange(queryCtx, datasource, strings.TrimSpace(rq.GetPromql()), start, end, step)
+	queryResult, err := b.adapter.QueryMetricsRange(
+		ctx,
+		datasource,
+		integrationds.MetricsRangeQuery{
+			PromQL:      strings.TrimSpace(rq.GetPromql()),
+			Start:       start,
+			End:         end,
+			StepSeconds: step,
+			Timeout:     timeout,
+		},
+	)
 	if err != nil {
 		mapped := toDatasourceQueryError(err)
 		if errors.Is(mapped, errno.ErrEvidenceQueryTimeout) {
@@ -158,7 +153,8 @@ func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsReque
 		return nil, mapped
 	}
 
-	resultJSON, sizeBytes, truncated := b.normalizeResult(result, b.guardrails.MaxResultBytes)
+	resultJSON, sizeBytes, truncated := b.normalizeResult(queryResult.ResultJSON, b.guardrails.MaxResultBytes)
+	rowCount := queryResult.RowCount
 	if rowCount > b.guardrails.MaxMetricsRows {
 		truncated = true
 		resultJSON = b.truncatedResultJSON(resultJSON, "max_metrics_rows_exceeded")
@@ -199,11 +195,7 @@ func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*
 		outcome = "failed"
 		return nil, err
 	}
-	if datasource.Type != "loki" && datasource.Type != "elasticsearch" {
-		outcome = "failed"
-		return nil, errno.ErrDatasourceUnsupportedType
-	}
-	datasourceType = datasource.Type
+	datasourceType = strings.ToLower(strings.TrimSpace(datasource.Type))
 	if !b.limiter.Allow(rq.GetDatasourceID()) {
 		outcome = "rate_limited"
 		return nil, errno.ErrEvidenceRateLimited
@@ -226,21 +218,18 @@ func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*
 	}
 
 	timeout := b.guardrails.ClampDatasourceTimeout(datasource.TimeoutMs)
-	queryCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var result map[string]any
-	var rowCount int64
-	if datasource.Type == "loki" {
-		result, rowCount, err = b.client.QueryLokiRange(queryCtx, datasource, strings.TrimSpace(rq.GetQueryText()), start, end, limit)
-	} else {
-		var queryJSON *string
-		if rq.QueryJSON != nil {
-			raw := strings.TrimSpace(rq.GetQueryJSON())
-			queryJSON = &raw
-		}
-		result, rowCount, err = b.client.QueryElasticsearch(queryCtx, datasource, strings.TrimSpace(rq.GetQueryText()), queryJSON, start, end, limit)
-	}
+	queryResult, err := b.adapter.QueryLogsRange(
+		ctx,
+		datasource,
+		integrationds.LogsRangeQuery{
+			QueryText: strings.TrimSpace(rq.GetQueryText()),
+			QueryJSON: rq.QueryJSON,
+			Start:     start,
+			End:       end,
+			Limit:     limit,
+			Timeout:   timeout,
+		},
+	)
 	if err != nil {
 		mapped := toDatasourceQueryError(err)
 		if errors.Is(mapped, errno.ErrEvidenceQueryTimeout) {
@@ -251,7 +240,8 @@ func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*
 		return nil, mapped
 	}
 
-	resultJSON, sizeBytes, truncated := b.normalizeResult(result, b.guardrails.MaxResultBytes)
+	resultJSON, sizeBytes, truncated := b.normalizeResult(queryResult.ResultJSON, b.guardrails.MaxResultBytes)
+	rowCount := queryResult.RowCount
 	if rowCount > b.guardrails.MaxLogsRows {
 		truncated = true
 		resultJSON = b.truncatedResultJSON(resultJSON, "max_logs_rows_exceeded")
@@ -530,19 +520,16 @@ func toDatasourceQueryError(err error) error {
 		return nil
 	}
 
-	// Context timeout.
-	if errors.Is(err, context.DeadlineExceeded) {
-		return errno.ErrEvidenceQueryTimeout
-	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return errno.ErrEvidenceQueryTimeout
-	}
-
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Timeout() {
-		return errno.ErrEvidenceQueryTimeout
+	var integrationErr *integrationds.QueryError
+	if errors.As(err, &integrationErr) {
+		switch integrationErr.Code {
+		case integrationds.QueryErrorCodeTimeout:
+			return errno.ErrEvidenceQueryTimeout
+		case integrationds.QueryErrorCodeUnsupportedType:
+			return errno.ErrDatasourceUnsupportedType
+		default:
+			return errno.ErrEvidenceQueryFailed
+		}
 	}
 
 	return errno.ErrEvidenceQueryFailed

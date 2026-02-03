@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,32 +12,53 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	integrationds "github.com/aiopsre/rca-api/internal/apiserver/pkg/integrations/datasource"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
-type mockDatasourceClient struct{}
+type mockDatasourceClient struct {
+	metricsErr error
+	logsErr    error
+}
 
-func (m *mockDatasourceClient) QueryPrometheusRange(_ context.Context, _ *model.DatasourceM, _ string, _ time.Time, _ time.Time, _ int64) (map[string]any, int64, error) {
-	return map[string]any{
-		"status": "success",
-		"data": map[string]any{
-			"resultType": "matrix",
-			"result": []any{
-				map[string]any{"metric": map[string]any{"__name__": "up"}},
-				map[string]any{"metric": map[string]any{"__name__": "http_requests_total"}},
+func (m *mockDatasourceClient) QueryMetricsRange(
+	_ context.Context,
+	_ *model.DatasourceM,
+	_ integrationds.MetricsRangeQuery,
+) (*integrationds.NormalizedQueryResult, error) {
+	if m.metricsErr != nil {
+		return nil, m.metricsErr
+	}
+	return &integrationds.NormalizedQueryResult{
+		ResultJSON: map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "matrix",
+				"result": []any{
+					map[string]any{"metric": map[string]any{"__name__": "up"}},
+					map[string]any{"metric": map[string]any{"__name__": "http_requests_total"}},
+				},
 			},
 		},
-	}, 2, nil
+		RowCount: 2,
+	}, nil
 }
 
-func (m *mockDatasourceClient) QueryLokiRange(_ context.Context, _ *model.DatasourceM, _ string, _ time.Time, _ time.Time, _ int64) (map[string]any, int64, error) {
-	return map[string]any{}, 0, nil
-}
-
-func (m *mockDatasourceClient) QueryElasticsearch(_ context.Context, _ *model.DatasourceM, _ string, _ *string, _ time.Time, _ time.Time, _ int64) (map[string]any, int64, error) {
-	return map[string]any{}, 0, nil
+func (m *mockDatasourceClient) QueryLogsRange(
+	_ context.Context,
+	_ *model.DatasourceM,
+	_ integrationds.LogsRangeQuery,
+) (*integrationds.NormalizedQueryResult, error) {
+	if m.logsErr != nil {
+		return nil, m.logsErr
+	}
+	return &integrationds.NormalizedQueryResult{
+		ResultJSON: map[string]any{},
+		RowCount:   0,
+	}, nil
 }
 
 func TestEvidenceQuerySaveList_Idempotent(t *testing.T) {
@@ -128,3 +150,78 @@ func toProtoTime(t time.Time) *timestamppb.Timestamp {
 
 func ptrString(v string) *string { return &v }
 func ptrInt64(v int64) *int64    { return &v }
+
+func TestEvidenceQueryMetrics_MapsAdapterTimeoutError(t *testing.T) {
+	db := newTestDB(t)
+	s := store.NewStore(db)
+	guardrails := policy.DefaultEvidenceGuardrails()
+	guardrails.QueryRatePerSecond = 1000
+	guardrails.QueryRateBurst = 1000
+
+	biz := NewWithDeps(s, guardrails, &mockDatasourceClient{
+		metricsErr: &integrationds.QueryError{
+			Code:           integrationds.QueryErrorCodeTimeout,
+			DatasourceType: "prometheus",
+			Err:            context.DeadlineExceeded,
+		},
+	})
+
+	ds := &model.DatasourceM{
+		Type:      "prometheus",
+		Name:      "prom",
+		BaseURL:   "http://mock-prometheus.local",
+		AuthType:  "none",
+		TimeoutMs: 5000,
+		IsEnabled: true,
+	}
+	require.NoError(t, s.Datasource().Create(context.Background(), ds))
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+	_, err := biz.QueryMetrics(context.Background(), &v1.QueryMetricsRequest{
+		DatasourceID:   ds.DatasourceID,
+		Promql:         "up",
+		TimeRangeStart: toProtoTime(start),
+		TimeRangeEnd:   toProtoTime(end),
+		StepSeconds:    ptrInt64(30),
+	})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, errno.ErrEvidenceQueryTimeout))
+}
+
+func TestEvidenceQueryLogs_MapsAdapterUnsupportedTypeError(t *testing.T) {
+	db := newTestDB(t)
+	s := store.NewStore(db)
+	guardrails := policy.DefaultEvidenceGuardrails()
+	guardrails.QueryRatePerSecond = 1000
+	guardrails.QueryRateBurst = 1000
+
+	biz := NewWithDeps(s, guardrails, &mockDatasourceClient{
+		logsErr: &integrationds.QueryError{
+			Code:           integrationds.QueryErrorCodeUnsupportedType,
+			DatasourceType: "prometheus",
+		},
+	})
+
+	ds := &model.DatasourceM{
+		Type:      "prometheus",
+		Name:      "prom",
+		BaseURL:   "http://mock-prometheus.local",
+		AuthType:  "none",
+		TimeoutMs: 5000,
+		IsEnabled: true,
+	}
+	require.NoError(t, s.Datasource().Create(context.Background(), ds))
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+	_, err := biz.QueryLogs(context.Background(), &v1.QueryLogsRequest{
+		DatasourceID:   ds.DatasourceID,
+		QueryText:      "error",
+		TimeRangeStart: toProtoTime(start),
+		TimeRangeEnd:   toProtoTime(end),
+		Limit:          ptrInt64(100),
+	})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, errno.ErrDatasourceUnsupportedType))
+}
