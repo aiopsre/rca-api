@@ -80,38 +80,7 @@ func ResolveChain(pipeline string) ([]*v1.OrchestratorToolset, error) {
 	if !ok || len(toolsetIDs) == 0 {
 		return nil, fmt.Errorf("%w: pipeline=%s", ErrToolsetNotFound, normalizedPipeline)
 	}
-
-	out := make([]*v1.OrchestratorToolset, 0, len(toolsetIDs))
-	for chainIndex, rawToolsetID := range toolsetIDs {
-		toolsetID := strings.TrimSpace(rawToolsetID)
-		if toolsetID == "" {
-			return nil, invalidConfigf("pipeline=%s has empty toolset_id at index=%d", normalizedPipeline, chainIndex+1)
-		}
-		toolsetPayload, exists := cfg.Toolsets[toolsetID]
-		if !exists {
-			return nil, invalidConfigf("pipeline=%s references missing toolset_id=%s", normalizedPipeline, toolsetID)
-		}
-		if len(toolsetPayload.Providers) == 0 {
-			return nil, invalidConfigf("pipeline=%s toolset=%s has empty providers", normalizedPipeline, toolsetID)
-		}
-
-		resolved := &v1.OrchestratorToolset{
-			ToolsetID: toolsetID,
-			Providers: make([]*v1.OrchestratorToolsetProvider, 0, len(toolsetPayload.Providers)),
-		}
-		for index, provider := range toolsetPayload.Providers {
-			normalizedProvider, normalizeErr := normalizeProvider(provider, toolsetID, index+1)
-			if normalizeErr != nil {
-				return nil, normalizeErr
-			}
-			resolved.Providers = append(resolved.Providers, normalizedProvider)
-		}
-		out = append(out, resolved)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: pipeline=%s", ErrToolsetNotFound, normalizedPipeline)
-	}
-	return out, nil
+	return resolveToolsetChainByIDs(toolsetIDs, cfg.Toolsets, normalizedPipeline)
 }
 
 func loadConfigFromEnv() (*toolsetConfig, error) {
@@ -161,6 +130,56 @@ func loadConfigFromEnv() (*toolsetConfig, error) {
 		Toolsets:  rawCfg.Toolsets,
 	}
 	return cfg, nil
+}
+
+func toolsetConfigSourceConfigured() bool {
+	return strings.TrimSpace(os.Getenv(envToolsetConfigJSON)) != "" ||
+		strings.TrimSpace(os.Getenv(envToolsetConfigPath)) != ""
+}
+
+func resolveToolsetChainByIDs(
+	toolsetIDs []string,
+	toolsetDefinitions map[string]toolsetV,
+	normalizedPipeline string,
+) ([]*v1.OrchestratorToolset, error) {
+	if len(toolsetIDs) == 0 {
+		return nil, invalidConfigf("pipeline=%s mapped toolset chain is empty", normalizedPipeline)
+	}
+	if len(toolsetDefinitions) == 0 {
+		return nil, invalidConfigf("pipeline=%s has no toolset definitions", normalizedPipeline)
+	}
+
+	out := make([]*v1.OrchestratorToolset, 0, len(toolsetIDs))
+	for chainIndex, rawToolsetID := range toolsetIDs {
+		toolsetID := strings.TrimSpace(rawToolsetID)
+		if toolsetID == "" {
+			return nil, invalidConfigf("pipeline=%s has empty toolset_id at index=%d", normalizedPipeline, chainIndex+1)
+		}
+		toolsetPayload, exists := toolsetDefinitions[toolsetID]
+		if !exists {
+			return nil, invalidConfigf("pipeline=%s references missing toolset_id=%s", normalizedPipeline, toolsetID)
+		}
+		if len(toolsetPayload.Providers) == 0 {
+			return nil, invalidConfigf("pipeline=%s toolset=%s has empty providers", normalizedPipeline, toolsetID)
+		}
+
+		resolved := &v1.OrchestratorToolset{
+			ToolsetID: toolsetID,
+			Providers: make([]*v1.OrchestratorToolsetProvider, 0, len(toolsetPayload.Providers)),
+		}
+		for index, provider := range toolsetPayload.Providers {
+			normalizedProvider, normalizeErr := normalizeProvider(provider, toolsetID, index+1)
+			if normalizeErr != nil {
+				return nil, normalizeErr
+			}
+			resolved.Providers = append(resolved.Providers, normalizedProvider)
+		}
+		out = append(out, resolved)
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: pipeline=%s", ErrToolsetNotFound, normalizedPipeline)
+	}
+	return out, nil
 }
 
 func normalizeProvider(provider providerV, toolsetID string, index int) (*v1.OrchestratorToolsetProvider, error) {

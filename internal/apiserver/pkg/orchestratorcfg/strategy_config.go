@@ -27,8 +27,8 @@ var (
 )
 
 type strategyConfig struct {
-	Pipelines map[string]strategyPipelineBinding
-	Toolsets  map[string]toolsetV
+	Pipelines      map[string]strategyPipelineBinding
+	InlineToolsets map[string]toolsetV
 }
 
 type strategyPipelineBinding struct {
@@ -51,41 +51,16 @@ func ResolveStrategy(pipeline string) (*v1.OrchestratorStrategy, error) {
 	if strings.TrimSpace(binding.TemplateID) == "" {
 		return nil, strategyInvalidConfigf("pipeline=%s template_id is empty", normalizedPipeline)
 	}
-	if len(binding.ToolsetIDs) == 0 {
-		return nil, strategyInvalidConfigf("pipeline=%s mapped toolset chain is empty", normalizedPipeline)
+
+	resolvedToolsets, err := resolveStrategyToolsets(normalizedPipeline, binding, cfg.InlineToolsets)
+	if err != nil {
+		return nil, err
 	}
 
 	strategy := &v1.OrchestratorStrategy{
 		Pipeline:   normalizedPipeline,
 		TemplateID: binding.TemplateID,
-		Toolsets:   make([]*v1.OrchestratorToolset, 0, len(binding.ToolsetIDs)),
-	}
-
-	for index, rawToolsetID := range binding.ToolsetIDs {
-		toolsetID := strings.TrimSpace(rawToolsetID)
-		if toolsetID == "" {
-			return nil, strategyInvalidConfigf("pipeline=%s has empty toolset_id at index=%d", normalizedPipeline, index+1)
-		}
-		toolsetPayload, exists := cfg.Toolsets[toolsetID]
-		if !exists {
-			return nil, strategyInvalidConfigf("pipeline=%s references missing toolset_id=%s", normalizedPipeline, toolsetID)
-		}
-		if len(toolsetPayload.Providers) == 0 {
-			return nil, strategyInvalidConfigf("pipeline=%s toolset=%s has empty providers", normalizedPipeline, toolsetID)
-		}
-
-		resolvedToolset := &v1.OrchestratorToolset{
-			ToolsetID: toolsetID,
-			Providers: make([]*v1.OrchestratorToolsetProvider, 0, len(toolsetPayload.Providers)),
-		}
-		for providerIndex, provider := range toolsetPayload.Providers {
-			normalizedProvider, normalizeErr := normalizeStrategyProvider(provider, toolsetID, providerIndex+1)
-			if normalizeErr != nil {
-				return nil, normalizeErr
-			}
-			resolvedToolset.Providers = append(resolvedToolset.Providers, normalizedProvider)
-		}
-		strategy.Toolsets = append(strategy.Toolsets, resolvedToolset)
+		Toolsets:   resolvedToolsets,
 	}
 
 	if err := ensureTemplateRegistered(strategy.TemplateID); err != nil {
@@ -125,9 +100,6 @@ func loadStrategyConfigFromEnv() (*strategyConfig, error) {
 	if rawCfg.Pipelines == nil || len(rawCfg.Pipelines) == 0 {
 		return nil, strategyInvalidConfigf("pipelines is empty")
 	}
-	if rawCfg.Toolsets == nil || len(rawCfg.Toolsets) == 0 {
-		return nil, strategyInvalidConfigf("toolsets is empty")
-	}
 
 	normalizedPipelines := make(map[string]strategyPipelineBinding, len(rawCfg.Pipelines))
 	for pipeline, mapping := range rawCfg.Pipelines {
@@ -147,18 +119,22 @@ func loadStrategyConfigFromEnv() (*strategyConfig, error) {
 	}
 
 	return &strategyConfig{
-		Pipelines: normalizedPipelines,
-		Toolsets:  rawCfg.Toolsets,
+		Pipelines:      normalizedPipelines,
+		InlineToolsets: rawCfg.Toolsets,
 	}, nil
 }
 
 func normalizeStrategyToolsetChain(pipeline string, raw any) ([]string, error) {
+	if raw == nil {
+		return []string{}, nil
+	}
+
 	list, ok := raw.([]any)
 	if !ok {
 		return nil, strategyInvalidConfigf("pipeline=%s toolsets must be list[string]", pipeline)
 	}
 	if len(list) == 0 {
-		return nil, strategyInvalidConfigf("pipeline=%s mapped toolset chain is empty", pipeline)
+		return []string{}, nil
 	}
 
 	chain := make([]string, 0, len(list))
@@ -176,63 +152,37 @@ func normalizeStrategyToolsetChain(pipeline string, raw any) ([]string, error) {
 	return chain, nil
 }
 
-func normalizeStrategyProvider(provider providerV, toolsetID string, index int) (*v1.OrchestratorToolsetProvider, error) {
-	providerType := strings.ToLower(strings.TrimSpace(provider.Type))
-	if providerType == "" {
-		return nil, strategyInvalidConfigf("toolset=%s provider[%d] type is empty", toolsetID, index)
-	}
-	if providerType != providerTypeMCPHTTP && providerType != providerTypeSkills {
-		return nil, strategyInvalidConfigf("toolset=%s provider[%d] unsupported type=%s", toolsetID, index, providerType)
-	}
-
-	allowTools := make([]string, 0, len(provider.AllowTools))
-	seen := make(map[string]struct{}, len(provider.AllowTools))
-	for _, tool := range provider.AllowTools {
-		normalizedTool := strings.TrimSpace(tool)
-		if normalizedTool == "" {
-			return nil, strategyInvalidConfigf("toolset=%s provider[%d] allow_tools contains empty", toolsetID, index)
+func resolveStrategyToolsets(
+	normalizedPipeline string,
+	binding strategyPipelineBinding,
+	inlineToolsetDefinitions map[string]toolsetV,
+) ([]*v1.OrchestratorToolset, error) {
+	// Canonical source: dedicated toolset config (RCA_TOOLSET_CONFIG_JSON/PATH).
+	if toolsetConfigSourceConfigured() {
+		resolvedToolsets, err := ResolveChain(normalizedPipeline)
+		if err != nil {
+			return nil, strategyInvalidConfigf("pipeline=%s resolve toolset config failed: %v", normalizedPipeline, err)
 		}
-		if _, exists := seen[normalizedTool]; exists {
-			continue
+		if len(resolvedToolsets) == 0 {
+			return nil, strategyInvalidConfigf("pipeline=%s mapped toolset chain is empty", normalizedPipeline)
 		}
-		seen[normalizedTool] = struct{}{}
-		allowTools = append(allowTools, normalizedTool)
-	}
-	if len(allowTools) == 0 {
-		return nil, strategyInvalidConfigf("toolset=%s provider[%d] allow_tools is empty", toolsetID, index)
+		return resolvedToolsets, nil
 	}
 
-	name := strings.TrimSpace(provider.Name)
-	if name == "" {
-		name = fmt.Sprintf("%s-%d", providerType, index)
+	// Transitional fallback: strategy inline toolsets for legacy deployments that only ship strategy config.
+	if len(binding.ToolsetIDs) == 0 {
+		return nil, strategyInvalidConfigf(
+			"pipeline=%s mapped toolset chain is empty and %s/%s are not configured",
+			normalizedPipeline,
+			envToolsetConfigJSON,
+			envToolsetConfigPath,
+		)
 	}
-	baseURL := strings.TrimSpace(provider.BaseURL)
-	module := strings.TrimSpace(provider.Module)
-	function := strings.TrimSpace(provider.Function)
-	if function == "" {
-		function = defaultProviderFunction
+	resolvedToolsets, err := resolveToolsetChainByIDs(binding.ToolsetIDs, inlineToolsetDefinitions, normalizedPipeline)
+	if err != nil {
+		return nil, strategyInvalidConfigf("pipeline=%s inline toolset resolve failed: %v", normalizedPipeline, err)
 	}
-	if providerType == providerTypeMCPHTTP && baseURL == "" {
-		return nil, strategyInvalidConfigf("toolset=%s provider[%d] base_url is required", toolsetID, index)
-	}
-	if providerType == providerTypeSkills && module == "" {
-		return nil, strategyInvalidConfigf("toolset=%s provider[%d] module is required", toolsetID, index)
-	}
-
-	out := &v1.OrchestratorToolsetProvider{
-		Type:       providerType,
-		AllowTools: allowTools,
-		Name:       &name,
-		BaseURL:    ptrString(baseURL),
-		Scopes:     ptrString(strings.TrimSpace(provider.Scopes)),
-		Module:     ptrString(module),
-		Function:   ptrString(function),
-	}
-	if provider.TimeoutS != nil && *provider.TimeoutS > 0 {
-		timeout := *provider.TimeoutS
-		out.TimeoutSeconds = &timeout
-	}
-	return out, nil
+	return resolvedToolsets, nil
 }
 
 func ensureTemplateRegistered(templateID string) error {
