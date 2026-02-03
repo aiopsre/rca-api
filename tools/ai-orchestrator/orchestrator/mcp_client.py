@@ -65,8 +65,11 @@ class MCPClient:
         normalized_tool = str(tool).strip()
         if not normalized_tool:
             raise RuntimeError("mcp tool name is required")
-        if get_tool(normalized_tool) is None:
-            raise RuntimeError(f"unsupported mcp tool: {normalized_tool}")
+        local_tool = get_tool(normalized_tool)
+        if local_tool is None:
+            # Local registry is an adapter hint, not runtime truth.
+            # Unknown tool names should still be delegated to server-side validation.
+            pass
         if not self.scopes:
             raise MCPCallError(
                 message=(

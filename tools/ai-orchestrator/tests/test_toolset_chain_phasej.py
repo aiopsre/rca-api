@@ -302,6 +302,7 @@ class RunnerChainObservationTest(unittest.TestCase):
         self.assertEqual(observed["tool"], "toolset.select")
         self.assertEqual(observed["response"]["toolsets"], ["ts_a", "ts_b"])
         self.assertEqual(observed["response"]["source"], "local_override")
+        self.assertEqual(observed["response"]["available_tools"], ["query_logs", "query_metrics"])
 
     def test_runner_missing_toolset_id_fail_fast_before_graph(self) -> None:
         self._assert_runner_fail_fast(

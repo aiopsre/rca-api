@@ -24,6 +24,8 @@ from orchestrator.runtime.toolcall_reporter import ToolCallReporter
 from orchestrator.runtime.verification_runner import VerificationBudget, VerificationRunner
 from orchestrator.sdk.errors import OrchestratorErrorCategory, RCAApiError
 from orchestrator.sdk.runtime_contract import EvidencePublishRequest, ToolCallReportRequest, VerificationReportRequest
+from orchestrator.tooling import ToolInvokeError
+from orchestrator.tooling.invoker import TOOLING_META_KEY
 from orchestrator.tools_rca_api import RCAApiClient
 
 
@@ -496,6 +498,195 @@ class RuntimeToolCallRetryTest(unittest.TestCase):
 
         self.assertEqual(seq, 1)
         self.assertEqual(attempts, [1, 1])
+
+
+class RuntimeQueryToolsetResolutionTest(unittest.TestCase):
+    def test_query_logs_uses_tool_invoker_when_present(self) -> None:
+        class _FakeSession:
+            def __init__(self) -> None:
+                self.headers: dict[str, str] = {}
+
+        class _FakeClient:
+            def __init__(self) -> None:
+                self.session = _FakeSession()
+                self.instance_id = ""
+                self.query_logs_calls = 0
+
+            def query_logs(
+                self,
+                *,
+                datasource_id: str,
+                query: str,
+                start_ts: int,
+                end_ts: int,
+                limit: int,
+            ) -> dict[str, Any]:
+                self.query_logs_calls += 1
+                return {
+                    "queryResultJSON": '{"rows":[{"line":"from-client"}]}',
+                    "resultSizeBytes": 32,
+                    "rowCount": 1,
+                    "isTruncated": False,
+                }
+
+        class _FakeInvoker:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+
+            def call(
+                self,
+                *,
+                tool: str,
+                input_payload: dict[str, Any] | None,
+                idempotency_key: str | None = None,
+            ) -> dict[str, Any]:
+                self.calls.append(
+                    {
+                        "tool": tool,
+                        "input_payload": dict(input_payload or {}),
+                        "idempotency_key": str(idempotency_key or ""),
+                    }
+                )
+                return {
+                    "output": {
+                        "queryResultJSON": '{"rows":[{"line":"from-invoker"}]}',
+                        "resultSizeBytes": 64,
+                        "rowCount": 1,
+                        "isTruncated": False,
+                    },
+                    TOOLING_META_KEY: {
+                        "provider_id": "skills.default",
+                        "provider_type": "skills",
+                        "resolved_from_toolset_id": "ts-default",
+                    },
+                }
+
+        client = _FakeClient()
+        invoker = _FakeInvoker()
+        runtime = OrchestratorRuntime(
+            client=client,
+            job_id="job-q-1",
+            instance_id="orc-q-1",
+            heartbeat_interval_seconds=10,
+            retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0.0, max_delay_seconds=0.0),
+            tool_invoker=invoker,
+        )
+        result = runtime.query_logs(
+            datasource_id="ds-1",
+            query="error",
+            start_ts=10,
+            end_ts=20,
+            limit=100,
+        )
+
+        self.assertEqual(client.query_logs_calls, 0)
+        self.assertEqual(len(invoker.calls), 1)
+        self.assertEqual(invoker.calls[0]["tool"], "mcp.query_logs")
+        self.assertEqual(result["queryResultJSON"], '{"rows":[{"line":"from-invoker"}]}')
+        self.assertEqual(result["rowCount"], 1)
+
+    def test_query_logs_allow_tools_denied_does_not_fallback_to_client(self) -> None:
+        class _FakeSession:
+            def __init__(self) -> None:
+                self.headers: dict[str, str] = {}
+
+        class _FakeClient:
+            def __init__(self) -> None:
+                self.session = _FakeSession()
+                self.instance_id = ""
+                self.query_logs_calls = 0
+
+            def query_logs(
+                self,
+                *,
+                datasource_id: str,
+                query: str,
+                start_ts: int,
+                end_ts: int,
+                limit: int,
+            ) -> dict[str, Any]:
+                self.query_logs_calls += 1
+                return {
+                    "queryResultJSON": '{"rows":[{"line":"from-client"}]}',
+                }
+
+        class _DenyingInvoker:
+            @staticmethod
+            def call(
+                *,
+                tool: str,
+                input_payload: dict[str, Any] | None,
+                idempotency_key: str | None = None,
+            ) -> dict[str, Any]:
+                raise ToolInvokeError("allowlist denied", retryable=False, reason="allow_tools_denied")
+
+        client = _FakeClient()
+        runtime = OrchestratorRuntime(
+            client=client,
+            job_id="job-q-2",
+            instance_id="orc-q-2",
+            heartbeat_interval_seconds=10,
+            retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0.0, max_delay_seconds=0.0),
+            tool_invoker=_DenyingInvoker(),
+        )
+
+        with self.assertRaises(ToolInvokeError):
+            runtime.query_logs(
+                datasource_id="ds-1",
+                query="error",
+                start_ts=10,
+                end_ts=20,
+                limit=100,
+            )
+        self.assertEqual(client.query_logs_calls, 0)
+
+    def test_query_logs_falls_back_to_client_without_tool_invoker(self) -> None:
+        class _FakeSession:
+            def __init__(self) -> None:
+                self.headers: dict[str, str] = {}
+
+        class _FakeClient:
+            def __init__(self) -> None:
+                self.session = _FakeSession()
+                self.instance_id = ""
+                self.query_logs_calls = 0
+
+            def query_logs(
+                self,
+                *,
+                datasource_id: str,
+                query: str,
+                start_ts: int,
+                end_ts: int,
+                limit: int,
+            ) -> dict[str, Any]:
+                self.query_logs_calls += 1
+                return {
+                    "queryResultJSON": '{"rows":[{"line":"from-client"}]}',
+                    "resultSizeBytes": 32,
+                    "rowCount": 1,
+                    "isTruncated": False,
+                }
+
+        client = _FakeClient()
+        runtime = OrchestratorRuntime(
+            client=client,
+            job_id="job-q-3",
+            instance_id="orc-q-3",
+            heartbeat_interval_seconds=10,
+            retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0.0, max_delay_seconds=0.0),
+            tool_invoker=None,
+        )
+        result = runtime.query_logs(
+            datasource_id="ds-1",
+            query="error",
+            start_ts=10,
+            end_ts=20,
+            limit=100,
+        )
+
+        self.assertEqual(client.query_logs_calls, 1)
+        self.assertEqual(result["queryResultJSON"], '{"rows":[{"line":"from-client"}]}')
 
 
 class EvidencePublisherTest(unittest.TestCase):

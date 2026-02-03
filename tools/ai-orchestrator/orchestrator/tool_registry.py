@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Mapping
 
+"""
+Adapter-local MCP tool metadata hints.
+
+Runtime tool availability should be driven by server-resolved strategy/toolset context.
+This module is intentionally scoped to local cache/validation hints and bridge helpers.
+"""
+
 
 RISK_LEVEL_READONLY = "readonly"
 
@@ -131,4 +138,3 @@ def iter_tool_names() -> Iterable[str]:
 
 def get_tool(name: str) -> ToolMetadata | None:
     return _TOOLS_BY_NAME.get(str(name).strip())
-

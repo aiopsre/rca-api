@@ -61,6 +61,15 @@ class ToolInvoker:
     def toolset_id(self) -> str:
         return self._toolset_id
 
+    def allowed_tools(self) -> list[str]:
+        names: set[str] = set()
+        for binding in self._providers:
+            for tool in binding.allow_tools:
+                normalized = str(tool).strip()
+                if normalized:
+                    names.add(normalized)
+        return sorted(names)
+
     def provider_summaries(self) -> list[dict[str, Any]]:
         return [
             {
@@ -68,6 +77,7 @@ class ToolInvoker:
                 "provider_id": binding.name,
                 "provider_type": binding.provider_type,
                 "allow_tools_count": len(binding.allow_tools),
+                "allow_tools": sorted(binding.allow_tools),
             }
             for binding in self._providers
         ]
@@ -110,6 +120,15 @@ class ToolInvokerChain:
     @property
     def toolset_ids(self) -> list[str]:
         return [invoker.toolset_id for invoker in self._toolset_invokers]
+
+    def allowed_tools(self) -> list[str]:
+        names: set[str] = set()
+        for invoker in self._toolset_invokers:
+            for tool in invoker.allowed_tools():
+                normalized = str(tool).strip()
+                if normalized:
+                    names.add(normalized)
+        return sorted(names)
 
     def provider_summaries(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

@@ -269,6 +269,7 @@ def _report_toolset_selection_observation(
         return
 
     providers: list[dict[str, Any]] = []
+    available_tools: list[str] = []
     if tool_invoker is not None:
         provider_summaries = getattr(tool_invoker, "provider_summaries", None)
         if callable(provider_summaries):
@@ -278,6 +279,14 @@ def _report_toolset_selection_observation(
                     providers = [item for item in raw if isinstance(item, dict)]
             except Exception:  # noqa: BLE001
                 providers = []
+        list_allowed_tools = getattr(tool_invoker, "allowed_tools", None)
+        if callable(list_allowed_tools):
+            try:
+                raw_tools = list_allowed_tools()
+                if isinstance(raw_tools, list):
+                    available_tools = [str(item).strip() for item in raw_tools if str(item).strip()]
+            except Exception:  # noqa: BLE001
+                available_tools = []
 
     template_name = str(getattr(template_builder, "__name__", type(template_builder).__name__) or "unknown")
     try:
@@ -294,6 +303,7 @@ def _report_toolset_selection_observation(
                 "toolsets": [str(item).strip() for item in toolsets if str(item).strip()],
                 "source": str(toolset_source).strip(),
                 "providers": providers,
+                "available_tools": available_tools,
             },
             evidence_ids=[],
         )

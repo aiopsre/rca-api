@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import TYPE_CHECKING, Any, Callable
 
 from ..sdk.errors import RCAApiError
@@ -92,6 +93,40 @@ def _is_toolcall_status_conflict(exc: RCAApiError) -> bool:
         "aitoolcallstatusconflict" in envelope_code
         or "can only be written for queued/running jobs" in message
     )
+
+
+def _normalize_query_tool_output(tool: str, payload: dict[str, Any]) -> dict[str, Any]:
+    # Providers may return either query payload directly or MCP envelope shape.
+    query_payload = payload
+    output = payload.get("output")
+    if isinstance(output, dict):
+        query_payload = output
+
+    raw_result = query_payload.get("queryResultJSON")
+    if isinstance(raw_result, str) and raw_result.strip():
+        return query_payload
+
+    if bool(payload.get("truncated")):
+        preview = str(query_payload.get("preview") or "").strip()
+        fallback_payload: dict[str, Any] = {
+            "mcp_truncated": True,
+            "reason": str(query_payload.get("reason") or "max_response_bytes_exceeded"),
+        }
+        if preview:
+            fallback_payload["preview"] = preview
+        warnings = payload.get("warnings")
+        if isinstance(warnings, list) and warnings:
+            fallback_payload["warnings"] = warnings
+
+        fallback_result = json.dumps(fallback_payload, ensure_ascii=False, separators=(",", ":"))
+        return {
+            "queryResultJSON": fallback_result,
+            "resultSizeBytes": len(fallback_result.encode("utf-8")),
+            "rowCount": 0,
+            "isTruncated": True,
+        }
+
+    raise RuntimeError(f"invalid {tool} tool result payload: missing queryResultJSON")
 
 
 class OrchestratorRuntime:
@@ -463,6 +498,30 @@ class OrchestratorRuntime:
     def ensure_datasource(self, ds_base_url: str) -> str:
         return self._execute_with_retry("datasource.ensure", lambda: self._client.ensure_datasource(ds_base_url))
 
+    def _query_via_tool_invoker(
+        self,
+        *,
+        operation: str,
+        tool: str,
+        input_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self._tool_invoker is None:
+            raise RuntimeError("tool invoker is not configured")
+        idempotency_key = f"orchestrator-{operation}-{uuid.uuid4().hex}"
+        raw_result = self._execute_with_retry(
+            operation,
+            lambda: self._tool_invoker.call(
+                tool=tool,
+                input_payload=input_payload,
+                idempotency_key=idempotency_key,
+            ),
+        )
+        if not isinstance(raw_result, dict):
+            raise RuntimeError(f"tool={tool} returned non-dict payload")
+        result = dict(raw_result)
+        result.pop(TOOLING_META_KEY, None)
+        return _normalize_query_tool_output(tool, result)
+
     def query_metrics(
         self,
         *,
@@ -472,6 +531,19 @@ class OrchestratorRuntime:
         end_ts: int,
         step_s: int,
     ) -> dict[str, Any]:
+        request = {
+            "datasource_id": datasource_id,
+            "expr": promql,
+            "time_range_start": {"seconds": int(start_ts), "nanos": 0},
+            "time_range_end": {"seconds": int(end_ts), "nanos": 0},
+            "step_seconds": int(step_s),
+        }
+        if self._tool_invoker is not None:
+            return self._query_via_tool_invoker(
+                operation="query.metrics.tool",
+                tool="mcp.query_metrics",
+                input_payload=request,
+            )
         return self._execute_with_retry(
             "query.metrics",
             lambda: self._client.query_metrics(
@@ -492,6 +564,20 @@ class OrchestratorRuntime:
         end_ts: int,
         limit: int,
     ) -> dict[str, Any]:
+        request = {
+            "datasource_id": datasource_id,
+            "query": query,
+            "query_json": {},
+            "time_range_start": {"seconds": int(start_ts), "nanos": 0},
+            "time_range_end": {"seconds": int(end_ts), "nanos": 0},
+            "limit": int(limit),
+        }
+        if self._tool_invoker is not None:
+            return self._query_via_tool_invoker(
+                operation="query.logs.tool",
+                tool="mcp.query_logs",
+                input_payload=request,
+            )
         return self._execute_with_retry(
             "query.logs",
             lambda: self._client.query_logs(

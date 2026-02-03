@@ -208,6 +208,7 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
         self.assertEqual(observed["tool"], "toolset.select")
         self.assertEqual(observed["response"]["source"], "server_resolve")
         self.assertEqual(observed["response"]["toolsets"], ["ts_one", "ts_two"])
+        self.assertEqual(observed["response"]["available_tools"], ["query_logs", "query_metrics"])
 
 
 if __name__ == "__main__":
