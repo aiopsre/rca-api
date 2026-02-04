@@ -14,6 +14,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -131,6 +132,183 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.NotNil(t, updatedIncident.DiagnosisJSON)
 	require.NotNil(t, updatedIncident.RootCauseType)
 	require.Equal(t, "db", *updatedIncident.RootCauseType)
+}
+
+func TestAIJobRun_BindsExistingIncidentSession(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	sessionSvc := sessionbiz.New(s)
+	ensureResp, err := sessionSvc.EnsureIncidentSession(context.Background(), &sessionbiz.EnsureIncidentSessionRequest{
+		IncidentID: incident.IncidentID,
+		Title:      ptrAIString("incident/" + incident.IncidentID),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ensureResp.Session)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	require.Equal(t, ensureResp.Session.SessionID, strings.TrimSpace(*job.SessionID))
+
+	sessionObj, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", ensureResp.Session.SessionID))
+	require.NoError(t, err)
+	require.NotNil(t, sessionObj.ActiveRunID)
+	require.Equal(t, runResp.JobID, strings.TrimSpace(*sessionObj.ActiveRunID))
+}
+
+func TestAIJobRun_EnsuresIncidentSessionWhenMissing(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	require.NotEmpty(t, strings.TrimSpace(*job.SessionID))
+
+	sessionObj, err := s.SessionContext().GetByIncidentID(context.Background(), incident.IncidentID)
+	require.NoError(t, err)
+	require.Equal(t, strings.TrimSpace(*job.SessionID), sessionObj.SessionID)
+	require.Equal(t, sessionbiz.SessionTypeIncident, sessionObj.SessionType)
+	require.Equal(t, incident.IncidentID, sessionObj.BusinessKey)
+	require.NotNil(t, sessionObj.ActiveRunID)
+	require.Equal(t, runResp.JobID, strings.TrimSpace(*sessionObj.ActiveRunID))
+}
+
+func TestAIJobFinalize_UpdatesSessionContextAndClearsActiveRun(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionObj, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", strings.TrimSpace(*job.SessionID)))
+	require.NoError(t, err)
+	require.NotNil(t, sessionObj.LatestSummaryJSON)
+	require.NotNil(t, sessionObj.PinnedEvidenceJSON)
+	require.Nil(t, sessionObj.ActiveRunID)
+
+	var latest map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*sessionObj.LatestSummaryJSON), &latest))
+	require.Equal(t, "db_pool_exhausted", strings.TrimSpace(anyToString(latest["root_cause_type"])))
+	require.Equal(t, "database pool saturation confirmed", strings.TrimSpace(anyToString(latest["summary"])))
+	require.Equal(t, 0.82, latest["confidence"])
+	refsAny, ok := latest["evidence_refs"].([]any)
+	require.True(t, ok)
+	require.Len(t, refsAny, 2)
+
+	var pinned map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*sessionObj.PinnedEvidenceJSON), &pinned))
+	require.Equal(t, "ai_job_finalize", strings.TrimSpace(anyToString(pinned["source"])))
+	refsAny, ok = pinned["refs"].([]any)
+	require.True(t, ok)
+	require.Len(t, refsAny, 2)
+}
+
+func TestAIJobFinalize_SessionPatchFailureIsBestEffort(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec("DROP TABLE session_contexts").Error)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"service dependency timeout spike",
+			"root_cause":{
+				"category":"dependency",
+				"statement":"downstream timeout rate increased",
+				"confidence":0.5,
+				"evidence_ids":["evidence-1"]
+			}
+		}`),
+	})
+	require.NoError(t, err)
+
+	jobResp, err := biz.Get(context.Background(), &v1.GetAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", jobResp.Job.Status)
 }
 
 func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
@@ -1080,6 +1258,7 @@ func TestAIJobList_ReclaimExpiredLeaseToQueued(t *testing.T) {
 
 func newAIJobTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	store.ResetForTest()
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
@@ -1124,7 +1303,14 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}, &model.EvidenceM{}, &model.DatasourceM{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.AIJobM{},
+		&model.AIJobQueueSignalM{},
+		&model.AIToolCallM{},
+		&model.EvidenceM{},
+		&model.DatasourceM{},
+		&model.SessionContextM{},
+	))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }

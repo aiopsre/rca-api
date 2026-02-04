@@ -10,6 +10,7 @@ type AIJobM struct {
 	ID              int64      `gorm:"column:id;primaryKey;autoIncrement:true" json:"id"`
 	JobID           string     `gorm:"column:job_id;type:varchar(64);uniqueIndex;not null" json:"job_id"`
 	IncidentID      string     `gorm:"column:incident_id;type:varchar(64);index:idx_ai_jobs_incident_id_created_at,priority:1;not null" json:"incident_id"`
+	SessionID       *string    `gorm:"column:session_id;type:varchar(64);index:idx_ai_jobs_session_id_created_at,priority:1" json:"session_id"`
 	Pipeline        string     `gorm:"column:pipeline;not null" json:"pipeline"`
 	Trigger         string     `gorm:"column:trigger;not null" json:"trigger"`
 	Status          string     `gorm:"column:status;type:varchar(32);index:idx_ai_jobs_status_created_at,priority:1;not null" json:"status"`
@@ -26,7 +27,7 @@ type AIJobM struct {
 	LeaseVersion    int64      `gorm:"column:lease_version;not null;default:0" json:"lease_version"`
 	HeartbeatAt     *time.Time `gorm:"column:heartbeat_at" json:"heartbeat_at"`
 	CreatedBy       string     `gorm:"column:created_by;not null" json:"created_by"`
-	CreatedAt       time.Time  `gorm:"column:created_at;type:datetime;index:idx_ai_jobs_incident_id_created_at,priority:2;index:idx_ai_jobs_status_created_at,priority:2;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
+	CreatedAt       time.Time  `gorm:"column:created_at;type:datetime;index:idx_ai_jobs_incident_id_created_at,priority:2;index:idx_ai_jobs_status_created_at,priority:2;index:idx_ai_jobs_session_id_created_at,priority:2;not null;default:CURRENT_TIMESTAMP" json:"created_at"`
 	StartedAt       *time.Time `gorm:"column:started_at" json:"started_at"`
 	FinishedAt      *time.Time `gorm:"column:finished_at" json:"finished_at"`
 	UpdatedAt       time.Time  `gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP" json:"updated_at"`
