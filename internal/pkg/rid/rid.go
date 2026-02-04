@@ -33,6 +33,8 @@ const (
 	OperatorActionID ResourceID = "operator-action"
 	// VerificationRunID defines verification-run resource identifier.
 	VerificationRunID ResourceID = "verification-run"
+	// SessionID defines session context resource identifier.
+	SessionID ResourceID = "session"
 )
 
 // String 将资源标识符转换为字符串.

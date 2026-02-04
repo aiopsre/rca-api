@@ -43,6 +43,7 @@ type IStore interface {
 	NoticeDelivery() NoticeDeliveryStore
 	IncidentActionLog() IncidentActionLogStore
 	IncidentVerificationRun() IncidentVerificationRunStore
+	SessionContext() SessionContextStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -166,4 +167,8 @@ func (s *store) IncidentActionLog() IncidentActionLogStore {
 
 func (s *store) IncidentVerificationRun() IncidentVerificationRunStore {
 	return newIncidentVerificationRunStore(s)
+}
+
+func (s *store) SessionContext() SessionContextStore {
+	return newSessionContextStore(s)
 }

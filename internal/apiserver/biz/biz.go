@@ -13,6 +13,7 @@ import (
 	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
 	orchestratortemplatev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_template"
 	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
+	sessionv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
 	"github.com/google/wire"
 
@@ -34,6 +35,7 @@ type IBiz interface {
 	OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz
 	OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz
 	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
+	SessionV1() sessionv1.SessionBiz
 	SilenceV1() silencev1.SilenceBiz
 	NoticeV1() noticev1.NoticeBiz
 	Close() error
@@ -59,6 +61,8 @@ type biz struct {
 	orchestratorTemplateBiz  orchestratortemplatev1.TemplateBiz
 	orchestratorToolsetOnce  sync.Once
 	orchestratorToolsetBiz   orchestratortoolsetv1.ToolsetBiz
+	sessionOnce              sync.Once
+	sessionBiz               sessionv1.SessionBiz
 	silenceOnce              sync.Once
 	silenceBiz               silencev1.SilenceBiz
 	noticeOnce               sync.Once
@@ -132,6 +136,13 @@ func (b *biz) OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz {
 	return b.orchestratorToolsetBiz
 }
 
+func (b *biz) SessionV1() sessionv1.SessionBiz {
+	b.sessionOnce.Do(func() {
+		b.sessionBiz = sessionv1.New(b.store)
+	})
+	return b.sessionBiz
+}
+
 func (b *biz) SilenceV1() silencev1.SilenceBiz {
 	b.silenceOnce.Do(func() {
 		b.silenceBiz = silencev1.New(b.store)
@@ -160,6 +171,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.orchestratorStrategyBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorTemplateBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)
+		errs = appendCloseIfSupported(errs, b.sessionBiz)
 		errs = appendCloseIfSupported(errs, b.silenceBiz)
 		errs = appendCloseIfSupported(errs, b.noticeBiz)
 		b.closeErr = errors.Join(errs...)

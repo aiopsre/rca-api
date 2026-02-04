@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
@@ -77,6 +79,7 @@ type IncidentExpansion interface{}
 type incidentBiz struct {
 	store       store.IStore
 	runAIJobBiz aijobbiz.AIJobBiz
+	sessionBiz  sessionbiz.SessionBiz
 }
 
 type SearchIncidentsRequest struct {
@@ -123,6 +126,7 @@ func New(store store.IStore) *incidentBiz {
 	return &incidentBiz{
 		store:       store,
 		runAIJobBiz: aijobbiz.New(store),
+		sessionBiz:  sessionbiz.New(store),
 	}
 }
 
@@ -170,11 +174,40 @@ func (b *incidentBiz) Create(ctx context.Context, rq *apiv1.CreateIncidentReques
 	if err := b.store.Incident().Create(ctx, &m); err != nil { // store 已经提供 Incident().Create :contentReference[oaicite:9]{index=9}
 		return nil, err
 	}
+	b.ensureIncidentSessionBestEffort(ctx, &m)
 
 	// 5) 返回事件单 ID（AfterCreate hook 会生成并回写，所以这里拿得到）:contentReference[oaicite:10]{index=10}
 	return &apiv1.CreateIncidentResponse{
 		IncidentID: m.IncidentID,
 	}, nil
+}
+
+func (b *incidentBiz) ensureIncidentSessionBestEffort(ctx context.Context, incident *model.IncidentM) {
+	if b == nil || b.sessionBiz == nil || incident == nil {
+		return
+	}
+	incidentID := strings.TrimSpace(incident.IncidentID)
+	if incidentID == "" {
+		return
+	}
+
+	var title *string
+	if v := strings.TrimSpace(incident.Service); v != "" {
+		title = &v
+	} else if v := strings.TrimSpace(incident.WorkloadName); v != "" {
+		title = &v
+	}
+
+	if _, err := b.sessionBiz.EnsureIncidentSession(ctx, &sessionbiz.EnsureIncidentSessionRequest{
+		IncidentID: incidentID,
+		Title:      title,
+	}); err != nil {
+		// Session is introduced as internal additive capability: do not break existing incident create path.
+		slog.WarnContext(ctx, "incident session ensure failed",
+			"incident_id", incidentID,
+			"error", err,
+		)
+	}
 }
 
 func (b *incidentBiz) Get(ctx context.Context, rq *apiv1.GetIncidentRequest) (*apiv1.GetIncidentResponse, error) {
