@@ -19,7 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
@@ -87,7 +87,7 @@ type alertEventBiz struct {
 	store          store.IStore
 	ingestPipeline *alertingingest.Pipeline
 	rolloutConfig  alertingingest.RolloutConfig
-	runAIJobBiz    aijobbiz.AIJobBiz
+	triggerBiz     triggerbiz.TriggerBiz
 	closeOnce      sync.Once
 	closeErr       error
 }
@@ -116,7 +116,7 @@ func New(store store.IStore) *alertEventBiz {
 		store:          store,
 		ingestPipeline: pipeline,
 		rolloutConfig:  runtimeCfg.Rollout,
-		runAIJobBiz:    aijobbiz.New(store),
+		triggerBiz:     triggerbiz.New(store),
 	}
 }
 

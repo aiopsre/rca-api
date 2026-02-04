@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -33,7 +34,7 @@ func (b *alertEventBiz) maybeTriggerOnIngestAIJob(
 	if blockByIngestPolicy(ctx, incidentID, mergeResult, silenced, suppressIncident) {
 		return
 	}
-	if b.runAIJobBiz == nil || incidentID == "" {
+	if b.triggerBiz == nil || incidentID == "" {
 		return
 	}
 
@@ -106,7 +107,26 @@ func (b *alertEventBiz) triggerOnIngestAIJob(ctx context.Context, incidentID str
 		return
 	}
 
-	runResp, err := b.runAIJobBiz.Run(ctx, runReq)
+	triggerResp, err := b.triggerBiz.Dispatch(ctx, &triggerbiz.TriggerRequest{
+		TriggerType: triggerbiz.TriggerTypeAlert,
+		Source:      "alert_ingest",
+		BusinessKey: strings.TrimSpace(incidentID),
+		IncidentHint: &triggerbiz.IncidentHint{
+			IncidentID: incidentID,
+		},
+		Payload: map[string]any{
+			"trigger":       plan.Trigger,
+			"decision":      plan.Decision,
+			"rule_name":     plan.RuleName,
+			"policy_source": plan.PolicySource,
+		},
+		DesiredPipeline: runReq.Pipeline,
+		TimeRange: &triggerbiz.TriggerTimeRange{
+			Start: plan.TimeRangeStart,
+			End:   plan.TimeRangeEnd,
+		},
+		RunRequest: runReq,
+	})
 	if err != nil {
 		if errors.Is(err, errno.ErrAIJobAlreadyRunning) {
 			slog.InfoContext(ctx, "on_ingest run plan already running",
@@ -130,11 +150,21 @@ func (b *alertEventBiz) triggerOnIngestAIJob(ctx context.Context, incidentID str
 		)
 		return
 	}
+	if triggerResp == nil {
+		slog.WarnContext(ctx, "on_ingest run plan trigger returned empty response",
+			"request_id", contextx.RequestID(ctx),
+			"incident_id", incidentID,
+			"trigger", plan.Trigger,
+			"rule", plan.RuleName,
+			"policy_source", plan.PolicySource,
+		)
+		return
+	}
 
 	slog.InfoContext(ctx, "on_ingest run plan triggered",
 		"request_id", contextx.RequestID(ctx),
 		"incident_id", incidentID,
-		"job_id", runResp.GetJobID(),
+		"job_id", triggerResp.JobID,
 		"trigger", plan.Trigger,
 		"decision", plan.Decision,
 		"rule", plan.RuleName,

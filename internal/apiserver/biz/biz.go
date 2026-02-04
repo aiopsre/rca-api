@@ -15,6 +15,7 @@ import (
 	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
 	sessionv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
+	triggerv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/google/wire"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
@@ -37,6 +38,7 @@ type IBiz interface {
 	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
 	SessionV1() sessionv1.SessionBiz
 	SilenceV1() silencev1.SilenceBiz
+	TriggerV1() triggerv1.TriggerBiz
 	NoticeV1() noticev1.NoticeBiz
 	Close() error
 }
@@ -65,6 +67,8 @@ type biz struct {
 	sessionBiz               sessionv1.SessionBiz
 	silenceOnce              sync.Once
 	silenceBiz               silencev1.SilenceBiz
+	triggerOnce              sync.Once
+	triggerBiz               triggerv1.TriggerBiz
 	noticeOnce               sync.Once
 	noticeBiz                noticev1.NoticeBiz
 
@@ -150,6 +154,13 @@ func (b *biz) SilenceV1() silencev1.SilenceBiz {
 	return b.silenceBiz
 }
 
+func (b *biz) TriggerV1() triggerv1.TriggerBiz {
+	b.triggerOnce.Do(func() {
+		b.triggerBiz = triggerv1.New(b.store)
+	})
+	return b.triggerBiz
+}
+
 func (b *biz) NoticeV1() noticev1.NoticeBiz {
 	b.noticeOnce.Do(func() {
 		b.noticeBiz = noticev1.New(b.store)
@@ -173,6 +184,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)
 		errs = appendCloseIfSupported(errs, b.sessionBiz)
 		errs = appendCloseIfSupported(errs, b.silenceBiz)
+		errs = appendCloseIfSupported(errs, b.triggerBiz)
 		errs = appendCloseIfSupported(errs, b.noticeBiz)
 		b.closeErr = errors.Join(errs...)
 	})

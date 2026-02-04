@@ -13,6 +13,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/core"
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
@@ -48,7 +49,24 @@ func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.biz.AIJobV1().Run(c.Request.Context(), &req)
+	triggerResp, err := h.biz.TriggerV1().Dispatch(c.Request.Context(), &triggerbiz.TriggerRequest{
+		TriggerType: triggerbiz.TriggerTypeManual,
+		Source:      "manual_api",
+		BusinessKey: req.GetIncidentID(),
+		IncidentHint: &triggerbiz.IncidentHint{
+			IncidentID: req.GetIncidentID(),
+		},
+		DesiredPipeline: req.Pipeline,
+		TimeRange: &triggerbiz.TriggerTimeRange{
+			Start: req.GetTimeRangeStart().AsTime(),
+			End:   req.GetTimeRangeEnd().AsTime(),
+		},
+		RunRequest: &req,
+	})
+	resp := &v1.RunAIJobResponse{}
+	if triggerResp != nil {
+		resp.JobID = triggerResp.JobID
+	}
 	if err == nil {
 		h.jobQueueNotifier.Notify()
 		if h.jobQueueWakeup != nil {

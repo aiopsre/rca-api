@@ -5,15 +5,14 @@ import (
 	"testing"
 	"time"
 
-	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
-	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/stretchr/testify/require"
 )
 
 func TestMaybeTriggerOnIngestAIJob_BlockedWhenSilenced(t *testing.T) {
-	fake := &fakeAIJobBizForRunPlan{}
-	biz := &alertEventBiz{runAIJobBiz: fake}
+	fake := &fakeTriggerBizForRunPlan{}
+	biz := &alertEventBiz{triggerBiz: fake}
 	in := &ingestInput{
 		alertName:  "cpu_high",
 		severity:   "p1",
@@ -30,12 +29,12 @@ func TestMaybeTriggerOnIngestAIJob_BlockedWhenSilenced(t *testing.T) {
 	biz.maybeTriggerOnIngestAIJob(context.Background(), "incident-1", in, "current_created", true, false)
 
 	require.False(t, evalCalled)
-	require.Equal(t, 0, fake.runCalls)
+	require.Equal(t, 0, fake.dispatchCalls)
 }
 
 func TestMaybeTriggerOnIngestAIJob_BlockedWhenSuppressIncident(t *testing.T) {
-	fake := &fakeAIJobBizForRunPlan{}
-	biz := &alertEventBiz{runAIJobBiz: fake}
+	fake := &fakeTriggerBizForRunPlan{}
+	biz := &alertEventBiz{triggerBiz: fake}
 	in := &ingestInput{
 		alertName:  "cpu_high",
 		severity:   "p1",
@@ -52,14 +51,14 @@ func TestMaybeTriggerOnIngestAIJob_BlockedWhenSuppressIncident(t *testing.T) {
 	biz.maybeTriggerOnIngestAIJob(context.Background(), "incident-2", in, "current_updated", false, true)
 
 	require.False(t, evalCalled)
-	require.Equal(t, 0, fake.runCalls)
+	require.Equal(t, 0, fake.dispatchCalls)
 }
 
 func TestMaybeTriggerOnIngestAIJob_NotBlockedContinuesEvaluateAndRun(t *testing.T) {
-	fake := &fakeAIJobBizForRunPlan{
-		runResp: &v1.RunAIJobResponse{JobID: "ai-job-on-ingest-1"},
+	fake := &fakeTriggerBizForRunPlan{
+		dispatchResp: &triggerbiz.TriggerResult{JobID: "ai-job-on-ingest-1"},
 	}
-	biz := &alertEventBiz{runAIJobBiz: fake}
+	biz := &alertEventBiz{triggerBiz: fake}
 	now := time.Now().UTC().Truncate(time.Second)
 	in := &ingestInput{
 		alertName:  "cpu_high",
@@ -85,9 +84,13 @@ func TestMaybeTriggerOnIngestAIJob_NotBlockedContinuesEvaluateAndRun(t *testing.
 	biz.maybeTriggerOnIngestAIJob(context.Background(), "incident-3", in, "current_updated", false, false)
 
 	require.True(t, evalCalled)
-	require.Equal(t, 1, fake.runCalls)
-	require.NotNil(t, fake.lastRunRequest)
-	require.Equal(t, "incident-3", fake.lastRunRequest.GetIncidentID())
+	require.Equal(t, 1, fake.dispatchCalls)
+	require.NotNil(t, fake.lastDispatchRequest)
+	require.Equal(t, "incident-3", fake.lastDispatchRequest.IncidentHint.IncidentID)
+	require.NotNil(t, fake.lastDispatchRequest.RunRequest)
+	require.Equal(t, "incident-3", fake.lastDispatchRequest.RunRequest.GetIncidentID())
+	require.Equal(t, "alert_ingest", fake.lastDispatchRequest.Source)
+	require.Equal(t, triggerbiz.TriggerTypeAlert, fake.lastDispatchRequest.TriggerType)
 }
 
 func withEvaluateOnIngestRunPlanForTest(fn func(context.Context, alertingpolicy.EvaluateInput) (alertingpolicy.RunPlan, error)) func() {
@@ -98,68 +101,29 @@ func withEvaluateOnIngestRunPlanForTest(fn func(context.Context, alertingpolicy.
 	}
 }
 
-type fakeAIJobBizForRunPlan struct {
-	runCalls       int
-	lastRunRequest *v1.RunAIJobRequest
-	runResp        *v1.RunAIJobResponse
-	runErr         error
+type fakeTriggerBizForRunPlan struct {
+	dispatchCalls       int
+	lastDispatchRequest *triggerbiz.TriggerRequest
+	dispatchResp        *triggerbiz.TriggerResult
+	dispatchErr         error
 }
 
-var _ aijobbiz.AIJobBiz = (*fakeAIJobBizForRunPlan)(nil)
+var _ triggerbiz.TriggerBiz = (*fakeTriggerBizForRunPlan)(nil)
 
-func (f *fakeAIJobBizForRunPlan) Run(_ context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error) {
-	f.runCalls++
-	f.lastRunRequest = rq
-	if f.runResp == nil {
-		f.runResp = &v1.RunAIJobResponse{JobID: "ai-job-fake"}
+func (f *fakeTriggerBizForRunPlan) Dispatch(
+	_ context.Context,
+	rq *triggerbiz.TriggerRequest,
+) (*triggerbiz.TriggerResult, error) {
+	f.dispatchCalls++
+	f.lastDispatchRequest = rq
+	if f.dispatchResp == nil {
+		f.dispatchResp = &triggerbiz.TriggerResult{
+			IncidentID: "incident-fake",
+			JobID:      "ai-job-fake",
+			Pipeline:   "basic_rca",
+			Created:    true,
+			Message:    "trigger_routed",
+		}
 	}
-	return f.runResp, f.runErr
-}
-
-func (f *fakeAIJobBizForRunPlan) Get(context.Context, *v1.GetAIJobRequest) (*v1.GetAIJobResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) List(context.Context, *v1.ListAIJobsRequest) (*v1.ListAIJobsResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) QueueSignalVersion(context.Context) (int64, error) {
-	return 0, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) ListByIncident(context.Context, *v1.ListIncidentAIJobsRequest) (*v1.ListIncidentAIJobsResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) Start(context.Context, *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) Renew(context.Context, *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) Cancel(context.Context, *v1.CancelAIJobRequest) (*v1.CancelAIJobResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) Finalize(context.Context, *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) CreateToolCall(context.Context, *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) ListToolCalls(context.Context, *v1.ListAIToolCallsRequest) (*v1.ListAIToolCallsResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) SearchToolCalls(context.Context, *aijobbiz.SearchToolCallsRequest) (*aijobbiz.SearchToolCallsResponse, error) {
-	return nil, nil
-}
-
-func (f *fakeAIJobBizForRunPlan) RecordToolCallAudit(context.Context, *aijobbiz.RecordToolCallAuditRequest) (string, error) {
-	return "", nil
+	return f.dispatchResp, f.dispatchErr
 }
