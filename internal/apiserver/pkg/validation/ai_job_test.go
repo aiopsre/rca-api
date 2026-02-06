@@ -24,6 +24,27 @@ func TestValidateRunAIJobRequest_InvalidTrigger(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestValidateRunAIJobRequest_ReplayAndFollowUp(t *testing.T) {
+	val := &Validator{}
+	now := time.Now().UTC()
+
+	err := val.ValidateRunAIJobRequest(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     "incident-1",
+		Trigger:        ptrValidationString("replay"),
+		TimeRangeStart: timestamppb.New(now.Add(-10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(now),
+	})
+	require.NoError(t, err)
+
+	err = val.ValidateRunAIJobRequest(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     "incident-1",
+		Trigger:        ptrValidationString("follow_up"),
+		TimeRangeStart: timestamppb.New(now.Add(-10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(now),
+	})
+	require.NoError(t, err)
+}
+
 func TestValidateFinalizeAIJobRequest_SucceededRequiresDiagnosis(t *testing.T) {
 	val := &Validator{}
 

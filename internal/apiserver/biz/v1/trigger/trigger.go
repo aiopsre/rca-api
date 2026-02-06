@@ -21,20 +21,28 @@ import (
 )
 
 const (
-	TriggerTypeAlert  = "alert"
-	TriggerTypeManual = "manual"
+	TriggerTypeAlert    = "alert"
+	TriggerTypeManual   = "manual"
+	TriggerTypeReplay   = "replay"
+	TriggerTypeFollowUp = "follow_up"
 
 	defaultPipeline = "basic_rca"
 	defaultMessage  = "trigger_routed"
 )
 
 var allowedTriggerTypes = map[string]struct{}{
-	TriggerTypeAlert:  {},
-	TriggerTypeManual: {},
+	TriggerTypeAlert:    {},
+	TriggerTypeManual:   {},
+	TriggerTypeReplay:   {},
+	TriggerTypeFollowUp: {},
 }
 
 type IncidentHint struct {
 	IncidentID string
+}
+
+type SessionHint struct {
+	SessionID string
 }
 
 type TriggerTimeRange struct {
@@ -50,6 +58,7 @@ type TriggerRequest struct {
 	BusinessKey string
 
 	IncidentHint *IncidentHint
+	SessionHint  *SessionHint
 	Payload      map[string]any
 	Initiator    *string
 
@@ -90,6 +99,7 @@ type aiJobRunner interface {
 
 type incidentSessionEnsurer interface {
 	EnsureIncidentSession(ctx context.Context, rq *sessionbiz.EnsureIncidentSessionRequest) (*sessionbiz.ResolveOrCreateResponse, error)
+	Get(ctx context.Context, rq *sessionbiz.GetSessionContextRequest) (*sessionbiz.GetSessionContextResponse, error)
 }
 
 type triggerBiz struct {
@@ -121,13 +131,12 @@ func (b *triggerBiz) Dispatch(ctx context.Context, rq *TriggerRequest) (*Trigger
 	if err != nil {
 		return nil, err
 	}
-	incident, err := b.getIncident(ctx, normalized.incidentID)
+	incident, resolvedSessionID, err := b.resolveExecutionContext(ctx, normalized)
 	if err != nil {
 		return nil, err
 	}
 
-	sessionID := b.ensureIncidentSessionIDBestEffort(ctx, incident)
-	runReq, err := normalized.toRunAIJobRequest()
+	runReq, err := normalized.toRunAIJobRequest(incident.IncidentID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +147,7 @@ func (b *triggerBiz) Dispatch(ctx context.Context, rq *TriggerRequest) (*Trigger
 	}
 
 	result := &TriggerResult{
-		SessionID:  sessionID,
+		SessionID:  resolvedSessionID,
 		IncidentID: incident.IncidentID,
 		JobID:      strings.TrimSpace(runResp.GetJobID()),
 		Pipeline:   strings.TrimSpace(runReq.GetPipeline()),
@@ -159,6 +168,44 @@ func (b *triggerBiz) Dispatch(ctx context.Context, rq *TriggerRequest) (*Trigger
 	return result, nil
 }
 
+func (b *triggerBiz) resolveExecutionContext(
+	ctx context.Context,
+	rq *normalizedTriggerRequest,
+) (*model.IncidentM, string, error) {
+	if rq == nil {
+		return nil, "", errorsx.ErrInvalidArgument
+	}
+
+	incidentID := strings.TrimSpace(rq.incidentID)
+	sessionID := strings.TrimSpace(rq.sessionID)
+
+	if sessionID != "" {
+		sessionObj, err := b.getSession(ctx, sessionID)
+		if err != nil {
+			return nil, "", err
+		}
+		sessionID = strings.TrimSpace(sessionObj.SessionID)
+		derivedIncidentID := incidentIDFromSession(sessionObj)
+		if incidentID == "" {
+			incidentID = derivedIncidentID
+		} else if derivedIncidentID != "" && derivedIncidentID != incidentID {
+			return nil, "", errorsx.ErrInvalidArgument
+		}
+	}
+	if incidentID == "" {
+		return nil, "", errorsx.ErrInvalidArgument
+	}
+
+	incident, err := b.getIncident(ctx, incidentID)
+	if err != nil {
+		return nil, "", err
+	}
+	if sessionID == "" {
+		sessionID = b.ensureIncidentSessionIDBestEffort(ctx, incident)
+	}
+	return incident, sessionID, nil
+}
+
 func (b *triggerBiz) getIncident(ctx context.Context, incidentID string) (*model.IncidentM, error) {
 	if b == nil || b.incidentStore == nil {
 		return nil, errorsx.ErrInvalidArgument
@@ -171,6 +218,26 @@ func (b *triggerBiz) getIncident(ctx context.Context, incidentID string) (*model
 		return nil, errno.ErrIncidentGetFailed
 	}
 	return incident, nil
+}
+
+func (b *triggerBiz) getSession(ctx context.Context, sessionID string) (*model.SessionContextM, error) {
+	if b == nil || b.sessionBiz == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	resp, err := b.sessionBiz.Get(ctx, &sessionbiz.GetSessionContextRequest{
+		SessionID: strPtr(sessionID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || resp.Session == nil {
+		return nil, errno.ErrSessionContextNotFound
+	}
+	return resp.Session, nil
 }
 
 func (b *triggerBiz) ensureIncidentSessionIDBestEffort(ctx context.Context, incident *model.IncidentM) string {
@@ -212,7 +279,10 @@ type normalizedTriggerRequest struct {
 	businessKey string
 	initiator   string
 	incidentID  string
+	sessionID   string
 	runRequest  *v1.RunAIJobRequest
+	timeRange   *TriggerTimeRange
+	pipeline    *string
 }
 
 func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, error) {
@@ -229,16 +299,17 @@ func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, err
 		source = triggerType
 	}
 	businessKey := strings.TrimSpace(rq.BusinessKey)
-	incidentID := resolveIncidentID(rq, businessKey)
-	if incidentID == "" {
+	incidentID := resolveIncidentID(rq, triggerType, businessKey)
+	sessionID := resolveSessionID(rq)
+	if !hasValidAnchor(triggerType, incidentID, sessionID) {
 		return nil, errorsx.ErrInvalidArgument
 	}
-	initiator := resolveInitiator(rq)
-
-	runReq, err := buildRunRequest(rq, triggerType, incidentID)
-	if err != nil {
-		return nil, err
+	if incidentID == "" {
+		if triggerType == TriggerTypeAlert || triggerType == TriggerTypeManual {
+			return nil, errorsx.ErrInvalidArgument
+		}
 	}
+	initiator := resolveInitiator(rq)
 
 	return &normalizedTriggerRequest{
 		triggerType: triggerType,
@@ -246,11 +317,25 @@ func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, err
 		businessKey: businessKey,
 		initiator:   initiator,
 		incidentID:  incidentID,
-		runRequest:  runReq,
+		sessionID:   sessionID,
+		runRequest:  cloneRunRequest(rq.RunRequest),
+		timeRange:   rq.TimeRange,
+		pipeline:    rq.DesiredPipeline,
 	}, nil
 }
 
-func resolveIncidentID(rq *TriggerRequest, businessKey string) string {
+func hasValidAnchor(triggerType string, incidentID string, sessionID string) bool {
+	incidentID = strings.TrimSpace(incidentID)
+	sessionID = strings.TrimSpace(sessionID)
+	switch triggerType {
+	case TriggerTypeReplay, TriggerTypeFollowUp:
+		return incidentID != "" || sessionID != ""
+	default:
+		return incidentID != ""
+	}
+}
+
+func resolveIncidentID(rq *TriggerRequest, triggerType string, businessKey string) string {
 	if rq == nil {
 		return ""
 	}
@@ -264,28 +349,55 @@ func resolveIncidentID(rq *TriggerRequest, businessKey string) string {
 			return value
 		}
 	}
+	if triggerType == TriggerTypeReplay || triggerType == TriggerTypeFollowUp {
+		return ""
+	}
 	// Transitional fallback: allow business_key to carry incident id when explicit hint is absent.
 	return strings.TrimSpace(businessKey)
 }
 
-func buildRunRequest(rq *TriggerRequest, triggerType string, incidentID string) (*v1.RunAIJobRequest, error) {
-	runReq := cloneRunRequest(rq.RunRequest)
+func resolveSessionID(rq *TriggerRequest) string {
+	if rq == nil {
+		return ""
+	}
+	if rq.SessionHint != nil {
+		if value := strings.TrimSpace(rq.SessionHint.SessionID); value != "" {
+			return value
+		}
+	}
+	if rq.Payload != nil {
+		if raw, ok := rq.Payload["session_id"]; ok {
+			if value := strings.TrimSpace(anyToString(raw)); value != "" {
+				return value
+			}
+		}
+		if raw, ok := rq.Payload["sessionID"]; ok {
+			if value := strings.TrimSpace(anyToString(raw)); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func buildRunRequest(r *normalizedTriggerRequest, incidentID string) (*v1.RunAIJobRequest, error) {
+	runReq := cloneRunRequest(r.runRequest)
 	if runReq == nil {
 		runReq = &v1.RunAIJobRequest{}
 	}
 	runReq.IncidentID = incidentID
 
-	if pipeline := trimOptional(rq.DesiredPipeline); pipeline != "" {
+	if pipeline := trimOptional(r.pipeline); pipeline != "" {
 		runReq.Pipeline = strPtr(pipeline)
 	} else if trimOptional(runReq.Pipeline) == "" {
 		runReq.Pipeline = strPtr(defaultPipeline)
 	}
 
 	if trigger := trimOptional(runReq.Trigger); trigger == "" {
-		runReq.Trigger = strPtr(defaultTriggerByType(triggerType))
+		runReq.Trigger = strPtr(defaultTriggerByType(r.triggerType))
 	}
 
-	applyTimeRange(runReq, rq.TimeRange)
+	applyTimeRange(runReq, r.timeRange)
 	start := runReq.GetTimeRangeStart().AsTime().UTC()
 	end := runReq.GetTimeRangeEnd().AsTime().UTC()
 	if start.IsZero() || end.IsZero() || start.After(end) {
@@ -334,6 +446,10 @@ func defaultTriggerByType(triggerType string) string {
 	switch strings.ToLower(strings.TrimSpace(triggerType)) {
 	case TriggerTypeAlert:
 		return "on_ingest"
+	case TriggerTypeReplay:
+		return TriggerTypeReplay
+	case TriggerTypeFollowUp:
+		return TriggerTypeFollowUp
 	default:
 		return "manual"
 	}
@@ -362,11 +478,11 @@ func cloneRunRequest(in *v1.RunAIJobRequest) *v1.RunAIJobRequest {
 	return &cloned
 }
 
-func (r *normalizedTriggerRequest) toRunAIJobRequest() (*v1.RunAIJobRequest, error) {
-	if r == nil || r.runRequest == nil {
+func (r *normalizedTriggerRequest) toRunAIJobRequest(incidentID string) (*v1.RunAIJobRequest, error) {
+	if r == nil {
 		return nil, errorsx.ErrInvalidArgument
 	}
-	return r.runRequest, nil
+	return buildRunRequest(r, incidentID)
 }
 
 func trimOptional(ptr *string) string {
@@ -382,4 +498,26 @@ func strPtr(v string) *string {
 		return nil
 	}
 	return &value
+}
+
+func incidentIDFromSession(sessionObj *model.SessionContextM) string {
+	if sessionObj == nil {
+		return ""
+	}
+	if value := trimOptional(sessionObj.IncidentID); value != "" {
+		return value
+	}
+	if strings.TrimSpace(sessionObj.SessionType) == sessionbiz.SessionTypeIncident {
+		return strings.TrimSpace(sessionObj.BusinessKey)
+	}
+	return ""
+}
+
+func anyToString(value any) string {
+	switch in := value.(type) {
+	case string:
+		return in
+	default:
+		return ""
+	}
 }

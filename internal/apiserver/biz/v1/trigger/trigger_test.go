@@ -106,6 +106,102 @@ func TestDispatchAlert_DefaultsPipelineAndTrigger(t *testing.T) {
 	require.Equal(t, "alert_ingest", runner.lastTriggerSource)
 }
 
+func TestDispatchReplay_ResolvesIncidentFromSessionID(t *testing.T) {
+	incident := &model.IncidentM{IncidentID: "incident-replay-1"}
+	incidentStore := &fakeIncidentStore{incident: incident}
+	runner := &fakeAIJobRunner{resp: &v1.RunAIJobResponse{JobID: "ai-job-replay-1"}}
+	sessionSvc := &fakeSessionEnsurer{
+		getResp: &sessionbiz.GetSessionContextResponse{
+			Session: &model.SessionContextM{
+				SessionID:   "session-replay-1",
+				SessionType: sessionbiz.SessionTypeIncident,
+				BusinessKey: incident.IncidentID,
+				IncidentID:  strPtr(incident.IncidentID),
+			},
+		},
+	}
+	biz := newWithDeps(incidentStore, runner, sessionSvc)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-45 * time.Minute)
+	resp, err := biz.Dispatch(context.Background(), &TriggerRequest{
+		TriggerType: TriggerTypeReplay,
+		Source:      "replay_api",
+		BusinessKey: "replay:session-replay-1",
+		SessionHint: &SessionHint{
+			SessionID: "session-replay-1",
+		},
+		Initiator: strPtr("user:replay"),
+		TimeRange: &TriggerTimeRange{
+			Start: start,
+			End:   end,
+		},
+		RunRequest: &v1.RunAIJobRequest{
+			TimeRangeStart: timestamppb.New(start),
+			TimeRangeEnd:   timestamppb.New(end),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, incident.IncidentID, resp.IncidentID)
+	require.Equal(t, "session-replay-1", resp.SessionID)
+	require.Equal(t, "ai-job-replay-1", resp.JobID)
+
+	require.Equal(t, 0, sessionSvc.calls)
+	require.Equal(t, 1, sessionSvc.getCalls)
+	require.NotNil(t, runner.lastReq)
+	require.Equal(t, incident.IncidentID, runner.lastReq.GetIncidentID())
+	require.Equal(t, TriggerTypeReplay, runner.lastReq.GetTrigger())
+	require.Equal(t, TriggerTypeReplay, runner.lastTriggerType)
+	require.Equal(t, "replay_api", runner.lastTriggerSource)
+	require.Equal(t, "user:replay", runner.lastInitiator)
+}
+
+func TestDispatchFollowUp_UsesIncidentAndEnsuresSession(t *testing.T) {
+	incident := &model.IncidentM{IncidentID: "incident-follow-up-1"}
+	incidentStore := &fakeIncidentStore{incident: incident}
+	runner := &fakeAIJobRunner{resp: &v1.RunAIJobResponse{JobID: "ai-job-follow-up-1"}}
+	sessionSvc := &fakeSessionEnsurer{
+		resp: &sessionbiz.ResolveOrCreateResponse{
+			Session: &model.SessionContextM{
+				SessionID: "session-follow-up-1",
+			},
+		},
+	}
+	biz := newWithDeps(incidentStore, runner, sessionSvc)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+	resp, err := biz.Dispatch(context.Background(), &TriggerRequest{
+		TriggerType: TriggerTypeFollowUp,
+		Source:      "follow_up_api",
+		BusinessKey: incident.IncidentID,
+		IncidentHint: &IncidentHint{
+			IncidentID: incident.IncidentID,
+		},
+		TimeRange: &TriggerTimeRange{
+			Start: start,
+			End:   end,
+		},
+		RunRequest: &v1.RunAIJobRequest{
+			TimeRangeStart: timestamppb.New(start),
+			TimeRangeEnd:   timestamppb.New(end),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, "session-follow-up-1", resp.SessionID)
+	require.Equal(t, incident.IncidentID, resp.IncidentID)
+	require.Equal(t, "ai-job-follow-up-1", resp.JobID)
+
+	require.Equal(t, 1, sessionSvc.calls)
+	require.Equal(t, 0, sessionSvc.getCalls)
+	require.NotNil(t, runner.lastReq)
+	require.Equal(t, TriggerTypeFollowUp, runner.lastReq.GetTrigger())
+	require.Equal(t, TriggerTypeFollowUp, runner.lastTriggerType)
+	require.Equal(t, "follow_up_api", runner.lastTriggerSource)
+}
+
 func TestDispatch_ReturnsIncidentNotFound(t *testing.T) {
 	biz := newWithDeps(
 		&fakeIncidentStore{err: gorm.ErrRecordNotFound},
@@ -133,6 +229,24 @@ func TestDispatch_InvalidRequest(t *testing.T) {
 	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{})
 	_, err := biz.Dispatch(context.Background(), &TriggerRequest{
 		TriggerType: "unknown",
+	})
+	require.Error(t, err)
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+}
+
+func TestDispatchReplay_InvalidWithoutIncidentOrSession(t *testing.T) {
+	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{})
+	_, err := biz.Dispatch(context.Background(), &TriggerRequest{
+		TriggerType: TriggerTypeReplay,
+		Source:      "replay_api",
+		TimeRange: &TriggerTimeRange{
+			Start: time.Now().UTC().Add(-10 * time.Minute),
+			End:   time.Now().UTC(),
+		},
+		RunRequest: &v1.RunAIJobRequest{
+			TimeRangeStart: timestamppb.Now(),
+			TimeRangeEnd:   timestamppb.Now(),
+		},
 	})
 	require.Error(t, err)
 	require.Equal(t, errorsx.ErrInvalidArgument, err)
@@ -180,10 +294,14 @@ func (f *fakeAIJobRunner) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.
 }
 
 type fakeSessionEnsurer struct {
-	calls   int
-	lastReq *sessionbiz.EnsureIncidentSessionRequest
-	resp    *sessionbiz.ResolveOrCreateResponse
-	err     error
+	calls    int
+	lastReq  *sessionbiz.EnsureIncidentSessionRequest
+	resp     *sessionbiz.ResolveOrCreateResponse
+	err      error
+	getCalls int
+	lastGet  *sessionbiz.GetSessionContextRequest
+	getResp  *sessionbiz.GetSessionContextResponse
+	getErr   error
 }
 
 func (f *fakeSessionEnsurer) EnsureIncidentSession(
@@ -196,4 +314,16 @@ func (f *fakeSessionEnsurer) EnsureIncidentSession(
 		return nil, f.err
 	}
 	return f.resp, nil
+}
+
+func (f *fakeSessionEnsurer) Get(
+	_ context.Context,
+	rq *sessionbiz.GetSessionContextRequest,
+) (*sessionbiz.GetSessionContextResponse, error) {
+	f.getCalls++
+	f.lastGet = rq
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.getResp, nil
 }

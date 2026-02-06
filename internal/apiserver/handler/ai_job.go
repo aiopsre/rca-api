@@ -48,10 +48,11 @@ func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
+	triggerType, triggerSource := resolveManualTrigger(req.Trigger)
 
 	triggerResp, err := h.biz.TriggerV1().Dispatch(c.Request.Context(), &triggerbiz.TriggerRequest{
-		TriggerType: triggerbiz.TriggerTypeManual,
-		Source:      "manual_api",
+		TriggerType: triggerType,
+		Source:      triggerSource,
 		BusinessKey: req.GetIncidentID(),
 		Initiator:   req.CreatedBy,
 		IncidentHint: &triggerbiz.IncidentHint{
@@ -75,6 +76,21 @@ func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 		}
 	}
 	core.WriteResponse(c, resp, err)
+}
+
+func resolveManualTrigger(trigger *string) (string, string) {
+	triggerValue := ""
+	if trigger != nil {
+		triggerValue = strings.TrimSpace(*trigger)
+	}
+	switch strings.ToLower(triggerValue) {
+	case triggerbiz.TriggerTypeReplay:
+		return triggerbiz.TriggerTypeReplay, "manual_replay_api"
+	case triggerbiz.TriggerTypeFollowUp:
+		return triggerbiz.TriggerTypeFollowUp, "manual_follow_up_api"
+	default:
+		return triggerbiz.TriggerTypeManual, "manual_api"
+	}
 }
 
 func (h *Handler) ListIncidentAIJobs(c *gin.Context) {

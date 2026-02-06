@@ -1864,7 +1864,7 @@ func inferRunTraceTriggerType(jobTrigger string) string {
 func normalizeRunTraceTriggerType(triggerType string) string {
 	triggerType = strings.ToLower(strings.TrimSpace(triggerType))
 	switch triggerType {
-	case "manual", "alert", "incident", "scheduled":
+	case "manual", "alert", "incident", "scheduled", "replay", "follow_up":
 		return triggerType
 	default:
 		return triggerType
@@ -1884,6 +1884,10 @@ func inferRunTraceTriggerSource(triggerType string, jobTrigger string) string {
 		return "incident_update"
 	case "scheduled":
 		return "incident_scheduler"
+	case "replay":
+		return "replay_router"
+	case "follow_up":
+		return "follow_up_router"
 	default:
 		return defaultRunTraceTriggerSource
 	}

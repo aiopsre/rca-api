@@ -406,6 +406,39 @@ func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T
 	require.GreaterOrEqual(t, len(verificationRefsAny), 2)
 }
 
+func TestAIJobRunTrace_UsesReplayTriggerContext(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runCtx := contextx.WithTriggerType(context.Background(), "replay")
+	runCtx = contextx.WithTriggerSource(runCtx, "replay_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:replay")
+
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("replay"),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+		CreatedBy:      ptrAIString("user:replay"),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+
+	var runTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &runTrace))
+	require.Equal(t, "replay", strings.TrimSpace(anyToString(runTrace["trigger_type"])))
+	require.Equal(t, "replay_api", strings.TrimSpace(anyToString(runTrace["trigger_source"])))
+	require.Equal(t, "user:replay", strings.TrimSpace(anyToString(runTrace["initiator"])))
+}
+
 func TestAIJobFinalize_SessionPatchFailureIsBestEffort(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)

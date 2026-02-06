@@ -36,6 +36,8 @@ var (
 	}
 	allowedAIJobTriggers = map[string]struct{}{
 		"manual":        {},
+		"replay":        {},
+		"follow_up":     {},
 		"on_ingest":     {},
 		"on_escalation": {},
 		"scheduled":     {},
