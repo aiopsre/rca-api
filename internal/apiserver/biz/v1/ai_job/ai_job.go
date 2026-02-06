@@ -1870,6 +1870,10 @@ func inferRunTraceTriggerType(jobTrigger string) string {
 		return "incident"
 	case "scheduled":
 		return "scheduled"
+	case "cron":
+		return "cron"
+	case "change":
+		return "change"
 	default:
 		return strings.ToLower(strings.TrimSpace(jobTrigger))
 	}
@@ -1902,6 +1906,10 @@ func inferRunTraceTriggerSource(triggerType string, jobTrigger string) string {
 		return "replay_router"
 	case "follow_up":
 		return "follow_up_router"
+	case "cron":
+		return "cron_router"
+	case "change":
+		return "change_router"
 	default:
 		return defaultRunTraceTriggerSource
 	}

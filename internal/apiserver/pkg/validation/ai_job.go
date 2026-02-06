@@ -38,6 +38,8 @@ var (
 		"manual":        {},
 		"replay":        {},
 		"follow_up":     {},
+		"cron":          {},
+		"change":        {},
 		"on_ingest":     {},
 		"on_escalation": {},
 		"scheduled":     {},

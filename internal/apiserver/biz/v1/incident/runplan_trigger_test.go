@@ -6,6 +6,7 @@ import (
 	"time"
 
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
@@ -167,6 +168,53 @@ func TestTriggerScheduledRunWithIncident_NotTerminalContinuesEvaluateAndRun(t *t
 	require.Equal(t, incident.IncidentID, fake.lastRunRequest.GetIncidentID())
 }
 
+func TestRunScheduledPlan_UsesTriggerRouterWhenAvailable(t *testing.T) {
+	aiJobFake := &fakeAIJobBizForEscalationRunPlan{}
+	triggerFake := &fakeTriggerRouter{
+		resp: &triggerbiz.TriggerResult{
+			JobID: "ai-job-cron-router-1",
+		},
+	}
+	biz := &incidentBiz{
+		runAIJobBiz: aiJobFake,
+		triggerBiz:  triggerFake,
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	plan := alertingpolicy.RunPlan{
+		ShouldRun:      true,
+		Decision:       "run",
+		Trigger:        alertingpolicy.TriggerScheduled,
+		Pipeline:       "basic_rca",
+		CreatedBy:      "scheduler:hourly",
+		TimeRangeStart: now.Add(-time.Hour),
+		TimeRangeEnd:   now,
+		RuleName:       "hourly_cron",
+		PolicySource:   "policy-default",
+	}
+	resp := &TriggerScheduledRunResponse{
+		ShouldRun: true,
+		Decision:  "run",
+		Trigger:   plan.Trigger,
+		Pipeline:  plan.Pipeline,
+		CreatedBy: plan.CreatedBy,
+	}
+	out, err := biz.runScheduledPlan(context.Background(), "incident-cron-1", plan, resp)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.NotNil(t, out.JobID)
+	require.Equal(t, "ai-job-cron-router-1", *out.JobID)
+	require.Equal(t, 1, triggerFake.calls)
+	require.NotNil(t, triggerFake.lastReq)
+	require.Equal(t, triggerbiz.TriggerTypeCron, triggerFake.lastReq.TriggerType)
+	require.Equal(t, "incident_scheduler", triggerFake.lastReq.Source)
+	require.NotNil(t, triggerFake.lastReq.IncidentHint)
+	require.Equal(t, "incident-cron-1", triggerFake.lastReq.IncidentHint.IncidentID)
+	require.NotNil(t, triggerFake.lastReq.RunRequest)
+	require.Equal(t, "incident-cron-1", triggerFake.lastReq.RunRequest.GetIncidentID())
+	require.Equal(t, 0, aiJobFake.runCalls)
+}
+
 func withEvaluateOnIncidentRunPlanForTest(
 	fn func(context.Context, alertingpolicy.EvaluateInput) (alertingpolicy.RunPlan, error),
 ) func() {
@@ -290,4 +338,23 @@ func (f *fakeAIJobBizForEscalationRunPlan) ListTraceReadModels(
 func strPtrForTest(v string) *string {
 	value := v
 	return &value
+}
+
+type fakeTriggerRouter struct {
+	calls   int
+	lastReq *triggerbiz.TriggerRequest
+	resp    *triggerbiz.TriggerResult
+	err     error
+}
+
+func (f *fakeTriggerRouter) Dispatch(
+	_ context.Context,
+	rq *triggerbiz.TriggerRequest,
+) (*triggerbiz.TriggerResult, error) {
+	f.calls++
+	f.lastReq = rq
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resp, nil
 }

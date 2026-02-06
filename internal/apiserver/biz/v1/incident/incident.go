@@ -19,6 +19,7 @@ import (
 
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
@@ -80,6 +81,7 @@ type incidentBiz struct {
 	store       store.IStore
 	runAIJobBiz aijobbiz.AIJobBiz
 	sessionBiz  sessionbiz.SessionBiz
+	triggerBiz  triggerRouter
 }
 
 type SearchIncidentsRequest struct {
@@ -127,6 +129,7 @@ func New(store store.IStore) *incidentBiz {
 		store:       store,
 		runAIJobBiz: aijobbiz.New(store),
 		sessionBiz:  sessionbiz.New(store),
+		triggerBiz:  triggerbiz.New(store),
 	}
 }
 

@@ -439,6 +439,63 @@ func TestAIJobRunTrace_UsesReplayTriggerContext(t *testing.T) {
 	require.Equal(t, "user:replay", strings.TrimSpace(anyToString(runTrace["initiator"])))
 }
 
+func TestAIJobRunTrace_UsesCronAndChangeTriggerContext(t *testing.T) {
+	cases := []struct {
+		name          string
+		triggerType   string
+		triggerSource string
+		createdBy     string
+	}{
+		{
+			name:          "cron",
+			triggerType:   "cron",
+			triggerSource: "cron_router",
+			createdBy:     "system:cron",
+		},
+		{
+			name:          "change",
+			triggerType:   "change",
+			triggerSource: "change_router",
+			createdBy:     "system:change",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newAIJobTestDB(t)
+			s := store.NewStore(db)
+			biz := New(s)
+			incident := createTestIncident(t, s)
+
+			end := time.Now().UTC().Truncate(time.Second)
+			start := end.Add(-15 * time.Minute)
+			runCtx := contextx.WithTriggerType(context.Background(), tc.triggerType)
+			runCtx = contextx.WithTriggerSource(runCtx, tc.triggerSource)
+			runCtx = contextx.WithTriggerInitiator(runCtx, tc.createdBy)
+
+			runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+				IncidentID:     incident.IncidentID,
+				Trigger:        ptrAIString(tc.triggerType),
+				TimeRangeStart: timestamppb.New(start),
+				TimeRangeEnd:   timestamppb.New(end),
+				CreatedBy:      ptrAIString(tc.createdBy),
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, runResp.JobID)
+
+			job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+			require.NoError(t, err)
+			require.NotNil(t, job.RunTraceJSON)
+
+			var runTrace map[string]any
+			require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &runTrace))
+			require.Equal(t, tc.triggerType, strings.TrimSpace(anyToString(runTrace["trigger_type"])))
+			require.Equal(t, tc.triggerSource, strings.TrimSpace(anyToString(runTrace["trigger_source"])))
+			require.Equal(t, tc.createdBy, strings.TrimSpace(anyToString(runTrace["initiator"])))
+		})
+	}
+}
+
 func TestAIJobTraceReadModel_GetAndList(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)

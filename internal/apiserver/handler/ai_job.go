@@ -88,6 +88,10 @@ func resolveManualTrigger(trigger *string) (string, string) {
 		return triggerbiz.TriggerTypeReplay, "manual_replay_api"
 	case triggerbiz.TriggerTypeFollowUp:
 		return triggerbiz.TriggerTypeFollowUp, "manual_follow_up_api"
+	case triggerbiz.TriggerTypeCron:
+		return triggerbiz.TriggerTypeCron, "manual_cron_api"
+	case triggerbiz.TriggerTypeChange:
+		return triggerbiz.TriggerTypeChange, "manual_change_api"
 	default:
 		return triggerbiz.TriggerTypeManual, "manual_api"
 	}

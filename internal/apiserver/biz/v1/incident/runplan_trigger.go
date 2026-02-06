@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/gorm"
 
+	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
@@ -32,6 +33,10 @@ const (
 )
 
 var evaluateOnIncidentRunPlan = alertingpolicy.Evaluate
+
+type triggerRouter interface {
+	Dispatch(ctx context.Context, rq *triggerbiz.TriggerRequest) (*triggerbiz.TriggerResult, error)
+}
 
 // TriggerScheduledRunRequest represents the scheduled trigger entrypoint request.
 type TriggerScheduledRunRequest struct {
@@ -329,6 +334,42 @@ func (b *incidentBiz) runScheduledPlan(
 	if err != nil {
 		return nil, errorsx.ErrInvalidArgument
 	}
+	if b != nil && b.triggerBiz != nil {
+		triggerResp, dispatchErr := b.triggerBiz.Dispatch(ctx, &triggerbiz.TriggerRequest{
+			TriggerType: triggerbiz.TriggerTypeCron,
+			Source:      "incident_scheduler",
+			BusinessKey: strings.TrimSpace(incidentID),
+			IncidentHint: &triggerbiz.IncidentHint{
+				IncidentID: incidentID,
+			},
+			Initiator: runReq.CreatedBy,
+			Payload: map[string]any{
+				"trigger":       plan.Trigger,
+				"decision":      plan.Decision,
+				"rule_name":     plan.RuleName,
+				"policy_source": plan.PolicySource,
+				"scheduler":     trimOptionalString(runReq.CreatedBy),
+			},
+			DesiredPipeline: runReq.Pipeline,
+			TimeRange: &triggerbiz.TriggerTimeRange{
+				Start: plan.TimeRangeStart,
+				End:   plan.TimeRangeEnd,
+			},
+			RunRequest: runReq,
+		})
+		if dispatchErr != nil {
+			if errors.Is(dispatchErr, errno.ErrAIJobAlreadyRunning) {
+				resp.Decision = triggerDecisionAlreadyRunning
+				return resp, nil
+			}
+			return nil, dispatchErr
+		}
+		if triggerResp != nil {
+			resp.JobID = strPtr(triggerResp.JobID)
+		}
+		return resp, nil
+	}
+
 	runResp, err := b.runAIJobBiz.Run(ctx, runReq)
 	if err != nil {
 		if errors.Is(err, errno.ErrAIJobAlreadyRunning) {

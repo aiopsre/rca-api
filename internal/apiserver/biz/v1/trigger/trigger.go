@@ -25,6 +25,8 @@ const (
 	TriggerTypeManual   = "manual"
 	TriggerTypeReplay   = "replay"
 	TriggerTypeFollowUp = "follow_up"
+	TriggerTypeCron     = "cron"
+	TriggerTypeChange   = "change"
 
 	defaultPipeline = "basic_rca"
 	defaultMessage  = "trigger_routed"
@@ -35,6 +37,8 @@ var allowedTriggerTypes = map[string]struct{}{
 	TriggerTypeManual:   {},
 	TriggerTypeReplay:   {},
 	TriggerTypeFollowUp: {},
+	TriggerTypeCron:     {},
+	TriggerTypeChange:   {},
 }
 
 type IncidentHint struct {
@@ -90,6 +94,7 @@ type TriggerBiz interface {
 type TriggerExpansion interface{}
 
 type incidentStore interface {
+	Create(ctx context.Context, obj *model.IncidentM) error
 	Get(ctx context.Context, opts *where.Options) (*model.IncidentM, error)
 }
 
@@ -98,8 +103,10 @@ type aiJobRunner interface {
 }
 
 type incidentSessionEnsurer interface {
+	ResolveOrCreate(ctx context.Context, rq *sessionbiz.ResolveOrCreateRequest) (*sessionbiz.ResolveOrCreateResponse, error)
 	EnsureIncidentSession(ctx context.Context, rq *sessionbiz.EnsureIncidentSessionRequest) (*sessionbiz.ResolveOrCreateResponse, error)
 	Get(ctx context.Context, rq *sessionbiz.GetSessionContextRequest) (*sessionbiz.GetSessionContextResponse, error)
+	Update(ctx context.Context, rq *sessionbiz.UpdateSessionContextRequest) (*sessionbiz.UpdateSessionContextResponse, error)
 }
 
 type triggerBiz struct {
@@ -192,8 +199,36 @@ func (b *triggerBiz) resolveExecutionContext(
 			return nil, "", errorsx.ErrInvalidArgument
 		}
 	}
+	if sessionID == "" && supportsBusinessSession(rq.triggerType) && strings.TrimSpace(rq.businessKey) != "" {
+		sessionObj, err := b.resolveBusinessSession(ctx, rq)
+		if err != nil {
+			return nil, "", err
+		}
+		if sessionObj != nil {
+			sessionID = strings.TrimSpace(sessionObj.SessionID)
+			derivedIncidentID := incidentIDFromSession(sessionObj)
+			if incidentID == "" {
+				incidentID = derivedIncidentID
+			} else if derivedIncidentID != "" && derivedIncidentID != incidentID {
+				return nil, "", errorsx.ErrInvalidArgument
+			}
+		}
+	}
 	if incidentID == "" {
-		return nil, "", errorsx.ErrInvalidArgument
+		if !supportsBusinessSession(rq.triggerType) {
+			return nil, "", errorsx.ErrInvalidArgument
+		}
+		created, err := b.createIncidentFromTrigger(ctx, rq)
+		if err != nil {
+			return nil, "", err
+		}
+		incidentID = strings.TrimSpace(created.IncidentID)
+		if sessionID != "" {
+			b.bindSessionIncidentBestEffort(ctx, sessionID, incidentID)
+		} else {
+			sessionID = b.ensureBusinessSessionBindingBestEffort(ctx, rq, incidentID)
+		}
+		return created, sessionID, nil
 	}
 
 	incident, err := b.getIncident(ctx, incidentID)
@@ -201,7 +236,12 @@ func (b *triggerBiz) resolveExecutionContext(
 		return nil, "", err
 	}
 	if sessionID == "" {
-		sessionID = b.ensureIncidentSessionIDBestEffort(ctx, incident)
+		if supportsBusinessSession(rq.triggerType) {
+			sessionID = b.ensureBusinessSessionBindingBestEffort(ctx, rq, incidentID)
+		}
+		if sessionID == "" {
+			sessionID = b.ensureIncidentSessionIDBestEffort(ctx, incident)
+		}
 	}
 	return incident, sessionID, nil
 }
@@ -273,6 +313,193 @@ func (b *triggerBiz) ensureIncidentSessionIDBestEffort(ctx context.Context, inci
 	return strings.TrimSpace(resp.Session.SessionID)
 }
 
+func supportsBusinessSession(triggerType string) bool {
+	switch strings.ToLower(strings.TrimSpace(triggerType)) {
+	case TriggerTypeCron, TriggerTypeChange:
+		return true
+	default:
+		return false
+	}
+}
+
+func sessionTypeByTrigger(triggerType string) string {
+	switch strings.ToLower(strings.TrimSpace(triggerType)) {
+	case TriggerTypeCron:
+		return sessionbiz.SessionTypeService
+	case TriggerTypeChange:
+		return sessionbiz.SessionTypeChange
+	default:
+		return ""
+	}
+}
+
+func (b *triggerBiz) resolveBusinessSession(
+	ctx context.Context,
+	rq *normalizedTriggerRequest,
+) (*model.SessionContextM, error) {
+	if b == nil || b.sessionBiz == nil || rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionType := sessionTypeByTrigger(rq.triggerType)
+	if sessionType == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	businessKey := strings.TrimSpace(rq.businessKey)
+	if businessKey == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	title := firstNonEmpty(
+		payloadString(rq.payload, "title"),
+		payloadString(rq.payload, "service"),
+		payloadString(rq.payload, "release_id"),
+		payloadString(rq.payload, "releaseID"),
+		payloadString(rq.payload, "change_id"),
+		payloadString(rq.payload, "changeID"),
+		businessKey,
+	)
+	resp, err := b.sessionBiz.ResolveOrCreate(ctx, &sessionbiz.ResolveOrCreateRequest{
+		SessionType: sessionType,
+		BusinessKey: businessKey,
+		Title:       strPtr(title),
+		Status:      strPtr(sessionbiz.SessionStatusActive),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || resp.Session == nil {
+		return nil, errno.ErrSessionContextGetFailed
+	}
+	return resp.Session, nil
+}
+
+func (b *triggerBiz) bindSessionIncidentBestEffort(ctx context.Context, sessionID string, incidentID string) {
+	if b == nil || b.sessionBiz == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	incidentID = strings.TrimSpace(incidentID)
+	if sessionID == "" || incidentID == "" {
+		return
+	}
+	_, err := b.sessionBiz.Update(ctx, &sessionbiz.UpdateSessionContextRequest{
+		SessionID:  sessionID,
+		IncidentID: strPtr(incidentID),
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "trigger session bind incident skipped",
+			"session_id", sessionID,
+			"incident_id", incidentID,
+			"error", err,
+		)
+	}
+}
+
+func (b *triggerBiz) ensureBusinessSessionBindingBestEffort(
+	ctx context.Context,
+	rq *normalizedTriggerRequest,
+	incidentID string,
+) string {
+	if b == nil || b.sessionBiz == nil || rq == nil {
+		return ""
+	}
+	if !supportsBusinessSession(rq.triggerType) {
+		return ""
+	}
+	sessionObj, err := b.resolveBusinessSession(ctx, rq)
+	if err != nil || sessionObj == nil {
+		if err != nil {
+			slog.WarnContext(ctx, "trigger business session ensure skipped",
+				"trigger_type", rq.triggerType,
+				"business_key", rq.businessKey,
+				"incident_id", strings.TrimSpace(incidentID),
+				"error", err,
+			)
+		}
+		return ""
+	}
+	sessionID := strings.TrimSpace(sessionObj.SessionID)
+	if sessionID == "" {
+		return ""
+	}
+	if trimOptional(sessionObj.IncidentID) == "" && strings.TrimSpace(incidentID) != "" {
+		b.bindSessionIncidentBestEffort(ctx, sessionID, incidentID)
+	}
+	return sessionID
+}
+
+func (b *triggerBiz) createIncidentFromTrigger(
+	ctx context.Context,
+	rq *normalizedTriggerRequest,
+) (*model.IncidentM, error) {
+	if b == nil || b.incidentStore == nil || rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	service := firstNonEmpty(
+		payloadString(rq.payload, "service"),
+		payloadString(rq.payload, "app"),
+		serviceFromBusinessKey(rq.businessKey),
+		"unknown-service",
+	)
+	namespace := firstNonEmpty(payloadString(rq.payload, "namespace"), "default")
+	environment := firstNonEmpty(payloadString(rq.payload, "environment"), payloadString(rq.payload, "env"), "prod")
+	tenant := firstNonEmpty(payloadString(rq.payload, "tenant"), payloadString(rq.payload, "tenant_id"), "default")
+	cluster := firstNonEmpty(payloadString(rq.payload, "cluster"), "default")
+	workload := firstNonEmpty(
+		payloadString(rq.payload, "workload"),
+		payloadString(rq.payload, "workload_name"),
+		service,
+	)
+	source := firstNonEmpty(strings.TrimSpace(rq.source), strings.TrimSpace(rq.triggerType))
+	severity := firstNonEmpty(payloadString(rq.payload, "severity"), "P2")
+
+	obj := &model.IncidentM{
+		TenantID:     tenant,
+		Cluster:      cluster,
+		Namespace:    namespace,
+		WorkloadKind: "Deployment",
+		WorkloadName: workload,
+		Service:      service,
+		Environment:  environment,
+		Source:       source,
+		Severity:     severity,
+		Status:       "open",
+		RCAStatus:    "pending",
+		ActionStatus: "none",
+		CreatedBy:    strPtr(rq.initiator),
+	}
+	if rq.timeRange != nil {
+		if !rq.timeRange.Start.IsZero() {
+			start := rq.timeRange.Start.UTC()
+			obj.StartAt = &start
+		}
+	}
+	switch rq.triggerType {
+	case TriggerTypeChange:
+		changeID := firstNonEmpty(
+			payloadString(rq.payload, "change_id"),
+			payloadString(rq.payload, "changeID"),
+			payloadString(rq.payload, "release_id"),
+			payloadString(rq.payload, "releaseID"),
+			payloadString(rq.payload, "deploy_id"),
+			payloadString(rq.payload, "deployID"),
+		)
+		obj.ChangeID = strPtr(changeID)
+		version := firstNonEmpty(
+			payloadString(rq.payload, "release_id"),
+			payloadString(rq.payload, "releaseID"),
+			payloadString(rq.payload, "version"),
+		)
+		obj.Version = strPtr(version)
+	}
+
+	if err := b.incidentStore.Create(ctx, obj); err != nil {
+		return nil, errno.ErrIncidentCreateFailed
+	}
+	return obj, nil
+}
+
 type normalizedTriggerRequest struct {
 	triggerType string
 	source      string
@@ -283,6 +510,7 @@ type normalizedTriggerRequest struct {
 	runRequest  *v1.RunAIJobRequest
 	timeRange   *TriggerTimeRange
 	pipeline    *string
+	payload     map[string]any
 }
 
 func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, error) {
@@ -299,9 +527,12 @@ func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, err
 		source = triggerType
 	}
 	businessKey := strings.TrimSpace(rq.BusinessKey)
+	if businessKey == "" {
+		businessKey = deriveBusinessKeyFromPayload(triggerType, rq.Payload)
+	}
 	incidentID := resolveIncidentID(rq, triggerType, businessKey)
 	sessionID := resolveSessionID(rq)
-	if !hasValidAnchor(triggerType, incidentID, sessionID) {
+	if !hasValidAnchor(triggerType, incidentID, sessionID, businessKey) {
 		return nil, errorsx.ErrInvalidArgument
 	}
 	if incidentID == "" {
@@ -321,15 +552,19 @@ func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, err
 		runRequest:  cloneRunRequest(rq.RunRequest),
 		timeRange:   rq.TimeRange,
 		pipeline:    rq.DesiredPipeline,
+		payload:     clonePayloadMap(rq.Payload),
 	}, nil
 }
 
-func hasValidAnchor(triggerType string, incidentID string, sessionID string) bool {
+func hasValidAnchor(triggerType string, incidentID string, sessionID string, businessKey string) bool {
 	incidentID = strings.TrimSpace(incidentID)
 	sessionID = strings.TrimSpace(sessionID)
+	businessKey = strings.TrimSpace(businessKey)
 	switch triggerType {
 	case TriggerTypeReplay, TriggerTypeFollowUp:
 		return incidentID != "" || sessionID != ""
+	case TriggerTypeCron, TriggerTypeChange:
+		return incidentID != "" || sessionID != "" || businessKey != ""
 	default:
 		return incidentID != ""
 	}
@@ -349,7 +584,7 @@ func resolveIncidentID(rq *TriggerRequest, triggerType string, businessKey strin
 			return value
 		}
 	}
-	if triggerType == TriggerTypeReplay || triggerType == TriggerTypeFollowUp {
+	if triggerType == TriggerTypeReplay || triggerType == TriggerTypeFollowUp || triggerType == TriggerTypeCron || triggerType == TriggerTypeChange {
 		return ""
 	}
 	// Transitional fallback: allow business_key to carry incident id when explicit hint is absent.
@@ -376,6 +611,77 @@ func resolveSessionID(rq *TriggerRequest) string {
 				return value
 			}
 		}
+	}
+	return ""
+}
+
+func deriveBusinessKeyFromPayload(triggerType string, payload map[string]any) string {
+	switch strings.ToLower(strings.TrimSpace(triggerType)) {
+	case TriggerTypeCron:
+		return buildCronBusinessKey(payload)
+	case TriggerTypeChange:
+		return buildChangeBusinessKey(payload)
+	default:
+		return ""
+	}
+}
+
+func buildCronBusinessKey(payload map[string]any) string {
+	service := payloadString(payload, "service")
+	namespace := payloadString(payload, "namespace")
+	environment := firstNonEmpty(payloadString(payload, "environment"), payloadString(payload, "env"))
+	tenant := firstNonEmpty(payloadString(payload, "tenant"), payloadString(payload, "tenant_id"))
+
+	if service != "" {
+		parts := []string{"service:" + service}
+		if environment != "" {
+			parts = append(parts, "env:"+environment)
+		}
+		if namespace != "" {
+			parts = append(parts, "ns:"+namespace)
+		}
+		if tenant != "" {
+			parts = append(parts, "tenant:"+tenant)
+		}
+		return strings.Join(parts, ":")
+	}
+	if namespace != "" {
+		parts := []string{"namespace:" + namespace}
+		if environment != "" {
+			parts = append(parts, "env:"+environment)
+		}
+		if tenant != "" {
+			parts = append(parts, "tenant:"+tenant)
+		}
+		return strings.Join(parts, ":")
+	}
+	if tenant != "" {
+		return "tenant:" + tenant
+	}
+	return ""
+}
+
+func buildChangeBusinessKey(payload map[string]any) string {
+	if changeID := firstNonEmpty(payloadString(payload, "change_id"), payloadString(payload, "changeID")); changeID != "" {
+		return "change:" + changeID
+	}
+	releaseID := firstNonEmpty(payloadString(payload, "release_id"), payloadString(payload, "releaseID"))
+	deployID := firstNonEmpty(payloadString(payload, "deploy_id"), payloadString(payload, "deployID"))
+	service := payloadString(payload, "service")
+	environment := firstNonEmpty(payloadString(payload, "environment"), payloadString(payload, "env"))
+
+	if releaseID != "" && service != "" {
+		parts := []string{"deploy", service, releaseID}
+		if environment != "" {
+			parts = append(parts, environment)
+		}
+		return strings.Join(parts, ":")
+	}
+	if releaseID != "" {
+		return "release:" + releaseID
+	}
+	if deployID != "" {
+		return "deploy:" + deployID
 	}
 	return ""
 }
@@ -450,6 +756,10 @@ func defaultTriggerByType(triggerType string) string {
 		return TriggerTypeReplay
 	case TriggerTypeFollowUp:
 		return TriggerTypeFollowUp
+	case TriggerTypeCron:
+		return TriggerTypeCron
+	case TriggerTypeChange:
+		return TriggerTypeChange
 	default:
 		return "manual"
 	}
@@ -520,4 +830,58 @@ func anyToString(value any) string {
 	default:
 		return ""
 	}
+}
+
+func payloadString(payload map[string]any, key string) string {
+	if payload == nil {
+		return ""
+	}
+	raw, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(anyToString(raw))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func clonePayloadMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		cleanKey := strings.TrimSpace(key)
+		if cleanKey == "" {
+			continue
+		}
+		out[cleanKey] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func serviceFromBusinessKey(businessKey string) string {
+	businessKey = strings.TrimSpace(businessKey)
+	if businessKey == "" {
+		return ""
+	}
+	if strings.HasPrefix(businessKey, "service:") {
+		trimmed := strings.TrimPrefix(businessKey, "service:")
+		parts := strings.Split(trimmed, ":")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	return ""
 }

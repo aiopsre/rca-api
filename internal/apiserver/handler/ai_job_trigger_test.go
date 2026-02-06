@@ -27,3 +27,17 @@ func TestResolveManualTrigger_FollowUp(t *testing.T) {
 	require.Equal(t, triggerbiz.TriggerTypeFollowUp, triggerType)
 	require.Equal(t, "manual_follow_up_api", triggerSource)
 }
+
+func TestResolveManualTrigger_Cron(t *testing.T) {
+	raw := "cron"
+	triggerType, triggerSource := resolveManualTrigger(&raw)
+	require.Equal(t, triggerbiz.TriggerTypeCron, triggerType)
+	require.Equal(t, "manual_cron_api", triggerSource)
+}
+
+func TestResolveManualTrigger_Change(t *testing.T) {
+	raw := "change"
+	triggerType, triggerSource := resolveManualTrigger(&raw)
+	require.Equal(t, triggerbiz.TriggerTypeChange, triggerType)
+	require.Equal(t, "manual_change_api", triggerSource)
+}
