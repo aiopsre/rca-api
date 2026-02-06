@@ -273,6 +273,20 @@ func (f *fakeAIJobBizForEscalationRunPlan) RecordToolCallAudit(
 	return "", nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) GetTraceReadModel(
+	context.Context,
+	*aijobbiz.GetTraceReadModelRequest,
+) (*aijobbiz.GetTraceReadModelResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeAIJobBizForEscalationRunPlan) ListTraceReadModels(
+	context.Context,
+	*aijobbiz.ListTraceReadModelsRequest,
+) (*aijobbiz.ListTraceReadModelsResponse, error) {
+	return nil, nil
+}
+
 func strPtrForTest(v string) *string {
 	value := v
 	return &value

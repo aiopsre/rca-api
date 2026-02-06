@@ -94,8 +94,10 @@ type AIJobBiz interface {
 	AIJobExpansion
 }
 
-//nolint:modernize // Keep explicit empty interface as a placeholder expansion point.
-type AIJobExpansion interface{}
+type AIJobExpansion interface {
+	GetTraceReadModel(ctx context.Context, rq *GetTraceReadModelRequest) (*GetTraceReadModelResponse, error)
+	ListTraceReadModels(ctx context.Context, rq *ListTraceReadModelsRequest) (*ListTraceReadModelsResponse, error)
+}
 
 type aiJobBiz struct {
 	store      store.IStore
@@ -679,7 +681,7 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 			runWindowStart = job.StartedAt.UTC()
 		}
 		runWindowStart = runWindowStart.Add(-1 * time.Second)
-		verificationRefs, verificationCount := b.collectVerificationTraceRefs(txCtx, job.IncidentID, runWindowStart, now)
+		verificationRefs, verificationCount := b.collectVerificationTraceRefs(txCtx, jobID, job.IncidentID, runWindowStart, now)
 		decisionTraceJSON := buildDecisionTraceJSON(
 			targetStatus,
 			outputSummary,
@@ -1846,6 +1848,18 @@ func parseRunTraceJSON(raw *string) *runTracePayload {
 	return &payload
 }
 
+func parseDecisionTraceJSON(raw *string) *decisionTracePayload {
+	trimmed := trimOptional(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var payload decisionTracePayload
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil
+	}
+	return &payload
+}
+
 func inferRunTraceTriggerType(jobTrigger string) string {
 	switch strings.ToLower(strings.TrimSpace(jobTrigger)) {
 	case "manual":
@@ -1911,41 +1925,77 @@ func (b *aiJobBiz) countToolCallsByJob(ctx context.Context, jobID string) (int64
 
 func (b *aiJobBiz) collectVerificationTraceRefs(
 	ctx context.Context,
+	jobID string,
 	incidentID string,
 	from time.Time,
 	to time.Time,
 ) ([]string, int64) {
+	jobID = strings.TrimSpace(jobID)
 	incidentID = strings.TrimSpace(incidentID)
+	if jobID == "" && incidentID == "" {
+		return nil, 0
+	}
+
+	buildTimeRangeFilters := func(whr *where.Options) *where.Options {
+		if whr == nil {
+			whr = where.T(ctx)
+		}
+		if !from.IsZero() {
+			whr = whr.Q("created_at >= ?", from.UTC())
+		}
+		if !to.IsZero() {
+			whr = whr.Q("created_at <= ?", to.UTC())
+		}
+		return whr
+	}
+	listRefs := func(whr *where.Options) ([]string, int64, error) {
+		total, list, err := b.store.IncidentVerificationRun().List(ctx, whr)
+		if err != nil {
+			return nil, 0, err
+		}
+		refs := make([]string, 0, len(list))
+		for _, item := range list {
+			if item == nil {
+				continue
+			}
+			runID := strings.TrimSpace(item.RunID)
+			if runID == "" {
+				continue
+			}
+			refs = append(refs, runID)
+		}
+		return normalizeStringSlice(refs), total, nil
+	}
+
+	if jobID != "" {
+		jobWhr := buildTimeRangeFilters(where.T(ctx).O(0).L(maxVerificationTraceRefs).F("job_id", jobID))
+		if refs, total, err := listRefs(jobWhr); err == nil {
+			if total > 0 {
+				return refs, total
+			}
+		} else {
+			slog.WarnContext(ctx, "verification trace refs by job skipped",
+				"job_id", jobID,
+				"incident_id", incidentID,
+				"error", err,
+			)
+		}
+	}
+
 	if incidentID == "" {
 		return nil, 0
 	}
-	whr := where.T(ctx).O(0).L(maxVerificationTraceRefs).F("incident_id", incidentID)
-	if !from.IsZero() {
-		whr = whr.Q("created_at >= ?", from.UTC())
-	}
-	if !to.IsZero() {
-		whr = whr.Q("created_at <= ?", to.UTC())
-	}
-	total, list, err := b.store.IncidentVerificationRun().List(ctx, whr)
+	incidentWhr := buildTimeRangeFilters(where.T(ctx).O(0).L(maxVerificationTraceRefs).F("incident_id", incidentID))
+	refs, total, err := listRefs(incidentWhr)
 	if err != nil {
 		slog.WarnContext(ctx, "verification trace refs skipped",
+			"job_id", jobID,
 			"incident_id", incidentID,
 			"error", err,
 		)
 		return nil, 0
 	}
-	refs := make([]string, 0, len(list))
-	for _, item := range list {
-		if item == nil {
-			continue
-		}
-		runID := strings.TrimSpace(item.RunID)
-		if runID == "" {
-			continue
-		}
-		refs = append(refs, runID)
-	}
-	return normalizeStringSlice(refs), total
+	return refs, total
 }
 
 func buildDecisionTraceJSON(

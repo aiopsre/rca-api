@@ -377,6 +377,10 @@ func (b *incidentBiz) CreateVerificationRun(
 	if paramsJSON != "" {
 		m.ParamsJSON = &paramsJSON
 	}
+	if jobID := b.resolveVerificationJobIDBestEffort(ctx, incidentID, actor, paramsJSON); jobID != "" {
+		jobIDCopy := jobID
+		m.JobID = &jobIDCopy
+	}
 
 	if err := b.store.IncidentVerificationRun().Create(ctx, m); err != nil {
 		return nil, errno.ErrIncidentVerificationRunCreateFailed
@@ -390,6 +394,9 @@ func (b *incidentBiz) CreateVerificationRun(
 		"tool":              m.Tool,
 		"observed":          m.Observed,
 		"meets_expectation": m.MeetsExpectation,
+	}
+	if m.JobID != nil {
+		payload["job_id"] = strings.TrimSpace(*m.JobID)
 	}
 	if m.ParamsJSON != nil {
 		payload["params_json"] = *m.ParamsJSON
@@ -967,6 +974,92 @@ func readTimelineRowTime(row map[string]any, key string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+func (b *incidentBiz) resolveVerificationJobIDBestEffort(
+	ctx context.Context,
+	incidentID string,
+	actor string,
+	paramsJSON string,
+) string {
+	candidates := verificationJobIDCandidates(actor, paramsJSON)
+	if len(candidates) == 0 {
+		return ""
+	}
+	incidentID = strings.TrimSpace(incidentID)
+	for _, candidate := range candidates {
+		jobID := strings.TrimSpace(candidate)
+		if jobID == "" {
+			continue
+		}
+		job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
+		if err != nil || job == nil {
+			continue
+		}
+		if strings.TrimSpace(job.IncidentID) == incidentID {
+			return jobID
+		}
+	}
+	return ""
+}
+
+func verificationJobIDCandidates(actor string, paramsJSON string) []string {
+	seen := make(map[string]struct{}, 2)
+	out := make([]string, 0, 2)
+
+	appendCandidate := func(candidate string) {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		out = append(out, candidate)
+	}
+
+	appendCandidate(extractJobIDFromActor(actor))
+	appendCandidate(extractJobIDFromVerificationParams(paramsJSON))
+	return out
+}
+
+func extractJobIDFromActor(actor string) string {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return ""
+	}
+	lower := strings.ToLower(actor)
+	if !strings.HasPrefix(lower, "ai:") {
+		return ""
+	}
+	return strings.TrimSpace(actor[3:])
+}
+
+func extractJobIDFromVerificationParams(paramsJSON string) string {
+	trimmed := strings.TrimSpace(paramsJSON)
+	if trimmed == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return ""
+	}
+	if value := strings.TrimSpace(anyToString(payload["job_id"])); value != "" {
+		return value
+	}
+	return strings.TrimSpace(anyToString(payload["jobID"]))
+}
+
+func anyToString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []byte:
+		return string(typed)
+	default:
+		return ""
+	}
 }
 
 func (b *incidentBiz) Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error) {

@@ -439,6 +439,184 @@ func TestAIJobRunTrace_UsesReplayTriggerContext(t *testing.T) {
 	require.Equal(t, "user:replay", strings.TrimSpace(anyToString(runTrace["initiator"])))
 }
 
+func TestAIJobTraceReadModel_GetAndList(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	runCtxReplay := contextx.WithTriggerType(context.Background(), "replay")
+	runCtxReplay = contextx.WithTriggerSource(runCtxReplay, "replay_api")
+	runCtxReplay = contextx.WithTriggerInitiator(runCtxReplay, "user:replay")
+	replayResp, err := biz.Run(runCtxReplay, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("replay"),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, replayResp.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: replayResp.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  replayResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-r1","evidence-r2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-r1","evidence-r2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-r1", "evidence-r2"},
+	})
+	require.NoError(t, err)
+
+	runCtxFollowUp := contextx.WithTriggerType(context.Background(), "follow_up")
+	runCtxFollowUp = contextx.WithTriggerSource(runCtxFollowUp, "follow_up_api")
+	runCtxFollowUp = contextx.WithTriggerInitiator(runCtxFollowUp, "user:follow-up")
+	followResp, err := biz.Run(runCtxFollowUp, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("follow_up"),
+		TimeRangeStart: timestamppb.New(start.Add(10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(end.Add(10 * time.Minute)),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, followResp.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: followResp.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         followResp.JobID,
+		Status:        "failed",
+		ErrorMessage:  ptrAIString("follow up evidence missing"),
+		OutputSummary: ptrAIString("follow up failed"),
+	})
+	require.NoError(t, err)
+
+	replayTrace, err := biz.GetTraceReadModel(context.Background(), &GetTraceReadModelRequest{JobID: replayResp.JobID})
+	require.NoError(t, err)
+	require.NotNil(t, replayTrace)
+	require.NotNil(t, replayTrace.RunTrace)
+	require.NotNil(t, replayTrace.DecisionTrace)
+	require.Equal(t, "replay", replayTrace.RunTrace.TriggerType)
+	require.Equal(t, "replay_api", replayTrace.RunTrace.TriggerSource)
+	require.Equal(t, "db_pool_exhausted", replayTrace.DecisionTrace.RootCauseType)
+
+	incidentSummaries, err := biz.ListTraceReadModels(context.Background(), &ListTraceReadModelsRequest{
+		IncidentID: ptrAIString(incident.IncidentID),
+		Limit:      10,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, incidentSummaries.TotalCount, int64(2))
+	require.Len(t, incidentSummaries.Summaries, 2)
+	require.Equal(t, followResp.JobID, incidentSummaries.Summaries[0].JobID)
+	require.Equal(t, "follow_up", incidentSummaries.Summaries[0].TriggerType)
+	require.Equal(t, replayResp.JobID, incidentSummaries.Summaries[1].JobID)
+	require.Equal(t, "replay", incidentSummaries.Summaries[1].TriggerType)
+
+	replayJob, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", replayResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, replayJob.SessionID)
+	sessionSummaries, err := biz.ListTraceReadModels(context.Background(), &ListTraceReadModelsRequest{
+		SessionID: replayJob.SessionID,
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, sessionSummaries.TotalCount, int64(2))
+}
+
+func TestAIJobFinalize_DecisionTraceVerificationRefsPreferJobLinkedRuns(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	targetJobID := runResp.JobID
+	otherJobID := "ai-job-other"
+	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
+		RunID:            "verification-run-target",
+		IncidentID:       incident.IncidentID,
+		JobID:            &targetJobID,
+		Actor:            "ai:" + targetJobID,
+		Source:           "ai_job",
+		StepIndex:        1,
+		Tool:             "evidence.queryMetrics",
+		Observed:         "ok",
+		MeetsExpectation: true,
+	}))
+	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
+		RunID:            "verification-run-other",
+		IncidentID:       incident.IncidentID,
+		JobID:            &otherJobID,
+		Actor:            "ai:" + otherJobID,
+		Source:           "ai_job",
+		StepIndex:        1,
+		Tool:             "evidence.queryLogs",
+		Observed:         "ok",
+		MeetsExpectation: true,
+	}))
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.9,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.9,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	traceResp, err := biz.GetTraceReadModel(context.Background(), &GetTraceReadModelRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+	require.NotNil(t, traceResp.DecisionTrace)
+	require.NotContains(t, traceResp.DecisionTrace.VerificationRefs, "verification-run-other")
+	require.NotEmpty(t, traceResp.DecisionTrace.VerificationRefs)
+	require.GreaterOrEqual(t, traceResp.RunTrace.VerificationCount, int64(1))
+}
+
 func TestAIJobFinalize_SessionPatchFailureIsBestEffort(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
