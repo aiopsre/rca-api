@@ -24,6 +24,12 @@ const (
 	loggerKey contextKey = "logger"
 	// orchestratorInstanceIDKey stores orchestrator instance identity for job lease ownership.
 	orchestratorInstanceIDKey contextKey = "orchestratorInstanceID"
+	// triggerTypeKey stores normalized trigger type for run trace linkage.
+	triggerTypeKey contextKey = "triggerType"
+	// triggerSourceKey stores trigger source for run trace linkage.
+	triggerSourceKey contextKey = "triggerSource"
+	// triggerInitiatorKey stores trigger initiator for run trace linkage.
+	triggerInitiatorKey contextKey = "triggerInitiator"
 )
 
 // WithUserID returns a new context with the given user ID.
@@ -131,6 +137,48 @@ func WithOrchestratorInstanceID(ctx context.Context, instanceID string) context.
 // Returns empty string when missing.
 func OrchestratorInstanceID(ctx context.Context) string {
 	val, ok := ctx.Value(orchestratorInstanceIDKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithTriggerType returns a new context with normalized trigger type.
+func WithTriggerType(ctx context.Context, triggerType string) context.Context {
+	return context.WithValue(ctx, triggerTypeKey, triggerType)
+}
+
+// TriggerType retrieves trigger type from context.
+func TriggerType(ctx context.Context) string {
+	val, ok := ctx.Value(triggerTypeKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithTriggerSource returns a new context with trigger source.
+func WithTriggerSource(ctx context.Context, triggerSource string) context.Context {
+	return context.WithValue(ctx, triggerSourceKey, triggerSource)
+}
+
+// TriggerSource retrieves trigger source from context.
+func TriggerSource(ctx context.Context) string {
+	val, ok := ctx.Value(triggerSourceKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithTriggerInitiator returns a new context with trigger initiator.
+func WithTriggerInitiator(ctx context.Context, triggerInitiator string) context.Context {
+	return context.WithValue(ctx, triggerInitiatorKey, triggerInitiator)
+}
+
+// TriggerInitiator retrieves trigger initiator from context.
+func TriggerInitiator(ctx context.Context) string {
+	val, ok := ctx.Value(triggerInitiatorKey).(string)
 	if !ok {
 		return ""
 	}

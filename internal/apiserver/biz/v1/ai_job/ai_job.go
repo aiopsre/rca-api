@@ -55,6 +55,11 @@ const (
 	rootCauseTypeMissingEvidence  = "missing_evidence"
 	rootCauseTypeConflictEvidence = "conflict_evidence"
 	maxMissingEvidenceItems       = 20
+
+	defaultRunTraceTriggerSource = "legacy_direct"
+	defaultRunTraceSchemaVersion = "v1"
+	humanReviewConfidenceGate    = 0.6
+	maxVerificationTraceRefs     = 20
 )
 
 var (
@@ -234,6 +239,20 @@ func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJo
 			return errno.ErrAIJobCreateFailed
 		}
 		createdNew = true
+		if runTraceJSON := b.buildRunTraceJSON(ctx, job, nil, nil); runTraceJSON != "" {
+			rows, updateErr := b.store.AIJob().UpdateStatus(txCtx, job.JobID, []string{jobStatusQueued}, map[string]any{
+				"run_trace_json": runTraceJSON,
+			})
+			if updateErr != nil || rows == 0 {
+				slog.WarnContext(txCtx, "ai job run trace init skipped",
+					"job_id", job.JobID,
+					"incident_id", incidentID,
+					"error", updateErr,
+				)
+			} else {
+				job.RunTraceJSON = &runTraceJSON
+			}
+		}
 
 		incident.RCAStatus = incidentRCAStatusRunning
 		if err := b.store.Incident().Update(txCtx, incident); err != nil {
@@ -362,6 +381,7 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 				return errno.ErrAIJobStartFailed
 			}
 			if renewRows == 1 {
+				b.refreshRunTraceOnStartBestEffort(txCtx, jobID, leaseOwner, now)
 				return nil
 			}
 			return errno.ErrAIJobInvalidTransition
@@ -378,6 +398,7 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 		if _, err := b.store.AIJobQueueSignal().Bump(txCtx, now); err != nil {
 			return errno.ErrAIJobStartFailed
 		}
+		b.refreshRunTraceOnStartBestEffort(txCtx, jobID, leaseOwner, now)
 
 		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_running", jobID, map[string]any{
 			"status":      jobStatusRunning,
@@ -652,6 +673,47 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 		if summaryValue, ok := updates["output_summary"].(string); ok {
 			outputSummary = strings.TrimSpace(summaryValue)
 		}
+
+		runWindowStart := job.CreatedAt.UTC()
+		if job.StartedAt != nil && !job.StartedAt.IsZero() {
+			runWindowStart = job.StartedAt.UTC()
+		}
+		runWindowStart = runWindowStart.Add(-1 * time.Second)
+		verificationRefs, verificationCount := b.collectVerificationTraceRefs(txCtx, job.IncidentID, runWindowStart, now)
+		decisionTraceJSON := buildDecisionTraceJSON(
+			targetStatus,
+			outputSummary,
+			diagnosis,
+			evidenceIDs,
+			verificationRefs,
+			trimOptional(rq.ErrorMessage),
+		)
+		if decisionTraceJSON != "" {
+			updates["decision_trace_json"] = decisionTraceJSON
+		}
+
+		toolCallCount, err := b.countToolCallsByJob(txCtx, jobID)
+		if err != nil {
+			slog.WarnContext(txCtx, "run trace tool call count skipped",
+				"job_id", jobID,
+				"incident_id", job.IncidentID,
+				"error", err,
+			)
+		}
+		evidenceCount := int64(len(normalizeStringSlice(evidenceIDs)))
+		runTraceJSON := b.buildRunTraceJSON(ctx, job, job.RunTraceJSON, &runTraceOverrides{
+			Status:            strPtr(targetStatus),
+			FinishedAt:        &now,
+			WorkerID:          strPtr(leaseOwner),
+			ToolCallCount:     &toolCallCount,
+			EvidenceCount:     &evidenceCount,
+			VerificationCount: &verificationCount,
+			ErrorSummary:      strPtr(trimOptional(rq.ErrorMessage)),
+		})
+		if runTraceJSON != "" {
+			updates["run_trace_json"] = runTraceJSON
+		}
+
 		sessionPatch = b.buildSessionFinalizePatch(
 			sessionID,
 			jobID,
@@ -1562,6 +1624,441 @@ func buildSessionPinnedEvidenceJSON(now time.Time, jobID string, evidenceIDs []s
 	return string(raw)
 }
 
+type runTracePayload struct {
+	SchemaVersion     string  `json:"schema_version,omitempty"`
+	RunID             string  `json:"run_id"`
+	JobID             string  `json:"job_id"`
+	SessionID         string  `json:"session_id,omitempty"`
+	IncidentID        string  `json:"incident_id"`
+	TriggerType       string  `json:"trigger_type,omitempty"`
+	TriggerSource     string  `json:"trigger_source,omitempty"`
+	Initiator         string  `json:"initiator,omitempty"`
+	Pipeline          string  `json:"pipeline"`
+	WorkerID          string  `json:"worker_id,omitempty"`
+	WorkerVersion     string  `json:"worker_version,omitempty"`
+	Status            string  `json:"status"`
+	StartedAt         *string `json:"started_at,omitempty"`
+	FinishedAt        *string `json:"finished_at,omitempty"`
+	ToolCallCount     int64   `json:"tool_call_count"`
+	EvidenceCount     int64   `json:"evidence_count"`
+	VerificationCount int64   `json:"verification_count"`
+	ErrorSummary      string  `json:"error_summary,omitempty"`
+	UpdatedAt         string  `json:"updated_at,omitempty"`
+}
+
+type runTraceOverrides struct {
+	Status            *string
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	WorkerID          *string
+	WorkerVersion     *string
+	ToolCallCount     *int64
+	EvidenceCount     *int64
+	VerificationCount *int64
+	ErrorSummary      *string
+	TriggerType       *string
+	TriggerSource     *string
+	Initiator         *string
+}
+
+type decisionTracePayload struct {
+	SchemaVersion       string   `json:"schema_version,omitempty"`
+	Status              string   `json:"status"`
+	RootCauseType       string   `json:"root_cause_type,omitempty"`
+	RootCauseSummary    string   `json:"root_cause_summary,omitempty"`
+	Confidence          float64  `json:"confidence"`
+	EvidenceRefs        []string `json:"evidence_refs"`
+	MissingFacts        []string `json:"missing_facts"`
+	Conflicts           []string `json:"conflicts"`
+	HumanReviewRequired bool     `json:"human_review_required"`
+	VerificationRefs    []string `json:"verification_refs"`
+	ErrorSummary        string   `json:"error_summary,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+}
+
+func (b *aiJobBiz) refreshRunTraceOnStartBestEffort(
+	ctx context.Context,
+	jobID string,
+	leaseOwner string,
+	now time.Time,
+) {
+	if b == nil {
+		return
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return
+	}
+	job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
+	if err != nil {
+		slog.WarnContext(ctx, "ai job run trace start refresh skipped",
+			"job_id", jobID,
+			"error", err,
+		)
+		return
+	}
+
+	startedAt := now.UTC()
+	if job.StartedAt != nil && !job.StartedAt.IsZero() {
+		startedAt = job.StartedAt.UTC()
+	}
+	runTraceJSON := b.buildRunTraceJSON(ctx, job, job.RunTraceJSON, &runTraceOverrides{
+		Status:    strPtr(jobStatusRunning),
+		StartedAt: &startedAt,
+		WorkerID:  strPtr(leaseOwner),
+	})
+	if runTraceJSON == "" {
+		return
+	}
+	rows, updateErr := b.store.AIJob().UpdateStatus(ctx, jobID, []string{jobStatusRunning}, map[string]any{
+		"run_trace_json": runTraceJSON,
+	})
+	if updateErr != nil || rows == 0 {
+		slog.WarnContext(ctx, "ai job run trace start persist skipped",
+			"job_id", jobID,
+			"rows", rows,
+			"error", updateErr,
+		)
+	}
+}
+
+func (b *aiJobBiz) buildRunTraceJSON(
+	ctx context.Context,
+	job *model.AIJobM,
+	existingRaw *string,
+	overrides *runTraceOverrides,
+) string {
+	if job == nil {
+		return ""
+	}
+
+	trace := parseRunTraceJSON(existingRaw)
+	if trace == nil {
+		trace = &runTracePayload{
+			SchemaVersion: defaultRunTraceSchemaVersion,
+		}
+	}
+	trace.RunID = strings.TrimSpace(job.JobID)
+	trace.JobID = strings.TrimSpace(job.JobID)
+	trace.IncidentID = strings.TrimSpace(job.IncidentID)
+	trace.SessionID = trimOptional(job.SessionID)
+	trace.Pipeline = strings.TrimSpace(job.Pipeline)
+	if trace.Pipeline == "" {
+		trace.Pipeline = defaultPipeline
+	}
+
+	if trace.TriggerType == "" {
+		trace.TriggerType = inferRunTraceTriggerType(job.Trigger)
+	}
+	if ctxTriggerType := normalizeRunTraceTriggerType(contextx.TriggerType(ctx)); ctxTriggerType != "" {
+		trace.TriggerType = ctxTriggerType
+	}
+	if trace.TriggerSource == "" {
+		trace.TriggerSource = inferRunTraceTriggerSource(trace.TriggerType, job.Trigger)
+	}
+	if ctxTriggerSource := strings.TrimSpace(contextx.TriggerSource(ctx)); ctxTriggerSource != "" {
+		trace.TriggerSource = ctxTriggerSource
+	}
+	if trace.Initiator == "" {
+		trace.Initiator = strings.TrimSpace(job.CreatedBy)
+	}
+	if ctxTriggerInitiator := strings.TrimSpace(contextx.TriggerInitiator(ctx)); ctxTriggerInitiator != "" {
+		trace.Initiator = ctxTriggerInitiator
+	}
+
+	trace.Status = strings.ToLower(strings.TrimSpace(job.Status))
+	if trace.Status == "" {
+		trace.Status = jobStatusQueued
+	}
+	trace.StartedAt = timeToRFC3339Ptr(job.StartedAt)
+	trace.FinishedAt = timeToRFC3339Ptr(job.FinishedAt)
+	trace.WorkerID = trimOptional(job.LeaseOwner)
+	trace.ErrorSummary = trimOptional(job.ErrorMessage)
+	if trace.ToolCallCount < 0 {
+		trace.ToolCallCount = 0
+	}
+	if trace.EvidenceCount < 0 {
+		trace.EvidenceCount = 0
+	}
+	if trace.VerificationCount < 0 {
+		trace.VerificationCount = 0
+	}
+
+	updatedAt := time.Now().UTC()
+	if overrides != nil {
+		if overrides.Status != nil {
+			trace.Status = strings.ToLower(strings.TrimSpace(*overrides.Status))
+		}
+		if overrides.StartedAt != nil {
+			trace.StartedAt = timeToRFC3339Ptr(overrides.StartedAt)
+			updatedAt = overrides.StartedAt.UTC()
+		}
+		if overrides.FinishedAt != nil {
+			trace.FinishedAt = timeToRFC3339Ptr(overrides.FinishedAt)
+			updatedAt = overrides.FinishedAt.UTC()
+		}
+		if overrides.WorkerID != nil {
+			trace.WorkerID = strings.TrimSpace(*overrides.WorkerID)
+		}
+		if overrides.WorkerVersion != nil {
+			trace.WorkerVersion = strings.TrimSpace(*overrides.WorkerVersion)
+		}
+		if overrides.ToolCallCount != nil && *overrides.ToolCallCount >= 0 {
+			trace.ToolCallCount = *overrides.ToolCallCount
+		}
+		if overrides.EvidenceCount != nil && *overrides.EvidenceCount >= 0 {
+			trace.EvidenceCount = *overrides.EvidenceCount
+		}
+		if overrides.VerificationCount != nil && *overrides.VerificationCount >= 0 {
+			trace.VerificationCount = *overrides.VerificationCount
+		}
+		if overrides.ErrorSummary != nil {
+			trace.ErrorSummary = strings.TrimSpace(*overrides.ErrorSummary)
+		}
+		if overrides.TriggerType != nil {
+			trace.TriggerType = normalizeRunTraceTriggerType(*overrides.TriggerType)
+		}
+		if overrides.TriggerSource != nil {
+			trace.TriggerSource = strings.TrimSpace(*overrides.TriggerSource)
+		}
+		if overrides.Initiator != nil {
+			trace.Initiator = strings.TrimSpace(*overrides.Initiator)
+		}
+	}
+	trace.UpdatedAt = updatedAt.Format(time.RFC3339Nano)
+
+	raw, err := json.Marshal(trace)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func parseRunTraceJSON(raw *string) *runTracePayload {
+	trimmed := trimOptional(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var payload runTracePayload
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil
+	}
+	return &payload
+}
+
+func inferRunTraceTriggerType(jobTrigger string) string {
+	switch strings.ToLower(strings.TrimSpace(jobTrigger)) {
+	case "manual":
+		return "manual"
+	case "on_ingest":
+		return "alert"
+	case "on_escalation":
+		return "incident"
+	case "scheduled":
+		return "scheduled"
+	default:
+		return strings.ToLower(strings.TrimSpace(jobTrigger))
+	}
+}
+
+func normalizeRunTraceTriggerType(triggerType string) string {
+	triggerType = strings.ToLower(strings.TrimSpace(triggerType))
+	switch triggerType {
+	case "manual", "alert", "incident", "scheduled":
+		return triggerType
+	default:
+		return triggerType
+	}
+}
+
+func inferRunTraceTriggerSource(triggerType string, jobTrigger string) string {
+	if triggerType == "" {
+		triggerType = inferRunTraceTriggerType(jobTrigger)
+	}
+	switch triggerType {
+	case "manual":
+		return "manual_api"
+	case "alert":
+		return "alert_ingest"
+	case "incident":
+		return "incident_update"
+	case "scheduled":
+		return "incident_scheduler"
+	default:
+		return defaultRunTraceTriggerSource
+	}
+}
+
+func timeToRFC3339Ptr(ts *time.Time) *string {
+	if ts == nil || ts.IsZero() {
+		return nil
+	}
+	value := ts.UTC().Format(time.RFC3339Nano)
+	return &value
+}
+
+func (b *aiJobBiz) countToolCallsByJob(ctx context.Context, jobID string) (int64, error) {
+	total, _, err := b.store.AIToolCall().List(ctx, where.T(ctx).O(0).L(1).F("job_id", strings.TrimSpace(jobID)))
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func (b *aiJobBiz) collectVerificationTraceRefs(
+	ctx context.Context,
+	incidentID string,
+	from time.Time,
+	to time.Time,
+) ([]string, int64) {
+	incidentID = strings.TrimSpace(incidentID)
+	if incidentID == "" {
+		return nil, 0
+	}
+	whr := where.T(ctx).O(0).L(maxVerificationTraceRefs).F("incident_id", incidentID)
+	if !from.IsZero() {
+		whr = whr.Q("created_at >= ?", from.UTC())
+	}
+	if !to.IsZero() {
+		whr = whr.Q("created_at <= ?", to.UTC())
+	}
+	total, list, err := b.store.IncidentVerificationRun().List(ctx, whr)
+	if err != nil {
+		slog.WarnContext(ctx, "verification trace refs skipped",
+			"incident_id", incidentID,
+			"error", err,
+		)
+		return nil, 0
+	}
+	refs := make([]string, 0, len(list))
+	for _, item := range list {
+		if item == nil {
+			continue
+		}
+		runID := strings.TrimSpace(item.RunID)
+		if runID == "" {
+			continue
+		}
+		refs = append(refs, runID)
+	}
+	return normalizeStringSlice(refs), total
+}
+
+func buildDecisionTraceJSON(
+	status string,
+	outputSummary string,
+	diagnosis *diagnosisPayload,
+	evidenceIDs []string,
+	verificationRefs []string,
+	errorSummary string,
+) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	rootCauseType := ""
+	rootCauseSummary := strings.TrimSpace(outputSummary)
+	confidence := 0.0
+
+	if diagnosis != nil {
+		if diagnosis.RootCause != nil {
+			rootCauseType = strings.TrimSpace(diagnosis.RootCause.Type)
+			if rootCauseType == "" {
+				rootCauseType = strings.TrimSpace(diagnosis.RootCause.Category)
+			}
+			confidence = normalizeDecisionTraceConfidence(diagnosis.RootCause.Confidence)
+			if rootCauseSummary == "" {
+				rootCauseSummary = strings.TrimSpace(diagnosis.RootCause.Summary)
+			}
+			if rootCauseSummary == "" {
+				rootCauseSummary = strings.TrimSpace(diagnosis.RootCause.Statement)
+			}
+		}
+		if rootCauseSummary == "" {
+			rootCauseSummary = strings.TrimSpace(diagnosis.Summary)
+		}
+	}
+
+	missingFacts := collectDecisionMissingFacts(diagnosis)
+	conflicts := collectDecisionConflicts(diagnosis)
+	errorSummary = strings.TrimSpace(errorSummary)
+
+	humanReviewRequired := status != jobStatusSucceeded
+	if !humanReviewRequired {
+		if confidence < humanReviewConfidenceGate {
+			humanReviewRequired = true
+		}
+		if len(missingFacts) > 0 || len(conflicts) > 0 {
+			humanReviewRequired = true
+		}
+		if rootCauseType == rootCauseTypeMissingEvidence || rootCauseType == rootCauseTypeConflictEvidence {
+			humanReviewRequired = true
+		}
+	}
+	if errorSummary != "" {
+		humanReviewRequired = true
+	}
+
+	payload := decisionTracePayload{
+		SchemaVersion:       defaultRunTraceSchemaVersion,
+		Status:              status,
+		RootCauseType:       rootCauseType,
+		RootCauseSummary:    rootCauseSummary,
+		Confidence:          confidence,
+		EvidenceRefs:        normalizeStringSlice(evidenceIDs),
+		MissingFacts:        missingFacts,
+		Conflicts:           conflicts,
+		HumanReviewRequired: humanReviewRequired,
+		VerificationRefs:    normalizeStringSlice(verificationRefs),
+		ErrorSummary:        errorSummary,
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func collectDecisionMissingFacts(diagnosis *diagnosisPayload) []string {
+	if diagnosis == nil {
+		return nil
+	}
+	out := make([]string, 0, len(diagnosis.MissingEvidence)+len(diagnosis.Hypotheses))
+	out = append(out, diagnosis.MissingEvidence...)
+	for _, hypothesis := range diagnosis.Hypotheses {
+		out = append(out, hypothesis.MissingEvidence...)
+	}
+	return normalizeStringSlice(out)
+}
+
+func collectDecisionConflicts(diagnosis *diagnosisPayload) []string {
+	if diagnosis == nil || diagnosis.RootCause == nil {
+		return nil
+	}
+	if strings.TrimSpace(diagnosis.RootCause.Type) != rootCauseTypeConflictEvidence {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	if summary := strings.TrimSpace(diagnosis.RootCause.Summary); summary != "" {
+		out = append(out, summary)
+	}
+	if statement := strings.TrimSpace(diagnosis.RootCause.Statement); statement != "" {
+		out = append(out, statement)
+	}
+	if len(out) == 0 {
+		out = append(out, "conflicting evidence detected")
+	}
+	return normalizeStringSlice(out)
+}
+
+func normalizeDecisionTraceConfidence(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
 func normalizePipeline(v *string) string {
 	if v == nil {
 		return defaultPipeline
@@ -1587,6 +2084,14 @@ func trimOptional(v *string) string {
 		return ""
 	}
 	return strings.TrimSpace(*v)
+}
+
+func strPtr(v string) *string {
+	value := strings.TrimSpace(v)
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func toAIJobGetError(err error) error {

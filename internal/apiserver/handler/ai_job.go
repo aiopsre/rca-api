@@ -53,6 +53,7 @@ func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 		TriggerType: triggerbiz.TriggerTypeManual,
 		Source:      "manual_api",
 		BusinessKey: req.GetIncidentID(),
+		Initiator:   req.CreatedBy,
 		IncidentHint: &triggerbiz.IncidentHint{
 			IncidentID: req.GetIncidentID(),
 		},

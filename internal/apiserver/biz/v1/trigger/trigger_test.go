@@ -12,6 +12,7 @@ import (
 
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -42,6 +43,7 @@ func TestDispatchManual_EnsuresSessionAndRunsAIJob(t *testing.T) {
 			IncidentID: incident.IncidentID,
 		},
 		DesiredPipeline: strPtr("basic_rca"),
+		Initiator:       strPtr("user:tester"),
 		TimeRange: &TriggerTimeRange{
 			Start: start,
 			End:   end,
@@ -68,6 +70,9 @@ func TestDispatchManual_EnsuresSessionAndRunsAIJob(t *testing.T) {
 	require.NotNil(t, runner.lastReq)
 	require.Equal(t, incident.IncidentID, runner.lastReq.GetIncidentID())
 	require.Equal(t, "manual", runner.lastReq.GetTrigger())
+	require.Equal(t, TriggerTypeManual, runner.lastTriggerType)
+	require.Equal(t, "manual_api", runner.lastTriggerSource)
+	require.Equal(t, "user:tester", runner.lastInitiator)
 }
 
 func TestDispatchAlert_DefaultsPipelineAndTrigger(t *testing.T) {
@@ -97,6 +102,8 @@ func TestDispatchAlert_DefaultsPipelineAndTrigger(t *testing.T) {
 	require.Equal(t, "basic_rca", runner.lastReq.GetPipeline())
 	require.Equal(t, "on_ingest", runner.lastReq.GetTrigger())
 	require.Equal(t, incident.IncidentID, runner.lastReq.GetIncidentID())
+	require.Equal(t, TriggerTypeAlert, runner.lastTriggerType)
+	require.Equal(t, "alert_ingest", runner.lastTriggerSource)
 }
 
 func TestDispatch_ReturnsIncidentNotFound(t *testing.T) {
@@ -151,11 +158,18 @@ type fakeAIJobRunner struct {
 	lastReq *v1.RunAIJobRequest
 	resp    *v1.RunAIJobResponse
 	err     error
+
+	lastTriggerType   string
+	lastTriggerSource string
+	lastInitiator     string
 }
 
-func (f *fakeAIJobRunner) Run(_ context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error) {
+func (f *fakeAIJobRunner) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error) {
 	f.calls++
 	f.lastReq = rq
+	f.lastTriggerType = contextx.TriggerType(ctx)
+	f.lastTriggerSource = contextx.TriggerSource(ctx)
+	f.lastInitiator = contextx.TriggerInitiator(ctx)
 	if f.err != nil {
 		return nil, f.err
 	}

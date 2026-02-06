@@ -14,6 +14,7 @@ import (
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -130,8 +131,8 @@ func (b *triggerBiz) Dispatch(ctx context.Context, rq *TriggerRequest) (*Trigger
 	if err != nil {
 		return nil, err
 	}
-
-	runResp, err := b.runAIJobBiz.Run(ctx, runReq)
+	runCtx := attachTriggerContext(ctx, normalized)
+	runResp, err := b.runAIJobBiz.Run(runCtx, runReq)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +210,7 @@ type normalizedTriggerRequest struct {
 	triggerType string
 	source      string
 	businessKey string
+	initiator   string
 	incidentID  string
 	runRequest  *v1.RunAIJobRequest
 }
@@ -231,6 +233,7 @@ func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, err
 	if incidentID == "" {
 		return nil, errorsx.ErrInvalidArgument
 	}
+	initiator := resolveInitiator(rq)
 
 	runReq, err := buildRunRequest(rq, triggerType, incidentID)
 	if err != nil {
@@ -241,6 +244,7 @@ func normalizeTriggerRequest(rq *TriggerRequest) (*normalizedTriggerRequest, err
 		triggerType: triggerType,
 		source:      source,
 		businessKey: businessKey,
+		initiator:   initiator,
 		incidentID:  incidentID,
 		runRequest:  runReq,
 	}, nil
@@ -289,6 +293,31 @@ func buildRunRequest(rq *TriggerRequest, triggerType string, incidentID string) 
 	}
 
 	return runReq, nil
+}
+
+func resolveInitiator(rq *TriggerRequest) string {
+	if rq == nil {
+		return ""
+	}
+	if value := trimOptional(rq.Initiator); value != "" {
+		return value
+	}
+	if rq.RunRequest != nil {
+		return trimOptional(rq.RunRequest.CreatedBy)
+	}
+	return ""
+}
+
+func attachTriggerContext(ctx context.Context, rq *normalizedTriggerRequest) context.Context {
+	if rq == nil {
+		return ctx
+	}
+	ctx = contextx.WithTriggerType(ctx, rq.triggerType)
+	ctx = contextx.WithTriggerSource(ctx, rq.source)
+	if value := strings.TrimSpace(rq.initiator); value != "" {
+		ctx = contextx.WithTriggerInitiator(ctx, value)
+	}
+	return ctx
 }
 
 func applyTimeRange(runReq *v1.RunAIJobRequest, tr *TriggerTimeRange) {

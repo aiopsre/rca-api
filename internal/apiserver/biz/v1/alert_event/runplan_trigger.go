@@ -114,6 +114,7 @@ func (b *alertEventBiz) triggerOnIngestAIJob(ctx context.Context, incidentID str
 		IncidentHint: &triggerbiz.IncidentHint{
 			IncidentID: incidentID,
 		},
+		Initiator: runReq.CreatedBy,
 		Payload: map[string]any{
 			"trigger":       plan.Trigger,
 			"decision":      plan.Decision,

@@ -270,6 +270,142 @@ func TestAIJobFinalize_UpdatesSessionContextAndClearsActiveRun(t *testing.T) {
 	require.Len(t, refsAny, 2)
 }
 
+func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+	runCtx := contextx.WithTriggerType(context.Background(), "manual")
+	runCtx = contextx.WithTriggerSource(runCtx, "manual_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:tester")
+
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+		CreatedBy:      ptrAIString("user:tester"),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+
+	var queuedTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &queuedTrace))
+	require.Equal(t, "manual", strings.TrimSpace(anyToString(queuedTrace["trigger_type"])))
+	require.Equal(t, "manual_api", strings.TrimSpace(anyToString(queuedTrace["trigger_source"])))
+	require.Equal(t, "user:tester", strings.TrimSpace(anyToString(queuedTrace["initiator"])))
+	require.Equal(t, "queued", strings.TrimSpace(anyToString(queuedTrace["status"])))
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+
+	var runningTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &runningTrace))
+	require.Equal(t, "running", strings.TrimSpace(anyToString(runningTrace["status"])))
+	require.NotEmpty(t, strings.TrimSpace(anyToString(runningTrace["started_at"])))
+	require.Equal(t, "test-instance", strings.TrimSpace(anyToString(runningTrace["worker_id"])))
+
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
+		JobID:        runResp.JobID,
+		Seq:          1,
+		NodeName:     "diagnosis",
+		ToolName:     "evidence.queryMetrics",
+		RequestJSON:  `{"q":"cpu"}`,
+		ResponseJSON: ptrAIString(`{"series":1}`),
+		Status:       "ok",
+		LatencyMs:    5,
+		EvidenceIDs:  []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
+		RunID:            "verification-run-1",
+		IncidentID:       incident.IncidentID,
+		Actor:            "worker",
+		Source:           "ai_job_finalize",
+		StepIndex:        1,
+		Tool:             "evidence.queryMetrics",
+		Observed:         "ok",
+		MeetsExpectation: true,
+	}))
+	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
+		RunID:            "verification-run-2",
+		IncidentID:       incident.IncidentID,
+		Actor:            "worker",
+		Source:           "ai_job_finalize",
+		StepIndex:        2,
+		Tool:             "evidence.queryLogs",
+		Observed:         "ok",
+		MeetsExpectation: true,
+	}))
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+	require.NotNil(t, job.DecisionTraceJSON)
+
+	var finalizedTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &finalizedTrace))
+	require.Equal(t, "succeeded", strings.TrimSpace(anyToString(finalizedTrace["status"])))
+	require.NotEmpty(t, strings.TrimSpace(anyToString(finalizedTrace["finished_at"])))
+	require.Equal(t, 1, parseAnyInt(t, finalizedTrace["tool_call_count"]))
+	require.Equal(t, 2, parseAnyInt(t, finalizedTrace["evidence_count"]))
+	require.GreaterOrEqual(t, parseAnyInt(t, finalizedTrace["verification_count"]), 2)
+	require.Equal(t, "manual", strings.TrimSpace(anyToString(finalizedTrace["trigger_type"])))
+	require.Equal(t, "manual_api", strings.TrimSpace(anyToString(finalizedTrace["trigger_source"])))
+
+	var decisionTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.DecisionTraceJSON), &decisionTrace))
+	require.Equal(t, "succeeded", strings.TrimSpace(anyToString(decisionTrace["status"])))
+	require.Equal(t, "db_pool_exhausted", strings.TrimSpace(anyToString(decisionTrace["root_cause_type"])))
+	require.Equal(t, "database pool saturation confirmed", strings.TrimSpace(anyToString(decisionTrace["root_cause_summary"])))
+	require.Equal(t, 0.82, decisionTrace["confidence"])
+	require.Equal(t, false, decisionTrace["human_review_required"])
+
+	evidenceRefsAny, ok := decisionTrace["evidence_refs"].([]any)
+	require.True(t, ok)
+	require.Len(t, evidenceRefsAny, 2)
+	verificationRefsAny, ok := decisionTrace["verification_refs"].([]any)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(verificationRefsAny), 2)
+}
+
 func TestAIJobFinalize_SessionPatchFailureIsBestEffort(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -1310,6 +1446,7 @@ CREATE TABLE incidents (
 		&model.EvidenceM{},
 		&model.DatasourceM{},
 		&model.SessionContextM{},
+		&model.IncidentVerificationRunM{},
 	))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
