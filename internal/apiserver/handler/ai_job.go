@@ -182,6 +182,23 @@ func (h *Handler) ListSessionAIJobTraces(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.GetSessionWorkbenchRequest{
+		SessionID: strings.TrimSpace(c.Param("sessionID")),
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.RecentLimit = v
+		}
+	}
+	resp, err := h.biz.AIJobV1().GetSessionWorkbench(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) CompareAIJobTrace(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -522,6 +539,7 @@ func init() {
 
 		sessionGroup := v1.Group("/sessions", mws...)
 		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
+		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
 
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})

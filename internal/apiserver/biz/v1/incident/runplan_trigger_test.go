@@ -342,6 +342,13 @@ func (f *fakeAIJobBizForEscalationRunPlan) CompareTraceReadModels(
 	return nil, nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) GetSessionWorkbench(
+	context.Context,
+	*aijobbiz.GetSessionWorkbenchRequest,
+) (*aijobbiz.GetSessionWorkbenchResponse, error) {
+	return nil, nil
+}
+
 func strPtrForTest(v string) *string {
 	value := v
 	return &value

@@ -15,6 +15,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 func TestAIJobTraceAPI_GetAndList(t *testing.T) {
@@ -162,6 +163,58 @@ func TestAIJobTraceAPI_CompareRejectsUnrelatedJobs(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, compareStatus)
 }
 
+func TestSessionWorkbenchAPI_Get(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+
+	_ = createFinalizedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", buildDiagnosisJSON(
+		"database pool saturation confirmed",
+		"db_pool_exhausted",
+		"db",
+		0.82,
+		"ev-manual-1",
+		"ev-manual-2",
+	))
+	rightJobID := createFinalizedTraceJob(t, aiBiz, incident.IncidentID, "replay", "replay_api", "user:replay", buildDiagnosisJSON(
+		"upstream timeout dominates latency",
+		"dependency_timeout",
+		"dependency",
+		0.67,
+		"ev-replay-1",
+		"ev-replay-2",
+	))
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", rightJobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := *job.SessionID
+
+	status, body, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+
+	data := extractDataContainer(body)
+	sessionObj := extractMap(data, "session", "Session")
+	require.NotNil(t, sessionObj)
+	require.Equal(t, sessionID, extractString(sessionObj, "session_id", "sessionID", "SessionID"))
+	latestRun := extractMap(data, "latest_run", "latestRun", "LatestRun")
+	require.NotNil(t, latestRun)
+	require.Equal(t, "replay", extractString(latestRun, "trigger_type", "triggerType", "TriggerType"))
+	reviewFlags := extractMap(data, "review_flags", "reviewFlags", "ReviewFlags")
+	require.NotNil(t, reviewFlags)
+	require.Equal(t, false, reviewFlags["human_review_required"])
+	hints := extractStringArray(data["next_action_hints"])
+	require.Contains(t, hints, "review_compare")
+}
+
 func createFinalizedTraceJob(
 	t *testing.T,
 	aiBiz aijobbiz.AIJobBiz,
@@ -256,6 +309,20 @@ func extractSummaryList(container map[string]any) []map[string]any {
 	for _, item := range list {
 		if obj, ok := item.(map[string]any); ok {
 			out = append(out, obj)
+		}
+	}
+	return out
+}
+
+func extractStringArray(raw any) []string {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		if value, ok := item.(string); ok {
+			out = append(out, value)
 		}
 	}
 	return out
