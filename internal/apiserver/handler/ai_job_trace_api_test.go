@@ -14,6 +14,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/biz"
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -516,6 +517,121 @@ func TestSessionWorkbenchReviewActionAPI_WorkbenchReflectsStateAndHints(t *testi
 	require.Contains(t, rejectedHints, "consider_replay")
 }
 
+func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incidentA := createAIJobLongPollTestIncident(t, s)
+	incidentB := createAIJobLongPollTestIncident(t, s)
+	incidentC := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+
+	jobA := createFailedTraceJob(t, aiBiz, incidentA.IncidentID, "manual", "manual_api", "user:a", "needs manual review")
+	jobB := createFailedTraceJob(t, aiBiz, incidentB.IncidentID, "follow_up", "follow_up_api", "user:b", "follow-up failed")
+	jobC := createFinalizedTraceJob(t, aiBiz, incidentC.IncidentID, "manual", "manual_api", "user:c", buildDiagnosisJSON(
+		"healthy after mitigation",
+		"dependency_timeout",
+		"dependency",
+		0.92,
+		"ev-c-1",
+		"ev-c-2",
+	))
+
+	sessionA := mustHandlerSessionIDByJob(t, s, jobA)
+	sessionB := mustHandlerSessionIDByJob(t, s, jobB)
+	sessionC := mustHandlerSessionIDByJob(t, s, jobC)
+
+	startStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-start", baseURL, sessionA),
+		[]byte(`{"note":"taking over","reviewed_by":"user:reviewer-a"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, startStatus)
+
+	rejectStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-reject", baseURL, sessionB),
+		[]byte(`{"note":"reject current diagnosis","reviewed_by":"user:reviewer-b"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rejectStatus)
+
+	confirmStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-confirm", baseURL, sessionC),
+		[]byte(`{"note":"confirmed","reviewed_by":"user:reviewer-c"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, confirmStatus)
+
+	inboxStatus, inboxBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?limit=10", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, inboxStatus)
+	inboxData := extractDataContainer(inboxBody)
+	items := extractInboxItems(inboxData)
+	require.GreaterOrEqual(t, len(items), 3)
+	require.Equal(t, sessionA, extractString(items[0], "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "in_review", extractString(items[0], "review_state", "reviewState", "ReviewState"))
+	require.NotEmpty(t, extractString(items[0], "workbench_path", "workbenchPath", "WorkbenchPath"))
+	require.NotEmpty(t, extractString(items[0], "last_activity_at", "lastActivityAt", "LastActivityAt"))
+
+	reviewStateStatus, reviewStateBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?review_state=confirmed", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, reviewStateStatus)
+	reviewStateData := extractDataContainer(reviewStateBody)
+	confirmedItems := extractInboxItems(reviewStateData)
+	require.Equal(t, 1, len(confirmedItems))
+	require.Equal(t, sessionC, extractString(confirmedItems[0], "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "confirmed", extractString(confirmedItems[0], "review_state", "reviewState", "ReviewState"))
+
+	needsReviewStatus, needsReviewBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?needs_review=true", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, needsReviewStatus)
+	needsReviewData := extractDataContainer(needsReviewBody)
+	needsReviewItems := extractInboxItems(needsReviewData)
+	require.Equal(t, 2, len(needsReviewItems))
+	ids := []string{
+		extractString(needsReviewItems[0], "session_id", "sessionID", "SessionID"),
+		extractString(needsReviewItems[1], "session_id", "sessionID", "SessionID"),
+	}
+	require.Contains(t, ids, sessionA)
+	require.Contains(t, ids, sessionB)
+}
+
+func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
+	baseURL, cleanup, _, client := newTestServer(t)
+	defer cleanup()
+
+	status, _, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?needs_review=bad-bool", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+}
+
 func createFinalizedTraceJob(
 	t *testing.T,
 	aiBiz aijobbiz.AIJobBiz,
@@ -592,6 +708,16 @@ func createFailedTraceJob(
 	return runResp.GetJobID()
 }
 
+func mustHandlerSessionIDByJob(t *testing.T, s store.IStore, jobID string) string {
+	t.Helper()
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", jobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+	return sessionID
+}
+
 func buildDiagnosisJSON(summary string, rootCauseType string, category string, confidence float64, ev1 string, ev2 string) string {
 	return fmt.Sprintf(`{
 		"summary":%q,
@@ -661,6 +787,24 @@ func extractStringArray(raw any) []string {
 	for _, item := range list {
 		if value, ok := item.(string); ok {
 			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func extractInboxItems(container map[string]any) []map[string]any {
+	raw := container["items"]
+	if raw == nil {
+		raw = container["Items"]
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, item := range list {
+		if obj, ok := item.(map[string]any); ok {
+			out = append(out, obj)
 		}
 	}
 	return out

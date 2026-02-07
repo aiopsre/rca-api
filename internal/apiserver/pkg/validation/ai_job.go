@@ -31,6 +31,8 @@ const (
 	maxSessionActionSourceLength    = 128
 	maxSessionActionInitiatorLength = 128
 	maxSessionReviewReasonCodeLen   = 64
+	defaultOperatorInboxListLimit   = int64(20)
+	maxOperatorInboxListLimit       = int64(100)
 )
 
 var (
@@ -68,6 +70,12 @@ var (
 		"confirmed": {},
 		"rejected":  {},
 	}
+	allowedSessionTypes = map[string]struct{}{
+		"incident": {},
+		"alert":    {},
+		"service":  {},
+		"change":   {},
+	}
 )
 
 type SessionOperatorActionRequest struct {
@@ -86,6 +94,14 @@ type SessionReviewActionRequest struct {
 	Note        *string
 	ReviewedBy  *string
 	ReasonCode  *string
+}
+
+type SessionOperatorInboxRequest struct {
+	ReviewState *string
+	NeedsReview *bool
+	SessionType *string
+	Offset      int64
+	Limit       int64
 }
 
 func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJobRequest) error {
@@ -328,6 +344,37 @@ func (v *Validator) ValidateSessionReviewActionRequest(ctx context.Context, rq *
 	}
 	if !validateOptionalTrimmedMaxLen(rq.ReasonCode, maxSessionReviewReasonCodeLen) {
 		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq *SessionOperatorInboxRequest) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.Offset < 0 {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.Limit <= 0 {
+		rq.Limit = defaultOperatorInboxListLimit
+	}
+	if rq.Limit > maxOperatorInboxListLimit {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.ReviewState != nil {
+		reviewState := strings.ToLower(strings.TrimSpace(*rq.ReviewState))
+		if _, ok := allowedSessionReviewStates[reviewState]; !ok {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.ReviewState = &reviewState
+	}
+	if rq.SessionType != nil {
+		sessionType := strings.ToLower(strings.TrimSpace(*rq.SessionType))
+		if _, ok := allowedSessionTypes[sessionType]; !ok {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.SessionType = &sessionType
 	}
 	return nil
 }

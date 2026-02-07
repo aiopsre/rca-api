@@ -177,6 +177,108 @@ func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
 	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderReplay)
 }
 
+func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentC := createTestIncident(t, s)
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "requires manual investigation",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "follow_up",
+		TriggerSource: "follow_up_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "follow-up still inconclusive",
+	})
+	jobC := runAndFinalizeWorkbenchJob(t, biz, incidentC.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:c",
+		DiagnosisJSON: `{
+			"summary":"healthy after mitigation",
+			"root_cause":{
+				"type":"dependency_timeout",
+				"category":"dependency",
+				"summary":"healthy after mitigation",
+				"statement":"resolved",
+				"confidence":0.92,
+				"evidence_ids":["ev-c-1","ev-c-2"]
+			},
+			"hypotheses":[{"statement":"mitigated","confidence":0.92,"supporting_evidence_ids":["ev-c-1","ev-c-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-c-1", "ev-c-2"},
+	})
+
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+	sessionC := mustSessionIDByJob(t, s, jobC)
+
+	_, err := sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionA,
+		ReviewState: sessionbiz.SessionReviewStateInReview,
+		ReviewedBy:  ptrAIString("user:reviewer-a"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionB,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewedBy:  ptrAIString("user:reviewer-b"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionC,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewedBy:  ptrAIString("user:reviewer-c"),
+	})
+	require.NoError(t, err)
+
+	listResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		Offset: 0,
+		Limit:  20,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, listResp.TotalCount, int64(3))
+	require.GreaterOrEqual(t, len(listResp.Items), 3)
+	require.Equal(t, sessionA, listResp.Items[0].SessionID)
+	require.Equal(t, sessionbiz.SessionReviewStateInReview, listResp.Items[0].ReviewState)
+	require.Equal(t, sessionbiz.SessionReviewStateRejected, listResp.Items[1].ReviewState)
+
+	reviewStateConfirmed := sessionbiz.SessionReviewStateConfirmed
+	confirmedResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		ReviewState: &reviewStateConfirmed,
+		Offset:      0,
+		Limit:       20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), confirmedResp.TotalCount)
+	require.Equal(t, sessionC, confirmedResp.Items[0].SessionID)
+	require.Equal(t, false, confirmedResp.Items[0].NeedsReview)
+
+	needsReview := true
+	needsReviewResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		NeedsReview: &needsReview,
+		Offset:      0,
+		Limit:       20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), needsReviewResp.TotalCount)
+	returnedIDs := []string{needsReviewResp.Items[0].SessionID, needsReviewResp.Items[1].SessionID}
+	require.Contains(t, returnedIDs, sessionA)
+	require.Contains(t, returnedIDs, sessionB)
+}
+
 type workbenchRunSpec struct {
 	Status        string
 	TriggerType   string
@@ -263,4 +365,14 @@ func ensureWorkbenchEvidence(
 		ResultSizeBytes: int64(len(resultJSON)),
 		CreatedBy:       "system",
 	}))
+}
+
+func mustSessionIDByJob(t *testing.T, s store.IStore, jobID string) string {
+	t.Helper()
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", jobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+	return sessionID
 }

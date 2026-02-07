@@ -246,6 +246,56 @@ func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) ListOperatorInbox(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.ListOperatorInboxRequest{}
+	if reviewState := strings.TrimSpace(c.Query("review_state")); reviewState != "" {
+		req.ReviewState = strPtr(reviewState)
+	}
+	if sessionType := strings.TrimSpace(c.Query("session_type")); sessionType != "" {
+		req.SessionType = strPtr(sessionType)
+	}
+	if needsReviewRaw := strings.TrimSpace(c.Query("needs_review")); needsReviewRaw != "" {
+		needsReview, err := strconv.ParseBool(needsReviewRaw)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.NeedsReview = &needsReview
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		if v, err := strconv.ParseInt(offset, 10, 64); err == nil {
+			req.Offset = v
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.Limit = v
+		}
+	}
+	validateReq := &validation.SessionOperatorInboxRequest{
+		ReviewState: req.ReviewState,
+		NeedsReview: req.NeedsReview,
+		SessionType: req.SessionType,
+		Offset:      req.Offset,
+		Limit:       req.Limit,
+	}
+	if err := h.val.ValidateSessionOperatorInboxRequest(c.Request.Context(), validateReq); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req.ReviewState = validateReq.ReviewState
+	req.SessionType = validateReq.SessionType
+	req.Offset = validateReq.Offset
+	req.Limit = validateReq.Limit
+
+	resp, err := h.biz.AIJobV1().ListOperatorInbox(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) CompareAIJobTrace(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -613,6 +663,7 @@ func init() {
 		sessionGroup.POST("/:sessionID/actions/review-confirm", handler.ConfirmSessionReview)
 		sessionGroup.POST("/:sessionID/actions/review-reject", handler.RejectSessionReview)
 
+		v1.GET("/operator/inbox", handler.ListOperatorInbox)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
 }

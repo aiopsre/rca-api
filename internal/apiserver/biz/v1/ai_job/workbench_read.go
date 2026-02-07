@@ -2,6 +2,7 @@ package ai_job
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,6 +18,10 @@ import (
 const (
 	defaultSessionWorkbenchRecentLimit = int64(10)
 	maxSessionWorkbenchRecentLimit     = int64(50)
+	defaultOperatorInboxLimit          = int64(20)
+	maxOperatorInboxLimit              = int64(100)
+	maxOperatorInboxScan               = int64(500)
+	operatorInboxTraceProbeLimit       = int64(5)
 
 	workbenchHintNeedHumanReview     = "need_human_review"
 	workbenchHintAwaitMoreEvidence   = "await_more_evidence"
@@ -44,6 +49,45 @@ type GetSessionWorkbenchResponse struct {
 	LatestCompare    *WorkbenchCompareSummary    `json:"latest_compare,omitempty"`
 	ReviewFlags      *WorkbenchReviewFlags       `json:"review_flags"`
 	NextActionHints  []string                    `json:"next_action_hints"`
+}
+
+type ListOperatorInboxRequest struct {
+	ReviewState *string
+	NeedsReview *bool
+	SessionType *string
+	Offset      int64
+	Limit       int64
+}
+
+type ListOperatorInboxResponse struct {
+	TotalCount int64                `json:"total_count"`
+	Items      []*OperatorInboxItem `json:"items"`
+}
+
+type OperatorInboxItem struct {
+	SessionID              string   `json:"session_id"`
+	SessionType            string   `json:"session_type"`
+	BusinessKey            string   `json:"business_key"`
+	IncidentID             string   `json:"incident_id,omitempty"`
+	ReviewState            string   `json:"review_state"`
+	ReviewedBy             string   `json:"reviewed_by,omitempty"`
+	ReviewedAt             string   `json:"reviewed_at,omitempty"`
+	LatestJobID            string   `json:"latest_job_id,omitempty"`
+	LatestTriggerType      string   `json:"latest_trigger_type,omitempty"`
+	LatestPipeline         string   `json:"latest_pipeline,omitempty"`
+	LatestSummary          string   `json:"latest_summary,omitempty"`
+	LatestConfidence       float64  `json:"latest_confidence"`
+	LatestUpdatedAt        string   `json:"latest_updated_at,omitempty"`
+	HumanReviewRequired    bool     `json:"human_review_required"`
+	MissingFactsCount      int64    `json:"missing_facts_count"`
+	ConflictsCount         int64    `json:"conflicts_count"`
+	VerificationPending    bool     `json:"verification_pending"`
+	HasPinnedEvidence      bool     `json:"has_pinned_evidence"`
+	NextActionHints        []string `json:"next_action_hints"`
+	WorkbenchPath          string   `json:"workbench_path"`
+	LatestCompareAvailable bool     `json:"latest_compare_available"`
+	LastActivityAt         string   `json:"last_activity_at,omitempty"`
+	NeedsReview            bool     `json:"needs_review"`
 }
 
 type SessionWorkbenchReadModel struct {
@@ -192,6 +236,259 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		ReviewFlags:      reviewFlags,
 		NextActionHints:  nextHints,
 	}, nil
+}
+
+func (b *aiJobBiz) ListOperatorInbox(
+	ctx context.Context,
+	rq *ListOperatorInboxRequest,
+) (*ListOperatorInboxResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultOperatorInboxLimit
+	}
+	if limit > maxOperatorInboxLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	reviewStateFilter := ""
+	if value := trimOptional(rq.ReviewState); value != "" {
+		reviewStateFilter = normalizeInboxReviewState(value)
+	}
+	needsReviewFilter := false
+	if rq.NeedsReview != nil {
+		needsReviewFilter = *rq.NeedsReview
+	}
+	hasNeedsReviewFilter := rq.NeedsReview != nil
+	sessionTypeFilter := normalizeInboxSessionType(trimOptional(rq.SessionType))
+	if trimOptional(rq.SessionType) != "" && sessionTypeFilter == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	whr := where.T(ctx).O(0).L(int(maxOperatorInboxScan))
+	if sessionTypeFilter != "" {
+		whr = whr.F("session_type", sessionTypeFilter)
+	}
+	_, sessions, err := b.store.SessionContext().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+
+	items := make([]*OperatorInboxItem, 0, len(sessions))
+	for _, sessionObj := range sessions {
+		item, buildErr := b.buildOperatorInboxItem(ctx, sessionObj)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if reviewStateFilter != "" && item.ReviewState != reviewStateFilter {
+			continue
+		}
+		if hasNeedsReviewFilter && item.NeedsReview != needsReviewFilter {
+			continue
+		}
+		items = append(items, item)
+	}
+
+	sort.SliceStable(items, func(i, j int) bool {
+		ri := operatorInboxPriority(items[i])
+		rj := operatorInboxPriority(items[j])
+		if ri != rj {
+			return ri < rj
+		}
+		ti := strings.TrimSpace(items[i].LastActivityAt)
+		tj := strings.TrimSpace(items[j].LastActivityAt)
+		if ti != tj {
+			return ti > tj
+		}
+		return strings.TrimSpace(items[i].SessionID) < strings.TrimSpace(items[j].SessionID)
+	})
+
+	totalCount := int64(len(items))
+	if offset >= totalCount {
+		return &ListOperatorInboxResponse{TotalCount: totalCount, Items: []*OperatorInboxItem{}}, nil
+	}
+	end := offset + limit
+	if end > totalCount {
+		end = totalCount
+	}
+	startIdx := int(offset)
+	endIdx := int(end)
+	return &ListOperatorInboxResponse{
+		TotalCount: totalCount,
+		Items:      items[startIdx:endIdx],
+	}, nil
+}
+
+func (b *aiJobBiz) buildOperatorInboxItem(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+) (*OperatorInboxItem, error) {
+	if sessionObj == nil {
+		return &OperatorInboxItem{}, nil
+	}
+	sessionID := strings.TrimSpace(sessionObj.SessionID)
+	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
+	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
+	listResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
+		SessionID: strPtr(sessionID),
+		Offset:    0,
+		Limit:     operatorInboxTraceProbeLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	recentRuns := listResp.Summaries
+	latestRun := firstTraceReadSummary(recentRuns)
+	var latestDecision *DecisionTraceReadModel
+	if latestRun != nil && strings.TrimSpace(latestRun.JobID) != "" {
+		traceResp, traceErr := b.GetTraceReadModel(ctx, &GetTraceReadModelRequest{JobID: latestRun.JobID})
+		if traceErr == nil && traceResp != nil {
+			latestDecision = traceResp.DecisionTrace
+		}
+	}
+	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
+
+	var latestCompare *WorkbenchCompareSummary
+	if leftJobID, rightJobID := pickLatestCompareJobPair(recentRuns); leftJobID != "" && rightJobID != "" {
+		cmp, cmpErr := b.CompareTraceReadModels(ctx, &CompareTraceReadModelsRequest{
+			LeftJobID:  leftJobID,
+			RightJobID: rightJobID,
+		})
+		if cmpErr == nil && cmp != nil && cmp.Left != nil && cmp.Right != nil {
+			latestCompare = &WorkbenchCompareSummary{
+				LeftJobID:         strings.TrimSpace(cmp.Left.JobID),
+				RightJobID:        strings.TrimSpace(cmp.Right.JobID),
+				SameSession:       cmp.SameSession,
+				SameIncident:      cmp.SameIncident,
+				ChangedRootCause:  cmp.ChangedRootCause,
+				ChangedConfidence: cmp.ChangedConfidence,
+			}
+		}
+	}
+	nextHints := buildWorkbenchNextActionHints(
+		latestRun,
+		latestDecision,
+		reviewFlags,
+		latestCompare,
+		trimOptional(sessionObj.ActiveRunID),
+		reviewState,
+	)
+
+	item := &OperatorInboxItem{
+		SessionID:              sessionID,
+		SessionType:            strings.TrimSpace(sessionObj.SessionType),
+		BusinessKey:            strings.TrimSpace(sessionObj.BusinessKey),
+		IncidentID:             trimOptional(sessionObj.IncidentID),
+		ReviewState:            normalizeInboxReviewState(reviewState.State),
+		ReviewedBy:             strings.TrimSpace(reviewState.ReviewedBy),
+		ReviewedAt:             strings.TrimSpace(reviewState.ReviewedAt),
+		HumanReviewRequired:    reviewFlags.HumanReviewRequired,
+		MissingFactsCount:      int64(len(reviewFlags.MissingFacts)),
+		ConflictsCount:         int64(len(reviewFlags.Conflicts)),
+		HasPinnedEvidence:      reviewFlags.HasPinnedEvidence,
+		VerificationPending:    containsString(nextHints, workbenchHintVerificationPending),
+		NextActionHints:        append([]string(nil), nextHints...),
+		WorkbenchPath:          "/v1/sessions/" + sessionID + "/workbench",
+		LatestCompareAvailable: latestCompare != nil,
+	}
+	if latestRun != nil {
+		item.LatestJobID = strings.TrimSpace(latestRun.JobID)
+		item.LatestTriggerType = strings.TrimSpace(latestRun.TriggerType)
+		item.LatestPipeline = strings.TrimSpace(latestRun.Pipeline)
+		item.LatestSummary = strings.TrimSpace(latestRun.RootCauseSummary)
+		item.LatestConfidence = latestRun.Confidence
+		item.LatestUpdatedAt = firstTraceNonEmpty(strings.TrimSpace(latestRun.DecisionUpdatedAt), strings.TrimSpace(latestRun.RunUpdatedAt))
+	}
+	if item.LatestUpdatedAt == "" {
+		item.LatestUpdatedAt = toRFC3339String(sessionObj.UpdatedAt)
+	}
+	item.LastActivityAt = firstTraceNonEmpty(item.LatestUpdatedAt, toRFC3339String(sessionObj.UpdatedAt))
+	item.NeedsReview = computeOperatorInboxNeedsReview(item)
+	return item, nil
+}
+
+func computeOperatorInboxNeedsReview(item *OperatorInboxItem) bool {
+	if item == nil {
+		return false
+	}
+	reviewState := normalizeInboxReviewState(item.ReviewState)
+	if reviewState == sessionbiz.SessionReviewStateConfirmed {
+		return false
+	}
+	if reviewState == sessionbiz.SessionReviewStateInReview || reviewState == sessionbiz.SessionReviewStateRejected {
+		return true
+	}
+	if item.HumanReviewRequired || item.MissingFactsCount > 0 || item.ConflictsCount > 0 {
+		return true
+	}
+	return containsString(item.NextActionHints, workbenchHintNeedHumanReview) ||
+		containsString(item.NextActionHints, workbenchHintReviewConflicts)
+}
+
+func operatorInboxPriority(item *OperatorInboxItem) int {
+	if item == nil {
+		return 5
+	}
+	reviewState := normalizeInboxReviewState(item.ReviewState)
+	switch reviewState {
+	case sessionbiz.SessionReviewStateInReview:
+		return 0
+	case sessionbiz.SessionReviewStateRejected:
+		return 1
+	case sessionbiz.SessionReviewStateConfirmed:
+		return 4
+	default:
+		if item.NeedsReview {
+			return 2
+		}
+		return 3
+	}
+}
+
+func normalizeInboxReviewState(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case sessionbiz.SessionReviewStateInReview:
+		return sessionbiz.SessionReviewStateInReview
+	case sessionbiz.SessionReviewStateConfirmed:
+		return sessionbiz.SessionReviewStateConfirmed
+	case sessionbiz.SessionReviewStateRejected:
+		return sessionbiz.SessionReviewStateRejected
+	default:
+		return sessionbiz.SessionReviewStatePending
+	}
+}
+
+func normalizeInboxSessionType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case sessionbiz.SessionTypeIncident:
+		return sessionbiz.SessionTypeIncident
+	case sessionbiz.SessionTypeAlert:
+		return sessionbiz.SessionTypeAlert
+	case sessionbiz.SessionTypeService:
+		return sessionbiz.SessionTypeService
+	case sessionbiz.SessionTypeChange:
+		return sessionbiz.SessionTypeChange
+	default:
+		return ""
+	}
+}
+
+func containsString(items []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, item := range items {
+		if strings.TrimSpace(item) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *aiJobBiz) loadWorkbenchIncident(

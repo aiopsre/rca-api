@@ -214,4 +214,37 @@ func TestValidateSessionReviewActionRequest_Invalid(t *testing.T) {
 	require.Error(t, val.ValidateSessionReviewActionRequest(context.Background(), req))
 }
 
+func TestValidateSessionOperatorInboxRequest(t *testing.T) {
+	val := &Validator{}
+	reviewState := "in_review"
+	sessionType := "service"
+	needsReview := true
+	req := &SessionOperatorInboxRequest{
+		ReviewState: &reviewState,
+		NeedsReview: &needsReview,
+		SessionType: &sessionType,
+		Offset:      0,
+		Limit:       10,
+	}
+	require.NoError(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+	require.Equal(t, "in_review", *req.ReviewState)
+	require.Equal(t, "service", *req.SessionType)
+}
+
+func TestValidateSessionOperatorInboxRequest_Invalid(t *testing.T) {
+	val := &Validator{}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), nil))
+
+	reviewState := "invalid"
+	req := &SessionOperatorInboxRequest{ReviewState: &reviewState}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+
+	sessionType := "invalid"
+	req = &SessionOperatorInboxRequest{SessionType: &sessionType}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+
+	req = &SessionOperatorInboxRequest{Offset: -1}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+}
+
 func ptrValidationString(v string) *string { return &v }
