@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -213,6 +214,153 @@ func TestSessionWorkbenchAPI_Get(t *testing.T) {
 	require.Equal(t, false, reviewFlags["human_review_required"])
 	hints := extractStringArray(data["next_action_hints"])
 	require.Contains(t, hints, "review_compare")
+}
+
+func TestSessionWorkbenchActionAPI_ReplayAndFollowUp(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+
+	seedJobID := createFinalizedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", buildDiagnosisJSON(
+		"database pool saturation confirmed",
+		"db_pool_exhausted",
+		"db",
+		0.82,
+		"ev-seed-1",
+		"ev-seed-2",
+	))
+	seedJob, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", seedJobID))
+	require.NoError(t, err)
+	require.NotNil(t, seedJob.SessionID)
+	sessionID := strings.TrimSpace(*seedJob.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	replayStatus, replayBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/replay", baseURL, sessionID),
+		[]byte(`{"reason":"operator replay","operator_note":"rerun with same context"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, replayStatus)
+	replayData := extractDataContainer(replayBody)
+	require.Equal(t, sessionID, extractString(replayData, "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "replay", extractString(replayData, "trigger_type", "triggerType", "TriggerType"))
+	require.Equal(t, "accepted", extractString(replayData, "status", "Status"))
+	replayJobID := extractString(replayData, "job_id", "jobID", "JobID")
+	require.NotEmpty(t, replayJobID)
+
+	replayTraceStatus, replayTraceBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/ai/jobs/%s/trace", baseURL, replayJobID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, replayTraceStatus)
+	replayTraceData := extractDataContainer(replayTraceBody)
+	replayRunTrace := extractMap(replayTraceData, "run_trace", "runTrace", "RunTrace")
+	require.NotNil(t, replayRunTrace)
+	require.Equal(t, "replay", extractString(replayRunTrace, "trigger_type", "triggerType", "TriggerType"))
+	require.Equal(
+		t,
+		sessionReplayActionSource,
+		extractString(replayRunTrace, "trigger_source", "triggerSource", "TriggerSource"),
+	)
+
+	orcCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-session-action-test")
+	_, err = aiBiz.Start(orcCtx, &v1.StartAIJobRequest{JobID: replayJobID})
+	require.NoError(t, err)
+	_, err = aiBiz.Finalize(orcCtx, &v1.FinalizeAIJobRequest{
+		JobID:  replayJobID,
+		Status: "succeeded",
+		DiagnosisJSON: strPtr(buildDiagnosisJSON(
+			"replay completed for follow_up setup",
+			"db_pool_exhausted",
+			"db",
+			0.71,
+			"ev-replay-finish-1",
+			"ev-replay-finish-2",
+		)),
+		EvidenceIDs: []string{"ev-replay-finish-1", "ev-replay-finish-2"},
+	})
+	require.NoError(t, err)
+
+	followUpStatus, followUpBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/follow-up", baseURL, sessionID),
+		[]byte(`{"pipeline":"basic_rca","source":"operator_review_panel","initiator":"user:alice","reason":"collect additional evidence"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, followUpStatus)
+	followUpData := extractDataContainer(followUpBody)
+	require.Equal(t, sessionID, extractString(followUpData, "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "follow_up", extractString(followUpData, "trigger_type", "triggerType", "TriggerType"))
+	require.Equal(t, "accepted", extractString(followUpData, "status", "Status"))
+	followUpJobID := extractString(followUpData, "job_id", "jobID", "JobID")
+	require.NotEmpty(t, followUpJobID)
+
+	followUpTraceStatus, followUpTraceBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/ai/jobs/%s/trace", baseURL, followUpJobID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, followUpTraceStatus)
+	followUpTraceData := extractDataContainer(followUpTraceBody)
+	followUpRunTrace := extractMap(followUpTraceData, "run_trace", "runTrace", "RunTrace")
+	require.NotNil(t, followUpRunTrace)
+	require.Equal(t, "follow_up", extractString(followUpRunTrace, "trigger_type", "triggerType", "TriggerType"))
+	require.Equal(
+		t,
+		"operator_review_panel",
+		extractString(followUpRunTrace, "trigger_source", "triggerSource", "TriggerSource"),
+	)
+}
+
+func TestSessionWorkbenchActionAPI_ValidationAndSessionNotFound(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	seedJobID := createFinalizedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", buildDiagnosisJSON(
+		"database pool saturation confirmed",
+		"db_pool_exhausted",
+		"db",
+		0.82,
+		"ev-seed-a",
+		"ev-seed-b",
+	))
+	seedJob, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", seedJobID))
+	require.NoError(t, err)
+	require.NotNil(t, seedJob.SessionID)
+	sessionID := strings.TrimSpace(*seedJob.SessionID)
+
+	invalidPipeline := strings.Repeat("x", 65)
+	invalidStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/replay", baseURL, sessionID),
+		[]byte(fmt.Sprintf(`{"pipeline":%q}`, invalidPipeline)),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, invalidStatus)
+
+	notFoundStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/follow-up", baseURL, "session-not-exists"),
+		[]byte(`{"reason":"test"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, notFoundStatus)
 }
 
 func createFinalizedTraceJob(

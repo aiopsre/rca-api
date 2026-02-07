@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -19,13 +20,40 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const (
 	orchestratorInstanceIDHeader = "X-Orchestrator-Instance-ID"
+	sessionActionDefaultWindow   = 30 * time.Minute
+	sessionActionStatusAccepted  = "accepted"
+	sessionActionRefreshHint     = "refresh_session_workbench"
+
+	sessionReplayActionSource   = "session_workbench_replay_api"
+	sessionFollowUpActionSource = "session_workbench_follow_up_api"
 )
+
+type sessionActionRequest struct {
+	Pipeline     *string `json:"pipeline,omitempty"`
+	Reason       *string `json:"reason,omitempty"`
+	OperatorNote *string `json:"operator_note,omitempty"`
+	Source       *string `json:"source,omitempty"`
+	Initiator    *string `json:"initiator,omitempty"`
+}
+
+type sessionActionResponse struct {
+	SessionID            string `json:"session_id"`
+	IncidentID           string `json:"incident_id"`
+	JobID                string `json:"job_id"`
+	TriggerType          string `json:"trigger_type"`
+	Pipeline             string `json:"pipeline"`
+	Created              bool   `json:"created"`
+	Status               string `json:"status"`
+	Message              string `json:"message,omitempty"`
+	WorkbenchRefreshHint string `json:"workbench_refresh_hint,omitempty"`
+}
 
 func (h *Handler) RunIncidentAIJob(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
@@ -212,6 +240,14 @@ func (h *Handler) CompareAIJobTrace(c *gin.Context) {
 	}
 	resp, err := h.biz.AIJobV1().CompareTraceReadModels(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) ReplaySessionAI(c *gin.Context) {
+	h.dispatchSessionAIAction(c, triggerbiz.TriggerTypeReplay, sessionReplayActionSource)
+}
+
+func (h *Handler) FollowUpSessionAI(c *gin.Context) {
+	h.dispatchSessionAIAction(c, triggerbiz.TriggerTypeFollowUp, sessionFollowUpActionSource)
 }
 
 //nolint:dupl // Keep handler pattern aligned with other resources.
@@ -540,6 +576,8 @@ func init() {
 		sessionGroup := v1.Group("/sessions", mws...)
 		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
 		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
+		sessionGroup.POST("/:sessionID/actions/replay", handler.ReplaySessionAI)
+		sessionGroup.POST("/:sessionID/actions/follow-up", handler.FollowUpSessionAI)
 
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
@@ -579,4 +617,141 @@ func firstNonEmptyTrimmedQuery(c *gin.Context, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func (h *Handler) dispatchSessionAIAction(c *gin.Context, triggerType string, defaultSource string) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	sessionID := strings.TrimSpace(c.Param("sessionID"))
+	var req sessionActionRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	validateReq := &validation.SessionOperatorActionRequest{
+		SessionID:    sessionID,
+		TriggerType:  triggerType,
+		Pipeline:     req.Pipeline,
+		Reason:       req.Reason,
+		OperatorNote: req.OperatorNote,
+		Source:       req.Source,
+		Initiator:    req.Initiator,
+	}
+	if err := h.val.ValidateSessionOperatorActionRequest(c.Request.Context(), validateReq); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	source := normalizeOptionalText(req.Source)
+	if source == "" {
+		source = defaultSource
+	}
+	initiator := resolveSessionActionInitiator(c.Request.Context(), req.Initiator)
+	pipeline := normalizeOptionalText(req.Pipeline)
+	reason := normalizeOptionalText(req.Reason)
+	operatorNote := normalizeOptionalText(req.OperatorNote)
+
+	runReq := &v1.RunAIJobRequest{
+		CreatedBy: strPtr(initiator),
+	}
+	if pipeline != "" {
+		runReq.Pipeline = strPtr(pipeline)
+	}
+	if inputHints := buildSessionActionInputHints(triggerType, reason, operatorNote, source); inputHints != "" {
+		runReq.InputHintsJSON = strPtr(inputHints)
+	}
+
+	triggerReq := &triggerbiz.TriggerRequest{
+		TriggerType: triggerType,
+		Source:      source,
+		BusinessKey: sessionID,
+		SessionHint: &triggerbiz.SessionHint{
+			SessionID: sessionID,
+		},
+		Payload:   buildSessionActionPayload(reason, operatorNote),
+		Initiator: strPtr(initiator),
+		TimeRange: &triggerbiz.TriggerTimeRange{
+			Start: time.Now().UTC().Add(-sessionActionDefaultWindow),
+			End:   time.Now().UTC(),
+		},
+		DesiredPipeline: strPtr(pipeline),
+		RunRequest:      runReq,
+	}
+
+	triggerResp, err := h.biz.TriggerV1().Dispatch(c.Request.Context(), triggerReq)
+	resp := &sessionActionResponse{
+		TriggerType:          triggerType,
+		Status:               sessionActionStatusAccepted,
+		WorkbenchRefreshHint: sessionActionRefreshHint,
+	}
+	if triggerResp != nil {
+		resp.SessionID = strings.TrimSpace(triggerResp.SessionID)
+		resp.IncidentID = strings.TrimSpace(triggerResp.IncidentID)
+		resp.JobID = strings.TrimSpace(triggerResp.JobID)
+		resp.Pipeline = strings.TrimSpace(triggerResp.Pipeline)
+		resp.Created = triggerResp.Created
+		resp.Message = strings.TrimSpace(triggerResp.Message)
+	}
+
+	if err == nil {
+		h.jobQueueNotifier.Notify()
+		if h.jobQueueWakeup != nil {
+			_ = h.jobQueueWakeup.PublishAIJobQueueSignal(c.Request.Context())
+		}
+	}
+	core.WriteResponse(c, resp, err)
+}
+
+func normalizeOptionalText(raw *string) string {
+	if raw == nil {
+		return ""
+	}
+	return strings.TrimSpace(*raw)
+}
+
+func resolveSessionActionInitiator(ctx context.Context, reqInitiator *string) string {
+	if value := normalizeOptionalText(reqInitiator); value != "" {
+		return value
+	}
+	if user := strings.TrimSpace(contextx.Username(ctx)); user != "" {
+		return "user:" + user
+	}
+	if userID := strings.TrimSpace(contextx.UserID(ctx)); userID != "" {
+		return "user:" + userID
+	}
+	return "operator:session_action"
+}
+
+func buildSessionActionPayload(reason string, operatorNote string) map[string]any {
+	payload := map[string]any{
+		"action_origin": "session_workbench",
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		payload["reason"] = reason
+	}
+	if operatorNote = strings.TrimSpace(operatorNote); operatorNote != "" {
+		payload["operator_note"] = operatorNote
+	}
+	return payload
+}
+
+func buildSessionActionInputHints(triggerType string, reason string, operatorNote string, source string) string {
+	payload := map[string]any{
+		"operator_action": strings.TrimSpace(triggerType),
+		"source":          strings.TrimSpace(source),
+	}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		payload["reason"] = reason
+	}
+	if operatorNote = strings.TrimSpace(operatorNote); operatorNote != "" {
+		payload["operator_note"] = operatorNote
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }

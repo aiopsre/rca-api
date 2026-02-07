@@ -158,4 +158,33 @@ func TestValidateCreateAIToolCallRequest_Guardrails(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateSessionOperatorActionRequest(t *testing.T) {
+	val := &Validator{}
+	req := &SessionOperatorActionRequest{
+		SessionID:    "session-1",
+		TriggerType:  "replay",
+		Pipeline:     ptrValidationString("basic_rca"),
+		Reason:       ptrValidationString("operator replay"),
+		OperatorNote: ptrValidationString("focus on db pressure"),
+		Source:       ptrValidationString("session_workbench_replay_api"),
+		Initiator:    ptrValidationString("user:alice"),
+	}
+	require.NoError(t, val.ValidateSessionOperatorActionRequest(context.Background(), req))
+}
+
+func TestValidateSessionOperatorActionRequest_Invalid(t *testing.T) {
+	val := &Validator{}
+	require.Error(t, val.ValidateSessionOperatorActionRequest(context.Background(), nil))
+
+	req := &SessionOperatorActionRequest{
+		SessionID:   "session-1",
+		TriggerType: "manual",
+	}
+	require.Error(t, val.ValidateSessionOperatorActionRequest(context.Background(), req))
+
+	req.TriggerType = "follow_up"
+	req.SessionID = " "
+	require.Error(t, val.ValidateSessionOperatorActionRequest(context.Background(), req))
+}
+
 func ptrValidationString(v string) *string { return &v }

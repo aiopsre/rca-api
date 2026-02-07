@@ -26,6 +26,10 @@ const (
 	maxToolCallRefLength            = 1024
 	maxAIIdempotencyLength          = 128
 	maxAIWindowRange                = 24 * time.Hour
+	maxSessionActionReasonLength    = 256
+	maxSessionActionNoteLength      = 1024
+	maxSessionActionSourceLength    = 128
+	maxSessionActionInitiatorLength = 128
 )
 
 var (
@@ -53,7 +57,21 @@ var (
 		"timeout":  {},
 		"canceled": {},
 	}
+	allowedSessionOperatorActionTriggerTypes = map[string]struct{}{
+		"replay":    {},
+		"follow_up": {},
+	}
 )
+
+type SessionOperatorActionRequest struct {
+	SessionID    string
+	TriggerType  string
+	Pipeline     *string
+	Reason       *string
+	OperatorNote *string
+	Source       *string
+	Initiator    *string
+}
 
 func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJobRequest) error {
 	_ = ctx
@@ -240,6 +258,36 @@ func (v *Validator) ValidateListAIToolCallsRequest(ctx context.Context, rq *v1.L
 		return errorsx.ErrInvalidArgument
 	}
 	if rq.Seq != nil && rq.GetSeq() <= 0 {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateSessionOperatorActionRequest(ctx context.Context, rq *SessionOperatorActionRequest) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if strings.TrimSpace(rq.SessionID) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	triggerType := strings.ToLower(strings.TrimSpace(rq.TriggerType))
+	if _, ok := allowedSessionOperatorActionTriggerTypes[triggerType]; !ok {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Pipeline, maxAIPipelineLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Reason, maxSessionActionReasonLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.OperatorNote, maxSessionActionNoteLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Source, maxSessionActionSourceLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Initiator, maxSessionActionInitiatorLength) {
 		return errorsx.ErrInvalidArgument
 	}
 	return nil
