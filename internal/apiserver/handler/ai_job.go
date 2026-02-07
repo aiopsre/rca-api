@@ -13,6 +13,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/core"
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
+	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
@@ -122,6 +123,77 @@ func (h *Handler) ListIncidentAIJobs(c *gin.Context) {
 	}
 
 	resp, err := h.biz.AIJobV1().ListByIncident(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) GetAIJobTrace(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.GetTraceReadModelRequest{
+		JobID: strings.TrimSpace(c.Param("jobID")),
+	}
+	resp, err := h.biz.AIJobV1().GetTraceReadModel(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) ListIncidentAIJobTraces(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.ListTraceReadModelsRequest{
+		IncidentID: strPtr(strings.TrimSpace(c.Param("incidentID"))),
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		if v, err := strconv.ParseInt(offset, 10, 64); err == nil {
+			req.Offset = v
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.Limit = v
+		}
+	}
+	resp, err := h.biz.AIJobV1().ListTraceReadModels(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) ListSessionAIJobTraces(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.ListTraceReadModelsRequest{
+		SessionID: strPtr(strings.TrimSpace(c.Param("sessionID"))),
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		if v, err := strconv.ParseInt(offset, 10, 64); err == nil {
+			req.Offset = v
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.Limit = v
+		}
+	}
+	resp, err := h.biz.AIJobV1().ListTraceReadModels(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) CompareAIJobTrace(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	leftJobID := firstNonEmptyTrimmedQuery(c, "left_job_id", "leftJobID")
+	rightJobID := firstNonEmptyTrimmedQuery(c, "right_job_id", "rightJobID")
+	req := &aijobbiz.CompareTraceReadModelsRequest{
+		LeftJobID:  leftJobID,
+		RightJobID: rightJobID,
+	}
+	resp, err := h.biz.AIJobV1().CompareTraceReadModels(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -435,16 +507,23 @@ func init() {
 		incidentGroup := v1.Group("/incidents", mws...)
 		incidentGroup.POST("/:incidentID/ai:run", handler.RunIncidentAIJob)
 		incidentGroup.GET("/:incidentID/ai", handler.ListIncidentAIJobs)
+		incidentGroup.GET("/:incidentID/ai/traces", handler.ListIncidentAIJobTraces)
 
 		jobGroup := v1.Group("/ai/jobs", mws...)
 		jobGroup.GET("", handler.ListAIJobs)
 		jobGroup.GET("/:jobID", handler.GetAIJob)
+		jobGroup.GET("/:jobID/trace", handler.GetAIJobTrace)
 		jobGroup.POST("/:jobID/start", handler.StartAIJob)
 		jobGroup.POST("/:jobID/heartbeat", handler.RenewAIJobLease)
 		jobGroup.POST("/:jobID/cancel", handler.CancelAIJob)
 		jobGroup.POST("/:jobID/finalize", handler.FinalizeAIJob)
 		jobGroup.POST("/:jobID/tool-calls", handler.CreateAIToolCall)
 		jobGroup.GET("/:jobID/tool-calls", handler.ListAIToolCalls)
+
+		sessionGroup := v1.Group("/sessions", mws...)
+		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
+
+		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
 }
 
@@ -472,4 +551,14 @@ func requireOrchestratorInstanceIDValue(c *gin.Context, instanceID string) bool 
 	}
 	core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
 	return false
+}
+
+func firstNonEmptyTrimmedQuery(c *gin.Context, keys ...string) string {
+	for _, key := range keys {
+		value := strings.TrimSpace(c.Query(key))
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

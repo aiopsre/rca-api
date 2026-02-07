@@ -21,9 +21,9 @@ type GetTraceReadModelRequest struct {
 }
 
 type GetTraceReadModelResponse struct {
-	JobID         string
-	RunTrace      *RunTraceReadModel
-	DecisionTrace *DecisionTraceReadModel
+	JobID         string                  `json:"job_id"`
+	RunTrace      *RunTraceReadModel      `json:"run_trace,omitempty"`
+	DecisionTrace *DecisionTraceReadModel `json:"decision_trace,omitempty"`
 }
 
 type ListTraceReadModelsRequest struct {
@@ -34,8 +34,37 @@ type ListTraceReadModelsRequest struct {
 }
 
 type ListTraceReadModelsResponse struct {
-	TotalCount int64
-	Summaries  []*TraceReadSummary
+	TotalCount int64               `json:"total_count"`
+	Summaries  []*TraceReadSummary `json:"summaries"`
+}
+
+type CompareTraceReadModelsRequest struct {
+	LeftJobID  string
+	RightJobID string
+}
+
+type CompareTraceReadModelsResponse struct {
+	Left              *TraceCompareSide `json:"left,omitempty"`
+	Right             *TraceCompareSide `json:"right,omitempty"`
+	SameSession       bool              `json:"same_session"`
+	SameIncident      bool              `json:"same_incident"`
+	ChangedRootCause  bool              `json:"changed_root_cause"`
+	ChangedConfidence bool              `json:"changed_confidence"`
+}
+
+type TraceCompareSide struct {
+	JobID            string   `json:"job_id"`
+	SessionID        string   `json:"session_id,omitempty"`
+	IncidentID       string   `json:"incident_id,omitempty"`
+	TriggerType      string   `json:"trigger_type,omitempty"`
+	Pipeline         string   `json:"pipeline,omitempty"`
+	RootCauseType    string   `json:"root_cause_type,omitempty"`
+	RootCauseSummary string   `json:"root_cause_summary,omitempty"`
+	Confidence       float64  `json:"confidence"`
+	EvidenceRefs     []string `json:"evidence_refs"`
+	VerificationRefs []string `json:"verification_refs"`
+	MissingFacts     []string `json:"missing_facts"`
+	Conflicts        []string `json:"conflicts"`
 }
 
 type RunTraceReadModel struct {
@@ -76,26 +105,26 @@ type DecisionTraceReadModel struct {
 }
 
 type TraceReadSummary struct {
-	JobID               string
-	SessionID           string
-	IncidentID          string
-	TriggerType         string
-	TriggerSource       string
-	Initiator           string
-	Pipeline            string
-	Status              string
-	StartedAt           *string
-	FinishedAt          *string
-	ToolCallCount       int64
-	EvidenceCount       int64
-	VerificationCount   int64
-	RootCauseType       string
-	RootCauseSummary    string
-	Confidence          float64
-	HumanReviewRequired bool
-	VerificationRefs    []string
-	RunUpdatedAt        string
-	DecisionUpdatedAt   string
+	JobID               string   `json:"job_id"`
+	SessionID           string   `json:"session_id,omitempty"`
+	IncidentID          string   `json:"incident_id"`
+	TriggerType         string   `json:"trigger_type,omitempty"`
+	TriggerSource       string   `json:"trigger_source,omitempty"`
+	Initiator           string   `json:"initiator,omitempty"`
+	Pipeline            string   `json:"pipeline,omitempty"`
+	Status              string   `json:"status,omitempty"`
+	StartedAt           *string  `json:"started_at,omitempty"`
+	FinishedAt          *string  `json:"finished_at,omitempty"`
+	ToolCallCount       int64    `json:"tool_call_count"`
+	EvidenceCount       int64    `json:"evidence_count"`
+	VerificationCount   int64    `json:"verification_count"`
+	RootCauseType       string   `json:"root_cause_type,omitempty"`
+	RootCauseSummary    string   `json:"root_cause_summary,omitempty"`
+	Confidence          float64  `json:"confidence"`
+	HumanReviewRequired bool     `json:"human_review_required"`
+	VerificationRefs    []string `json:"verification_refs"`
+	RunUpdatedAt        string   `json:"run_updated_at,omitempty"`
+	DecisionUpdatedAt   string   `json:"decision_updated_at,omitempty"`
 }
 
 func (b *aiJobBiz) GetTraceReadModel(
@@ -168,6 +197,59 @@ func (b *aiJobBiz) ListTraceReadModels(
 	return &ListTraceReadModelsResponse{
 		TotalCount: total,
 		Summaries:  summaries,
+	}, nil
+}
+
+func (b *aiJobBiz) CompareTraceReadModels(
+	ctx context.Context,
+	rq *CompareTraceReadModelsRequest,
+) (*CompareTraceReadModelsResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	leftJobID := strings.TrimSpace(rq.LeftJobID)
+	rightJobID := strings.TrimSpace(rq.RightJobID)
+	if leftJobID == "" || rightJobID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	if leftJobID == rightJobID {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	left, err := b.GetTraceReadModel(ctx, &GetTraceReadModelRequest{JobID: leftJobID})
+	if err != nil {
+		return nil, err
+	}
+	right, err := b.GetTraceReadModel(ctx, &GetTraceReadModelRequest{JobID: rightJobID})
+	if err != nil {
+		return nil, err
+	}
+
+	leftRun := left.RunTrace
+	rightRun := right.RunTrace
+	sameIncident := false
+	sameSession := false
+	if leftRun != nil && rightRun != nil {
+		leftIncidentID := strings.TrimSpace(leftRun.IncidentID)
+		rightIncidentID := strings.TrimSpace(rightRun.IncidentID)
+		leftSessionID := strings.TrimSpace(leftRun.SessionID)
+		rightSessionID := strings.TrimSpace(rightRun.SessionID)
+		sameIncident = leftIncidentID != "" && leftIncidentID == rightIncidentID
+		sameSession = leftSessionID != "" && leftSessionID == rightSessionID
+	}
+	if !sameIncident && !sameSession {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	leftSide := buildTraceCompareSide(left)
+	rightSide := buildTraceCompareSide(right)
+	return &CompareTraceReadModelsResponse{
+		Left:              leftSide,
+		Right:             rightSide,
+		SameSession:       sameSession,
+		SameIncident:      sameIncident,
+		ChangedRootCause:  strings.TrimSpace(leftSide.RootCauseSummary) != strings.TrimSpace(rightSide.RootCauseSummary),
+		ChangedConfidence: leftSide.Confidence != rightSide.Confidence,
 	}, nil
 }
 
@@ -277,6 +359,42 @@ func fallbackRunTraceReadModel(job *model.AIJobM) *RunTraceReadModel {
 		VerificationCount: 0,
 		ErrorSummary:      trimOptional(job.ErrorMessage),
 	}
+}
+
+func buildTraceCompareSide(in *GetTraceReadModelResponse) *TraceCompareSide {
+	if in == nil {
+		return &TraceCompareSide{}
+	}
+	out := &TraceCompareSide{
+		JobID: strings.TrimSpace(in.JobID),
+	}
+	if in.RunTrace != nil {
+		out.JobID = firstTraceNonEmpty(out.JobID, in.RunTrace.JobID)
+		out.SessionID = strings.TrimSpace(in.RunTrace.SessionID)
+		out.IncidentID = strings.TrimSpace(in.RunTrace.IncidentID)
+		out.TriggerType = strings.TrimSpace(in.RunTrace.TriggerType)
+		out.Pipeline = strings.TrimSpace(in.RunTrace.Pipeline)
+	}
+	if in.DecisionTrace != nil {
+		out.RootCauseType = strings.TrimSpace(in.DecisionTrace.RootCauseType)
+		out.RootCauseSummary = strings.TrimSpace(in.DecisionTrace.RootCauseSummary)
+		out.Confidence = in.DecisionTrace.Confidence
+		out.EvidenceRefs = append([]string(nil), in.DecisionTrace.EvidenceRefs...)
+		out.VerificationRefs = append([]string(nil), in.DecisionTrace.VerificationRefs...)
+		out.MissingFacts = append([]string(nil), in.DecisionTrace.MissingFacts...)
+		out.Conflicts = append([]string(nil), in.DecisionTrace.Conflicts...)
+	}
+	return out
+}
+
+func firstTraceNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func cloneOptionalTrimmedString(in *string) *string {

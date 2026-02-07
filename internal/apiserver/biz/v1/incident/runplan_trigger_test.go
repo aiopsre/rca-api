@@ -335,6 +335,13 @@ func (f *fakeAIJobBizForEscalationRunPlan) ListTraceReadModels(
 	return nil, nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) CompareTraceReadModels(
+	context.Context,
+	*aijobbiz.CompareTraceReadModelsRequest,
+) (*aijobbiz.CompareTraceReadModelsResponse, error) {
+	return nil, nil
+}
+
 func strPtrForTest(v string) *string {
 	value := v
 	return &value

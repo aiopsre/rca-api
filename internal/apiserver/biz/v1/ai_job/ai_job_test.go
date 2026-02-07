@@ -597,6 +597,142 @@ func TestAIJobTraceReadModel_GetAndList(t *testing.T) {
 	require.GreaterOrEqual(t, sessionSummaries.TotalCount, int64(2))
 }
 
+func TestAIJobTraceReadModel_CompareReplayRuns(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+
+	leftCtx := contextx.WithTriggerType(context.Background(), "replay")
+	leftCtx = contextx.WithTriggerSource(leftCtx, "replay_api")
+	leftCtx = contextx.WithTriggerInitiator(leftCtx, "user:replay")
+	leftRun, err := biz.Run(leftCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("replay"),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, leftRun.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: leftRun.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  leftRun.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-l1","evidence-l2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-l1","evidence-l2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-l1", "evidence-l2"},
+	})
+	require.NoError(t, err)
+
+	rightCtx := contextx.WithTriggerType(context.Background(), "follow_up")
+	rightCtx = contextx.WithTriggerSource(rightCtx, "follow_up_api")
+	rightCtx = contextx.WithTriggerInitiator(rightCtx, "user:follow-up")
+	rightRun, err := biz.Run(rightCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("follow_up"),
+		TimeRangeStart: timestamppb.New(start.Add(10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(end.Add(10 * time.Minute)),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, rightRun.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: rightRun.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  rightRun.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"upstream timeout dominates latency",
+			"root_cause":{
+				"type":"dependency_timeout",
+				"category":"dependency",
+				"summary":"upstream timeout dominates latency",
+				"statement":"dependency timeout ratio increased",
+				"confidence":0.67,
+				"evidence_ids":["evidence-r1","evidence-r2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"dependency timeout dominates",
+					"confidence":0.67,
+					"supporting_evidence_ids":["evidence-r1","evidence-r2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-r1", "evidence-r2"},
+	})
+	require.NoError(t, err)
+
+	compareResp, err := biz.CompareTraceReadModels(context.Background(), &CompareTraceReadModelsRequest{
+		LeftJobID:  leftRun.JobID,
+		RightJobID: rightRun.JobID,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, compareResp)
+	require.True(t, compareResp.SameIncident)
+	require.True(t, compareResp.SameSession)
+	require.True(t, compareResp.ChangedRootCause)
+	require.True(t, compareResp.ChangedConfidence)
+	require.Equal(t, "replay", compareResp.Left.TriggerType)
+	require.Equal(t, "follow_up", compareResp.Right.TriggerType)
+	require.Equal(t, "database pool saturation confirmed", compareResp.Left.RootCauseSummary)
+	require.Equal(t, "upstream timeout dominates latency", compareResp.Right.RootCauseSummary)
+	require.NotEmpty(t, compareResp.Left.EvidenceRefs)
+	require.NotEmpty(t, compareResp.Right.EvidenceRefs)
+}
+
+func TestAIJobTraceReadModel_CompareRejectsUnrelatedRuns(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	leftRun, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentA.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	rightRun, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentB.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.CompareTraceReadModels(context.Background(), &CompareTraceReadModelsRequest{
+		LeftJobID:  leftRun.JobID,
+		RightJobID: rightRun.JobID,
+	})
+	require.Error(t, err)
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+}
+
 func TestAIJobFinalize_DecisionTraceVerificationRefsPreferJobLinkedRuns(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
