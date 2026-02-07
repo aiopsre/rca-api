@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
@@ -108,6 +110,60 @@ func TestGet_ReturnsNotFound(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.ErrorIs(t, err, errno.ErrSessionContextNotFound)
+}
+
+func TestUpdateReviewState_PersistsIntoContextStateJSON(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType:      SessionTypeService,
+		BusinessKey:      "service:checkout",
+		ContextStateJSON: ptrString(`{"watch_mode":true}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	reviewedAt := time.Now().UTC().Truncate(time.Second)
+	updateResp, err := biz.UpdateReviewState(context.Background(), &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateInReview,
+		ReviewNote:  ptrString("needs manual validation"),
+		ReviewedBy:  ptrString("user:alice"),
+		ReasonCode:  ptrString("manual_takeover"),
+		ReviewedAt:  &reviewedAt,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, updateResp)
+	require.NotNil(t, updateResp.Review)
+	require.Equal(t, SessionReviewStateInReview, updateResp.Review.State)
+	require.Equal(t, "user:alice", updateResp.Review.ReviewedBy)
+	require.Equal(t, "needs manual validation", updateResp.Review.Note)
+
+	getResp, err := biz.Get(context.Background(), &GetSessionContextRequest{
+		SessionID: ptrString(created.Session.SessionID),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, getResp.Session)
+	require.NotNil(t, getResp.Session.ContextStateJSON)
+
+	var state map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*getResp.Session.ContextStateJSON), &state))
+	require.Equal(t, true, state["watch_mode"])
+	reviewObj, ok := state["review"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, SessionReviewStateInReview, reviewObj["state"])
+	require.Equal(t, "user:alice", reviewObj["reviewed_by"])
+	require.Equal(t, "needs manual validation", reviewObj["note"])
+	require.Equal(t, "manual_takeover", reviewObj["reason_code"])
+}
+
+func TestUpdateReviewState_InvalidState(t *testing.T) {
+	biz := newSessionBizForTest(t)
+	_, err := biz.UpdateReviewState(context.Background(), &UpdateReviewStateRequest{
+		SessionID:   "session-1",
+		ReviewState: "invalid",
+	})
+	require.Error(t, err)
 }
 
 func newSessionBizForTest(t *testing.T) *sessionBiz {

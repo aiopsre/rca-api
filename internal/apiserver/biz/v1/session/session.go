@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
@@ -26,6 +28,17 @@ const (
 	SessionStatusArchived = "archived"
 )
 
+const (
+	SessionReviewStatePending   = "pending"
+	SessionReviewStateInReview  = "in_review"
+	SessionReviewStateConfirmed = "confirmed"
+	SessionReviewStateRejected  = "rejected"
+)
+
+const (
+	sessionContextStateReviewKey = "review"
+)
+
 var allowedSessionTypes = map[string]struct{}{
 	SessionTypeIncident: {},
 	SessionTypeAlert:    {},
@@ -39,6 +52,13 @@ var allowedSessionStatuses = map[string]struct{}{
 	SessionStatusArchived: {},
 }
 
+var allowedSessionReviewStates = map[string]struct{}{
+	SessionReviewStatePending:   {},
+	SessionReviewStateInReview:  {},
+	SessionReviewStateConfirmed: {},
+	SessionReviewStateRejected:  {},
+}
+
 // SessionBiz defines internal session context operations.
 //
 //nolint:interfacebloat // Keep minimal create/get/update/internal helper in one entrypoint.
@@ -47,6 +67,7 @@ type SessionBiz interface {
 	EnsureIncidentSession(ctx context.Context, rq *EnsureIncidentSessionRequest) (*ResolveOrCreateResponse, error)
 	Get(ctx context.Context, rq *GetSessionContextRequest) (*GetSessionContextResponse, error)
 	Update(ctx context.Context, rq *UpdateSessionContextRequest) (*UpdateSessionContextResponse, error)
+	UpdateReviewState(ctx context.Context, rq *UpdateReviewStateRequest) (*UpdateReviewStateResponse, error)
 
 	SessionExpansion
 }
@@ -101,6 +122,28 @@ type UpdateSessionContextRequest struct {
 
 type UpdateSessionContextResponse struct {
 	Session *model.SessionContextM
+}
+
+type ReviewState struct {
+	State      string `json:"state"`
+	Note       string `json:"note,omitempty"`
+	ReviewedBy string `json:"reviewed_by,omitempty"`
+	ReviewedAt string `json:"reviewed_at,omitempty"`
+	ReasonCode string `json:"reason_code,omitempty"`
+}
+
+type UpdateReviewStateRequest struct {
+	SessionID   string
+	ReviewState string
+	ReviewNote  *string
+	ReviewedBy  *string
+	ReasonCode  *string
+	ReviewedAt  *time.Time
+}
+
+type UpdateReviewStateResponse struct {
+	Session *model.SessionContextM
+	Review  *ReviewState
 }
 
 var _ SessionBiz = (*sessionBiz)(nil)
@@ -307,6 +350,66 @@ func (b *sessionBiz) Update(ctx context.Context, rq *UpdateSessionContextRequest
 	return &UpdateSessionContextResponse{Session: out}, nil
 }
 
+func (b *sessionBiz) UpdateReviewState(
+	ctx context.Context,
+	rq *UpdateReviewStateRequest,
+) (*UpdateReviewStateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	reviewState, err := normalizeSessionReviewState(rq.ReviewState)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionContextNotFound
+		}
+		return nil, errno.ErrSessionContextGetFailed
+	}
+
+	review := &ReviewState{
+		State:      reviewState,
+		Note:       trimOptional(rq.ReviewNote),
+		ReviewedBy: trimOptional(rq.ReviewedBy),
+		ReasonCode: trimOptional(rq.ReasonCode),
+	}
+	reviewedAt := time.Now().UTC()
+	if rq.ReviewedAt != nil && !rq.ReviewedAt.IsZero() {
+		reviewedAt = rq.ReviewedAt.UTC()
+	}
+	review.ReviewedAt = reviewedAt.Format(time.RFC3339Nano)
+
+	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
+	stateObj[sessionContextStateReviewKey] = map[string]any{
+		"state":       review.State,
+		"note":        review.Note,
+		"reviewed_by": review.ReviewedBy,
+		"reviewed_at": review.ReviewedAt,
+		"reason_code": review.ReasonCode,
+	}
+	encoded, err := json.Marshal(stateObj)
+	if err != nil {
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	encodedRaw := string(encoded)
+	out.ContextStateJSON = &encodedRaw
+
+	if err := b.store.SessionContext().Update(ctx, out); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errno.ErrSessionContextConflict
+		}
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	return &UpdateReviewStateResponse{Session: out, Review: review}, nil
+}
+
 func normalizeSessionType(input string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	if normalized == "" {
@@ -324,6 +427,17 @@ func normalizeSessionStatus(input string) (string, error) {
 		return "", errorsx.ErrInvalidArgument
 	}
 	if _, ok := allowedSessionStatuses[normalized]; !ok {
+		return "", errorsx.ErrInvalidArgument
+	}
+	return normalized, nil
+}
+
+func normalizeSessionReviewState(input string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" {
+		return "", errorsx.ErrInvalidArgument
+	}
+	if _, ok := allowedSessionReviewStates[normalized]; !ok {
 		return "", errorsx.ErrInvalidArgument
 	}
 	return normalized, nil
@@ -357,4 +471,19 @@ func isDuplicateKeyError(err error) bool {
 
 func ptrString(v string) *string {
 	return &v
+}
+
+func parseContextStateJSONObject(raw *string) map[string]any {
+	if raw == nil {
+		return map[string]any{}
+	}
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
 }

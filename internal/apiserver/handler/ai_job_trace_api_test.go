@@ -363,6 +363,159 @@ func TestSessionWorkbenchActionAPI_ValidationAndSessionNotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, notFoundStatus)
 }
 
+func TestSessionWorkbenchReviewActionAPI_StateTransitions(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+
+	failedJobID := createFailedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", "review required")
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", failedJobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	startStatus, startBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-start", baseURL, sessionID),
+		[]byte(`{"note":"taking ownership","reviewed_by":"user:reviewer","reason_code":"manual_takeover"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, startStatus)
+	startData := extractDataContainer(startBody)
+	require.Equal(t, sessionID, extractString(startData, "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "in_review", extractString(startData, "review_state", "reviewState", "ReviewState"))
+	require.Equal(t, "user:reviewer", extractString(startData, "reviewed_by", "reviewedBy", "ReviewedBy"))
+	require.NotEmpty(t, extractString(startData, "reviewed_at", "reviewedAt", "ReviewedAt"))
+
+	confirmStatus, confirmBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-confirm", baseURL, sessionID),
+		[]byte(`{"note":"confirmed diagnosis"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, confirmStatus)
+	confirmData := extractDataContainer(confirmBody)
+	require.Equal(t, "confirmed", extractString(confirmData, "review_state", "reviewState", "ReviewState"))
+	require.NotEmpty(t, extractString(confirmData, "reviewed_by", "reviewedBy", "ReviewedBy"))
+
+	rejectStatus, rejectBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-reject", baseURL, sessionID),
+		[]byte(`{"note":"reject and require another pass","reviewed_by":"user:reviewer","reason_code":"insufficient_evidence"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rejectStatus)
+	rejectData := extractDataContainer(rejectBody)
+	require.Equal(t, "rejected", extractString(rejectData, "review_state", "reviewState", "ReviewState"))
+	require.Equal(t, "insufficient_evidence", extractString(rejectData, "reason_code", "reasonCode", "ReasonCode"))
+}
+
+func TestSessionWorkbenchReviewActionAPI_WorkbenchReflectsStateAndHints(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+
+	failedJobID := createFailedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", "review required")
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", failedJobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	initialStatus, initialBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, initialStatus)
+	initialData := extractDataContainer(initialBody)
+	initialHints := extractStringArray(initialData["next_action_hints"])
+	require.Contains(t, initialHints, "need_human_review")
+	initialSession := extractMap(initialData, "session", "Session")
+	require.NotNil(t, initialSession)
+	require.Equal(t, "pending", extractString(initialSession, "review_state", "reviewState", "ReviewState"))
+
+	confirmStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-confirm", baseURL, sessionID),
+		[]byte(`{"note":"human confirmed","reviewed_by":"user:alice"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, confirmStatus)
+
+	confirmedWorkbenchStatus, confirmedWorkbenchBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, confirmedWorkbenchStatus)
+	confirmedData := extractDataContainer(confirmedWorkbenchBody)
+	confirmedSession := extractMap(confirmedData, "session", "Session")
+	require.NotNil(t, confirmedSession)
+	require.Equal(t, "confirmed", extractString(confirmedSession, "review_state", "reviewState", "ReviewState"))
+	require.Equal(t, "user:alice", extractString(confirmedSession, "reviewed_by", "reviewedBy", "ReviewedBy"))
+	confirmedHints := extractStringArray(confirmedData["next_action_hints"])
+	require.NotContains(t, confirmedHints, "need_human_review")
+
+	startStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-start", baseURL, sessionID),
+		[]byte(`{"note":"back to investigation","reviewed_by":"user:alice"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, startStatus)
+
+	inReviewStatus, inReviewBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, inReviewStatus)
+	inReviewData := extractDataContainer(inReviewBody)
+	inReviewHints := extractStringArray(inReviewData["next_action_hints"])
+	require.Contains(t, inReviewHints, "review_in_progress")
+
+	rejectStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-reject", baseURL, sessionID),
+		[]byte(`{"note":"reject diagnosis","reviewed_by":"user:alice"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rejectStatus)
+
+	rejectedWorkbenchStatus, rejectedWorkbenchBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rejectedWorkbenchStatus)
+	rejectedData := extractDataContainer(rejectedWorkbenchBody)
+	rejectedHints := extractStringArray(rejectedData["next_action_hints"])
+	require.Contains(t, rejectedHints, "consider_follow_up")
+	require.Contains(t, rejectedHints, "consider_replay")
+}
+
 func createFinalizedTraceJob(
 	t *testing.T,
 	aiBiz aijobbiz.AIJobBiz,
@@ -397,6 +550,43 @@ func createFinalizedTraceJob(
 		Status:        "succeeded",
 		DiagnosisJSON: strPtr(diagnosisJSON),
 		EvidenceIDs:   []string{"ev-1", "ev-2"},
+	})
+	require.NoError(t, err)
+	return runResp.GetJobID()
+}
+
+func createFailedTraceJob(
+	t *testing.T,
+	aiBiz aijobbiz.AIJobBiz,
+	incidentID string,
+	triggerType string,
+	triggerSource string,
+	initiator string,
+	errorMessage string,
+) string {
+	t.Helper()
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+	runCtx := contextx.WithTriggerType(context.Background(), triggerType)
+	runCtx = contextx.WithTriggerSource(runCtx, triggerSource)
+	runCtx = contextx.WithTriggerInitiator(runCtx, initiator)
+	runResp, err := aiBiz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incidentID,
+		Trigger:        strPtr(triggerType),
+		CreatedBy:      strPtr(initiator),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.GetJobID())
+
+	orcCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-trace-api-failed-test")
+	_, err = aiBiz.Start(orcCtx, &v1.StartAIJobRequest{JobID: runResp.GetJobID()})
+	require.NoError(t, err)
+	_, err = aiBiz.Finalize(orcCtx, &v1.FinalizeAIJobRequest{
+		JobID:        runResp.GetJobID(),
+		Status:       "failed",
+		ErrorMessage: strPtr(errorMessage),
 	})
 	require.NoError(t, err)
 	return runResp.GetJobID()

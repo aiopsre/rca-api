@@ -187,4 +187,31 @@ func TestValidateSessionOperatorActionRequest_Invalid(t *testing.T) {
 	require.Error(t, val.ValidateSessionOperatorActionRequest(context.Background(), req))
 }
 
+func TestValidateSessionReviewActionRequest(t *testing.T) {
+	val := &Validator{}
+	req := &SessionReviewActionRequest{
+		SessionID:   "session-1",
+		ReviewState: "confirmed",
+		Note:        ptrValidationString("manual verification completed"),
+		ReviewedBy:  ptrValidationString("user:alice"),
+		ReasonCode:  ptrValidationString("human_validated"),
+	}
+	require.NoError(t, val.ValidateSessionReviewActionRequest(context.Background(), req))
+}
+
+func TestValidateSessionReviewActionRequest_Invalid(t *testing.T) {
+	val := &Validator{}
+	require.Error(t, val.ValidateSessionReviewActionRequest(context.Background(), nil))
+
+	req := &SessionReviewActionRequest{
+		SessionID:   "session-1",
+		ReviewState: "unknown",
+	}
+	require.Error(t, val.ValidateSessionReviewActionRequest(context.Background(), req))
+
+	req.ReviewState = "rejected"
+	req.SessionID = " "
+	require.Error(t, val.ValidateSessionReviewActionRequest(context.Background(), req))
+}
+
 func ptrValidationString(v string) *string { return &v }

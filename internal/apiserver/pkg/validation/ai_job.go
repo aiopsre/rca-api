@@ -30,6 +30,7 @@ const (
 	maxSessionActionNoteLength      = 1024
 	maxSessionActionSourceLength    = 128
 	maxSessionActionInitiatorLength = 128
+	maxSessionReviewReasonCodeLen   = 64
 )
 
 var (
@@ -61,6 +62,12 @@ var (
 		"replay":    {},
 		"follow_up": {},
 	}
+	allowedSessionReviewStates = map[string]struct{}{
+		"pending":   {},
+		"in_review": {},
+		"confirmed": {},
+		"rejected":  {},
+	}
 )
 
 type SessionOperatorActionRequest struct {
@@ -71,6 +78,14 @@ type SessionOperatorActionRequest struct {
 	OperatorNote *string
 	Source       *string
 	Initiator    *string
+}
+
+type SessionReviewActionRequest struct {
+	SessionID   string
+	ReviewState string
+	Note        *string
+	ReviewedBy  *string
+	ReasonCode  *string
 }
 
 func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJobRequest) error {
@@ -288,6 +303,30 @@ func (v *Validator) ValidateSessionOperatorActionRequest(ctx context.Context, rq
 		return errorsx.ErrInvalidArgument
 	}
 	if !validateOptionalTrimmedMaxLen(rq.Initiator, maxSessionActionInitiatorLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateSessionReviewActionRequest(ctx context.Context, rq *SessionReviewActionRequest) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if strings.TrimSpace(rq.SessionID) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	state := strings.ToLower(strings.TrimSpace(rq.ReviewState))
+	if _, ok := allowedSessionReviewStates[state]; !ok {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Note, maxSessionActionNoteLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.ReviewedBy, maxSessionActionInitiatorLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.ReasonCode, maxSessionReviewReasonCodeLen) {
 		return errorsx.ErrInvalidArgument
 	}
 	return nil

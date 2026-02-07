@@ -8,6 +8,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -23,6 +24,7 @@ const (
 	workbenchHintVerificationPending = "verification_pending"
 	workbenchHintRunInProgress       = "run_in_progress"
 	workbenchHintReviewCompare       = "review_compare"
+	workbenchHintReviewInProgress    = "review_in_progress"
 	workbenchHintConsiderFollowUp    = "consider_follow_up"
 	workbenchHintConsiderReplay      = "consider_replay"
 )
@@ -55,6 +57,11 @@ type SessionWorkbenchReadModel struct {
 	LatestSummary      map[string]any `json:"latest_summary,omitempty"`
 	PinnedEvidenceRefs []string       `json:"pinned_evidence_refs"`
 	HasPinnedEvidence  bool           `json:"has_pinned_evidence"`
+	ReviewState        string         `json:"review_state"`
+	ReviewNote         string         `json:"review_note,omitempty"`
+	ReviewedBy         string         `json:"reviewed_by,omitempty"`
+	ReviewedAt         string         `json:"reviewed_at,omitempty"`
+	ReviewReasonCode   string         `json:"review_reason_code,omitempty"`
 	CreatedAt          string         `json:"created_at,omitempty"`
 	UpdatedAt          string         `json:"updated_at,omitempty"`
 }
@@ -97,6 +104,14 @@ type WorkbenchReviewFlags struct {
 	VerificationCount   int64    `json:"verification_count"`
 	HasPinnedEvidence   bool     `json:"has_pinned_evidence"`
 	PinnedEvidenceCount int64    `json:"pinned_evidence_count"`
+}
+
+type sessionReviewContextState struct {
+	State      string
+	Note       string
+	ReviewedBy string
+	ReviewedAt string
+	ReasonCode string
 }
 
 func (b *aiJobBiz) GetSessionWorkbench(
@@ -154,6 +169,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	}
 
 	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
+	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
 	latestCompare := b.buildLatestWorkbenchCompare(ctx, recentRuns)
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
 	nextHints := buildWorkbenchNextActionHints(
@@ -162,10 +178,11 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		reviewFlags,
 		latestCompare,
 		trimOptional(sessionObj.ActiveRunID),
+		reviewState,
 	)
 
 	return &GetSessionWorkbenchResponse{
-		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs),
+		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState),
 		Incident:         incidentBlock,
 		LatestRun:        latestRun,
 		LatestDecision:   latestDecision,
@@ -244,9 +261,16 @@ func traceSummaryIncidentID(in *TraceReadSummary) string {
 	return strings.TrimSpace(in.IncidentID)
 }
 
-func sessionToWorkbench(in *model.SessionContextM, pinnedRefs []string) *SessionWorkbenchReadModel {
+func sessionToWorkbench(
+	in *model.SessionContextM,
+	pinnedRefs []string,
+	reviewState *sessionReviewContextState,
+) *SessionWorkbenchReadModel {
 	if in == nil {
 		return &SessionWorkbenchReadModel{}
+	}
+	if reviewState == nil {
+		reviewState = &sessionReviewContextState{State: sessionbiz.SessionReviewStatePending}
 	}
 	latestSummary := parseOptionalJSONObject(in.LatestSummaryJSON)
 	return &SessionWorkbenchReadModel{
@@ -260,6 +284,11 @@ func sessionToWorkbench(in *model.SessionContextM, pinnedRefs []string) *Session
 		LatestSummary:      latestSummary,
 		PinnedEvidenceRefs: append([]string(nil), pinnedRefs...),
 		HasPinnedEvidence:  len(pinnedRefs) > 0,
+		ReviewState:        strings.TrimSpace(reviewState.State),
+		ReviewNote:         strings.TrimSpace(reviewState.Note),
+		ReviewedBy:         strings.TrimSpace(reviewState.ReviewedBy),
+		ReviewedAt:         strings.TrimSpace(reviewState.ReviewedAt),
+		ReviewReasonCode:   strings.TrimSpace(reviewState.ReasonCode),
 		CreatedAt:          toRFC3339String(in.CreatedAt),
 		UpdatedAt:          toRFC3339String(in.UpdatedAt),
 	}
@@ -319,19 +348,28 @@ func buildWorkbenchNextActionHints(
 	reviewFlags *WorkbenchReviewFlags,
 	latestCompare *WorkbenchCompareSummary,
 	activeRunID string,
+	reviewState *sessionReviewContextState,
 ) []string {
 	hints := make([]string, 0, 8)
+	state := sessionbiz.SessionReviewStatePending
+	if reviewState != nil {
+		state = normalizeWorkbenchReviewState(reviewState.State)
+	}
 	if strings.TrimSpace(activeRunID) != "" || isActiveRunStatus(latestRun) {
 		hints = appendUniqueHint(hints, workbenchHintRunInProgress)
 	}
+	if state == sessionbiz.SessionReviewStateInReview {
+		hints = appendUniqueHint(hints, workbenchHintReviewInProgress)
+	}
+	reviewTerminal := state == sessionbiz.SessionReviewStateConfirmed || state == sessionbiz.SessionReviewStateRejected
 	if reviewFlags != nil {
-		if reviewFlags.HumanReviewRequired {
+		if reviewFlags.HumanReviewRequired && !reviewTerminal && state != sessionbiz.SessionReviewStateInReview {
 			hints = appendUniqueHint(hints, workbenchHintNeedHumanReview)
 		}
 		if len(reviewFlags.MissingFacts) > 0 {
 			hints = appendUniqueHint(hints, workbenchHintAwaitMoreEvidence)
 		}
-		if len(reviewFlags.Conflicts) > 0 {
+		if len(reviewFlags.Conflicts) > 0 && state != sessionbiz.SessionReviewStateConfirmed {
 			hints = appendUniqueHint(hints, workbenchHintReviewConflicts)
 		}
 	}
@@ -347,11 +385,16 @@ func buildWorkbenchNextActionHints(
 	if latestCompare != nil && (latestCompare.ChangedRootCause || latestCompare.ChangedConfidence) {
 		hints = appendUniqueHint(hints, workbenchHintReviewCompare)
 	}
-	if latestRun != nil && shouldSuggestFollowUp(latestRun, reviewFlags) {
+	if state == sessionbiz.SessionReviewStateRejected {
 		hints = appendUniqueHint(hints, workbenchHintConsiderFollowUp)
-	}
-	if latestRun != nil && shouldSuggestReplay(latestRun, reviewFlags) {
 		hints = appendUniqueHint(hints, workbenchHintConsiderReplay)
+	} else if state != sessionbiz.SessionReviewStateConfirmed {
+		if latestRun != nil && shouldSuggestFollowUp(latestRun, reviewFlags) {
+			hints = appendUniqueHint(hints, workbenchHintConsiderFollowUp)
+		}
+		if latestRun != nil && shouldSuggestReplay(latestRun, reviewFlags) {
+			hints = appendUniqueHint(hints, workbenchHintConsiderReplay)
+		}
 	}
 	return hints
 }
@@ -445,6 +488,38 @@ func parseOptionalJSONObject(raw *string) map[string]any {
 		return nil
 	}
 	return parseJSONObject(*raw)
+}
+
+func extractSessionReviewState(raw *string) *sessionReviewContextState {
+	out := &sessionReviewContextState{State: sessionbiz.SessionReviewStatePending}
+	obj := parseOptionalJSONObject(raw)
+	if obj == nil {
+		return out
+	}
+	reviewRaw, ok := obj["review"]
+	if !ok {
+		return out
+	}
+	reviewObj, ok := reviewRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	out.State = normalizeWorkbenchReviewState(anyToString(reviewObj["state"]))
+	out.Note = strings.TrimSpace(anyToString(reviewObj["note"]))
+	out.ReviewedBy = strings.TrimSpace(anyToString(reviewObj["reviewed_by"]))
+	out.ReviewedAt = strings.TrimSpace(anyToString(reviewObj["reviewed_at"]))
+	out.ReasonCode = strings.TrimSpace(anyToString(reviewObj["reason_code"]))
+	return out
+}
+
+func normalizeWorkbenchReviewState(raw string) string {
+	state := strings.ToLower(strings.TrimSpace(raw))
+	switch state {
+	case sessionbiz.SessionReviewStateInReview, sessionbiz.SessionReviewStateConfirmed, sessionbiz.SessionReviewStateRejected:
+		return state
+	default:
+		return sessionbiz.SessionReviewStatePending
+	}
 }
 
 func extractPinnedEvidenceRefs(raw *string) []string {

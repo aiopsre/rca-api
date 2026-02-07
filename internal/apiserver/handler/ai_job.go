@@ -15,6 +15,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
@@ -50,6 +51,24 @@ type sessionActionResponse struct {
 	TriggerType          string `json:"trigger_type"`
 	Pipeline             string `json:"pipeline"`
 	Created              bool   `json:"created"`
+	Status               string `json:"status"`
+	Message              string `json:"message,omitempty"`
+	WorkbenchRefreshHint string `json:"workbench_refresh_hint,omitempty"`
+}
+
+type sessionReviewActionRequest struct {
+	Note       *string `json:"note,omitempty"`
+	ReviewedBy *string `json:"reviewed_by,omitempty"`
+	ReasonCode *string `json:"reason_code,omitempty"`
+}
+
+type sessionReviewActionResponse struct {
+	SessionID            string `json:"session_id"`
+	ReviewState          string `json:"review_state"`
+	ReviewNote           string `json:"review_note,omitempty"`
+	ReviewedBy           string `json:"reviewed_by,omitempty"`
+	ReviewedAt           string `json:"reviewed_at,omitempty"`
+	ReasonCode           string `json:"reason_code,omitempty"`
 	Status               string `json:"status"`
 	Message              string `json:"message,omitempty"`
 	WorkbenchRefreshHint string `json:"workbench_refresh_hint,omitempty"`
@@ -248,6 +267,18 @@ func (h *Handler) ReplaySessionAI(c *gin.Context) {
 
 func (h *Handler) FollowUpSessionAI(c *gin.Context) {
 	h.dispatchSessionAIAction(c, triggerbiz.TriggerTypeFollowUp, sessionFollowUpActionSource)
+}
+
+func (h *Handler) StartSessionReview(c *gin.Context) {
+	h.dispatchSessionReviewAction(c, sessionbiz.SessionReviewStateInReview, "review_started")
+}
+
+func (h *Handler) ConfirmSessionReview(c *gin.Context) {
+	h.dispatchSessionReviewAction(c, sessionbiz.SessionReviewStateConfirmed, "review_confirmed")
+}
+
+func (h *Handler) RejectSessionReview(c *gin.Context) {
+	h.dispatchSessionReviewAction(c, sessionbiz.SessionReviewStateRejected, "review_rejected")
 }
 
 //nolint:dupl // Keep handler pattern aligned with other resources.
@@ -578,6 +609,9 @@ func init() {
 		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
 		sessionGroup.POST("/:sessionID/actions/replay", handler.ReplaySessionAI)
 		sessionGroup.POST("/:sessionID/actions/follow-up", handler.FollowUpSessionAI)
+		sessionGroup.POST("/:sessionID/actions/review-start", handler.StartSessionReview)
+		sessionGroup.POST("/:sessionID/actions/review-confirm", handler.ConfirmSessionReview)
+		sessionGroup.POST("/:sessionID/actions/review-reject", handler.RejectSessionReview)
 
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
@@ -754,4 +788,55 @@ func buildSessionActionInputHints(triggerType string, reason string, operatorNot
 		return ""
 	}
 	return string(raw)
+}
+
+func (h *Handler) dispatchSessionReviewAction(c *gin.Context, reviewState string, message string) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	sessionID := strings.TrimSpace(c.Param("sessionID"))
+	var req sessionReviewActionRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	validateReq := &validation.SessionReviewActionRequest{
+		SessionID:   sessionID,
+		ReviewState: reviewState,
+		Note:        req.Note,
+		ReviewedBy:  req.ReviewedBy,
+		ReasonCode:  req.ReasonCode,
+	}
+	if err := h.val.ValidateSessionReviewActionRequest(c.Request.Context(), validateReq); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	reviewedBy := resolveSessionActionInitiator(c.Request.Context(), req.ReviewedBy)
+	updateResp, err := h.biz.SessionV1().UpdateReviewState(c.Request.Context(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: reviewState,
+		ReviewNote:  req.Note,
+		ReviewedBy:  strPtr(reviewedBy),
+		ReasonCode:  req.ReasonCode,
+	})
+	resp := &sessionReviewActionResponse{
+		SessionID:            sessionID,
+		ReviewState:          reviewState,
+		ReviewedBy:           reviewedBy,
+		ReviewNote:           normalizeOptionalText(req.Note),
+		ReasonCode:           normalizeOptionalText(req.ReasonCode),
+		Status:               sessionActionStatusAccepted,
+		Message:              strings.TrimSpace(message),
+		WorkbenchRefreshHint: sessionActionRefreshHint,
+	}
+	if updateResp != nil && updateResp.Review != nil {
+		resp.ReviewState = strings.TrimSpace(updateResp.Review.State)
+		resp.ReviewNote = strings.TrimSpace(updateResp.Review.Note)
+		resp.ReviewedBy = strings.TrimSpace(updateResp.Review.ReviewedBy)
+		resp.ReviewedAt = strings.TrimSpace(updateResp.Review.ReviewedAt)
+		resp.ReasonCode = strings.TrimSpace(updateResp.Review.ReasonCode)
+	}
+	core.WriteResponse(c, resp, err)
 }

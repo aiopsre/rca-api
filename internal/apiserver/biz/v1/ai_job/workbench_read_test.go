@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -121,6 +122,59 @@ func TestGetSessionWorkbench_InProgressHint(t *testing.T) {
 	require.NotNil(t, resp.LatestRun)
 	require.Equal(t, jobStatusQueued, resp.LatestRun.Status)
 	require.Contains(t, resp.NextActionHints, workbenchHintRunInProgress)
+}
+
+func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	failedJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		ErrorMessage:  "diagnosis confidence too low",
+	})
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", failedJobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	initial, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Contains(t, initial.NextActionHints, workbenchHintNeedHumanReview)
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewNote:  ptrAIString("human confirmed"),
+		ReviewedBy:  ptrAIString("user:alice"),
+	})
+	require.NoError(t, err)
+
+	confirmed, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, sessionbiz.SessionReviewStateConfirmed, confirmed.Session.ReviewState)
+	require.Equal(t, "user:alice", confirmed.Session.ReviewedBy)
+	require.NotContains(t, confirmed.NextActionHints, workbenchHintNeedHumanReview)
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewNote:  ptrAIString("reject current diagnosis"),
+		ReviewedBy:  ptrAIString("user:alice"),
+	})
+	require.NoError(t, err)
+
+	rejected, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, sessionbiz.SessionReviewStateRejected, rejected.Session.ReviewState)
+	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderFollowUp)
+	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderReplay)
 }
 
 type workbenchRunSpec struct {
