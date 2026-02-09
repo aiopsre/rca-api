@@ -100,6 +100,7 @@ type AIJobExpansion interface {
 	CompareTraceReadModels(ctx context.Context, rq *CompareTraceReadModelsRequest) (*CompareTraceReadModelsResponse, error)
 	GetSessionWorkbench(ctx context.Context, rq *GetSessionWorkbenchRequest) (*GetSessionWorkbenchResponse, error)
 	ListOperatorInbox(ctx context.Context, rq *ListOperatorInboxRequest) (*ListOperatorInboxResponse, error)
+	GetOperatorDashboard(ctx context.Context, rq *GetOperatorDashboardRequest) (*GetOperatorDashboardResponse, error)
 }
 
 type aiJobBiz struct {

@@ -348,6 +348,15 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) GetOperatorDashboard(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	resp, err := h.biz.AIJobV1().GetOperatorDashboard(c.Request.Context(), &aijobbiz.GetOperatorDashboardRequest{})
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) CompareAIJobTrace(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -727,6 +736,7 @@ func init() {
 		sessionGroup.POST("/:sessionID/actions/reassign", handler.ReassignSessionOwner)
 
 		v1.GET("/operator/inbox", handler.ListOperatorInbox)
+		v1.GET("/operator/dashboard", handler.GetOperatorDashboard)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
 }

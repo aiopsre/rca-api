@@ -877,6 +877,129 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.Equal(t, sessionB, extractString(escalatedItems[0], "session_id", "sessionID", "SessionID"))
 }
 
+func TestOperatorDashboardAPI_Get(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incidentA := createAIJobLongPollTestIncident(t, s)
+	incidentB := createAIJobLongPollTestIncident(t, s)
+	incidentC := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	sessionSvc := biz.NewBiz(s).SessionV1()
+
+	jobA := createFailedTraceJob(t, aiBiz, incidentA.IncidentID, "manual", "manual_api", "user:a", "needs manual review")
+	jobB := createFailedTraceJob(t, aiBiz, incidentB.IncidentID, "follow_up", "follow_up_api", "user:b", "follow-up failed")
+	jobC := createFinalizedTraceJob(t, aiBiz, incidentC.IncidentID, "manual", "manual_api", "user:c", buildDiagnosisJSON(
+		"healthy after mitigation",
+		"dependency_timeout",
+		"dependency",
+		0.92,
+		"ev-c-1",
+		"ev-c-2",
+	))
+
+	sessionA := mustHandlerSessionIDByJob(t, s, jobA)
+	sessionB := mustHandlerSessionIDByJob(t, s, jobB)
+	sessionC := mustHandlerSessionIDByJob(t, s, jobC)
+
+	startStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-start", baseURL, sessionA),
+		[]byte(`{"note":"taking over","reviewed_by":"user:reviewer-a"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, startStatus)
+
+	rejectStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-reject", baseURL, sessionB),
+		[]byte(`{"note":"reject current diagnosis","reviewed_by":"user:reviewer-b"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, rejectStatus)
+
+	confirmStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-confirm", baseURL, sessionC),
+		[]byte(`{"note":"confirmed","reviewed_by":"user:reviewer-c"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, confirmStatus)
+
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: strPtr("user:lead-a"),
+		AssignedAt: &assignedAtPending,
+	})
+	require.NoError(t, err)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: strPtr("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
+	})
+	require.NoError(t, err)
+
+	status, body, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/dashboard", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+
+	data := extractDataContainer(body)
+	require.NotEmpty(t, extractString(data, "as_of", "asOf", "AsOf"))
+
+	overview := extractMap(data, "overview", "Overview")
+	require.NotNil(t, overview)
+	require.EqualValues(t, 3, extractInt64(overview, "total_sessions", "totalSessions", "TotalSessions"))
+	require.EqualValues(t, 2, extractInt64(overview, "needs_review_count", "needsReviewCount", "NeedsReviewCount"))
+	require.EqualValues(t, 1, extractInt64(overview, "in_review_count", "inReviewCount", "InReviewCount"))
+	require.EqualValues(t, 1, extractInt64(overview, "confirmed_count", "confirmedCount", "ConfirmedCount"))
+	require.EqualValues(t, 1, extractInt64(overview, "rejected_count", "rejectedCount", "RejectedCount"))
+	require.EqualValues(t, 2, extractInt64(overview, "assigned_count", "assignedCount", "AssignedCount"))
+	require.EqualValues(t, 1, extractInt64(overview, "unassigned_count", "unassignedCount", "UnassignedCount"))
+
+	escalation := extractMap(data, "escalation", "Escalation")
+	require.NotNil(t, escalation)
+	require.EqualValues(t, 1, extractInt64(escalation, "pending_escalation_count", "pendingEscalationCount", "PendingEscalationCount"))
+	require.EqualValues(t, 1, extractInt64(escalation, "escalated_count", "escalatedCount", "EscalatedCount"))
+	require.EqualValues(t, 1, extractInt64(escalation, "normal_count", "normalCount", "NormalCount"))
+
+	distribution := extractMap(data, "distribution", "Distribution")
+	require.NotNil(t, distribution)
+	bySessionType := extractMap(distribution, "by_session_type", "bySessionType", "BySessionType")
+	require.EqualValues(t, 3, extractInt64(bySessionType, "incident"))
+	byTriggerType := extractMap(distribution, "by_latest_trigger_type", "byLatestTriggerType", "ByLatestTriggerType")
+	require.EqualValues(t, 2, extractInt64(byTriggerType, "manual"))
+	require.EqualValues(t, 1, extractInt64(byTriggerType, "follow_up"))
+
+	queuePreview := extractMap(data, "queue_preview", "queuePreview", "QueuePreview")
+	require.NotNil(t, queuePreview)
+	inReviewItems := extractInboxItems(map[string]any{"items": queuePreview["in_review"]})
+	require.NotEmpty(t, inReviewItems)
+	require.Equal(t, sessionA, extractString(inReviewItems[0], "session_id", "sessionID", "SessionID"))
+	escalatedItems := extractInboxItems(map[string]any{"items": queuePreview["escalated"]})
+	require.NotEmpty(t, escalatedItems)
+	require.Equal(t, sessionB, extractString(escalatedItems[0], "session_id", "sessionID", "SessionID"))
+
+	navigation := extractMap(data, "navigation", "Navigation")
+	require.NotNil(t, navigation)
+	require.Equal(t, "/v1/operator/inbox", extractString(navigation, "inbox_path", "inboxPath", "InboxPath"))
+	recommendedFilters := extractMap(navigation, "recommended_filters", "recommendedFilters", "RecommendedFilters")
+	require.Equal(t, "/v1/operator/inbox?review_state=in_review", extractString(recommendedFilters, "in_review"))
+	require.Equal(t, "/v1/operator/inbox?escalation_state=escalated", extractString(recommendedFilters, "escalated"))
+}
+
 func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
 	baseURL, cleanup, _, client := newTestServer(t)
 	defer cleanup()
@@ -1094,4 +1217,22 @@ func extractHistoryItems(container map[string]any) []map[string]any {
 		}
 	}
 	return out
+}
+
+func extractInt64(container map[string]any, keys ...string) int64 {
+	for _, key := range keys {
+		value, ok := container[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case float64:
+			return int64(v)
+		case int64:
+			return v
+		case int:
+			return int64(v)
+		}
+	}
+	return 0
 }

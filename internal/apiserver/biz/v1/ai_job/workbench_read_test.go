@@ -419,6 +419,157 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 	require.Equal(t, sessionB, escalatedResp.Items[0].SessionID)
 }
 
+func TestGetOperatorDashboard_AggregatesOverviewAndPreview(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentC := createTestIncident(t, s)
+	incidentD := createTestIncident(t, s)
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "requires manual review",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "follow_up",
+		TriggerSource: "follow_up_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "follow-up still inconclusive",
+	})
+	jobC := runAndFinalizeWorkbenchJob(t, biz, incidentC.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:c",
+		DiagnosisJSON: `{
+			"summary":"healthy after mitigation",
+			"root_cause":{
+				"type":"dependency_timeout",
+				"category":"dependency",
+				"summary":"healthy after mitigation",
+				"statement":"resolved",
+				"confidence":0.92,
+				"evidence_ids":["ev-c-1","ev-c-2"]
+			},
+			"hypotheses":[{"statement":"mitigated","confidence":0.92,"supporting_evidence_ids":["ev-c-1","ev-c-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-c-1", "ev-c-2"},
+	})
+	now := time.Now().UTC().Truncate(time.Second)
+	runCtx := contextx.WithTriggerType(context.Background(), "manual")
+	runCtx = contextx.WithTriggerSource(runCtx, "manual_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:d")
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incidentD.IncidentID,
+		Trigger:        ptrAIString("manual"),
+		CreatedBy:      ptrAIString("user:d"),
+		TimeRangeStart: timestamppb.New(now.Add(-20 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(now),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.GetJobID())
+
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+	sessionC := mustSessionIDByJob(t, s, jobC)
+	sessionD := mustSessionIDByJob(t, s, runResp.GetJobID())
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionA,
+		ReviewState: sessionbiz.SessionReviewStateInReview,
+		ReviewedBy:  ptrAIString("user:reviewer-a"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionB,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewedBy:  ptrAIString("user:reviewer-b"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionC,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewedBy:  ptrAIString("user:reviewer-c"),
+	})
+	require.NoError(t, err)
+
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignedAt: &assignedAtPending,
+	})
+	require.NoError(t, err)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: ptrAIString("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
+	})
+	require.NoError(t, err)
+
+	resp, err := biz.GetOperatorDashboard(context.Background(), &GetOperatorDashboardRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotEmpty(t, resp.AsOf)
+	require.NotNil(t, resp.Overview)
+	require.EqualValues(t, 4, resp.Overview.TotalSessions)
+	require.EqualValues(t, 2, resp.Overview.NeedsReviewCount)
+	require.EqualValues(t, 1, resp.Overview.InReviewCount)
+	require.EqualValues(t, 1, resp.Overview.ConfirmedCount)
+	require.EqualValues(t, 1, resp.Overview.RejectedCount)
+	require.EqualValues(t, 2, resp.Overview.AssignedCount)
+	require.EqualValues(t, 2, resp.Overview.UnassignedCount)
+
+	require.NotNil(t, resp.Escalation)
+	require.EqualValues(t, 1, resp.Escalation.PendingEscalationCount)
+	require.EqualValues(t, 1, resp.Escalation.EscalatedCount)
+	require.EqualValues(t, 2, resp.Escalation.NormalCount)
+
+	require.NotNil(t, resp.Distribution)
+	require.EqualValues(t, 4, resp.Distribution.BySessionType[sessionbiz.SessionTypeIncident])
+	require.EqualValues(t, 3, resp.Distribution.ByLatestTriggerType["manual"])
+	require.EqualValues(t, 1, resp.Distribution.ByLatestTriggerType["follow_up"])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStateInReview])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStateRejected])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStateConfirmed])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStatePending])
+
+	require.NotNil(t, resp.Activity)
+	require.EqualValues(t, 1, resp.Activity.ActiveRunCount)
+	require.EqualValues(t, 4, resp.Activity.RecentlyUpdatedCount)
+	require.EqualValues(t, 0, resp.Activity.RecentReplayCount)
+	require.EqualValues(t, 1, resp.Activity.RecentFollowUpCount)
+	require.EqualValues(t, 1440, resp.Activity.RecentWindowMinutes)
+
+	require.NotNil(t, resp.QueuePreview)
+	require.NotEmpty(t, resp.QueuePreview.InReview)
+	require.Equal(t, sessionA, resp.QueuePreview.InReview[0].SessionID)
+	require.NotEmpty(t, resp.QueuePreview.Escalated)
+	require.Equal(t, sessionB, resp.QueuePreview.Escalated[0].SessionID)
+	require.GreaterOrEqual(t, len(resp.QueuePreview.NeedsReview), 2)
+	require.Equal(t, sessionA, resp.QueuePreview.NeedsReview[0].SessionID)
+	previewIDs := []string{resp.QueuePreview.NeedsReview[0].SessionID, resp.QueuePreview.NeedsReview[1].SessionID}
+	require.Contains(t, previewIDs, sessionB)
+	require.NotContains(t, previewIDs, sessionC)
+	require.NotContains(t, previewIDs, sessionD)
+
+	require.NotNil(t, resp.Navigation)
+	require.Equal(t, "/v1/operator/inbox", resp.Navigation.InboxPath)
+	require.Equal(t, "/v1/operator/inbox?review_state=in_review", resp.Navigation.RecommendedFilters["in_review"])
+	require.Equal(t, "/v1/operator/inbox?escalation_state=escalated", resp.Navigation.RecommendedFilters["escalated"])
+}
+
 type workbenchRunSpec struct {
 	Status        string
 	TriggerType   string

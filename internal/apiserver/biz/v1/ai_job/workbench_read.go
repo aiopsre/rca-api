@@ -16,14 +16,17 @@ import (
 )
 
 const (
-	defaultSessionWorkbenchRecentLimit  = int64(10)
-	maxSessionWorkbenchRecentLimit      = int64(50)
-	defaultSessionWorkbenchHistoryLimit = int64(5)
-	defaultOperatorInboxLimit           = int64(20)
-	maxOperatorInboxLimit               = int64(100)
-	maxOperatorInboxScan                = int64(500)
-	operatorInboxTraceProbeLimit        = int64(5)
-	defaultSessionSLAWindow             = 2 * time.Hour
+	defaultSessionWorkbenchRecentLimit   = int64(10)
+	maxSessionWorkbenchRecentLimit       = int64(50)
+	defaultSessionWorkbenchHistoryLimit  = int64(5)
+	defaultOperatorInboxLimit            = int64(20)
+	maxOperatorInboxLimit                = int64(100)
+	maxOperatorInboxScan                 = int64(500)
+	defaultOperatorDashboardPreviewLimit = int64(3)
+	maxOperatorDashboardPreviewLimit     = int64(10)
+	defaultOperatorDashboardRecentWindow = 24 * time.Hour
+	operatorInboxTraceProbeLimit         = int64(5)
+	defaultSessionSLAWindow              = 2 * time.Hour
 
 	workbenchHintNeedHumanReview     = "need_human_review"
 	workbenchHintAwaitMoreEvidence   = "await_more_evidence"
@@ -68,6 +71,74 @@ type ListOperatorInboxRequest struct {
 type ListOperatorInboxResponse struct {
 	TotalCount int64                `json:"total_count"`
 	Items      []*OperatorInboxItem `json:"items"`
+}
+
+type GetOperatorDashboardRequest struct {
+	PreviewLimit int64
+	RecentWindow time.Duration
+}
+
+type GetOperatorDashboardResponse struct {
+	AsOf         string                         `json:"as_of"`
+	Overview     *OperatorDashboardOverview     `json:"overview"`
+	Escalation   *OperatorDashboardEscalation   `json:"escalation"`
+	Distribution *OperatorDashboardDistribution `json:"distribution"`
+	Activity     *OperatorDashboardActivity     `json:"activity"`
+	QueuePreview *OperatorDashboardQueuePreview `json:"queue_preview"`
+	Navigation   *OperatorDashboardNavigation   `json:"navigation"`
+}
+
+type OperatorDashboardOverview struct {
+	TotalSessions    int64 `json:"total_sessions"`
+	NeedsReviewCount int64 `json:"needs_review_count"`
+	InReviewCount    int64 `json:"in_review_count"`
+	ConfirmedCount   int64 `json:"confirmed_count"`
+	RejectedCount    int64 `json:"rejected_count"`
+	AssignedCount    int64 `json:"assigned_count"`
+	UnassignedCount  int64 `json:"unassigned_count"`
+}
+
+type OperatorDashboardEscalation struct {
+	PendingEscalationCount int64 `json:"pending_escalation_count"`
+	EscalatedCount         int64 `json:"escalated_count"`
+	NormalCount            int64 `json:"normal_count"`
+}
+
+type OperatorDashboardDistribution struct {
+	BySessionType       map[string]int64 `json:"by_session_type"`
+	ByLatestTriggerType map[string]int64 `json:"by_latest_trigger_type"`
+	ByReviewState       map[string]int64 `json:"by_review_state"`
+}
+
+type OperatorDashboardActivity struct {
+	ActiveRunCount       int64 `json:"active_run_count"`
+	RecentlyUpdatedCount int64 `json:"recently_updated_count"`
+	RecentReplayCount    int64 `json:"recent_replay_count"`
+	RecentFollowUpCount  int64 `json:"recent_follow_up_count"`
+	RecentWindowMinutes  int64 `json:"recent_window_minutes"`
+}
+
+type OperatorDashboardQueuePreview struct {
+	InReview    []*OperatorDashboardPreviewItem `json:"in_review"`
+	Escalated   []*OperatorDashboardPreviewItem `json:"escalated"`
+	NeedsReview []*OperatorDashboardPreviewItem `json:"needs_review"`
+}
+
+type OperatorDashboardPreviewItem struct {
+	SessionID         string `json:"session_id"`
+	IncidentID        string `json:"incident_id,omitempty"`
+	SessionType       string `json:"session_type"`
+	ReviewState       string `json:"review_state"`
+	EscalationState   string `json:"escalation_state"`
+	Assignee          string `json:"assignee,omitempty"`
+	LatestTriggerType string `json:"latest_trigger_type,omitempty"`
+	LastActivityAt    string `json:"last_activity_at,omitempty"`
+	WorkbenchPath     string `json:"workbench_path"`
+}
+
+type OperatorDashboardNavigation struct {
+	InboxPath          string            `json:"inbox_path"`
+	RecommendedFilters map[string]string `json:"recommended_filters"`
 }
 
 type OperatorInboxItem struct {
@@ -206,6 +277,15 @@ type sessionSLAContextState struct {
 	ReasonCode      string
 }
 
+type operatorInboxFilters struct {
+	ReviewState     string
+	HasNeedsReview  bool
+	NeedsReview     bool
+	SessionType     string
+	Assignee        string
+	EscalationState string
+}
+
 func (b *aiJobBiz) GetSessionWorkbench(
 	ctx context.Context,
 	rq *GetSessionWorkbenchRequest,
@@ -317,71 +397,14 @@ func (b *aiJobBiz) ListOperatorInbox(
 	if limit > maxOperatorInboxLimit {
 		return nil, errorsx.ErrInvalidArgument
 	}
-	reviewStateFilter := ""
-	if value := trimOptional(rq.ReviewState); value != "" {
-		reviewStateFilter = normalizeInboxReviewState(value)
-	}
-	needsReviewFilter := false
-	if rq.NeedsReview != nil {
-		needsReviewFilter = *rq.NeedsReview
-	}
-	hasNeedsReviewFilter := rq.NeedsReview != nil
-	sessionTypeFilter := normalizeInboxSessionType(trimOptional(rq.SessionType))
-	if trimOptional(rq.SessionType) != "" && sessionTypeFilter == "" {
-		return nil, errorsx.ErrInvalidArgument
-	}
-	assigneeFilter := strings.TrimSpace(trimOptional(rq.Assignee))
-	escalationStateFilter := ""
-	if value := trimOptional(rq.EscalationState); value != "" {
-		escalationStateFilter = normalizeSLAEscalationState(value)
-		if escalationStateFilter == "" {
-			return nil, errorsx.ErrInvalidArgument
-		}
-	}
-
-	whr := where.T(ctx).O(0).L(int(maxOperatorInboxScan))
-	if sessionTypeFilter != "" {
-		whr = whr.F("session_type", sessionTypeFilter)
-	}
-	_, sessions, err := b.store.SessionContext().List(ctx, whr)
+	filters, err := normalizeOperatorInboxFilters(rq)
 	if err != nil {
-		return nil, errno.ErrSessionContextListFailed
+		return nil, err
 	}
-
-	items := make([]*OperatorInboxItem, 0, len(sessions))
-	for _, sessionObj := range sessions {
-		item, buildErr := b.buildOperatorInboxItem(ctx, sessionObj)
-		if buildErr != nil {
-			return nil, buildErr
-		}
-		if reviewStateFilter != "" && item.ReviewState != reviewStateFilter {
-			continue
-		}
-		if hasNeedsReviewFilter && item.NeedsReview != needsReviewFilter {
-			continue
-		}
-		if assigneeFilter != "" && strings.TrimSpace(item.Assignee) != assigneeFilter {
-			continue
-		}
-		if escalationStateFilter != "" && normalizeSLAEscalationState(item.EscalationState) != escalationStateFilter {
-			continue
-		}
-		items = append(items, item)
+	items, err := b.listOperatorInboxItems(ctx, filters)
+	if err != nil {
+		return nil, err
 	}
-
-	sort.SliceStable(items, func(i, j int) bool {
-		ri := operatorInboxPriority(items[i])
-		rj := operatorInboxPriority(items[j])
-		if ri != rj {
-			return ri < rj
-		}
-		ti := strings.TrimSpace(items[i].LastActivityAt)
-		tj := strings.TrimSpace(items[j].LastActivityAt)
-		if ti != tj {
-			return ti > tj
-		}
-		return strings.TrimSpace(items[i].SessionID) < strings.TrimSpace(items[j].SessionID)
-	})
 
 	totalCount := int64(len(items))
 	if offset >= totalCount {
@@ -397,6 +420,274 @@ func (b *aiJobBiz) ListOperatorInbox(
 		TotalCount: totalCount,
 		Items:      items[startIdx:endIdx],
 	}, nil
+}
+
+func (b *aiJobBiz) GetOperatorDashboard(
+	ctx context.Context,
+	rq *GetOperatorDashboardRequest,
+) (*GetOperatorDashboardResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	previewLimit := rq.PreviewLimit
+	if previewLimit <= 0 {
+		previewLimit = defaultOperatorDashboardPreviewLimit
+	}
+	if previewLimit > maxOperatorDashboardPreviewLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	recentWindow := rq.RecentWindow
+	if recentWindow <= 0 {
+		recentWindow = defaultOperatorDashboardRecentWindow
+	}
+	items, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{})
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	recentThreshold := now.Add(-recentWindow)
+	overview := &OperatorDashboardOverview{
+		TotalSessions: int64(len(items)),
+	}
+	escalation := &OperatorDashboardEscalation{}
+	distribution := &OperatorDashboardDistribution{
+		BySessionType:       map[string]int64{},
+		ByLatestTriggerType: map[string]int64{},
+		ByReviewState:       map[string]int64{},
+	}
+	activity := &OperatorDashboardActivity{
+		RecentWindowMinutes: int64(recentWindow / time.Minute),
+	}
+
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		reviewState := normalizeInboxReviewState(item.ReviewState)
+		distribution.ByReviewState[reviewState]++
+		switch reviewState {
+		case sessionbiz.SessionReviewStateInReview:
+			overview.InReviewCount++
+		case sessionbiz.SessionReviewStateConfirmed:
+			overview.ConfirmedCount++
+		case sessionbiz.SessionReviewStateRejected:
+			overview.RejectedCount++
+		}
+		if item.NeedsReview {
+			overview.NeedsReviewCount++
+		}
+		if strings.TrimSpace(item.Assignee) == "" {
+			overview.UnassignedCount++
+		} else {
+			overview.AssignedCount++
+		}
+
+		escalationState := normalizeSLAEscalationState(item.EscalationState)
+		if escalationState == "" {
+			escalationState = sessionbiz.SessionEscalationStateNone
+		}
+		switch escalationState {
+		case sessionbiz.SessionEscalationStatePending:
+			escalation.PendingEscalationCount++
+		case sessionbiz.SessionEscalationStateEscalated:
+			escalation.EscalatedCount++
+		default:
+			escalation.NormalCount++
+		}
+
+		sessionType := normalizeInboxSessionType(item.SessionType)
+		if sessionType == "" {
+			sessionType = "unknown"
+		}
+		distribution.BySessionType[sessionType]++
+
+		latestTriggerType := strings.ToLower(strings.TrimSpace(item.LatestTriggerType))
+		if latestTriggerType == "" {
+			latestTriggerType = "unknown"
+		}
+		distribution.ByLatestTriggerType[latestTriggerType]++
+
+		if containsString(item.NextActionHints, workbenchHintRunInProgress) {
+			activity.ActiveRunCount++
+		}
+		lastActivityAt, ok := parseRFC3339Time(item.LastActivityAt)
+		if !ok {
+			continue
+		}
+		if !lastActivityAt.Before(recentThreshold) {
+			activity.RecentlyUpdatedCount++
+			switch latestTriggerType {
+			case "replay":
+				activity.RecentReplayCount++
+			case "follow_up":
+				activity.RecentFollowUpCount++
+			}
+		}
+	}
+
+	return &GetOperatorDashboardResponse{
+		AsOf:         toRFC3339String(now),
+		Overview:     overview,
+		Escalation:   escalation,
+		Distribution: distribution,
+		Activity:     activity,
+		QueuePreview: buildOperatorDashboardQueuePreview(items, int(previewLimit)),
+		Navigation: &OperatorDashboardNavigation{
+			InboxPath: "/v1/operator/inbox",
+			RecommendedFilters: map[string]string{
+				"in_review":          "/v1/operator/inbox?review_state=in_review",
+				"needs_review":       "/v1/operator/inbox?needs_review=true",
+				"pending_escalation": "/v1/operator/inbox?escalation_state=pending",
+				"escalated":          "/v1/operator/inbox?escalation_state=escalated",
+			},
+		},
+	}, nil
+}
+
+func buildOperatorDashboardQueuePreview(items []*OperatorInboxItem, previewLimit int) *OperatorDashboardQueuePreview {
+	out := &OperatorDashboardQueuePreview{
+		InReview:    []*OperatorDashboardPreviewItem{},
+		Escalated:   []*OperatorDashboardPreviewItem{},
+		NeedsReview: []*OperatorDashboardPreviewItem{},
+	}
+	if previewLimit <= 0 {
+		return out
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		if len(out.InReview) < previewLimit && normalizeInboxReviewState(item.ReviewState) == sessionbiz.SessionReviewStateInReview {
+			out.InReview = append(out.InReview, operatorInboxItemToDashboardPreview(item))
+		}
+		if len(out.Escalated) < previewLimit && normalizeSLAEscalationState(item.EscalationState) == sessionbiz.SessionEscalationStateEscalated {
+			out.Escalated = append(out.Escalated, operatorInboxItemToDashboardPreview(item))
+		}
+		if len(out.NeedsReview) < previewLimit && item.NeedsReview {
+			out.NeedsReview = append(out.NeedsReview, operatorInboxItemToDashboardPreview(item))
+		}
+		if len(out.InReview) >= previewLimit &&
+			len(out.Escalated) >= previewLimit &&
+			len(out.NeedsReview) >= previewLimit {
+			break
+		}
+	}
+	return out
+}
+
+func operatorInboxItemToDashboardPreview(item *OperatorInboxItem) *OperatorDashboardPreviewItem {
+	if item == nil {
+		return &OperatorDashboardPreviewItem{}
+	}
+	return &OperatorDashboardPreviewItem{
+		SessionID:         strings.TrimSpace(item.SessionID),
+		IncidentID:        strings.TrimSpace(item.IncidentID),
+		SessionType:       strings.TrimSpace(item.SessionType),
+		ReviewState:       normalizeInboxReviewState(item.ReviewState),
+		EscalationState:   firstTraceNonEmpty(normalizeSLAEscalationState(item.EscalationState), sessionbiz.SessionEscalationStateNone),
+		Assignee:          strings.TrimSpace(item.Assignee),
+		LatestTriggerType: strings.TrimSpace(item.LatestTriggerType),
+		LastActivityAt:    strings.TrimSpace(item.LastActivityAt),
+		WorkbenchPath:     strings.TrimSpace(item.WorkbenchPath),
+	}
+}
+
+func normalizeOperatorInboxFilters(rq *ListOperatorInboxRequest) (*operatorInboxFilters, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	filters := &operatorInboxFilters{}
+	if value := trimOptional(rq.ReviewState); value != "" {
+		filters.ReviewState = normalizeInboxReviewState(value)
+	}
+	if rq.NeedsReview != nil {
+		filters.HasNeedsReview = true
+		filters.NeedsReview = *rq.NeedsReview
+	}
+	if trimOptional(rq.SessionType) != "" {
+		filters.SessionType = normalizeInboxSessionType(trimOptional(rq.SessionType))
+		if filters.SessionType == "" {
+			return nil, errorsx.ErrInvalidArgument
+		}
+	}
+	filters.Assignee = strings.TrimSpace(trimOptional(rq.Assignee))
+	if value := trimOptional(rq.EscalationState); value != "" {
+		filters.EscalationState = normalizeSLAEscalationState(value)
+		if filters.EscalationState == "" {
+			return nil, errorsx.ErrInvalidArgument
+		}
+	}
+	return filters, nil
+}
+
+func (b *aiJobBiz) listOperatorInboxItems(
+	ctx context.Context,
+	filters *operatorInboxFilters,
+) ([]*OperatorInboxItem, error) {
+	if filters == nil {
+		filters = &operatorInboxFilters{}
+	}
+	whr := where.T(ctx).O(0).L(int(maxOperatorInboxScan))
+	if filters.SessionType != "" {
+		whr = whr.F("session_type", filters.SessionType)
+	}
+	_, sessions, err := b.store.SessionContext().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+
+	items := make([]*OperatorInboxItem, 0, len(sessions))
+	for _, sessionObj := range sessions {
+		item, buildErr := b.buildOperatorInboxItem(ctx, sessionObj)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if !matchesOperatorInboxFilters(item, filters) {
+			continue
+		}
+		items = append(items, item)
+	}
+	sortOperatorInboxItems(items)
+	return items, nil
+}
+
+func matchesOperatorInboxFilters(item *OperatorInboxItem, filters *operatorInboxFilters) bool {
+	if item == nil {
+		return false
+	}
+	if filters == nil {
+		return true
+	}
+	if filters.ReviewState != "" && normalizeInboxReviewState(item.ReviewState) != filters.ReviewState {
+		return false
+	}
+	if filters.HasNeedsReview && item.NeedsReview != filters.NeedsReview {
+		return false
+	}
+	if filters.Assignee != "" && strings.TrimSpace(item.Assignee) != filters.Assignee {
+		return false
+	}
+	if filters.EscalationState != "" && normalizeSLAEscalationState(item.EscalationState) != filters.EscalationState {
+		return false
+	}
+	return true
+}
+
+func sortOperatorInboxItems(items []*OperatorInboxItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		ri := operatorInboxPriority(items[i])
+		rj := operatorInboxPriority(items[j])
+		if ri != rj {
+			return ri < rj
+		}
+		ti := strings.TrimSpace(items[i].LastActivityAt)
+		tj := strings.TrimSpace(items[j].LastActivityAt)
+		if ti != tj {
+			return ti > tj
+		}
+		return strings.TrimSpace(items[i].SessionID) < strings.TrimSpace(items[j].SessionID)
+	})
 }
 
 func (b *aiJobBiz) buildOperatorInboxItem(

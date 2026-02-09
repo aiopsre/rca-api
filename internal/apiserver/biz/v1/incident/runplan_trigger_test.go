@@ -356,6 +356,13 @@ func (f *fakeAIJobBizForEscalationRunPlan) ListOperatorInbox(
 	return nil, nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) GetOperatorDashboard(
+	context.Context,
+	*aijobbiz.GetOperatorDashboardRequest,
+) (*aijobbiz.GetOperatorDashboardResponse, error) {
+	return nil, nil
+}
+
 func strPtrForTest(v string) *string {
 	value := v
 	return &value
