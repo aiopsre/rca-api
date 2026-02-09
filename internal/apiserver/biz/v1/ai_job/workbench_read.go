@@ -16,13 +16,14 @@ import (
 )
 
 const (
-	defaultSessionWorkbenchRecentLimit = int64(10)
-	maxSessionWorkbenchRecentLimit     = int64(50)
-	defaultOperatorInboxLimit          = int64(20)
-	maxOperatorInboxLimit              = int64(100)
-	maxOperatorInboxScan               = int64(500)
-	operatorInboxTraceProbeLimit       = int64(5)
-	defaultSessionSLAWindow            = 2 * time.Hour
+	defaultSessionWorkbenchRecentLimit  = int64(10)
+	maxSessionWorkbenchRecentLimit      = int64(50)
+	defaultSessionWorkbenchHistoryLimit = int64(5)
+	defaultOperatorInboxLimit           = int64(20)
+	maxOperatorInboxLimit               = int64(100)
+	maxOperatorInboxScan                = int64(500)
+	operatorInboxTraceProbeLimit        = int64(5)
+	defaultSessionSLAWindow             = 2 * time.Hour
 
 	workbenchHintNeedHumanReview     = "need_human_review"
 	workbenchHintAwaitMoreEvidence   = "await_more_evidence"
@@ -50,6 +51,8 @@ type GetSessionWorkbenchResponse struct {
 	LatestCompare    *WorkbenchCompareSummary    `json:"latest_compare,omitempty"`
 	ReviewFlags      *WorkbenchReviewFlags       `json:"review_flags"`
 	NextActionHints  []string                    `json:"next_action_hints"`
+	RecentHistory    []*SessionHistorySummary    `json:"recent_history"`
+	HistoryPath      string                      `json:"history_path,omitempty"`
 }
 
 type ListOperatorInboxRequest struct {
@@ -167,6 +170,19 @@ type WorkbenchReviewFlags struct {
 	PinnedEvidenceCount int64    `json:"pinned_evidence_count"`
 }
 
+type SessionHistorySummary struct {
+	EventID        string         `json:"event_id"`
+	EventType      string         `json:"event_type"`
+	SessionID      string         `json:"session_id"`
+	IncidentID     string         `json:"incident_id,omitempty"`
+	JobID          string         `json:"job_id,omitempty"`
+	Actor          string         `json:"actor"`
+	Note           string         `json:"note,omitempty"`
+	ReasonCode     string         `json:"reason_code,omitempty"`
+	PayloadSummary map[string]any `json:"payload_summary,omitempty"`
+	CreatedAt      string         `json:"created_at"`
+}
+
 type sessionReviewContextState struct {
 	State      string
 	Note       string
@@ -247,13 +263,15 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
 	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
 	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
+	baseSLAState := extractSessionSLAState(sessionObj.ContextStateJSON)
 	slaState := evaluateSessionSLAContext(
 		time.Now().UTC(),
 		reviewState,
 		assignmentState,
 		latestRun,
-		extractSessionSLAState(sessionObj.ContextStateJSON),
+		baseSLAState,
 	)
+	b.syncSessionSLAStateBestEffort(ctx, sessionObj, baseSLAState, slaState)
 	latestCompare := b.buildLatestWorkbenchCompare(ctx, recentRuns)
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
 	nextHints := buildWorkbenchNextActionHints(
@@ -264,6 +282,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		trimOptional(sessionObj.ActiveRunID),
 		reviewState,
 	)
+	recentHistory := b.loadSessionHistorySummariesBestEffort(ctx, sessionID, defaultSessionWorkbenchHistoryLimit)
 
 	return &GetSessionWorkbenchResponse{
 		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState, assignmentState, slaState),
@@ -275,6 +294,8 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		LatestCompare:    latestCompare,
 		ReviewFlags:      reviewFlags,
 		NextActionHints:  nextHints,
+		RecentHistory:    recentHistory,
+		HistoryPath:      "/v1/sessions/" + sessionID + "/history",
 	}, nil
 }
 
@@ -407,13 +428,15 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 		}
 	}
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
+	baseSLAState := extractSessionSLAState(sessionObj.ContextStateJSON)
 	slaState := evaluateSessionSLAContext(
 		time.Now().UTC(),
 		reviewState,
 		assignmentState,
 		latestRun,
-		extractSessionSLAState(sessionObj.ContextStateJSON),
+		baseSLAState,
 	)
+	b.syncSessionSLAStateBestEffort(ctx, sessionObj, baseSLAState, slaState)
 
 	var latestCompare *WorkbenchCompareSummary
 	if leftJobID, rightJobID := pickLatestCompareJobPair(recentRuns); leftJobID != "" && rightJobID != "" {
@@ -622,6 +645,84 @@ func (b *aiJobBiz) buildLatestWorkbenchCompare(
 		LeftConfidence:    cmp.Left.Confidence,
 		RightConfidence:   cmp.Right.Confidence,
 	}
+}
+
+func (b *aiJobBiz) loadSessionHistorySummariesBestEffort(
+	ctx context.Context,
+	sessionID string,
+	limit int64,
+) []*SessionHistorySummary {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || b == nil || b.sessionBiz == nil {
+		return []*SessionHistorySummary{}
+	}
+	resp, err := b.sessionBiz.ListHistory(ctx, &sessionbiz.ListSessionHistoryRequest{
+		SessionID: sessionID,
+		Offset:    0,
+		Limit:     limit,
+		Order:     strPtr("desc"),
+	})
+	if err != nil || resp == nil {
+		return []*SessionHistorySummary{}
+	}
+	items := make([]*SessionHistorySummary, 0, len(resp.Events))
+	for _, event := range resp.Events {
+		if event == nil {
+			continue
+		}
+		items = append(items, &SessionHistorySummary{
+			EventID:        strings.TrimSpace(event.EventID),
+			EventType:      strings.TrimSpace(event.EventType),
+			SessionID:      strings.TrimSpace(event.SessionID),
+			IncidentID:     strings.TrimSpace(event.IncidentID),
+			JobID:          strings.TrimSpace(event.JobID),
+			Actor:          strings.TrimSpace(event.Actor),
+			Note:           strings.TrimSpace(event.Note),
+			ReasonCode:     strings.TrimSpace(event.ReasonCode),
+			PayloadSummary: cloneMapAny(event.PayloadSummary),
+			CreatedAt:      strings.TrimSpace(event.CreatedAt),
+		})
+	}
+	return items
+}
+
+func (b *aiJobBiz) syncSessionSLAStateBestEffort(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+	base *sessionSLAContextState,
+	computed *sessionSLAContextState,
+) {
+	if b == nil || b.sessionBiz == nil || sessionObj == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(sessionObj.SessionID)
+	if sessionID == "" || !sessionSLAStateChanged(base, computed) {
+		return
+	}
+	_, _ = b.sessionBiz.SyncSLAState(ctx, &sessionbiz.SyncSessionSLAStateRequest{
+		SessionID:       sessionID,
+		AssignedAt:      strPtr(strings.TrimSpace(computed.AssignedAt)),
+		DueAt:           strPtr(strings.TrimSpace(computed.DueAt)),
+		EscalationState: strings.TrimSpace(computed.EscalationState),
+		EscalationLevel: computed.EscalationLevel,
+		ReasonCode:      strPtr(strings.TrimSpace(computed.ReasonCode)),
+	})
+}
+
+func sessionSLAStateChanged(base *sessionSLAContextState, computed *sessionSLAContextState) bool {
+	if computed == nil {
+		return false
+	}
+	if base == nil {
+		base = &sessionSLAContextState{
+			EscalationState: sessionbiz.SessionEscalationStateNone,
+		}
+	}
+	return strings.TrimSpace(base.AssignedAt) != strings.TrimSpace(computed.AssignedAt) ||
+		strings.TrimSpace(base.DueAt) != strings.TrimSpace(computed.DueAt) ||
+		normalizeSLAEscalationState(base.EscalationState) != normalizeSLAEscalationState(computed.EscalationState) ||
+		base.EscalationLevel != computed.EscalationLevel ||
+		strings.TrimSpace(base.ReasonCode) != strings.TrimSpace(computed.ReasonCode)
 }
 
 func firstTraceReadSummary(in []*TraceReadSummary) *TraceReadSummary {
@@ -1108,6 +1209,17 @@ func extractStringSlice(raw any) []string {
 	default:
 		return []string{}
 	}
+}
+
+func cloneMapAny(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func incidentTitle(incident *model.IncidentM) string {

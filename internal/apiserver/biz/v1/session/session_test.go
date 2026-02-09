@@ -225,13 +225,201 @@ func TestUpdateAssignment_InvalidAssignee(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestSessionHistory_AppendAndList(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: "incident-1",
+		IncidentID:  ptrString("incident-1"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	t1 := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
+	_, err = biz.AppendHistoryEvent(context.Background(), &AppendSessionHistoryEventRequest{
+		SessionID:  created.Session.SessionID,
+		EventType:  SessionHistoryEventReplayRequested,
+		Actor:      ptrString("user:alice"),
+		Note:       ptrString("operator replay"),
+		ReasonCode: ptrString("manual_recheck"),
+		CreatedAt:  &t1,
+	})
+	require.NoError(t, err)
+
+	t2 := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Second)
+	_, err = biz.AppendHistoryEvent(context.Background(), &AppendSessionHistoryEventRequest{
+		SessionID: created.Session.SessionID,
+		EventType: SessionHistoryEventFollowUpRequested,
+		Actor:     ptrString("user:bob"),
+		CreatedAt: &t2,
+		PayloadSummary: map[string]any{
+			"source": "workbench",
+		},
+	})
+	require.NoError(t, err)
+
+	desc, err := biz.ListHistory(context.Background(), &ListSessionHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    0,
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, desc.TotalCount)
+	require.Len(t, desc.Events, 2)
+	require.Equal(t, SessionHistoryEventFollowUpRequested, desc.Events[0].EventType)
+	require.Equal(t, SessionHistoryEventReplayRequested, desc.Events[1].EventType)
+
+	order := "asc"
+	asc, err := biz.ListHistory(context.Background(), &ListSessionHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    0,
+		Limit:     10,
+		Order:     &order,
+	})
+	require.NoError(t, err)
+	require.Len(t, asc.Events, 2)
+	require.Equal(t, SessionHistoryEventReplayRequested, asc.Events[0].EventType)
+	require.Equal(t, SessionHistoryEventFollowUpRequested, asc.Events[1].EventType)
+
+	paged, err := biz.ListHistory(context.Background(), &ListSessionHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    1,
+		Limit:     1,
+	})
+	require.NoError(t, err)
+	require.Len(t, paged.Events, 1)
+	require.Equal(t, SessionHistoryEventReplayRequested, paged.Events[0].EventType)
+}
+
+func TestSessionHistory_AutoRecordedByAssignmentAndReview(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: "incident-2",
+		IncidentID:  ptrString("incident-2"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrString("user:lead-a"),
+	})
+	require.NoError(t, err)
+	_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-b",
+		AssignedBy: ptrString("user:lead-b"),
+	})
+	require.NoError(t, err)
+	_, err = biz.UpdateReviewState(context.Background(), &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateInReview,
+		ReviewedBy:  ptrString("user:reviewer"),
+	})
+	require.NoError(t, err)
+	_, err = biz.UpdateReviewState(context.Background(), &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateConfirmed,
+		ReviewedBy:  ptrString("user:reviewer"),
+	})
+	require.NoError(t, err)
+	_, err = biz.UpdateReviewState(context.Background(), &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateRejected,
+		ReviewedBy:  ptrString("user:reviewer"),
+	})
+	require.NoError(t, err)
+
+	list, err := biz.ListHistory(context.Background(), &ListSessionHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    0,
+		Limit:     20,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(list.Events), 5)
+
+	eventTypes := map[string]bool{}
+	for _, event := range list.Events {
+		if event != nil {
+			eventTypes[event.EventType] = true
+		}
+	}
+	require.True(t, eventTypes[SessionHistoryEventAssigned])
+	require.True(t, eventTypes[SessionHistoryEventReassigned])
+	require.True(t, eventTypes[SessionHistoryEventReviewStarted])
+	require.True(t, eventTypes[SessionHistoryEventReviewConfirmed])
+	require.True(t, eventTypes[SessionHistoryEventReviewRejected])
+}
+
+func TestSessionHistory_SyncSLAStateRecordsEscalationTransition(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: "incident-3",
+		IncidentID:  ptrString("incident-3"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	assignedAt := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second).Format(time.RFC3339Nano)
+	dueAt := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second).Format(time.RFC3339Nano)
+	_, err = biz.SyncSLAState(context.Background(), &SyncSessionSLAStateRequest{
+		SessionID:       created.Session.SessionID,
+		AssignedAt:      &assignedAt,
+		DueAt:           &dueAt,
+		EscalationState: SessionEscalationStatePending,
+		EscalationLevel: 1,
+		ReasonCode:      ptrString("sla_due_passed"),
+	})
+	require.NoError(t, err)
+	_, err = biz.SyncSLAState(context.Background(), &SyncSessionSLAStateRequest{
+		SessionID:       created.Session.SessionID,
+		AssignedAt:      &assignedAt,
+		DueAt:           &dueAt,
+		EscalationState: SessionEscalationStateEscalated,
+		EscalationLevel: 2,
+		ReasonCode:      ptrString("sla_timeout_escalated"),
+	})
+	require.NoError(t, err)
+	_, err = biz.SyncSLAState(context.Background(), &SyncSessionSLAStateRequest{
+		SessionID:       created.Session.SessionID,
+		AssignedAt:      &assignedAt,
+		DueAt:           &dueAt,
+		EscalationState: SessionEscalationStateNone,
+		EscalationLevel: 0,
+		ReasonCode:      ptrString("handled"),
+	})
+	require.NoError(t, err)
+
+	list, err := biz.ListHistory(context.Background(), &ListSessionHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    0,
+		Limit:     20,
+	})
+	require.NoError(t, err)
+	eventTypes := []string{}
+	for _, event := range list.Events {
+		if event != nil {
+			eventTypes = append(eventTypes, event.EventType)
+		}
+	}
+	require.Contains(t, eventTypes, SessionHistoryEventEscalationPending)
+	require.Contains(t, eventTypes, SessionHistoryEventEscalationEscalated)
+	require.Contains(t, eventTypes, SessionHistoryEventEscalationCleared)
+}
+
 func newSessionBizForTest(t *testing.T) *sessionBiz {
 	t.Helper()
 	store.ResetForTest()
 
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.SessionContextM{}))
+	require.NoError(t, db.AutoMigrate(&model.SessionContextM{}, &model.SessionHistoryEventM{}))
 
 	s := store.NewStore(db)
 	return New(s)

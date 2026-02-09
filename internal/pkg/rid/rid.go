@@ -35,6 +35,8 @@ const (
 	VerificationRunID ResourceID = "verification-run"
 	// SessionID defines session context resource identifier.
 	SessionID ResourceID = "session"
+	// SessionHistoryEventID defines session history event resource identifier.
+	SessionHistoryEventID ResourceID = "session-history"
 )
 
 // String 将资源标识符转换为字符串.

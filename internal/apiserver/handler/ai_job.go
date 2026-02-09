@@ -246,6 +246,31 @@ func (h *Handler) ListSessionAIJobTraces(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) ListSessionHistory(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &sessionbiz.ListSessionHistoryRequest{
+		SessionID: strings.TrimSpace(c.Param("sessionID")),
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		if v, err := strconv.ParseInt(offset, 10, 64); err == nil {
+			req.Offset = v
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.Limit = v
+		}
+	}
+	if order := strings.TrimSpace(c.Query("order")); order != "" {
+		req.Order = strPtr(order)
+	}
+	resp, err := h.biz.SessionV1().ListHistory(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -691,6 +716,7 @@ func init() {
 
 		sessionGroup := v1.Group("/sessions", mws...)
 		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
+		sessionGroup.GET("/:sessionID/history", handler.ListSessionHistory)
 		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
 		sessionGroup.POST("/:sessionID/actions/replay", handler.ReplaySessionAI)
 		sessionGroup.POST("/:sessionID/actions/follow-up", handler.FollowUpSessionAI)
@@ -819,6 +845,58 @@ func (h *Handler) dispatchSessionAIAction(c *gin.Context, triggerType string, de
 	}
 
 	if err == nil {
+		historySessionID := strings.TrimSpace(resp.SessionID)
+		if historySessionID == "" {
+			historySessionID = sessionID
+		}
+		historyEventType := ""
+		switch strings.ToLower(strings.TrimSpace(triggerType)) {
+		case triggerbiz.TriggerTypeReplay:
+			historyEventType = sessionbiz.SessionHistoryEventReplayRequested
+		case triggerbiz.TriggerTypeFollowUp:
+			historyEventType = sessionbiz.SessionHistoryEventFollowUpRequested
+		}
+		if historyEventType != "" && historySessionID != "" {
+			historyNote := operatorNote
+			if historyNote == "" {
+				historyNote = reason
+			}
+			payload := map[string]any{
+				"trigger_type": triggerType,
+				"source":       source,
+			}
+			pipelineValue := strings.TrimSpace(resp.Pipeline)
+			if pipelineValue == "" {
+				pipelineValue = strings.TrimSpace(pipeline)
+			}
+			if pipelineValue != "" {
+				payload["pipeline"] = pipelineValue
+			}
+			if reason != "" {
+				payload["reason"] = reason
+			}
+			if operatorNote != "" {
+				payload["operator_note"] = operatorNote
+			}
+			if resp.JobID != "" {
+				payload["job_id"] = resp.JobID
+			}
+			if _, historyErr := h.biz.SessionV1().AppendHistoryEvent(c.Request.Context(), &sessionbiz.AppendSessionHistoryEventRequest{
+				SessionID:      historySessionID,
+				EventType:      historyEventType,
+				IncidentID:     strPtr(resp.IncidentID),
+				JobID:          strPtr(resp.JobID),
+				Actor:          strPtr(initiator),
+				Note:           strPtr(historyNote),
+				PayloadSummary: payload,
+			}); historyErr != nil {
+				slog.WarnContext(c.Request.Context(), "append session replay/follow_up history skipped",
+					"session_id", historySessionID,
+					"event_type", historyEventType,
+					"error", historyErr,
+				)
+			}
+		}
 		h.jobQueueNotifier.Notify()
 		if h.jobQueueWakeup != nil {
 			_ = h.jobQueueWakeup.PublishAIJobQueueSignal(c.Request.Context())

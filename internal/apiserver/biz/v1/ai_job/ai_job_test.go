@@ -1850,6 +1850,7 @@ CREATE TABLE incidents (
 		&model.EvidenceM{},
 		&model.DatasourceM{},
 		&model.SessionContextM{},
+		&model.SessionHistoryEventM{},
 		&model.IncidentVerificationRunM{},
 	))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))

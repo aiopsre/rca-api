@@ -598,6 +598,122 @@ func TestSessionWorkbenchAssignmentActionAPI_AssignReassignAndWorkbench(t *testi
 	require.Equal(t, "none", extractString(sessionObj, "escalation_state", "escalationState", "EscalationState"))
 }
 
+func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}, &model.SessionHistoryEventM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	jobID := createFailedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", "needs operator action")
+	sessionID := mustHandlerSessionIDByJob(t, s, jobID)
+
+	assignStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/assign", baseURL, sessionID),
+		[]byte(`{"assignee":"user:oncall-a","assigned_by":"user:lead-a","note":"handoff"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assignStatus)
+
+	reviewStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/review-start", baseURL, sessionID),
+		[]byte(`{"note":"start review","reviewed_by":"user:reviewer-a","reason_code":"manual_takeover"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, reviewStatus)
+
+	replayStatus, replayBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/replay", baseURL, sessionID),
+		[]byte(`{"reason":"operator replay","operator_note":"rerun latest evidence"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, replayStatus)
+	replayData := extractDataContainer(replayBody)
+	replayJobID := extractString(replayData, "job_id", "jobID", "JobID")
+	require.NotEmpty(t, replayJobID)
+
+	orcCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-session-history-test")
+	_, err = aiBiz.Start(orcCtx, &v1.StartAIJobRequest{JobID: replayJobID})
+	require.NoError(t, err)
+	_, err = aiBiz.Finalize(orcCtx, &v1.FinalizeAIJobRequest{
+		JobID:  replayJobID,
+		Status: "succeeded",
+		DiagnosisJSON: strPtr(buildDiagnosisJSON(
+			"replay succeeded for follow-up",
+			"db_pool_exhausted",
+			"db",
+			0.75,
+			"ev-history-1",
+			"ev-history-2",
+		)),
+		EvidenceIDs: []string{"ev-history-1", "ev-history-2"},
+	})
+	require.NoError(t, err)
+
+	followUpStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/follow-up", baseURL, sessionID),
+		[]byte(`{"reason":"collect extra context","source":"operator_review_panel","initiator":"user:reviewer-a"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, followUpStatus)
+
+	historyStatus, historyBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/history?offset=0&limit=20", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, historyStatus)
+	historyData := extractDataContainer(historyBody)
+	historyItems := extractHistoryItems(historyData)
+	require.GreaterOrEqual(t, len(historyItems), 4)
+	historyEventTypes := map[string]bool{}
+	for _, item := range historyItems {
+		historyEventTypes[extractString(item, "event_type", "eventType", "EventType")] = true
+	}
+	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventAssigned])
+	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventReviewStarted])
+	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventReplayRequested])
+	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventFollowUpRequested])
+
+	ascStatus, ascBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/history?order=asc&offset=0&limit=2", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, ascStatus)
+	ascData := extractDataContainer(ascBody)
+	ascItems := extractHistoryItems(ascData)
+	require.Len(t, ascItems, 2)
+	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(ascItems[0], "event_type", "eventType", "EventType"))
+
+	workbenchStatus, workbenchBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, workbenchStatus)
+	workbenchData := extractDataContainer(workbenchBody)
+	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/history", sessionID), extractString(workbenchData, "history_path", "historyPath", "HistoryPath"))
+	recentHistory := extractHistoryItems(map[string]any{
+		"events": workbenchData["recent_history"],
+	})
+	require.NotEmpty(t, recentHistory)
+}
+
 func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	baseURL, cleanup, s, client := newTestServer(t)
 	defer cleanup()
@@ -948,6 +1064,24 @@ func extractInboxItems(container map[string]any) []map[string]any {
 	raw := container["items"]
 	if raw == nil {
 		raw = container["Items"]
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, item := range list {
+		if obj, ok := item.(map[string]any); ok {
+			out = append(out, obj)
+		}
+	}
+	return out
+}
+
+func extractHistoryItems(container map[string]any) []map[string]any {
+	raw := container["events"]
+	if raw == nil {
+		raw = container["Events"]
 	}
 	list, ok := raw.([]any)
 	if !ok {

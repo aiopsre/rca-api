@@ -349,6 +349,13 @@ func (f *fakeAIJobBizForEscalationRunPlan) GetSessionWorkbench(
 	return nil, nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) ListOperatorInbox(
+	context.Context,
+	*aijobbiz.ListOperatorInboxRequest,
+) (*aijobbiz.ListOperatorInboxResponse, error) {
+	return nil, nil
+}
+
 func strPtrForTest(v string) *string {
 	value := v
 	return &value

@@ -187,6 +187,38 @@ func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
 	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderReplay)
 }
 
+func TestGetSessionWorkbench_IncludesRecentHistorySummary(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	failedJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		ErrorMessage:  "needs history summary",
+	})
+	sessionID := mustSessionIDByJob(t, s, failedJobID)
+
+	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID: sessionID,
+		EventType: sessionbiz.SessionHistoryEventReviewStarted,
+		Actor:     ptrAIString("user:reviewer"),
+		Note:      ptrAIString("start review"),
+	})
+	require.NoError(t, err)
+
+	resp, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.HistoryPath)
+	require.NotEmpty(t, resp.RecentHistory)
+	require.Equal(t, sessionbiz.SessionHistoryEventReviewStarted, resp.RecentHistory[0].EventType)
+}
+
 func TestGetSessionWorkbench_SLAEscalationState(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
