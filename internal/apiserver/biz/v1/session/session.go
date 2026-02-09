@@ -37,6 +37,7 @@ const (
 
 const (
 	sessionContextStateReviewKey = "review"
+	sessionContextStateAssignKey = "assignment"
 )
 
 var allowedSessionTypes = map[string]struct{}{
@@ -68,6 +69,7 @@ type SessionBiz interface {
 	Get(ctx context.Context, rq *GetSessionContextRequest) (*GetSessionContextResponse, error)
 	Update(ctx context.Context, rq *UpdateSessionContextRequest) (*UpdateSessionContextResponse, error)
 	UpdateReviewState(ctx context.Context, rq *UpdateReviewStateRequest) (*UpdateReviewStateResponse, error)
+	UpdateAssignment(ctx context.Context, rq *UpdateAssignmentRequest) (*UpdateAssignmentResponse, error)
 
 	SessionExpansion
 }
@@ -144,6 +146,26 @@ type UpdateReviewStateRequest struct {
 type UpdateReviewStateResponse struct {
 	Session *model.SessionContextM
 	Review  *ReviewState
+}
+
+type AssignmentState struct {
+	Assignee   string `json:"assignee,omitempty"`
+	AssignedBy string `json:"assigned_by,omitempty"`
+	AssignedAt string `json:"assigned_at,omitempty"`
+	Note       string `json:"note,omitempty"`
+}
+
+type UpdateAssignmentRequest struct {
+	SessionID  string
+	Assignee   string
+	AssignedBy *string
+	AssignNote *string
+	AssignedAt *time.Time
+}
+
+type UpdateAssignmentResponse struct {
+	Session    *model.SessionContextM
+	Assignment *AssignmentState
 }
 
 var _ SessionBiz = (*sessionBiz)(nil)
@@ -408,6 +430,64 @@ func (b *sessionBiz) UpdateReviewState(
 		return nil, errno.ErrSessionContextUpdateFailed
 	}
 	return &UpdateReviewStateResponse{Session: out, Review: review}, nil
+}
+
+func (b *sessionBiz) UpdateAssignment(
+	ctx context.Context,
+	rq *UpdateAssignmentRequest,
+) (*UpdateAssignmentResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	assignee := strings.TrimSpace(rq.Assignee)
+	if assignee == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	out, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionContextNotFound
+		}
+		return nil, errno.ErrSessionContextGetFailed
+	}
+
+	assignment := &AssignmentState{
+		Assignee:   assignee,
+		AssignedBy: trimOptional(rq.AssignedBy),
+		Note:       trimOptional(rq.AssignNote),
+	}
+	assignedAt := time.Now().UTC()
+	if rq.AssignedAt != nil && !rq.AssignedAt.IsZero() {
+		assignedAt = rq.AssignedAt.UTC()
+	}
+	assignment.AssignedAt = assignedAt.Format(time.RFC3339Nano)
+
+	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
+	stateObj[sessionContextStateAssignKey] = map[string]any{
+		"assignee":    assignment.Assignee,
+		"assigned_by": assignment.AssignedBy,
+		"assigned_at": assignment.AssignedAt,
+		"note":        assignment.Note,
+	}
+	encoded, err := json.Marshal(stateObj)
+	if err != nil {
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	encodedRaw := string(encoded)
+	out.ContextStateJSON = &encodedRaw
+
+	if err := b.store.SessionContext().Update(ctx, out); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errno.ErrSessionContextConflict
+		}
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	return &UpdateAssignmentResponse{Session: out, Assignment: assignment}, nil
 }
 
 func normalizeSessionType(input string) (string, error) {

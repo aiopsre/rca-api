@@ -166,6 +166,58 @@ func TestUpdateReviewState_InvalidState(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestUpdateAssignment_PersistsIntoContextStateJSON(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType:      SessionTypeService,
+		BusinessKey:      "service:checkout",
+		ContextStateJSON: ptrString(`{"watch_mode":true}`),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	assignedAt := time.Now().UTC().Truncate(time.Second)
+	updateResp, err := biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrString("user:lead-a"),
+		AssignNote: ptrString("handoff to oncall shift"),
+		AssignedAt: &assignedAt,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, updateResp)
+	require.NotNil(t, updateResp.Assignment)
+	require.Equal(t, "user:oncall-a", updateResp.Assignment.Assignee)
+	require.Equal(t, "user:lead-a", updateResp.Assignment.AssignedBy)
+	require.Equal(t, "handoff to oncall shift", updateResp.Assignment.Note)
+
+	getResp, err := biz.Get(context.Background(), &GetSessionContextRequest{
+		SessionID: ptrString(created.Session.SessionID),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, getResp.Session)
+	require.NotNil(t, getResp.Session.ContextStateJSON)
+
+	var state map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*getResp.Session.ContextStateJSON), &state))
+	require.Equal(t, true, state["watch_mode"])
+	assignObj, ok := state["assignment"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "user:oncall-a", assignObj["assignee"])
+	require.Equal(t, "user:lead-a", assignObj["assigned_by"])
+	require.Equal(t, "handoff to oncall shift", assignObj["note"])
+}
+
+func TestUpdateAssignment_InvalidAssignee(t *testing.T) {
+	biz := newSessionBizForTest(t)
+	_, err := biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID: "session-1",
+		Assignee:  " ",
+	})
+	require.Error(t, err)
+}
+
 func newSessionBizForTest(t *testing.T) *sessionBiz {
 	t.Helper()
 	store.ResetForTest()

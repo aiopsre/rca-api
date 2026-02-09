@@ -214,21 +214,49 @@ func TestValidateSessionReviewActionRequest_Invalid(t *testing.T) {
 	require.Error(t, val.ValidateSessionReviewActionRequest(context.Background(), req))
 }
 
+func TestValidateSessionAssignmentActionRequest(t *testing.T) {
+	val := &Validator{}
+	req := &SessionAssignmentActionRequest{
+		SessionID:  "session-1",
+		Assignee:   ptrValidationString(" user:oncall-a "),
+		AssignedBy: ptrValidationString("user:lead-a"),
+		Note:       ptrValidationString("handoff to oncall shift"),
+	}
+	require.NoError(t, val.ValidateSessionAssignmentActionRequest(context.Background(), req))
+	require.Equal(t, "user:oncall-a", *req.Assignee)
+}
+
+func TestValidateSessionAssignmentActionRequest_Invalid(t *testing.T) {
+	val := &Validator{}
+	require.Error(t, val.ValidateSessionAssignmentActionRequest(context.Background(), nil))
+
+	req := &SessionAssignmentActionRequest{
+		SessionID: "session-1",
+	}
+	require.Error(t, val.ValidateSessionAssignmentActionRequest(context.Background(), req))
+
+	req.Assignee = ptrValidationString(" ")
+	require.Error(t, val.ValidateSessionAssignmentActionRequest(context.Background(), req))
+}
+
 func TestValidateSessionOperatorInboxRequest(t *testing.T) {
 	val := &Validator{}
 	reviewState := "in_review"
 	sessionType := "service"
+	assignee := "user:oncall-a"
 	needsReview := true
 	req := &SessionOperatorInboxRequest{
 		ReviewState: &reviewState,
 		NeedsReview: &needsReview,
 		SessionType: &sessionType,
+		Assignee:    &assignee,
 		Offset:      0,
 		Limit:       10,
 	}
 	require.NoError(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
 	require.Equal(t, "in_review", *req.ReviewState)
 	require.Equal(t, "service", *req.SessionType)
+	require.Equal(t, "user:oncall-a", *req.Assignee)
 }
 
 func TestValidateSessionOperatorInboxRequest_Invalid(t *testing.T) {
@@ -244,6 +272,10 @@ func TestValidateSessionOperatorInboxRequest_Invalid(t *testing.T) {
 	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
 
 	req = &SessionOperatorInboxRequest{Offset: -1}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+
+	assignee := " "
+	req = &SessionOperatorInboxRequest{Assignee: &assignee}
 	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
 }
 

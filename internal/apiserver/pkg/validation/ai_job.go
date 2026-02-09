@@ -31,6 +31,7 @@ const (
 	maxSessionActionSourceLength    = 128
 	maxSessionActionInitiatorLength = 128
 	maxSessionReviewReasonCodeLen   = 64
+	maxSessionAssigneeLength        = 128
 	defaultOperatorInboxListLimit   = int64(20)
 	maxOperatorInboxListLimit       = int64(100)
 )
@@ -96,10 +97,18 @@ type SessionReviewActionRequest struct {
 	ReasonCode  *string
 }
 
+type SessionAssignmentActionRequest struct {
+	SessionID  string
+	Assignee   *string
+	AssignedBy *string
+	Note       *string
+}
+
 type SessionOperatorInboxRequest struct {
 	ReviewState *string
 	NeedsReview *bool
 	SessionType *string
+	Assignee    *string
 	Offset      int64
 	Limit       int64
 }
@@ -348,6 +357,34 @@ func (v *Validator) ValidateSessionReviewActionRequest(ctx context.Context, rq *
 	return nil
 }
 
+func (v *Validator) ValidateSessionAssignmentActionRequest(
+	ctx context.Context,
+	rq *SessionAssignmentActionRequest,
+) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if strings.TrimSpace(rq.SessionID) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.Assignee == nil || strings.TrimSpace(*rq.Assignee) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Assignee, maxSessionAssigneeLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.AssignedBy, maxSessionActionInitiatorLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Note, maxSessionActionNoteLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	normalizedAssignee := strings.TrimSpace(*rq.Assignee)
+	rq.Assignee = &normalizedAssignee
+	return nil
+}
+
 func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq *SessionOperatorInboxRequest) error {
 	_ = ctx
 	if rq == nil {
@@ -375,6 +412,13 @@ func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq 
 			return errorsx.ErrInvalidArgument
 		}
 		rq.SessionType = &sessionType
+	}
+	if rq.Assignee != nil {
+		assignee := strings.TrimSpace(*rq.Assignee)
+		if assignee == "" || len(assignee) > maxSessionAssigneeLength {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.Assignee = &assignee
 	}
 	return nil
 }

@@ -155,11 +155,21 @@ func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
 		ReviewedBy:  ptrAIString("user:alice"),
 	})
 	require.NoError(t, err)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignNote: ptrAIString("manual handoff"),
+	})
+	require.NoError(t, err)
 
 	confirmed, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
 	require.NoError(t, err)
 	require.Equal(t, sessionbiz.SessionReviewStateConfirmed, confirmed.Session.ReviewState)
 	require.Equal(t, "user:alice", confirmed.Session.ReviewedBy)
+	require.Equal(t, "user:oncall-a", confirmed.Session.Assignee)
+	require.Equal(t, "user:lead-a", confirmed.Session.AssignedBy)
+	require.Equal(t, "manual handoff", confirmed.Session.AssignNote)
 	require.NotContains(t, confirmed.NextActionHints, workbenchHintNeedHumanReview)
 
 	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
@@ -243,6 +253,19 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 		ReviewedBy:  ptrAIString("user:reviewer-c"),
 	})
 	require.NoError(t, err)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignNote: ptrAIString("handoff to oncall-a"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: ptrAIString("user:lead-b"),
+	})
+	require.NoError(t, err)
 
 	listResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
 		Offset: 0,
@@ -253,6 +276,9 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 	require.GreaterOrEqual(t, len(listResp.Items), 3)
 	require.Equal(t, sessionA, listResp.Items[0].SessionID)
 	require.Equal(t, sessionbiz.SessionReviewStateInReview, listResp.Items[0].ReviewState)
+	require.Equal(t, "user:oncall-a", listResp.Items[0].Assignee)
+	require.Equal(t, "user:lead-a", listResp.Items[0].AssignedBy)
+	require.Equal(t, "handoff to oncall-a", listResp.Items[0].AssignNote)
 	require.Equal(t, sessionbiz.SessionReviewStateRejected, listResp.Items[1].ReviewState)
 
 	reviewStateConfirmed := sessionbiz.SessionReviewStateConfirmed
@@ -277,6 +303,17 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 	returnedIDs := []string{needsReviewResp.Items[0].SessionID, needsReviewResp.Items[1].SessionID}
 	require.Contains(t, returnedIDs, sessionA)
 	require.Contains(t, returnedIDs, sessionB)
+
+	assignee := "user:oncall-a"
+	assigneeResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		Assignee: &assignee,
+		Offset:   0,
+		Limit:    20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), assigneeResp.TotalCount)
+	require.Equal(t, sessionA, assigneeResp.Items[0].SessionID)
+	require.Equal(t, "user:oncall-a", assigneeResp.Items[0].Assignee)
 }
 
 type workbenchRunSpec struct {

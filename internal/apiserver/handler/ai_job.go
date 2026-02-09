@@ -62,6 +62,12 @@ type sessionReviewActionRequest struct {
 	ReasonCode *string `json:"reason_code,omitempty"`
 }
 
+type sessionAssignActionRequest struct {
+	Assignee   *string `json:"assignee,omitempty"`
+	AssignedBy *string `json:"assigned_by,omitempty"`
+	Note       *string `json:"note,omitempty"`
+}
+
 type sessionReviewActionResponse struct {
 	SessionID            string `json:"session_id"`
 	ReviewState          string `json:"review_state"`
@@ -69,6 +75,17 @@ type sessionReviewActionResponse struct {
 	ReviewedBy           string `json:"reviewed_by,omitempty"`
 	ReviewedAt           string `json:"reviewed_at,omitempty"`
 	ReasonCode           string `json:"reason_code,omitempty"`
+	Status               string `json:"status"`
+	Message              string `json:"message,omitempty"`
+	WorkbenchRefreshHint string `json:"workbench_refresh_hint,omitempty"`
+}
+
+type sessionAssignActionResponse struct {
+	SessionID            string `json:"session_id"`
+	Assignee             string `json:"assignee"`
+	AssignedBy           string `json:"assigned_by,omitempty"`
+	AssignedAt           string `json:"assigned_at,omitempty"`
+	AssignNote           string `json:"assign_note,omitempty"`
 	Status               string `json:"status"`
 	Message              string `json:"message,omitempty"`
 	WorkbenchRefreshHint string `json:"workbench_refresh_hint,omitempty"`
@@ -258,6 +275,9 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	if sessionType := strings.TrimSpace(c.Query("session_type")); sessionType != "" {
 		req.SessionType = strPtr(sessionType)
 	}
+	if assignee := strings.TrimSpace(c.Query("assignee")); assignee != "" {
+		req.Assignee = strPtr(assignee)
+	}
 	if needsReviewRaw := strings.TrimSpace(c.Query("needs_review")); needsReviewRaw != "" {
 		needsReview, err := strconv.ParseBool(needsReviewRaw)
 		if err != nil {
@@ -280,6 +300,7 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 		ReviewState: req.ReviewState,
 		NeedsReview: req.NeedsReview,
 		SessionType: req.SessionType,
+		Assignee:    req.Assignee,
 		Offset:      req.Offset,
 		Limit:       req.Limit,
 	}
@@ -329,6 +350,14 @@ func (h *Handler) ConfirmSessionReview(c *gin.Context) {
 
 func (h *Handler) RejectSessionReview(c *gin.Context) {
 	h.dispatchSessionReviewAction(c, sessionbiz.SessionReviewStateRejected, "review_rejected")
+}
+
+func (h *Handler) AssignSessionOwner(c *gin.Context) {
+	h.dispatchSessionAssignAction(c, "assigned")
+}
+
+func (h *Handler) ReassignSessionOwner(c *gin.Context) {
+	h.dispatchSessionAssignAction(c, "reassigned")
 }
 
 //nolint:dupl // Keep handler pattern aligned with other resources.
@@ -662,6 +691,8 @@ func init() {
 		sessionGroup.POST("/:sessionID/actions/review-start", handler.StartSessionReview)
 		sessionGroup.POST("/:sessionID/actions/review-confirm", handler.ConfirmSessionReview)
 		sessionGroup.POST("/:sessionID/actions/review-reject", handler.RejectSessionReview)
+		sessionGroup.POST("/:sessionID/actions/assign", handler.AssignSessionOwner)
+		sessionGroup.POST("/:sessionID/actions/reassign", handler.ReassignSessionOwner)
 
 		v1.GET("/operator/inbox", handler.ListOperatorInbox)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
@@ -888,6 +919,53 @@ func (h *Handler) dispatchSessionReviewAction(c *gin.Context, reviewState string
 		resp.ReviewedBy = strings.TrimSpace(updateResp.Review.ReviewedBy)
 		resp.ReviewedAt = strings.TrimSpace(updateResp.Review.ReviewedAt)
 		resp.ReasonCode = strings.TrimSpace(updateResp.Review.ReasonCode)
+	}
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) dispatchSessionAssignAction(c *gin.Context, message string) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	sessionID := strings.TrimSpace(c.Param("sessionID"))
+	var req sessionAssignActionRequest
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	validateReq := &validation.SessionAssignmentActionRequest{
+		SessionID:  sessionID,
+		Assignee:   req.Assignee,
+		AssignedBy: req.AssignedBy,
+		Note:       req.Note,
+	}
+	if err := h.val.ValidateSessionAssignmentActionRequest(c.Request.Context(), validateReq); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+
+	assignedBy := resolveSessionActionInitiator(c.Request.Context(), req.AssignedBy)
+	updateResp, err := h.biz.SessionV1().UpdateAssignment(c.Request.Context(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionID,
+		Assignee:   strings.TrimSpace(*validateReq.Assignee),
+		AssignedBy: strPtr(assignedBy),
+		AssignNote: req.Note,
+	})
+	resp := &sessionAssignActionResponse{
+		SessionID:            sessionID,
+		Assignee:             strings.TrimSpace(*validateReq.Assignee),
+		AssignedBy:           assignedBy,
+		AssignNote:           normalizeOptionalText(req.Note),
+		Status:               sessionActionStatusAccepted,
+		Message:              strings.TrimSpace(message),
+		WorkbenchRefreshHint: sessionActionRefreshHint,
+	}
+	if updateResp != nil && updateResp.Assignment != nil {
+		resp.Assignee = strings.TrimSpace(updateResp.Assignment.Assignee)
+		resp.AssignedBy = strings.TrimSpace(updateResp.Assignment.AssignedBy)
+		resp.AssignedAt = strings.TrimSpace(updateResp.Assignment.AssignedAt)
+		resp.AssignNote = strings.TrimSpace(updateResp.Assignment.Note)
 	}
 	core.WriteResponse(c, resp, err)
 }

@@ -55,6 +55,7 @@ type ListOperatorInboxRequest struct {
 	ReviewState *string
 	NeedsReview *bool
 	SessionType *string
+	Assignee    *string
 	Offset      int64
 	Limit       int64
 }
@@ -69,6 +70,10 @@ type OperatorInboxItem struct {
 	SessionType            string   `json:"session_type"`
 	BusinessKey            string   `json:"business_key"`
 	IncidentID             string   `json:"incident_id,omitempty"`
+	Assignee               string   `json:"assignee,omitempty"`
+	AssignedBy             string   `json:"assigned_by,omitempty"`
+	AssignedAt             string   `json:"assigned_at,omitempty"`
+	AssignNote             string   `json:"assign_note,omitempty"`
 	ReviewState            string   `json:"review_state"`
 	ReviewedBy             string   `json:"reviewed_by,omitempty"`
 	ReviewedAt             string   `json:"reviewed_at,omitempty"`
@@ -106,6 +111,10 @@ type SessionWorkbenchReadModel struct {
 	ReviewedBy         string         `json:"reviewed_by,omitempty"`
 	ReviewedAt         string         `json:"reviewed_at,omitempty"`
 	ReviewReasonCode   string         `json:"review_reason_code,omitempty"`
+	Assignee           string         `json:"assignee,omitempty"`
+	AssignedBy         string         `json:"assigned_by,omitempty"`
+	AssignedAt         string         `json:"assigned_at,omitempty"`
+	AssignNote         string         `json:"assign_note,omitempty"`
 	CreatedAt          string         `json:"created_at,omitempty"`
 	UpdatedAt          string         `json:"updated_at,omitempty"`
 }
@@ -156,6 +165,13 @@ type sessionReviewContextState struct {
 	ReviewedBy string
 	ReviewedAt string
 	ReasonCode string
+}
+
+type sessionAssignmentContextState struct {
+	Assignee   string
+	AssignedBy string
+	AssignedAt string
+	Note       string
 }
 
 func (b *aiJobBiz) GetSessionWorkbench(
@@ -214,6 +230,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 
 	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
 	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
+	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
 	latestCompare := b.buildLatestWorkbenchCompare(ctx, recentRuns)
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
 	nextHints := buildWorkbenchNextActionHints(
@@ -226,7 +243,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	)
 
 	return &GetSessionWorkbenchResponse{
-		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState),
+		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState, assignmentState),
 		Incident:         incidentBlock,
 		LatestRun:        latestRun,
 		LatestDecision:   latestDecision,
@@ -269,6 +286,7 @@ func (b *aiJobBiz) ListOperatorInbox(
 	if trimOptional(rq.SessionType) != "" && sessionTypeFilter == "" {
 		return nil, errorsx.ErrInvalidArgument
 	}
+	assigneeFilter := strings.TrimSpace(trimOptional(rq.Assignee))
 
 	whr := where.T(ctx).O(0).L(int(maxOperatorInboxScan))
 	if sessionTypeFilter != "" {
@@ -289,6 +307,9 @@ func (b *aiJobBiz) ListOperatorInbox(
 			continue
 		}
 		if hasNeedsReviewFilter && item.NeedsReview != needsReviewFilter {
+			continue
+		}
+		if assigneeFilter != "" && strings.TrimSpace(item.Assignee) != assigneeFilter {
 			continue
 		}
 		items = append(items, item)
@@ -333,6 +354,7 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 	}
 	sessionID := strings.TrimSpace(sessionObj.SessionID)
 	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
+	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
 	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
 	listResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
 		SessionID: strPtr(sessionID),
@@ -384,6 +406,10 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 		SessionType:            strings.TrimSpace(sessionObj.SessionType),
 		BusinessKey:            strings.TrimSpace(sessionObj.BusinessKey),
 		IncidentID:             trimOptional(sessionObj.IncidentID),
+		Assignee:               strings.TrimSpace(assignmentState.Assignee),
+		AssignedBy:             strings.TrimSpace(assignmentState.AssignedBy),
+		AssignedAt:             strings.TrimSpace(assignmentState.AssignedAt),
+		AssignNote:             strings.TrimSpace(assignmentState.Note),
 		ReviewState:            normalizeInboxReviewState(reviewState.State),
 		ReviewedBy:             strings.TrimSpace(reviewState.ReviewedBy),
 		ReviewedAt:             strings.TrimSpace(reviewState.ReviewedAt),
@@ -562,12 +588,16 @@ func sessionToWorkbench(
 	in *model.SessionContextM,
 	pinnedRefs []string,
 	reviewState *sessionReviewContextState,
+	assignmentState *sessionAssignmentContextState,
 ) *SessionWorkbenchReadModel {
 	if in == nil {
 		return &SessionWorkbenchReadModel{}
 	}
 	if reviewState == nil {
 		reviewState = &sessionReviewContextState{State: sessionbiz.SessionReviewStatePending}
+	}
+	if assignmentState == nil {
+		assignmentState = &sessionAssignmentContextState{}
 	}
 	latestSummary := parseOptionalJSONObject(in.LatestSummaryJSON)
 	return &SessionWorkbenchReadModel{
@@ -586,6 +616,10 @@ func sessionToWorkbench(
 		ReviewedBy:         strings.TrimSpace(reviewState.ReviewedBy),
 		ReviewedAt:         strings.TrimSpace(reviewState.ReviewedAt),
 		ReviewReasonCode:   strings.TrimSpace(reviewState.ReasonCode),
+		Assignee:           strings.TrimSpace(assignmentState.Assignee),
+		AssignedBy:         strings.TrimSpace(assignmentState.AssignedBy),
+		AssignedAt:         strings.TrimSpace(assignmentState.AssignedAt),
+		AssignNote:         strings.TrimSpace(assignmentState.Note),
 		CreatedAt:          toRFC3339String(in.CreatedAt),
 		UpdatedAt:          toRFC3339String(in.UpdatedAt),
 	}
@@ -806,6 +840,27 @@ func extractSessionReviewState(raw *string) *sessionReviewContextState {
 	out.ReviewedBy = strings.TrimSpace(anyToString(reviewObj["reviewed_by"]))
 	out.ReviewedAt = strings.TrimSpace(anyToString(reviewObj["reviewed_at"]))
 	out.ReasonCode = strings.TrimSpace(anyToString(reviewObj["reason_code"]))
+	return out
+}
+
+func extractSessionAssignmentState(raw *string) *sessionAssignmentContextState {
+	out := &sessionAssignmentContextState{}
+	obj := parseOptionalJSONObject(raw)
+	if obj == nil {
+		return out
+	}
+	assignRaw, ok := obj["assignment"]
+	if !ok {
+		return out
+	}
+	assignObj, ok := assignRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	out.Assignee = strings.TrimSpace(anyToString(assignObj["assignee"]))
+	out.AssignedBy = strings.TrimSpace(anyToString(assignObj["assigned_by"]))
+	out.AssignedAt = strings.TrimSpace(anyToString(assignObj["assigned_at"]))
+	out.Note = strings.TrimSpace(anyToString(assignObj["note"]))
 	return out
 }
 

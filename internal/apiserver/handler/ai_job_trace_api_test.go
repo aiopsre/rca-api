@@ -362,6 +362,15 @@ func TestSessionWorkbenchActionAPI_ValidationAndSessionNotFound(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusNotFound, notFoundStatus)
+
+	invalidAssignStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/assign", baseURL, sessionID),
+		[]byte(`{"assignee":" "}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, invalidAssignStatus)
 }
 
 func TestSessionWorkbenchReviewActionAPI_StateTransitions(t *testing.T) {
@@ -517,6 +526,74 @@ func TestSessionWorkbenchReviewActionAPI_WorkbenchReflectsStateAndHints(t *testi
 	require.Contains(t, rejectedHints, "consider_replay")
 }
 
+func TestSessionWorkbenchAssignmentActionAPI_AssignReassignAndWorkbench(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	jobID := createFailedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", "needs assignment")
+	sessionID := mustHandlerSessionIDByJob(t, s, jobID)
+
+	assignStatus, assignBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/assign", baseURL, sessionID),
+		[]byte(`{"assignee":"user:oncall-a","assigned_by":"user:lead-a","note":"handoff to oncall-a"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assignStatus)
+	assignData := extractDataContainer(assignBody)
+	require.Equal(t, sessionID, extractString(assignData, "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "user:oncall-a", extractString(assignData, "assignee", "Assignee"))
+	require.Equal(t, "user:lead-a", extractString(assignData, "assigned_by", "assignedBy", "AssignedBy"))
+	require.NotEmpty(t, extractString(assignData, "assigned_at", "assignedAt", "AssignedAt"))
+	require.Equal(t, "handoff to oncall-a", extractString(assignData, "assign_note", "assignNote", "AssignNote"))
+
+	workbenchStatus, workbenchBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, workbenchStatus)
+	workbenchData := extractDataContainer(workbenchBody)
+	sessionObj := extractMap(workbenchData, "session", "Session")
+	require.NotNil(t, sessionObj)
+	require.Equal(t, "user:oncall-a", extractString(sessionObj, "assignee", "Assignee"))
+	require.Equal(t, "user:lead-a", extractString(sessionObj, "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "handoff to oncall-a", extractString(sessionObj, "assign_note", "assignNote", "AssignNote"))
+
+	reassignStatus, reassignBody, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/reassign", baseURL, sessionID),
+		[]byte(`{"assignee":"user:oncall-b","note":"shift changed"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, reassignStatus)
+	reassignData := extractDataContainer(reassignBody)
+	require.Equal(t, "user:oncall-b", extractString(reassignData, "assignee", "Assignee"))
+	require.NotEmpty(t, extractString(reassignData, "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "shift changed", extractString(reassignData, "assign_note", "assignNote", "AssignNote"))
+
+	workbenchStatus, workbenchBody, err = doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/workbench?limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, workbenchStatus)
+	workbenchData = extractDataContainer(workbenchBody)
+	sessionObj = extractMap(workbenchData, "session", "Session")
+	require.NotNil(t, sessionObj)
+	require.Equal(t, "user:oncall-b", extractString(sessionObj, "assignee", "Assignee"))
+	require.Equal(t, "shift changed", extractString(sessionObj, "assign_note", "assignNote", "AssignNote"))
+}
+
 func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	baseURL, cleanup, s, client := newTestServer(t)
 	defer cleanup()
@@ -569,6 +646,15 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, confirmStatus)
 
+	assignStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/assign", baseURL, sessionA),
+		[]byte(`{"assignee":"user:oncall-a","assigned_by":"user:lead-a","note":"handoff"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assignStatus)
+
 	inboxStatus, inboxBody, err := doJSONRequest(
 		client,
 		http.MethodGet,
@@ -582,6 +668,7 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.GreaterOrEqual(t, len(items), 3)
 	require.Equal(t, sessionA, extractString(items[0], "session_id", "sessionID", "SessionID"))
 	require.Equal(t, "in_review", extractString(items[0], "review_state", "reviewState", "ReviewState"))
+	require.Equal(t, "user:oncall-a", extractString(items[0], "assignee", "Assignee"))
 	require.NotEmpty(t, extractString(items[0], "workbench_path", "workbenchPath", "WorkbenchPath"))
 	require.NotEmpty(t, extractString(items[0], "last_activity_at", "lastActivityAt", "LastActivityAt"))
 
@@ -616,6 +703,20 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	}
 	require.Contains(t, ids, sessionA)
 	require.Contains(t, ids, sessionB)
+
+	assigneeStatus, assigneeBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?assignee=user:oncall-a", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assigneeStatus)
+	assigneeData := extractDataContainer(assigneeBody)
+	assigneeItems := extractInboxItems(assigneeData)
+	require.Equal(t, 1, len(assigneeItems))
+	require.Equal(t, sessionA, extractString(assigneeItems[0], "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "user:oncall-a", extractString(assigneeItems[0], "assignee", "Assignee"))
 }
 
 func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
