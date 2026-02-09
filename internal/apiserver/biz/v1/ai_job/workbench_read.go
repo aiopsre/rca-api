@@ -22,6 +22,7 @@ const (
 	maxOperatorInboxLimit              = int64(100)
 	maxOperatorInboxScan               = int64(500)
 	operatorInboxTraceProbeLimit       = int64(5)
+	defaultSessionSLAWindow            = 2 * time.Hour
 
 	workbenchHintNeedHumanReview     = "need_human_review"
 	workbenchHintAwaitMoreEvidence   = "await_more_evidence"
@@ -52,12 +53,13 @@ type GetSessionWorkbenchResponse struct {
 }
 
 type ListOperatorInboxRequest struct {
-	ReviewState *string
-	NeedsReview *bool
-	SessionType *string
-	Assignee    *string
-	Offset      int64
-	Limit       int64
+	ReviewState     *string
+	NeedsReview     *bool
+	SessionType     *string
+	Assignee        *string
+	EscalationState *string
+	Offset          int64
+	Limit           int64
 }
 
 type ListOperatorInboxResponse struct {
@@ -74,6 +76,9 @@ type OperatorInboxItem struct {
 	AssignedBy             string   `json:"assigned_by,omitempty"`
 	AssignedAt             string   `json:"assigned_at,omitempty"`
 	AssignNote             string   `json:"assign_note,omitempty"`
+	SlaDueAt               string   `json:"sla_due_at,omitempty"`
+	EscalationState        string   `json:"escalation_state"`
+	EscalationLevel        int64    `json:"escalation_level"`
 	ReviewState            string   `json:"review_state"`
 	ReviewedBy             string   `json:"reviewed_by,omitempty"`
 	ReviewedAt             string   `json:"reviewed_at,omitempty"`
@@ -115,6 +120,9 @@ type SessionWorkbenchReadModel struct {
 	AssignedBy         string         `json:"assigned_by,omitempty"`
 	AssignedAt         string         `json:"assigned_at,omitempty"`
 	AssignNote         string         `json:"assign_note,omitempty"`
+	SlaDueAt           string         `json:"sla_due_at,omitempty"`
+	EscalationState    string         `json:"escalation_state"`
+	EscalationLevel    int64          `json:"escalation_level"`
 	CreatedAt          string         `json:"created_at,omitempty"`
 	UpdatedAt          string         `json:"updated_at,omitempty"`
 }
@@ -174,6 +182,14 @@ type sessionAssignmentContextState struct {
 	Note       string
 }
 
+type sessionSLAContextState struct {
+	AssignedAt      string
+	DueAt           string
+	EscalationState string
+	EscalationLevel int64
+	ReasonCode      string
+}
+
 func (b *aiJobBiz) GetSessionWorkbench(
 	ctx context.Context,
 	rq *GetSessionWorkbenchRequest,
@@ -231,6 +247,13 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
 	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
 	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
+	slaState := evaluateSessionSLAContext(
+		time.Now().UTC(),
+		reviewState,
+		assignmentState,
+		latestRun,
+		extractSessionSLAState(sessionObj.ContextStateJSON),
+	)
 	latestCompare := b.buildLatestWorkbenchCompare(ctx, recentRuns)
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
 	nextHints := buildWorkbenchNextActionHints(
@@ -243,7 +266,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	)
 
 	return &GetSessionWorkbenchResponse{
-		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState, assignmentState),
+		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState, assignmentState, slaState),
 		Incident:         incidentBlock,
 		LatestRun:        latestRun,
 		LatestDecision:   latestDecision,
@@ -287,6 +310,13 @@ func (b *aiJobBiz) ListOperatorInbox(
 		return nil, errorsx.ErrInvalidArgument
 	}
 	assigneeFilter := strings.TrimSpace(trimOptional(rq.Assignee))
+	escalationStateFilter := ""
+	if value := trimOptional(rq.EscalationState); value != "" {
+		escalationStateFilter = normalizeSLAEscalationState(value)
+		if escalationStateFilter == "" {
+			return nil, errorsx.ErrInvalidArgument
+		}
+	}
 
 	whr := where.T(ctx).O(0).L(int(maxOperatorInboxScan))
 	if sessionTypeFilter != "" {
@@ -310,6 +340,9 @@ func (b *aiJobBiz) ListOperatorInbox(
 			continue
 		}
 		if assigneeFilter != "" && strings.TrimSpace(item.Assignee) != assigneeFilter {
+			continue
+		}
+		if escalationStateFilter != "" && normalizeSLAEscalationState(item.EscalationState) != escalationStateFilter {
 			continue
 		}
 		items = append(items, item)
@@ -374,6 +407,13 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 		}
 	}
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
+	slaState := evaluateSessionSLAContext(
+		time.Now().UTC(),
+		reviewState,
+		assignmentState,
+		latestRun,
+		extractSessionSLAState(sessionObj.ContextStateJSON),
+	)
 
 	var latestCompare *WorkbenchCompareSummary
 	if leftJobID, rightJobID := pickLatestCompareJobPair(recentRuns); leftJobID != "" && rightJobID != "" {
@@ -410,6 +450,9 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 		AssignedBy:             strings.TrimSpace(assignmentState.AssignedBy),
 		AssignedAt:             strings.TrimSpace(assignmentState.AssignedAt),
 		AssignNote:             strings.TrimSpace(assignmentState.Note),
+		SlaDueAt:               strings.TrimSpace(slaState.DueAt),
+		EscalationState:        normalizeSLAEscalationState(slaState.EscalationState),
+		EscalationLevel:        slaState.EscalationLevel,
 		ReviewState:            normalizeInboxReviewState(reviewState.State),
 		ReviewedBy:             strings.TrimSpace(reviewState.ReviewedBy),
 		ReviewedAt:             strings.TrimSpace(reviewState.ReviewedAt),
@@ -504,6 +547,19 @@ func normalizeInboxSessionType(raw string) string {
 	}
 }
 
+func normalizeSLAEscalationState(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case sessionbiz.SessionEscalationStateNone:
+		return sessionbiz.SessionEscalationStateNone
+	case sessionbiz.SessionEscalationStatePending:
+		return sessionbiz.SessionEscalationStatePending
+	case sessionbiz.SessionEscalationStateEscalated:
+		return sessionbiz.SessionEscalationStateEscalated
+	default:
+		return ""
+	}
+}
+
 func containsString(items []string, target string) bool {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -589,6 +645,7 @@ func sessionToWorkbench(
 	pinnedRefs []string,
 	reviewState *sessionReviewContextState,
 	assignmentState *sessionAssignmentContextState,
+	slaState *sessionSLAContextState,
 ) *SessionWorkbenchReadModel {
 	if in == nil {
 		return &SessionWorkbenchReadModel{}
@@ -598,6 +655,12 @@ func sessionToWorkbench(
 	}
 	if assignmentState == nil {
 		assignmentState = &sessionAssignmentContextState{}
+	}
+	if slaState == nil {
+		slaState = &sessionSLAContextState{
+			EscalationState: sessionbiz.SessionEscalationStateNone,
+			EscalationLevel: 0,
+		}
 	}
 	latestSummary := parseOptionalJSONObject(in.LatestSummaryJSON)
 	return &SessionWorkbenchReadModel{
@@ -620,6 +683,9 @@ func sessionToWorkbench(
 		AssignedBy:         strings.TrimSpace(assignmentState.AssignedBy),
 		AssignedAt:         strings.TrimSpace(assignmentState.AssignedAt),
 		AssignNote:         strings.TrimSpace(assignmentState.Note),
+		SlaDueAt:           strings.TrimSpace(slaState.DueAt),
+		EscalationState:    normalizeSLAEscalationState(slaState.EscalationState),
+		EscalationLevel:    slaState.EscalationLevel,
 		CreatedAt:          toRFC3339String(in.CreatedAt),
 		UpdatedAt:          toRFC3339String(in.UpdatedAt),
 	}
@@ -862,6 +928,137 @@ func extractSessionAssignmentState(raw *string) *sessionAssignmentContextState {
 	out.AssignedAt = strings.TrimSpace(anyToString(assignObj["assigned_at"]))
 	out.Note = strings.TrimSpace(anyToString(assignObj["note"]))
 	return out
+}
+
+func extractSessionSLAState(raw *string) *sessionSLAContextState {
+	out := &sessionSLAContextState{
+		EscalationState: sessionbiz.SessionEscalationStateNone,
+	}
+	obj := parseOptionalJSONObject(raw)
+	if obj == nil {
+		return out
+	}
+	slaRaw, ok := obj["sla"]
+	if !ok {
+		return out
+	}
+	slaObj, ok := slaRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	out.AssignedAt = strings.TrimSpace(anyToString(slaObj["assigned_at"]))
+	out.DueAt = strings.TrimSpace(anyToString(slaObj["due_at"]))
+	out.EscalationState = normalizeSLAEscalationState(anyToString(slaObj["escalation_state"]))
+	if out.EscalationState == "" {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
+	}
+	out.ReasonCode = strings.TrimSpace(anyToString(slaObj["reason_code"]))
+	switch value := slaObj["escalation_level"].(type) {
+	case float64:
+		out.EscalationLevel = int64(value)
+	case int64:
+		out.EscalationLevel = value
+	case int:
+		out.EscalationLevel = int64(value)
+	}
+	return out
+}
+
+func evaluateSessionSLAContext(
+	now time.Time,
+	reviewState *sessionReviewContextState,
+	assignmentState *sessionAssignmentContextState,
+	latestRun *TraceReadSummary,
+	base *sessionSLAContextState,
+) *sessionSLAContextState {
+	out := &sessionSLAContextState{
+		EscalationState: sessionbiz.SessionEscalationStateNone,
+		EscalationLevel: 0,
+	}
+	if base != nil {
+		out.AssignedAt = strings.TrimSpace(base.AssignedAt)
+		out.DueAt = strings.TrimSpace(base.DueAt)
+		out.EscalationState = normalizeSLAEscalationState(base.EscalationState)
+		out.EscalationLevel = base.EscalationLevel
+		out.ReasonCode = strings.TrimSpace(base.ReasonCode)
+	}
+	if out.EscalationState == "" {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
+	}
+	if assignmentState == nil || strings.TrimSpace(assignmentState.Assignee) == "" {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
+		out.EscalationLevel = 0
+		return out
+	}
+
+	assignedAtRaw := firstTraceNonEmpty(strings.TrimSpace(out.AssignedAt), strings.TrimSpace(assignmentState.AssignedAt))
+	assignedAt, ok := parseRFC3339Time(assignedAtRaw)
+	if !ok {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
+		out.EscalationLevel = 0
+		return out
+	}
+	out.AssignedAt = assignedAt.UTC().Format(time.RFC3339Nano)
+
+	dueAt, ok := parseRFC3339Time(out.DueAt)
+	if !ok {
+		dueAt = assignedAt.Add(defaultSessionSLAWindow)
+	}
+	out.DueAt = dueAt.UTC().Format(time.RFC3339Nano)
+
+	if !needsSessionSLAAttention(reviewState, latestRun) {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
+		out.EscalationLevel = 0
+		return out
+	}
+	if !now.After(dueAt) {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
+		out.EscalationLevel = 0
+		return out
+	}
+
+	if now.After(dueAt.Add(defaultSessionSLAWindow)) {
+		out.EscalationState = sessionbiz.SessionEscalationStateEscalated
+		out.EscalationLevel = 2
+		out.ReasonCode = "sla_timeout_escalated"
+		return out
+	}
+
+	out.EscalationState = sessionbiz.SessionEscalationStatePending
+	out.EscalationLevel = 1
+	out.ReasonCode = "sla_due_passed"
+	return out
+}
+
+func needsSessionSLAAttention(reviewState *sessionReviewContextState, latestRun *TraceReadSummary) bool {
+	review := sessionbiz.SessionReviewStatePending
+	if reviewState != nil {
+		review = normalizeWorkbenchReviewState(reviewState.State)
+	}
+	if review != sessionbiz.SessionReviewStateConfirmed {
+		return true
+	}
+	if latestRun == nil {
+		return true
+	}
+	switch strings.TrimSpace(latestRun.Status) {
+	case jobStatusSucceeded, jobStatusFailed, jobStatusCanceled:
+		return false
+	default:
+		return true
+	}
+}
+
+func parseRFC3339Time(raw string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
 }
 
 func normalizeWorkbenchReviewState(raw string) string {

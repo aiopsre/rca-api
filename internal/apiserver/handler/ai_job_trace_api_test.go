@@ -13,6 +13,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/biz"
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -565,6 +566,8 @@ func TestSessionWorkbenchAssignmentActionAPI_AssignReassignAndWorkbench(t *testi
 	require.Equal(t, "user:oncall-a", extractString(sessionObj, "assignee", "Assignee"))
 	require.Equal(t, "user:lead-a", extractString(sessionObj, "assigned_by", "assignedBy", "AssignedBy"))
 	require.Equal(t, "handoff to oncall-a", extractString(sessionObj, "assign_note", "assignNote", "AssignNote"))
+	require.Equal(t, "none", extractString(sessionObj, "escalation_state", "escalationState", "EscalationState"))
+	require.NotEmpty(t, extractString(sessionObj, "sla_due_at", "slaDueAt", "SlaDueAt"))
 
 	reassignStatus, reassignBody, err := doJSONRequest(
 		client,
@@ -592,6 +595,7 @@ func TestSessionWorkbenchAssignmentActionAPI_AssignReassignAndWorkbench(t *testi
 	require.NotNil(t, sessionObj)
 	require.Equal(t, "user:oncall-b", extractString(sessionObj, "assignee", "Assignee"))
 	require.Equal(t, "shift changed", extractString(sessionObj, "assign_note", "assignNote", "AssignNote"))
+	require.Equal(t, "none", extractString(sessionObj, "escalation_state", "escalationState", "EscalationState"))
 }
 
 func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
@@ -603,6 +607,7 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	incidentB := createAIJobLongPollTestIncident(t, s)
 	incidentC := createAIJobLongPollTestIncident(t, s)
 	aiBiz := biz.NewBiz(s).AIJobV1()
+	sessionSvc := biz.NewBiz(s).SessionV1()
 
 	jobA := createFailedTraceJob(t, aiBiz, incidentA.IncidentID, "manual", "manual_api", "user:a", "needs manual review")
 	jobB := createFailedTraceJob(t, aiBiz, incidentB.IncidentID, "follow_up", "follow_up_api", "user:b", "follow-up failed")
@@ -646,14 +651,23 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, confirmStatus)
 
-	assignStatus, _, err := doJSONRequest(
-		client,
-		http.MethodPost,
-		fmt.Sprintf("%s/v1/sessions/%s/actions/assign", baseURL, sessionA),
-		[]byte(`{"assignee":"user:oncall-a","assigned_by":"user:lead-a","note":"handoff"}`),
-	)
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: strPtr("user:lead-a"),
+		AssignNote: strPtr("handoff"),
+		AssignedAt: &assignedAtPending,
+	})
 	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, assignStatus)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: strPtr("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
+	})
+	require.NoError(t, err)
 
 	inboxStatus, inboxBody, err := doJSONRequest(
 		client,
@@ -669,6 +683,8 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.Equal(t, sessionA, extractString(items[0], "session_id", "sessionID", "SessionID"))
 	require.Equal(t, "in_review", extractString(items[0], "review_state", "reviewState", "ReviewState"))
 	require.Equal(t, "user:oncall-a", extractString(items[0], "assignee", "Assignee"))
+	require.Equal(t, "pending", extractString(items[0], "escalation_state", "escalationState", "EscalationState"))
+	require.NotEmpty(t, extractString(items[0], "sla_due_at", "slaDueAt", "SlaDueAt"))
 	require.NotEmpty(t, extractString(items[0], "workbench_path", "workbenchPath", "WorkbenchPath"))
 	require.NotEmpty(t, extractString(items[0], "last_activity_at", "lastActivityAt", "LastActivityAt"))
 
@@ -717,6 +733,32 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.Equal(t, 1, len(assigneeItems))
 	require.Equal(t, sessionA, extractString(assigneeItems[0], "session_id", "sessionID", "SessionID"))
 	require.Equal(t, "user:oncall-a", extractString(assigneeItems[0], "assignee", "Assignee"))
+
+	escalationPendingStatus, escalationPendingBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?escalation_state=pending", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, escalationPendingStatus)
+	escalationPendingData := extractDataContainer(escalationPendingBody)
+	pendingItems := extractInboxItems(escalationPendingData)
+	require.Equal(t, 1, len(pendingItems))
+	require.Equal(t, sessionA, extractString(pendingItems[0], "session_id", "sessionID", "SessionID"))
+
+	escalationEscalatedStatus, escalationEscalatedBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?escalation_state=escalated", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, escalationEscalatedStatus)
+	escalationEscalatedData := extractDataContainer(escalationEscalatedBody)
+	escalatedItems := extractInboxItems(escalationEscalatedData)
+	require.Equal(t, 1, len(escalatedItems))
+	require.Equal(t, sessionB, extractString(escalatedItems[0], "session_id", "sessionID", "SessionID"))
 }
 
 func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
@@ -727,6 +769,15 @@ func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
 		client,
 		http.MethodGet,
 		fmt.Sprintf("%s/v1/operator/inbox?needs_review=bad-bool", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+
+	status, _, err = doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?escalation_state=bad", baseURL),
 		nil,
 	)
 	require.NoError(t, err)

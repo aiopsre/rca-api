@@ -278,6 +278,9 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	if assignee := strings.TrimSpace(c.Query("assignee")); assignee != "" {
 		req.Assignee = strPtr(assignee)
 	}
+	if escalationState := strings.TrimSpace(c.Query("escalation_state")); escalationState != "" {
+		req.EscalationState = strPtr(escalationState)
+	}
 	if needsReviewRaw := strings.TrimSpace(c.Query("needs_review")); needsReviewRaw != "" {
 		needsReview, err := strconv.ParseBool(needsReviewRaw)
 		if err != nil {
@@ -297,12 +300,13 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 		}
 	}
 	validateReq := &validation.SessionOperatorInboxRequest{
-		ReviewState: req.ReviewState,
-		NeedsReview: req.NeedsReview,
-		SessionType: req.SessionType,
-		Assignee:    req.Assignee,
-		Offset:      req.Offset,
-		Limit:       req.Limit,
+		ReviewState:     req.ReviewState,
+		NeedsReview:     req.NeedsReview,
+		SessionType:     req.SessionType,
+		Assignee:        req.Assignee,
+		EscalationState: req.EscalationState,
+		Offset:          req.Offset,
+		Limit:           req.Limit,
 	}
 	if err := h.val.ValidateSessionOperatorInboxRequest(c.Request.Context(), validateReq); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -310,6 +314,8 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	}
 	req.ReviewState = validateReq.ReviewState
 	req.SessionType = validateReq.SessionType
+	req.Assignee = validateReq.Assignee
+	req.EscalationState = validateReq.EscalationState
 	req.Offset = validateReq.Offset
 	req.Limit = validateReq.Limit
 

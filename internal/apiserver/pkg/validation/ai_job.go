@@ -77,6 +77,11 @@ var (
 		"service":  {},
 		"change":   {},
 	}
+	allowedSessionEscalationStates = map[string]struct{}{
+		"none":      {},
+		"pending":   {},
+		"escalated": {},
+	}
 )
 
 type SessionOperatorActionRequest struct {
@@ -105,12 +110,13 @@ type SessionAssignmentActionRequest struct {
 }
 
 type SessionOperatorInboxRequest struct {
-	ReviewState *string
-	NeedsReview *bool
-	SessionType *string
-	Assignee    *string
-	Offset      int64
-	Limit       int64
+	ReviewState     *string
+	NeedsReview     *bool
+	SessionType     *string
+	Assignee        *string
+	EscalationState *string
+	Offset          int64
+	Limit           int64
 }
 
 func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJobRequest) error {
@@ -419,6 +425,13 @@ func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq 
 			return errorsx.ErrInvalidArgument
 		}
 		rq.Assignee = &assignee
+	}
+	if rq.EscalationState != nil {
+		escalationState := strings.ToLower(strings.TrimSpace(*rq.EscalationState))
+		if _, ok := allowedSessionEscalationStates[escalationState]; !ok {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.EscalationState = &escalationState
 	}
 	return nil
 }

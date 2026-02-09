@@ -187,6 +187,51 @@ func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
 	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderReplay)
 }
 
+func TestGetSessionWorkbench_SLAEscalationState(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	failedJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		ErrorMessage:  "needs assignment follow-up",
+	})
+	sessionID := mustSessionIDByJob(t, s, failedJobID)
+
+	oldAssignedAt := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err := sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignedAt: &oldAssignedAt,
+	})
+	require.NoError(t, err)
+
+	escalated, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, "escalated", escalated.Session.EscalationState)
+	require.EqualValues(t, 2, escalated.Session.EscalationLevel)
+	require.NotEmpty(t, escalated.Session.SlaDueAt)
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewNote:  ptrAIString("handled manually"),
+		ReviewedBy:  ptrAIString("user:reviewer"),
+	})
+	require.NoError(t, err)
+
+	cleared, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, "none", cleared.Session.EscalationState)
+	require.EqualValues(t, 0, cleared.Session.EscalationLevel)
+}
+
 func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -253,17 +298,21 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 		ReviewedBy:  ptrAIString("user:reviewer-c"),
 	})
 	require.NoError(t, err)
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
 	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
 		SessionID:  sessionA,
 		Assignee:   "user:oncall-a",
 		AssignedBy: ptrAIString("user:lead-a"),
 		AssignNote: ptrAIString("handoff to oncall-a"),
+		AssignedAt: &assignedAtPending,
 	})
 	require.NoError(t, err)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
 	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
 		SessionID:  sessionB,
 		Assignee:   "user:oncall-b",
 		AssignedBy: ptrAIString("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
 	})
 	require.NoError(t, err)
 
@@ -279,7 +328,9 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 	require.Equal(t, "user:oncall-a", listResp.Items[0].Assignee)
 	require.Equal(t, "user:lead-a", listResp.Items[0].AssignedBy)
 	require.Equal(t, "handoff to oncall-a", listResp.Items[0].AssignNote)
+	require.Equal(t, "pending", listResp.Items[0].EscalationState)
 	require.Equal(t, sessionbiz.SessionReviewStateRejected, listResp.Items[1].ReviewState)
+	require.Equal(t, "escalated", listResp.Items[1].EscalationState)
 
 	reviewStateConfirmed := sessionbiz.SessionReviewStateConfirmed
 	confirmedResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
@@ -314,6 +365,26 @@ func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
 	require.Equal(t, int64(1), assigneeResp.TotalCount)
 	require.Equal(t, sessionA, assigneeResp.Items[0].SessionID)
 	require.Equal(t, "user:oncall-a", assigneeResp.Items[0].Assignee)
+
+	escalationPending := "pending"
+	pendingResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		EscalationState: &escalationPending,
+		Offset:          0,
+		Limit:           20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), pendingResp.TotalCount)
+	require.Equal(t, sessionA, pendingResp.Items[0].SessionID)
+
+	escalationEscalated := "escalated"
+	escalatedResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		EscalationState: &escalationEscalated,
+		Offset:          0,
+		Limit:           20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), escalatedResp.TotalCount)
+	require.Equal(t, sessionB, escalatedResp.Items[0].SessionID)
 }
 
 type workbenchRunSpec struct {

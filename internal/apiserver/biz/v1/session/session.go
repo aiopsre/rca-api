@@ -38,6 +38,14 @@ const (
 const (
 	sessionContextStateReviewKey = "review"
 	sessionContextStateAssignKey = "assignment"
+	sessionContextStateSLAKey    = "sla"
+)
+
+const (
+	SessionEscalationStateNone      = "none"
+	SessionEscalationStatePending   = "pending"
+	SessionEscalationStateEscalated = "escalated"
+	defaultSessionSLAWindow         = 2 * time.Hour
 )
 
 var allowedSessionTypes = map[string]struct{}{
@@ -466,6 +474,7 @@ func (b *sessionBiz) UpdateAssignment(
 		assignedAt = rq.AssignedAt.UTC()
 	}
 	assignment.AssignedAt = assignedAt.Format(time.RFC3339Nano)
+	dueAt := assignedAt.Add(defaultSessionSLAWindow)
 
 	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
 	stateObj[sessionContextStateAssignKey] = map[string]any{
@@ -473,6 +482,12 @@ func (b *sessionBiz) UpdateAssignment(
 		"assigned_by": assignment.AssignedBy,
 		"assigned_at": assignment.AssignedAt,
 		"note":        assignment.Note,
+	}
+	stateObj[sessionContextStateSLAKey] = map[string]any{
+		"assigned_at":      assignment.AssignedAt,
+		"due_at":           dueAt.Format(time.RFC3339Nano),
+		"escalation_state": SessionEscalationStateNone,
+		"escalation_level": 0,
 	}
 	encoded, err := json.Marshal(stateObj)
 	if err != nil {

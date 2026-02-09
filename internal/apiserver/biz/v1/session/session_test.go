@@ -207,6 +207,13 @@ func TestUpdateAssignment_PersistsIntoContextStateJSON(t *testing.T) {
 	require.Equal(t, "user:oncall-a", assignObj["assignee"])
 	require.Equal(t, "user:lead-a", assignObj["assigned_by"])
 	require.Equal(t, "handoff to oncall shift", assignObj["note"])
+
+	slaObj, ok := state["sla"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "none", slaObj["escalation_state"])
+	require.EqualValues(t, 0, slaObj["escalation_level"])
+	require.NotEmpty(t, slaObj["assigned_at"])
+	require.NotEmpty(t, slaObj["due_at"])
 }
 
 func TestUpdateAssignment_InvalidAssignee(t *testing.T) {
