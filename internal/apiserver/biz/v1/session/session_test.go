@@ -355,6 +355,82 @@ func TestSessionHistory_AutoRecordedByAssignmentAndReview(t *testing.T) {
 	require.True(t, eventTypes[SessionHistoryEventReviewRejected])
 }
 
+func TestSessionHistory_ListAssignmentHistory(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: "incident-assign-history",
+		IncidentID:  ptrString("incident-assign-history"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	firstAssignedAt := time.Now().UTC().Add(-2 * time.Minute).Truncate(time.Second)
+	_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrString("user:lead-a"),
+		AssignNote: ptrString("handoff to oncall-a"),
+		AssignedAt: &firstAssignedAt,
+	})
+	require.NoError(t, err)
+	secondAssignedAt := time.Now().UTC().Add(-1 * time.Minute).Truncate(time.Second)
+	_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-b",
+		AssignedBy: ptrString("user:lead-b"),
+		AssignNote: ptrString("shift changed"),
+		AssignedAt: &secondAssignedAt,
+	})
+	require.NoError(t, err)
+	_, err = biz.UpdateReviewState(context.Background(), &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateInReview,
+		ReviewedBy:  ptrString("user:reviewer"),
+	})
+	require.NoError(t, err)
+
+	desc, err := biz.ListAssignmentHistory(context.Background(), &ListSessionAssignmentHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    0,
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 2, desc.TotalCount)
+	require.Len(t, desc.Events, 2)
+	require.Equal(t, SessionHistoryEventReassigned, desc.Events[0].EventType)
+	require.Equal(t, "user:oncall-b", desc.Events[0].Assignee)
+	require.Equal(t, "user:lead-b", desc.Events[0].AssignedBy)
+	require.Equal(t, secondAssignedAt.Format(time.RFC3339Nano), desc.Events[0].AssignedAt)
+	require.Equal(t, "shift changed", desc.Events[0].Note)
+	require.Equal(t, SessionHistoryEventAssigned, desc.Events[1].EventType)
+	require.Equal(t, "user:oncall-a", desc.Events[1].Assignee)
+	require.Equal(t, "user:lead-a", desc.Events[1].AssignedBy)
+	require.Equal(t, firstAssignedAt.Format(time.RFC3339Nano), desc.Events[1].AssignedAt)
+
+	order := "asc"
+	asc, err := biz.ListAssignmentHistory(context.Background(), &ListSessionAssignmentHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    0,
+		Limit:     10,
+		Order:     &order,
+	})
+	require.NoError(t, err)
+	require.Len(t, asc.Events, 2)
+	require.Equal(t, SessionHistoryEventAssigned, asc.Events[0].EventType)
+	require.Equal(t, SessionHistoryEventReassigned, asc.Events[1].EventType)
+
+	paged, err := biz.ListAssignmentHistory(context.Background(), &ListSessionAssignmentHistoryRequest{
+		SessionID: created.Session.SessionID,
+		Offset:    1,
+		Limit:     1,
+	})
+	require.NoError(t, err)
+	require.Len(t, paged.Events, 1)
+	require.Equal(t, SessionHistoryEventAssigned, paged.Events[0].EventType)
+}
+
 func TestSessionHistory_SyncSLAStateRecordsEscalationTransition(t *testing.T) {
 	biz := newSessionBizForTest(t)
 

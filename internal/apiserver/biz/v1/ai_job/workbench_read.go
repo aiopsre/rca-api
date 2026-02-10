@@ -244,15 +244,17 @@ type WorkbenchReviewFlags struct {
 }
 
 type WorkbenchDrillDown struct {
-	LatestTracePath     string                          `json:"latest_trace_path,omitempty"`
-	LatestComparePath   string                          `json:"latest_compare_path,omitempty"`
-	HistoryPath         string                          `json:"history_path,omitempty"`
-	RecommendedNextView []string                        `json:"recommended_next_view"`
-	LatestDecision      *WorkbenchDecisionDrillDown     `json:"latest_decision,omitempty"`
-	LatestCompare       *WorkbenchCompareDrillDown      `json:"latest_compare,omitempty"`
-	PinnedEvidence      *WorkbenchEvidenceDrillDown     `json:"pinned_evidence,omitempty"`
-	Verification        *WorkbenchVerificationDrillDown `json:"verification,omitempty"`
-	History             *WorkbenchHistoryDrillDown      `json:"history,omitempty"`
+	LatestTracePath       string                          `json:"latest_trace_path,omitempty"`
+	LatestComparePath     string                          `json:"latest_compare_path,omitempty"`
+	HistoryPath           string                          `json:"history_path,omitempty"`
+	AssignmentHistoryPath string                          `json:"assignment_history_path,omitempty"`
+	RecommendedNextView   []string                        `json:"recommended_next_view"`
+	LatestDecision        *WorkbenchDecisionDrillDown     `json:"latest_decision,omitempty"`
+	LatestCompare         *WorkbenchCompareDrillDown      `json:"latest_compare,omitempty"`
+	LatestAssignment      *WorkbenchAssignmentDrillDown   `json:"latest_assignment,omitempty"`
+	PinnedEvidence        *WorkbenchEvidenceDrillDown     `json:"pinned_evidence,omitempty"`
+	Verification          *WorkbenchVerificationDrillDown `json:"verification,omitempty"`
+	History               *WorkbenchHistoryDrillDown      `json:"history,omitempty"`
 }
 
 type WorkbenchDecisionDrillDown struct {
@@ -268,6 +270,13 @@ type WorkbenchCompareDrillDown struct {
 	ComparePath      string `json:"compare_path,omitempty"`
 	LeftJobID        string `json:"left_job_id,omitempty"`
 	RightJobID       string `json:"right_job_id,omitempty"`
+}
+
+type WorkbenchAssignmentDrillDown struct {
+	Assignee   string `json:"assignee,omitempty"`
+	AssignedBy string `json:"assigned_by,omitempty"`
+	AssignedAt string `json:"assigned_at,omitempty"`
+	Note       string `json:"note,omitempty"`
 }
 
 type WorkbenchEvidenceDrillDown struct {
@@ -419,6 +428,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		latestRun,
 		latestDecision,
 		latestCompare,
+		assignmentState,
 		reviewFlags,
 		pinnedEvidenceRefs,
 		recentHistory,
@@ -1045,6 +1055,7 @@ func buildWorkbenchDrillDown(
 	latestRun *TraceReadSummary,
 	latestDecision *DecisionTraceReadModel,
 	latestCompare *WorkbenchCompareSummary,
+	assignmentState *sessionAssignmentContextState,
 	reviewFlags *WorkbenchReviewFlags,
 	pinnedEvidenceRefs []string,
 	recentHistory []*SessionHistorySummary,
@@ -1059,6 +1070,7 @@ func buildWorkbenchDrillDown(
 	}
 	latestTracePath := buildAIJobTracePath(latestJobID)
 	historyPath := buildSessionHistoryPath(sessionID)
+	assignmentHistoryPath := buildSessionAssignmentHistoryPath(sessionID)
 	recentHistoryPath := buildSessionHistoryRecentPath(sessionID, 0, defaultSessionWorkbenchHistoryLimit)
 	relatedEvidenceRefs := normalizeStringSlice(pinnedEvidenceRefs)
 	relatedVerificationRefs := []string{}
@@ -1093,6 +1105,9 @@ func buildWorkbenchDrillDown(
 	if historyPath != "" {
 		recommendedNextView = appendUniqueHint(recommendedNextView, historyPath)
 	}
+	if assignmentHistoryPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, assignmentHistoryPath)
+	}
 	if incidentEvidencePath != "" && len(relatedEvidenceRefs) > 0 {
 		recommendedNextView = appendUniqueHint(recommendedNextView, incidentEvidencePath)
 	}
@@ -1109,12 +1124,20 @@ func buildWorkbenchDrillDown(
 			defaultSessionWorkbenchHistoryLimit,
 		)
 	}
+	latestAssignment := &WorkbenchAssignmentDrillDown{}
+	if assignmentState != nil {
+		latestAssignment.Assignee = strings.TrimSpace(assignmentState.Assignee)
+		latestAssignment.AssignedBy = strings.TrimSpace(assignmentState.AssignedBy)
+		latestAssignment.AssignedAt = strings.TrimSpace(assignmentState.AssignedAt)
+		latestAssignment.Note = strings.TrimSpace(assignmentState.Note)
+	}
 
 	return &WorkbenchDrillDown{
-		LatestTracePath:     latestTracePath,
-		LatestComparePath:   latestComparePath,
-		HistoryPath:         historyPath,
-		RecommendedNextView: recommendedNextView,
+		LatestTracePath:       latestTracePath,
+		LatestComparePath:     latestComparePath,
+		HistoryPath:           historyPath,
+		AssignmentHistoryPath: assignmentHistoryPath,
+		RecommendedNextView:   recommendedNextView,
 		LatestDecision: &WorkbenchDecisionDrillDown{
 			JobID:                   latestJobID,
 			TracePath:               latestTracePath,
@@ -1122,7 +1145,8 @@ func buildWorkbenchDrillDown(
 			RelatedEvidenceRefs:     relatedEvidenceRefs,
 			RelatedVerificationRefs: relatedVerificationRefs,
 		},
-		LatestCompare: compare,
+		LatestCompare:    compare,
+		LatestAssignment: latestAssignment,
 		PinnedEvidence: &WorkbenchEvidenceDrillDown{
 			IncidentEvidencePath: incidentEvidencePath,
 			EvidenceRefs:         normalizeStringSlice(pinnedEvidenceRefs),
@@ -1166,6 +1190,14 @@ func buildSessionHistoryPath(sessionID string) string {
 		return ""
 	}
 	return "/v1/sessions/" + sessionID + "/history"
+}
+
+func buildSessionAssignmentHistoryPath(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	return "/v1/sessions/" + sessionID + "/assignment_history"
 }
 
 func buildSessionHistoryRecentPath(sessionID string, offset int64, limit int64) string {

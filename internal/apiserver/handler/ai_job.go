@@ -271,6 +271,31 @@ func (h *Handler) ListSessionHistory(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) ListSessionAssignmentHistory(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &sessionbiz.ListSessionAssignmentHistoryRequest{
+		SessionID: strings.TrimSpace(c.Param("sessionID")),
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		if v, err := strconv.ParseInt(offset, 10, 64); err == nil {
+			req.Offset = v
+		}
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
+			req.Limit = v
+		}
+	}
+	if order := strings.TrimSpace(c.Query("order")); order != "" {
+		req.Order = strPtr(order)
+	}
+	resp, err := h.biz.SessionV1().ListAssignmentHistory(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -726,6 +751,7 @@ func init() {
 		sessionGroup := v1.Group("/sessions", mws...)
 		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
 		sessionGroup.GET("/:sessionID/history", handler.ListSessionHistory)
+		sessionGroup.GET("/:sessionID/assignment_history", handler.ListSessionAssignmentHistory)
 		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
 		sessionGroup.POST("/:sessionID/actions/replay", handler.ReplaySessionAI)
 		sessionGroup.POST("/:sessionID/actions/follow-up", handler.FollowUpSessionAI)

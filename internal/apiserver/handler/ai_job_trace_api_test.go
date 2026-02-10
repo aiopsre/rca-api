@@ -227,10 +227,14 @@ func TestSessionWorkbenchAPI_Get(t *testing.T) {
 		extractString(drilldown, "latest_compare_path", "latestComparePath", "LatestComparePath"),
 	)
 	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/history", sessionID), extractString(drilldown, "history_path", "historyPath", "HistoryPath"))
+	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/assignment_history", sessionID), extractString(drilldown, "assignment_history_path", "assignmentHistoryPath", "AssignmentHistoryPath"))
 	latestDecisionDrill := extractMap(drilldown, "latest_decision", "latestDecision", "LatestDecision")
 	require.NotNil(t, latestDecisionDrill)
 	require.Equal(t, rightJobID, extractString(latestDecisionDrill, "job_id", "jobID", "JobID"))
 	require.Equal(t, true, latestDecisionDrill["decision_detail_available"])
+	latestAssignmentDrill := extractMap(drilldown, "latest_assignment", "latestAssignment", "LatestAssignment")
+	require.NotNil(t, latestAssignmentDrill)
+	require.Equal(t, "", extractString(latestAssignmentDrill, "assignee", "Assignee"))
 	pinnedEvidenceDrill := extractMap(drilldown, "pinned_evidence", "pinnedEvidence", "PinnedEvidence")
 	require.NotNil(t, pinnedEvidenceDrill)
 	require.Equal(t, fmt.Sprintf("/v1/incidents/%s/evidence", incident.IncidentID), extractString(pinnedEvidenceDrill, "incident_evidence_path", "incidentEvidencePath", "IncidentEvidencePath"))
@@ -640,6 +644,14 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, assignStatus)
+	reassignStatus, _, err := doJSONRequest(
+		client,
+		http.MethodPost,
+		fmt.Sprintf("%s/v1/sessions/%s/actions/reassign", baseURL, sessionID),
+		[]byte(`{"assignee":"user:oncall-b","assigned_by":"user:lead-b","note":"shift changed"}`),
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, reassignStatus)
 
 	reviewStatus, _, err := doJSONRequest(
 		client,
@@ -708,6 +720,44 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventReviewStarted])
 	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventReplayRequested])
 	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventFollowUpRequested])
+	require.True(t, historyEventTypes[sessionbiz.SessionHistoryEventReassigned])
+
+	assignmentHistoryStatus, assignmentHistoryBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/sessions/%s/assignment_history?offset=0&limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assignmentHistoryStatus)
+	assignmentHistoryData := extractDataContainer(assignmentHistoryBody)
+	assignmentItems := extractHistoryItems(assignmentHistoryData)
+	require.Len(t, assignmentItems, 2)
+	require.Equal(t, sessionbiz.SessionHistoryEventReassigned, extractString(assignmentItems[0], "event_type", "eventType", "EventType"))
+	require.Equal(t, "user:oncall-b", extractString(assignmentItems[0], "assignee", "Assignee"))
+	require.Equal(t, "user:lead-b", extractString(assignmentItems[0], "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "shift changed", extractString(assignmentItems[0], "note", "Note"))
+	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(assignmentItems[1], "event_type", "eventType", "EventType"))
+	require.Equal(t, "user:oncall-a", extractString(assignmentItems[1], "assignee", "Assignee"))
+
+	assignmentOrder := "asc"
+	assignmentAscStatus, assignmentAscBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf(
+			"%s/v1/sessions/%s/assignment_history?offset=0&limit=1&order=%s",
+			baseURL,
+			sessionID,
+			assignmentOrder,
+		),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, assignmentAscStatus)
+	assignmentAscData := extractDataContainer(assignmentAscBody)
+	assignmentAscItems := extractHistoryItems(assignmentAscData)
+	require.Len(t, assignmentAscItems, 1)
+	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(assignmentAscItems[0], "event_type", "eventType", "EventType"))
 
 	ascStatus, ascBody, err := doJSONRequest(
 		client,
@@ -736,6 +786,17 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 		"events": workbenchData["recent_history"],
 	})
 	require.NotEmpty(t, recentHistory)
+	drilldown := extractMap(workbenchData, "drilldown", "Drilldown")
+	require.NotNil(t, drilldown)
+	require.Equal(
+		t,
+		fmt.Sprintf("/v1/sessions/%s/assignment_history", sessionID),
+		extractString(drilldown, "assignment_history_path", "assignmentHistoryPath", "AssignmentHistoryPath"),
+	)
+	latestAssignment := extractMap(drilldown, "latest_assignment", "latestAssignment", "LatestAssignment")
+	require.NotNil(t, latestAssignment)
+	require.Equal(t, "user:oncall-b", extractString(latestAssignment, "assignee", "Assignee"))
+	require.Equal(t, "user:lead-b", extractString(latestAssignment, "assigned_by", "assignedBy", "AssignedBy"))
 }
 
 func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {

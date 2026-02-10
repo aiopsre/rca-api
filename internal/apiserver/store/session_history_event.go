@@ -10,6 +10,14 @@ import (
 type SessionHistoryEventStore interface {
 	Create(ctx context.Context, obj *model.SessionHistoryEventM) error
 	ListBySession(ctx context.Context, sessionID string, offset int, limit int, ascending bool) (int64, []*model.SessionHistoryEventM, error)
+	ListBySessionAndEventTypes(
+		ctx context.Context,
+		sessionID string,
+		eventTypes []string,
+		offset int,
+		limit int,
+		ascending bool,
+	) (int64, []*model.SessionHistoryEventM, error)
 }
 
 type sessionHistoryEventStore struct {
@@ -31,8 +39,34 @@ func (sse *sessionHistoryEventStore) ListBySession(
 	limit int,
 	ascending bool,
 ) (int64, []*model.SessionHistoryEventM, error) {
+	return sse.listBySession(ctx, sessionID, nil, offset, limit, ascending)
+}
+
+func (sse *sessionHistoryEventStore) ListBySessionAndEventTypes(
+	ctx context.Context,
+	sessionID string,
+	eventTypes []string,
+	offset int,
+	limit int,
+	ascending bool,
+) (int64, []*model.SessionHistoryEventM, error) {
+	return sse.listBySession(ctx, sessionID, eventTypes, offset, limit, ascending)
+}
+
+func (sse *sessionHistoryEventStore) listBySession(
+	ctx context.Context,
+	sessionID string,
+	eventTypes []string,
+	offset int,
+	limit int,
+	ascending bool,
+) (int64, []*model.SessionHistoryEventM, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	db := sse.s.DB(ctx).Where("session_id = ?", sessionID)
+	filteredEventTypes := normalizeSessionHistoryEventTypes(eventTypes)
+	if len(filteredEventTypes) > 0 {
+		db = db.Where("event_type IN ?", filteredEventTypes)
+	}
 
 	var total int64
 	if err := db.Model(&model.SessionHistoryEventM{}).Count(&total).Error; err != nil {
@@ -49,4 +83,24 @@ func (sse *sessionHistoryEventStore) ListBySession(
 		return 0, nil, err
 	}
 	return total, list, nil
+}
+
+func normalizeSessionHistoryEventTypes(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		value := strings.TrimSpace(item)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
