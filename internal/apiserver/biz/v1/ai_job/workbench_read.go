@@ -3,6 +3,7 @@ package ai_job
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,7 @@ type GetSessionWorkbenchResponse struct {
 	NextActionHints  []string                    `json:"next_action_hints"`
 	RecentHistory    []*SessionHistorySummary    `json:"recent_history"`
 	HistoryPath      string                      `json:"history_path,omitempty"`
+	DrillDown        *WorkbenchDrillDown         `json:"drilldown,omitempty"`
 }
 
 type ListOperatorInboxRequest struct {
@@ -241,6 +243,53 @@ type WorkbenchReviewFlags struct {
 	PinnedEvidenceCount int64    `json:"pinned_evidence_count"`
 }
 
+type WorkbenchDrillDown struct {
+	LatestTracePath     string                          `json:"latest_trace_path,omitempty"`
+	LatestComparePath   string                          `json:"latest_compare_path,omitempty"`
+	HistoryPath         string                          `json:"history_path,omitempty"`
+	RecommendedNextView []string                        `json:"recommended_next_view"`
+	LatestDecision      *WorkbenchDecisionDrillDown     `json:"latest_decision,omitempty"`
+	LatestCompare       *WorkbenchCompareDrillDown      `json:"latest_compare,omitempty"`
+	PinnedEvidence      *WorkbenchEvidenceDrillDown     `json:"pinned_evidence,omitempty"`
+	Verification        *WorkbenchVerificationDrillDown `json:"verification,omitempty"`
+	History             *WorkbenchHistoryDrillDown      `json:"history,omitempty"`
+}
+
+type WorkbenchDecisionDrillDown struct {
+	JobID                   string   `json:"job_id,omitempty"`
+	TracePath               string   `json:"trace_path,omitempty"`
+	DecisionDetailAvailable bool     `json:"decision_detail_available"`
+	RelatedEvidenceRefs     []string `json:"related_evidence_refs"`
+	RelatedVerificationRefs []string `json:"related_verification_refs"`
+}
+
+type WorkbenchCompareDrillDown struct {
+	CompareAvailable bool   `json:"compare_available"`
+	ComparePath      string `json:"compare_path,omitempty"`
+	LeftJobID        string `json:"left_job_id,omitempty"`
+	RightJobID       string `json:"right_job_id,omitempty"`
+}
+
+type WorkbenchEvidenceDrillDown struct {
+	IncidentEvidencePath string   `json:"incident_evidence_path,omitempty"`
+	EvidenceRefs         []string `json:"evidence_refs"`
+}
+
+type WorkbenchVerificationDrillDown struct {
+	IncidentVerificationPath string   `json:"incident_verification_path,omitempty"`
+	VerificationRefs         []string `json:"verification_refs"`
+	VerificationPending      bool     `json:"verification_pending"`
+}
+
+type WorkbenchHistoryDrillDown struct {
+	HistoryPath    string `json:"history_path,omitempty"`
+	RecentPath     string `json:"recent_path,omitempty"`
+	NextPagePath   string `json:"next_page_path,omitempty"`
+	RecentLimit    int64  `json:"recent_limit"`
+	RecentReturned int64  `json:"recent_returned"`
+	Order          string `json:"order"`
+}
+
 type SessionHistorySummary struct {
 	EventID        string         `json:"event_id"`
 	EventType      string         `json:"event_type"`
@@ -363,6 +412,18 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		reviewState,
 	)
 	recentHistory := b.loadSessionHistorySummariesBestEffort(ctx, sessionID, defaultSessionWorkbenchHistoryLimit)
+	historyPath := buildSessionHistoryPath(sessionID)
+	drillDown := buildWorkbenchDrillDown(
+		sessionID,
+		incidentID,
+		latestRun,
+		latestDecision,
+		latestCompare,
+		reviewFlags,
+		pinnedEvidenceRefs,
+		recentHistory,
+		nextHints,
+	)
 
 	return &GetSessionWorkbenchResponse{
 		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState, assignmentState, slaState),
@@ -375,7 +436,8 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		ReviewFlags:      reviewFlags,
 		NextActionHints:  nextHints,
 		RecentHistory:    recentHistory,
-		HistoryPath:      "/v1/sessions/" + sessionID + "/history",
+		HistoryPath:      historyPath,
+		DrillDown:        drillDown,
 	}, nil
 }
 
@@ -975,6 +1037,165 @@ func (b *aiJobBiz) loadSessionHistorySummariesBestEffort(
 		})
 	}
 	return items
+}
+
+func buildWorkbenchDrillDown(
+	sessionID string,
+	incidentID string,
+	latestRun *TraceReadSummary,
+	latestDecision *DecisionTraceReadModel,
+	latestCompare *WorkbenchCompareSummary,
+	reviewFlags *WorkbenchReviewFlags,
+	pinnedEvidenceRefs []string,
+	recentHistory []*SessionHistorySummary,
+	nextHints []string,
+) *WorkbenchDrillDown {
+	sessionID = strings.TrimSpace(sessionID)
+	incidentID = strings.TrimSpace(incidentID)
+
+	latestJobID := ""
+	if latestRun != nil {
+		latestJobID = strings.TrimSpace(latestRun.JobID)
+	}
+	latestTracePath := buildAIJobTracePath(latestJobID)
+	historyPath := buildSessionHistoryPath(sessionID)
+	recentHistoryPath := buildSessionHistoryRecentPath(sessionID, 0, defaultSessionWorkbenchHistoryLimit)
+	relatedEvidenceRefs := normalizeStringSlice(pinnedEvidenceRefs)
+	relatedVerificationRefs := []string{}
+	if latestDecision != nil {
+		relatedEvidenceRefs = mergeStringSlices(latestDecision.EvidenceRefs, relatedEvidenceRefs)
+		relatedVerificationRefs = normalizeStringSlice(latestDecision.VerificationRefs)
+	} else if reviewFlags != nil {
+		relatedVerificationRefs = normalizeStringSlice(reviewFlags.VerificationRefs)
+	}
+
+	compare := &WorkbenchCompareDrillDown{
+		CompareAvailable: false,
+	}
+	latestComparePath := ""
+	if latestCompare != nil {
+		compare.LeftJobID = strings.TrimSpace(latestCompare.LeftJobID)
+		compare.RightJobID = strings.TrimSpace(latestCompare.RightJobID)
+		latestComparePath = buildTraceComparePath(compare.LeftJobID, compare.RightJobID)
+		compare.ComparePath = latestComparePath
+		compare.CompareAvailable = latestComparePath != ""
+	}
+
+	incidentEvidencePath := buildIncidentEvidencePath(incidentID)
+	incidentVerificationPath := buildIncidentVerificationPath(incidentID)
+	recommendedNextView := []string{}
+	if latestTracePath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, latestTracePath)
+	}
+	if latestComparePath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, latestComparePath)
+	}
+	if historyPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, historyPath)
+	}
+	if incidentEvidencePath != "" && len(relatedEvidenceRefs) > 0 {
+		recommendedNextView = appendUniqueHint(recommendedNextView, incidentEvidencePath)
+	}
+	if incidentVerificationPath != "" && len(relatedVerificationRefs) > 0 {
+		recommendedNextView = appendUniqueHint(recommendedNextView, incidentVerificationPath)
+	}
+
+	verificationPending := containsString(nextHints, workbenchHintVerificationPending)
+	nextHistoryPath := ""
+	if int64(len(recentHistory)) >= defaultSessionWorkbenchHistoryLimit {
+		nextHistoryPath = buildSessionHistoryRecentPath(
+			sessionID,
+			defaultSessionWorkbenchHistoryLimit,
+			defaultSessionWorkbenchHistoryLimit,
+		)
+	}
+
+	return &WorkbenchDrillDown{
+		LatestTracePath:     latestTracePath,
+		LatestComparePath:   latestComparePath,
+		HistoryPath:         historyPath,
+		RecommendedNextView: recommendedNextView,
+		LatestDecision: &WorkbenchDecisionDrillDown{
+			JobID:                   latestJobID,
+			TracePath:               latestTracePath,
+			DecisionDetailAvailable: latestDecision != nil,
+			RelatedEvidenceRefs:     relatedEvidenceRefs,
+			RelatedVerificationRefs: relatedVerificationRefs,
+		},
+		LatestCompare: compare,
+		PinnedEvidence: &WorkbenchEvidenceDrillDown{
+			IncidentEvidencePath: incidentEvidencePath,
+			EvidenceRefs:         normalizeStringSlice(pinnedEvidenceRefs),
+		},
+		Verification: &WorkbenchVerificationDrillDown{
+			IncidentVerificationPath: incidentVerificationPath,
+			VerificationRefs:         relatedVerificationRefs,
+			VerificationPending:      verificationPending,
+		},
+		History: &WorkbenchHistoryDrillDown{
+			HistoryPath:    historyPath,
+			RecentPath:     recentHistoryPath,
+			NextPagePath:   nextHistoryPath,
+			RecentLimit:    defaultSessionWorkbenchHistoryLimit,
+			RecentReturned: int64(len(recentHistory)),
+			Order:          "desc",
+		},
+	}
+}
+
+func buildAIJobTracePath(jobID string) string {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return ""
+	}
+	return "/v1/ai/jobs/" + jobID + "/trace"
+}
+
+func buildTraceComparePath(leftJobID string, rightJobID string) string {
+	leftJobID = strings.TrimSpace(leftJobID)
+	rightJobID = strings.TrimSpace(rightJobID)
+	if leftJobID == "" || rightJobID == "" {
+		return ""
+	}
+	return "/v1/ai/jobs:trace-compare?left_job_id=" + leftJobID + "&right_job_id=" + rightJobID
+}
+
+func buildSessionHistoryPath(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	return "/v1/sessions/" + sessionID + "/history"
+}
+
+func buildSessionHistoryRecentPath(sessionID string, offset int64, limit int64) string {
+	base := buildSessionHistoryPath(sessionID)
+	if base == "" {
+		return ""
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = defaultSessionWorkbenchHistoryLimit
+	}
+	return base + "?order=desc&offset=" + strconv.FormatInt(offset, 10) + "&limit=" + strconv.FormatInt(limit, 10)
+}
+
+func buildIncidentEvidencePath(incidentID string) string {
+	incidentID = strings.TrimSpace(incidentID)
+	if incidentID == "" {
+		return ""
+	}
+	return "/v1/incidents/" + incidentID + "/evidence"
+}
+
+func buildIncidentVerificationPath(incidentID string) string {
+	incidentID = strings.TrimSpace(incidentID)
+	if incidentID == "" {
+		return ""
+	}
+	return "/v1/incidents/" + incidentID + "/verification-runs"
 }
 
 func (b *aiJobBiz) syncSessionSLAStateBestEffort(

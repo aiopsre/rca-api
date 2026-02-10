@@ -216,6 +216,30 @@ func TestSessionWorkbenchAPI_Get(t *testing.T) {
 	require.Equal(t, false, reviewFlags["human_review_required"])
 	hints := extractStringArray(data["next_action_hints"])
 	require.Contains(t, hints, "review_compare")
+	latestCompare := extractMap(data, "latest_compare", "latestCompare", "LatestCompare")
+	require.NotNil(t, latestCompare)
+	drilldown := extractMap(data, "drilldown", "Drilldown")
+	require.NotNil(t, drilldown)
+	require.Equal(t, fmt.Sprintf("/v1/ai/jobs/%s/trace", rightJobID), extractString(drilldown, "latest_trace_path", "latestTracePath", "LatestTracePath"))
+	require.Equal(
+		t,
+		fmt.Sprintf("/v1/ai/jobs:trace-compare?left_job_id=%s&right_job_id=%s", extractString(latestCompare, "left_job_id", "leftJobID", "LeftJobID"), rightJobID),
+		extractString(drilldown, "latest_compare_path", "latestComparePath", "LatestComparePath"),
+	)
+	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/history", sessionID), extractString(drilldown, "history_path", "historyPath", "HistoryPath"))
+	latestDecisionDrill := extractMap(drilldown, "latest_decision", "latestDecision", "LatestDecision")
+	require.NotNil(t, latestDecisionDrill)
+	require.Equal(t, rightJobID, extractString(latestDecisionDrill, "job_id", "jobID", "JobID"))
+	require.Equal(t, true, latestDecisionDrill["decision_detail_available"])
+	pinnedEvidenceDrill := extractMap(drilldown, "pinned_evidence", "pinnedEvidence", "PinnedEvidence")
+	require.NotNil(t, pinnedEvidenceDrill)
+	require.Equal(t, fmt.Sprintf("/v1/incidents/%s/evidence", incident.IncidentID), extractString(pinnedEvidenceDrill, "incident_evidence_path", "incidentEvidencePath", "IncidentEvidencePath"))
+	historyDrill := extractMap(drilldown, "history", "History")
+	require.NotNil(t, historyDrill)
+	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/history?order=desc&offset=0&limit=5", sessionID), extractString(historyDrill, "recent_path", "recentPath", "RecentPath"))
+	nextViews := extractStringArray(drilldown["recommended_next_view"])
+	require.Contains(t, nextViews, fmt.Sprintf("/v1/ai/jobs/%s/trace", rightJobID))
+	require.Contains(t, nextViews, fmt.Sprintf("/v1/sessions/%s/history", sessionID))
 }
 
 func TestSessionWorkbenchActionAPI_ReplayAndFollowUp(t *testing.T) {

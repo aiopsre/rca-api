@@ -88,6 +88,30 @@ func TestGetSessionWorkbench_AggregatesAndSuggestsReviewHints(t *testing.T) {
 
 	require.Contains(t, resp.NextActionHints, workbenchHintNeedHumanReview)
 	require.Contains(t, resp.NextActionHints, workbenchHintReviewCompare)
+	require.NotNil(t, resp.DrillDown)
+	require.Equal(t, "/v1/ai/jobs/"+followJobID+"/trace", resp.DrillDown.LatestTracePath)
+	require.Equal(
+		t,
+		"/v1/ai/jobs:trace-compare?left_job_id="+manualJobID+"&right_job_id="+followJobID,
+		resp.DrillDown.LatestComparePath,
+	)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.DrillDown.HistoryPath)
+	require.NotNil(t, resp.DrillDown.LatestDecision)
+	require.Equal(t, followJobID, resp.DrillDown.LatestDecision.JobID)
+	require.True(t, resp.DrillDown.LatestDecision.DecisionDetailAvailable)
+	require.Contains(t, resp.DrillDown.LatestDecision.RelatedEvidenceRefs, "ev-manual-1")
+	require.NotNil(t, resp.DrillDown.LatestCompare)
+	require.True(t, resp.DrillDown.LatestCompare.CompareAvailable)
+	require.Equal(t, manualJobID, resp.DrillDown.LatestCompare.LeftJobID)
+	require.Equal(t, followJobID, resp.DrillDown.LatestCompare.RightJobID)
+	require.NotNil(t, resp.DrillDown.PinnedEvidence)
+	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/evidence", resp.DrillDown.PinnedEvidence.IncidentEvidencePath)
+	require.NotNil(t, resp.DrillDown.History)
+	require.Equal(t, defaultSessionWorkbenchHistoryLimit, resp.DrillDown.History.RecentLimit)
+	require.Equal(t, "desc", resp.DrillDown.History.Order)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history?order=desc&offset=0&limit=5", resp.DrillDown.History.RecentPath)
+	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/ai/jobs/"+followJobID+"/trace")
+	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/sessions/"+sessionID+"/history")
 }
 
 func TestGetSessionWorkbench_InProgressHint(t *testing.T) {
@@ -122,6 +146,12 @@ func TestGetSessionWorkbench_InProgressHint(t *testing.T) {
 	require.NotNil(t, resp.LatestRun)
 	require.Equal(t, jobStatusQueued, resp.LatestRun.Status)
 	require.Contains(t, resp.NextActionHints, workbenchHintRunInProgress)
+	require.NotNil(t, resp.DrillDown)
+	require.NotNil(t, resp.DrillDown.LatestDecision)
+	require.Equal(t, runResp.GetJobID(), resp.DrillDown.LatestDecision.JobID)
+	require.False(t, resp.DrillDown.LatestDecision.DecisionDetailAvailable)
+	require.NotNil(t, resp.DrillDown.LatestCompare)
+	require.False(t, resp.DrillDown.LatestCompare.CompareAvailable)
 }
 
 func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
@@ -217,6 +247,11 @@ func TestGetSessionWorkbench_IncludesRecentHistorySummary(t *testing.T) {
 	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.HistoryPath)
 	require.NotEmpty(t, resp.RecentHistory)
 	require.Equal(t, sessionbiz.SessionHistoryEventReviewStarted, resp.RecentHistory[0].EventType)
+	require.NotNil(t, resp.DrillDown)
+	require.NotNil(t, resp.DrillDown.History)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.DrillDown.History.HistoryPath)
+	require.Equal(t, int64(1), resp.DrillDown.History.RecentReturned)
+	require.Equal(t, "", resp.DrillDown.History.NextPagePath)
 }
 
 func TestGetSessionWorkbench_SLAEscalationState(t *testing.T) {
