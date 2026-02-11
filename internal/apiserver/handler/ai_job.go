@@ -17,6 +17,7 @@ import (
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
+	authpkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/auth"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
@@ -301,8 +302,13 @@ func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
+	sessionID := strings.TrimSpace(c.Param("sessionID"))
+	if err := h.ensureOperatorSessionAccess(c.Request.Context(), sessionID); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
 	req := &aijobbiz.GetSessionWorkbenchRequest{
-		SessionID: strings.TrimSpace(c.Param("sessionID")),
+		SessionID: sessionID,
 	}
 	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
 		if v, err := strconv.ParseInt(limit, 10, 64); err == nil {
@@ -748,7 +754,8 @@ func init() {
 		jobGroup.POST("/:jobID/tool-calls", handler.CreateAIToolCall)
 		jobGroup.GET("/:jobID/tool-calls", handler.ListAIToolCalls)
 
-		sessionGroup := v1.Group("/sessions", mws...)
+		operatorAuthMW := authpkg.RequireOperatorToken()
+		sessionGroup := v1.Group("/sessions", append(mws, operatorAuthMW)...)
 		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
 		sessionGroup.GET("/:sessionID/history", handler.ListSessionHistory)
 		sessionGroup.GET("/:sessionID/assignment_history", handler.ListSessionAssignmentHistory)
@@ -761,8 +768,9 @@ func init() {
 		sessionGroup.POST("/:sessionID/actions/assign", handler.AssignSessionOwner)
 		sessionGroup.POST("/:sessionID/actions/reassign", handler.ReassignSessionOwner)
 
-		v1.GET("/operator/inbox", handler.ListOperatorInbox)
-		v1.GET("/operator/dashboard", handler.GetOperatorDashboard)
+		operatorGroup := v1.Group("/operator", append(mws, operatorAuthMW)...)
+		operatorGroup.GET("/inbox", handler.ListOperatorInbox)
+		operatorGroup.GET("/dashboard", handler.GetOperatorDashboard)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
 }
@@ -825,6 +833,10 @@ func (h *Handler) dispatchSessionAIAction(c *gin.Context, triggerType string, de
 		Initiator:    req.Initiator,
 	}
 	if err := h.val.ValidateSessionOperatorActionRequest(c.Request.Context(), validateReq); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	if err := h.ensureOperatorSessionAccess(c.Request.Context(), sessionID); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
@@ -948,15 +960,26 @@ func normalizeOptionalText(raw *string) string {
 	return strings.TrimSpace(*raw)
 }
 
-func resolveSessionActionInitiator(ctx context.Context, reqInitiator *string) string {
-	if value := normalizeOptionalText(reqInitiator); value != "" {
-		return value
+func (h *Handler) ensureOperatorSessionAccess(ctx context.Context, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return errorsx.ErrInvalidArgument
 	}
+	_, err := h.biz.SessionV1().Get(ctx, &sessionbiz.GetSessionContextRequest{
+		SessionID: &sessionID,
+	})
+	return err
+}
+
+func resolveSessionActionInitiator(ctx context.Context, reqInitiator *string) string {
 	if user := strings.TrimSpace(contextx.Username(ctx)); user != "" {
 		return "user:" + user
 	}
 	if userID := strings.TrimSpace(contextx.UserID(ctx)); userID != "" {
 		return "user:" + userID
+	}
+	if value := normalizeOptionalText(reqInitiator); value != "" {
+		return value
 	}
 	return "operator:session_action"
 }

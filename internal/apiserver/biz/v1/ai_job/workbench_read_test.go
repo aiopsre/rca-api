@@ -13,6 +13,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
@@ -612,6 +613,64 @@ func TestGetOperatorDashboard_AggregatesOverviewAndPreview(t *testing.T) {
 	require.Equal(t, "/v1/operator/inbox", resp.Navigation.InboxPath)
 	require.Equal(t, "/v1/operator/inbox?review_state=in_review", resp.Navigation.RecommendedFilters["in_review"])
 	require.Equal(t, "/v1/operator/inbox?escalation_state=escalated", resp.Navigation.RecommendedFilters["escalated"])
+}
+
+func TestOperatorAccessControl_WorkbenchAndInbox(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentA.Namespace = "payments"
+	incidentA.Service = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentA))
+	incidentB.Namespace = "checkout"
+	incidentB.Service = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentB))
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "requires team follow-up",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "requires owner follow-up",
+	})
+
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+	_, err := sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-self",
+		AssignedBy: ptrAIString("user:lead"),
+	})
+	require.NoError(t, err)
+
+	teamCtx := contextx.WithOperatorTeams(contextx.WithUserID(context.Background(), "operator:team-payments"), []string{"namespace:payments"})
+	teamWorkbench, err := biz.GetSessionWorkbench(teamCtx, &GetSessionWorkbenchRequest{SessionID: sessionA})
+	require.NoError(t, err)
+	require.Equal(t, sessionA, teamWorkbench.Session.SessionID)
+
+	_, err = biz.GetSessionWorkbench(teamCtx, &GetSessionWorkbenchRequest{SessionID: sessionB})
+	require.ErrorIs(t, err, errno.ErrPermissionDenied)
+
+	inboxResp, err := biz.ListOperatorInbox(teamCtx, &ListOperatorInboxRequest{Offset: 0, Limit: 20})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, inboxResp.TotalCount)
+	require.Equal(t, sessionA, inboxResp.Items[0].SessionID)
+
+	selfCtx := contextx.WithUserID(context.Background(), "oncall-self")
+	selfWorkbench, err := biz.GetSessionWorkbench(selfCtx, &GetSessionWorkbenchRequest{SessionID: sessionB})
+	require.NoError(t, err)
+	require.Equal(t, sessionB, selfWorkbench.Session.SessionID)
 }
 
 type workbenchRunSpec struct {

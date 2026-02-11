@@ -12,6 +12,7 @@ import (
 
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
@@ -371,6 +372,10 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		}
 		return nil, errno.ErrSessionContextGetFailed
 	}
+	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
+	if !b.canAccessOperatorSession(ctx, sessionObj, assignmentState) {
+		return nil, errno.ErrPermissionDenied
+	}
 
 	listResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
 		SessionID: &sessionID,
@@ -400,7 +405,6 @@ func (b *aiJobBiz) GetSessionWorkbench(
 
 	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
 	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
-	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
 	baseSLAState := extractSessionSLAState(sessionObj.ContextStateJSON)
 	slaState := evaluateSessionSLAContext(
 		time.Now().UTC(),
@@ -711,6 +715,9 @@ func (b *aiJobBiz) listOperatorInboxItems(
 
 	items := make([]*OperatorInboxItem, 0, len(sessions))
 	for _, sessionObj := range sessions {
+		if !b.canAccessOperatorSession(ctx, sessionObj, nil) {
+			continue
+		}
 		item, buildErr := b.buildOperatorInboxItem(ctx, sessionObj)
 		if buildErr != nil {
 			return nil, buildErr
@@ -944,6 +951,45 @@ func normalizeSLAEscalationState(raw string) string {
 	default:
 		return ""
 	}
+}
+
+func (b *aiJobBiz) canAccessOperatorSession(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+	assignmentState *sessionAssignmentContextState,
+) bool {
+	if sessionObj == nil {
+		return false
+	}
+	if strings.TrimSpace(contextx.UserID(ctx)) == "" {
+		return true
+	}
+	assignee := ""
+	if assignmentState != nil {
+		assignee = strings.TrimSpace(assignmentState.Assignee)
+	} else {
+		assignee = strings.TrimSpace(extractSessionAssignmentState(sessionObj.ContextStateJSON).Assignee)
+	}
+	if sessionbiz.CanOperatorAccessSession(ctx, sessionObj, nil, assignee) {
+		return true
+	}
+	incident := b.loadSessionIncidentForAccess(ctx, sessionObj)
+	return sessionbiz.CanOperatorAccessSession(ctx, sessionObj, incident, assignee)
+}
+
+func (b *aiJobBiz) loadSessionIncidentForAccess(ctx context.Context, sessionObj *model.SessionContextM) *model.IncidentM {
+	if b == nil || b.store == nil || sessionObj == nil {
+		return nil
+	}
+	incidentID := trimOptional(sessionObj.IncidentID)
+	if incidentID == "" {
+		return nil
+	}
+	incident, err := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", incidentID))
+	if err != nil {
+		return nil
+	}
+	return incident
 }
 
 func containsString(items []string, target string) bool {

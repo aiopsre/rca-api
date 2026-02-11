@@ -30,6 +30,10 @@ const (
 	triggerSourceKey contextKey = "triggerSource"
 	// triggerInitiatorKey stores trigger initiator for run trace linkage.
 	triggerInitiatorKey contextKey = "triggerInitiator"
+	// operatorTeamsKey stores caller team scope list resolved by auth middleware.
+	operatorTeamsKey contextKey = "operatorTeams"
+	// operatorScopesKey stores caller scope list resolved by auth middleware.
+	operatorScopesKey contextKey = "operatorScopes"
 )
 
 // WithUserID returns a new context with the given user ID.
@@ -183,4 +187,56 @@ func TriggerInitiator(ctx context.Context) string {
 		return ""
 	}
 	return val
+}
+
+// WithOperatorTeams returns a new context with operator team scope list.
+func WithOperatorTeams(ctx context.Context, teams []string) context.Context {
+	if len(teams) == 0 {
+		return context.WithValue(ctx, operatorTeamsKey, []string{})
+	}
+	out := make([]string, 0, len(teams))
+	for _, team := range teams {
+		if team == "" {
+			continue
+		}
+		out = append(out, team)
+	}
+	return context.WithValue(ctx, operatorTeamsKey, out)
+}
+
+// OperatorTeams retrieves operator team scope list from context.
+func OperatorTeams(ctx context.Context) []string {
+	val, ok := ctx.Value(operatorTeamsKey).([]string)
+	if !ok || len(val) == 0 {
+		return nil
+	}
+	out := make([]string, len(val))
+	copy(out, val)
+	return out
+}
+
+// WithOperatorScopes returns a new context with operator scopes list.
+func WithOperatorScopes(ctx context.Context, scopes []string) context.Context {
+	if len(scopes) == 0 {
+		return context.WithValue(ctx, operatorScopesKey, []string{})
+	}
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope == "" {
+			continue
+		}
+		out = append(out, scope)
+	}
+	return context.WithValue(ctx, operatorScopesKey, out)
+}
+
+// OperatorScopes retrieves operator scopes list from context.
+func OperatorScopes(ctx context.Context) []string {
+	val, ok := ctx.Value(operatorScopesKey).([]string)
+	if !ok || len(val) == 0 {
+		return nil
+	}
+	out := make([]string, len(val))
+	copy(out, val)
+	return out
 }

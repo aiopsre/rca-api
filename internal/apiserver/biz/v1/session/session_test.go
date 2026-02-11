@@ -12,6 +12,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
@@ -489,13 +490,65 @@ func TestSessionHistory_SyncSLAStateRecordsEscalationTransition(t *testing.T) {
 	require.Contains(t, eventTypes, SessionHistoryEventEscalationCleared)
 }
 
+func TestSessionAccessControl_AssigneeScope(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: "incident-access-assignee",
+		IncidentID:  ptrString("incident-access-assignee"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrString("user:lead"),
+	})
+	require.NoError(t, err)
+
+	selfCtx := contextx.WithUserID(context.Background(), "oncall-a")
+	_, err = biz.UpdateReviewState(selfCtx, &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateInReview,
+	})
+	require.NoError(t, err)
+
+	otherCtx := contextx.WithUserID(context.Background(), "oncall-b")
+	_, err = biz.UpdateReviewState(otherCtx, &UpdateReviewStateRequest{
+		SessionID:   created.Session.SessionID,
+		ReviewState: SessionReviewStateConfirmed,
+	})
+	require.ErrorIs(t, err, errno.ErrPermissionDenied)
+}
+
+func TestSessionAccessControl_TeamScope(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeService,
+		BusinessKey: "service:checkout:env:prod:ns:payments:tenant:tenant-a",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, created.Session)
+
+	teamCtx := contextx.WithOperatorTeams(contextx.WithUserID(context.Background(), "operator:team-a"), []string{"namespace:payments"})
+	_, err = biz.Get(teamCtx, &GetSessionContextRequest{SessionID: ptrString(created.Session.SessionID)})
+	require.NoError(t, err)
+
+	otherTeamCtx := contextx.WithOperatorTeams(contextx.WithUserID(context.Background(), "operator:team-b"), []string{"namespace:checkout"})
+	_, err = biz.Get(otherTeamCtx, &GetSessionContextRequest{SessionID: ptrString(created.Session.SessionID)})
+	require.ErrorIs(t, err, errno.ErrPermissionDenied)
+}
+
 func newSessionBizForTest(t *testing.T) *sessionBiz {
 	t.Helper()
 	store.ResetForTest()
 
 	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.SessionContextM{}, &model.SessionHistoryEventM{}))
+	require.NoError(t, db.AutoMigrate(&model.IncidentM{}, &model.SessionContextM{}, &model.SessionHistoryEventM{}))
 
 	s := store.NewStore(db)
 	return New(s)

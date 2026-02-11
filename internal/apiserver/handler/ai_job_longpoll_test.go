@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,9 +22,16 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/biz"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	authpkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/auth"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/validation"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+)
+
+var (
+	testOperatorTokenOnce sync.Once
+	testOperatorToken     string
+	testOperatorTokenErr  error
 )
 
 func TestListAIJobs_LongPollTimeoutReturnsEmpty(t *testing.T) {
@@ -376,6 +384,9 @@ func doJSONRequest(client *http.Client, method string, url string, payload []byt
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Scopes", "*")
+	if token, tokenErr := getTestOperatorToken(); tokenErr == nil && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -391,6 +402,24 @@ func doJSONRequest(client *http.Client, method string, url string, payload []byt
 		return resp.StatusCode, nil, err
 	}
 	return resp.StatusCode, data, nil
+}
+
+func getTestOperatorToken() (string, error) {
+	testOperatorTokenOnce.Do(func() {
+		resp, err := authpkg.IssueToken(&authpkg.IssueTokenRequest{
+			OperatorID: "operator:test",
+			Username:   "test-user",
+			TeamIDs:    []string{"default"},
+			Scopes:     []string{"*"},
+			Now:        time.Now().UTC(),
+		})
+		if err != nil {
+			testOperatorTokenErr = err
+			return
+		}
+		testOperatorToken = resp.Token
+	})
+	return testOperatorToken, testOperatorTokenErr
 }
 
 func newAIJobLongPollTestDB(t *testing.T) *gorm.DB {

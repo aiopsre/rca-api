@@ -444,6 +444,9 @@ func (b *sessionBiz) Get(ctx context.Context, rq *GetSessionContextRequest) (*Ge
 		}
 		return nil, errno.ErrSessionContextGetFailed
 	}
+	if err := b.ensureOperatorSessionAccess(ctx, out); err != nil {
+		return nil, err
+	}
 	return &GetSessionContextResponse{Session: out}, nil
 }
 
@@ -456,12 +459,9 @@ func (b *sessionBiz) Update(ctx context.Context, rq *UpdateSessionContextRequest
 		return nil, errorsx.ErrInvalidArgument
 	}
 
-	out, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	out, err := b.getSessionByID(ctx, sessionID)
 	if err != nil {
-		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errno.ErrSessionContextNotFound
-		}
-		return nil, errno.ErrSessionContextGetFailed
+		return nil, err
 	}
 
 	if rq.IncidentID != nil {
@@ -516,12 +516,9 @@ func (b *sessionBiz) UpdateReviewState(
 		return nil, err
 	}
 
-	out, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	out, err := b.getSessionByID(ctx, sessionID)
 	if err != nil {
-		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errno.ErrSessionContextNotFound
-		}
-		return nil, errno.ErrSessionContextGetFailed
+		return nil, err
 	}
 
 	review := &ReviewState{
@@ -590,12 +587,9 @@ func (b *sessionBiz) UpdateAssignment(
 		return nil, errorsx.ErrInvalidArgument
 	}
 
-	out, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	out, err := b.getSessionByID(ctx, sessionID)
 	if err != nil {
-		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errno.ErrSessionContextNotFound
-		}
-		return nil, errno.ErrSessionContextGetFailed
+		return nil, err
 	}
 	previousAssignment := extractAssignmentState(out.ContextStateJSON)
 
@@ -1021,7 +1015,37 @@ func (b *sessionBiz) getSessionByID(ctx context.Context, sessionID string) (*mod
 		}
 		return nil, errno.ErrSessionContextGetFailed
 	}
+	if err := b.ensureOperatorSessionAccess(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+func (b *sessionBiz) ensureOperatorSessionAccess(ctx context.Context, sessionObj *model.SessionContextM) error {
+	if sessionObj == nil {
+		return errno.ErrSessionContextNotFound
+	}
+	assignment := extractAssignmentState(sessionObj.ContextStateJSON)
+	incident := b.loadIncidentForSession(ctx, sessionObj)
+	if !CanOperatorAccessSession(ctx, sessionObj, incident, assignment.Assignee) {
+		return errno.ErrPermissionDenied
+	}
+	return nil
+}
+
+func (b *sessionBiz) loadIncidentForSession(ctx context.Context, sessionObj *model.SessionContextM) *model.IncidentM {
+	if b == nil || b.store == nil || sessionObj == nil {
+		return nil
+	}
+	incidentID := trimOptional(sessionObj.IncidentID)
+	if incidentID == "" {
+		return nil
+	}
+	incident, err := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", incidentID))
+	if err != nil {
+		return nil
+	}
+	return incident
 }
 
 func (b *sessionBiz) isHistoryTableReady(ctx context.Context) bool {

@@ -428,7 +428,7 @@ func TestSessionWorkbenchReviewActionAPI_StateTransitions(t *testing.T) {
 	startData := extractDataContainer(startBody)
 	require.Equal(t, sessionID, extractString(startData, "session_id", "sessionID", "SessionID"))
 	require.Equal(t, "in_review", extractString(startData, "review_state", "reviewState", "ReviewState"))
-	require.Equal(t, "user:reviewer", extractString(startData, "reviewed_by", "reviewedBy", "ReviewedBy"))
+	require.Equal(t, "user:test-user", extractString(startData, "reviewed_by", "reviewedBy", "ReviewedBy"))
 	require.NotEmpty(t, extractString(startData, "reviewed_at", "reviewedAt", "ReviewedAt"))
 
 	confirmStatus, confirmBody, err := doJSONRequest(
@@ -507,7 +507,7 @@ func TestSessionWorkbenchReviewActionAPI_WorkbenchReflectsStateAndHints(t *testi
 	confirmedSession := extractMap(confirmedData, "session", "Session")
 	require.NotNil(t, confirmedSession)
 	require.Equal(t, "confirmed", extractString(confirmedSession, "review_state", "reviewState", "ReviewState"))
-	require.Equal(t, "user:alice", extractString(confirmedSession, "reviewed_by", "reviewedBy", "ReviewedBy"))
+	require.Equal(t, "user:test-user", extractString(confirmedSession, "reviewed_by", "reviewedBy", "ReviewedBy"))
 	confirmedHints := extractStringArray(confirmedData["next_action_hints"])
 	require.NotContains(t, confirmedHints, "need_human_review")
 
@@ -576,7 +576,7 @@ func TestSessionWorkbenchAssignmentActionAPI_AssignReassignAndWorkbench(t *testi
 	assignData := extractDataContainer(assignBody)
 	require.Equal(t, sessionID, extractString(assignData, "session_id", "sessionID", "SessionID"))
 	require.Equal(t, "user:oncall-a", extractString(assignData, "assignee", "Assignee"))
-	require.Equal(t, "user:lead-a", extractString(assignData, "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "user:test-user", extractString(assignData, "assigned_by", "assignedBy", "AssignedBy"))
 	require.NotEmpty(t, extractString(assignData, "assigned_at", "assignedAt", "AssignedAt"))
 	require.Equal(t, "handoff to oncall-a", extractString(assignData, "assign_note", "assignNote", "AssignNote"))
 
@@ -592,7 +592,7 @@ func TestSessionWorkbenchAssignmentActionAPI_AssignReassignAndWorkbench(t *testi
 	sessionObj := extractMap(workbenchData, "session", "Session")
 	require.NotNil(t, sessionObj)
 	require.Equal(t, "user:oncall-a", extractString(sessionObj, "assignee", "Assignee"))
-	require.Equal(t, "user:lead-a", extractString(sessionObj, "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "user:test-user", extractString(sessionObj, "assigned_by", "assignedBy", "AssignedBy"))
 	require.Equal(t, "handoff to oncall-a", extractString(sessionObj, "assign_note", "assignNote", "AssignNote"))
 	require.Equal(t, "none", extractString(sessionObj, "escalation_state", "escalationState", "EscalationState"))
 	require.NotEmpty(t, extractString(sessionObj, "sla_due_at", "slaDueAt", "SlaDueAt"))
@@ -735,7 +735,7 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	require.Len(t, assignmentItems, 2)
 	require.Equal(t, sessionbiz.SessionHistoryEventReassigned, extractString(assignmentItems[0], "event_type", "eventType", "EventType"))
 	require.Equal(t, "user:oncall-b", extractString(assignmentItems[0], "assignee", "Assignee"))
-	require.Equal(t, "user:lead-b", extractString(assignmentItems[0], "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "user:test-user", extractString(assignmentItems[0], "assigned_by", "assignedBy", "AssignedBy"))
 	require.Equal(t, "shift changed", extractString(assignmentItems[0], "note", "Note"))
 	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(assignmentItems[1], "event_type", "eventType", "EventType"))
 	require.Equal(t, "user:oncall-a", extractString(assignmentItems[1], "assignee", "Assignee"))
@@ -796,7 +796,7 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	latestAssignment := extractMap(drilldown, "latest_assignment", "latestAssignment", "LatestAssignment")
 	require.NotNil(t, latestAssignment)
 	require.Equal(t, "user:oncall-b", extractString(latestAssignment, "assignee", "Assignee"))
-	require.Equal(t, "user:lead-b", extractString(latestAssignment, "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "user:test-user", extractString(latestAssignment, "assigned_by", "assignedBy", "AssignedBy"))
 }
 
 func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
