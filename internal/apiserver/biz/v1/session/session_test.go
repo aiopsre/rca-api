@@ -403,6 +403,7 @@ func TestSessionHistory_ListAssignmentHistory(t *testing.T) {
 	require.Equal(t, SessionHistoryEventReassigned, desc.Events[0].EventType)
 	require.Equal(t, "user:oncall-b", desc.Events[0].Assignee)
 	require.Equal(t, "user:lead-b", desc.Events[0].AssignedBy)
+	require.Equal(t, "user:oncall-a", desc.Events[0].PreviousAssignee)
 	require.Equal(t, secondAssignedAt.Format(time.RFC3339Nano), desc.Events[0].AssignedAt)
 	require.Equal(t, "shift changed", desc.Events[0].Note)
 	require.Equal(t, SessionHistoryEventAssigned, desc.Events[1].EventType)

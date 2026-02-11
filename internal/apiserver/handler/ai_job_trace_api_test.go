@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -227,7 +228,11 @@ func TestSessionWorkbenchAPI_Get(t *testing.T) {
 		extractString(drilldown, "latest_compare_path", "latestComparePath", "LatestComparePath"),
 	)
 	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/history", sessionID), extractString(drilldown, "history_path", "historyPath", "HistoryPath"))
-	require.Equal(t, fmt.Sprintf("/v1/sessions/%s/assignment_history", sessionID), extractString(drilldown, "assignment_history_path", "assignmentHistoryPath", "AssignmentHistoryPath"))
+	require.Equal(
+		t,
+		fmt.Sprintf("/v1/operator/assignment_history?session_id=%s", sessionID),
+		extractString(drilldown, "assignment_history_path", "assignmentHistoryPath", "AssignmentHistoryPath"),
+	)
 	latestDecisionDrill := extractMap(drilldown, "latest_decision", "latestDecision", "LatestDecision")
 	require.NotNil(t, latestDecisionDrill)
 	require.Equal(t, rightJobID, extractString(latestDecisionDrill, "job_id", "jobID", "JobID"))
@@ -736,6 +741,7 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	require.Equal(t, sessionbiz.SessionHistoryEventReassigned, extractString(assignmentItems[0], "event_type", "eventType", "EventType"))
 	require.Equal(t, "user:oncall-b", extractString(assignmentItems[0], "assignee", "Assignee"))
 	require.Equal(t, "user:test-user", extractString(assignmentItems[0], "assigned_by", "assignedBy", "AssignedBy"))
+	require.Equal(t, "user:oncall-a", extractString(assignmentItems[0], "previous_assignee", "previousAssignee", "PreviousAssignee"))
 	require.Equal(t, "shift changed", extractString(assignmentItems[0], "note", "Note"))
 	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(assignmentItems[1], "event_type", "eventType", "EventType"))
 	require.Equal(t, "user:oncall-a", extractString(assignmentItems[1], "assignee", "Assignee"))
@@ -758,6 +764,33 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	assignmentAscItems := extractHistoryItems(assignmentAscData)
 	require.Len(t, assignmentAscItems, 1)
 	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(assignmentAscItems[0], "event_type", "eventType", "EventType"))
+
+	globalAssignmentStatus, globalAssignmentBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/assignment_history?session_id=%s&offset=0&limit=10", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, globalAssignmentStatus)
+	globalAssignmentData := extractDataContainer(globalAssignmentBody)
+	globalAssignmentItems := extractHistoryItems(globalAssignmentData)
+	require.Len(t, globalAssignmentItems, 2)
+	require.Equal(t, sessionID, extractString(globalAssignmentItems[0], "session_id", "sessionID", "SessionID"))
+	require.Equal(t, sessionbiz.SessionHistoryEventReassigned, extractString(globalAssignmentItems[0], "event_type", "eventType", "EventType"))
+
+	globalAssignmentAscStatus, globalAssignmentAscBody, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/assignment_history?session_id=%s&offset=0&limit=1&order=asc", baseURL, sessionID),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, globalAssignmentAscStatus)
+	globalAssignmentAscData := extractDataContainer(globalAssignmentAscBody)
+	globalAssignmentAscItems := extractHistoryItems(globalAssignmentAscData)
+	require.Len(t, globalAssignmentAscItems, 1)
+	require.Equal(t, sessionbiz.SessionHistoryEventAssigned, extractString(globalAssignmentAscItems[0], "event_type", "eventType", "EventType"))
 
 	ascStatus, ascBody, err := doJSONRequest(
 		client,
@@ -790,7 +823,7 @@ func TestSessionHistoryAPI_ListAndWorkbenchRecent(t *testing.T) {
 	require.NotNil(t, drilldown)
 	require.Equal(
 		t,
-		fmt.Sprintf("/v1/sessions/%s/assignment_history", sessionID),
+		fmt.Sprintf("/v1/operator/assignment_history?session_id=%s", sessionID),
 		extractString(drilldown, "assignment_history_path", "assignmentHistoryPath", "AssignmentHistoryPath"),
 	)
 	latestAssignment := extractMap(drilldown, "latest_assignment", "latestAssignment", "LatestAssignment")
@@ -888,6 +921,8 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	require.NotEmpty(t, extractString(items[0], "sla_due_at", "slaDueAt", "SlaDueAt"))
 	require.NotEmpty(t, extractString(items[0], "workbench_path", "workbenchPath", "WorkbenchPath"))
 	require.NotEmpty(t, extractString(items[0], "last_activity_at", "lastActivityAt", "LastActivityAt"))
+	require.True(t, extractBool(items[0], "long_unhandled", "longUnhandled", "LongUnhandled"))
+	require.True(t, extractBool(items[0], "high_risk", "highRisk", "HighRisk"))
 
 	reviewStateStatus, reviewStateBody, err := doJSONRequest(
 		client,
@@ -960,6 +995,7 @@ func TestOperatorInboxAPI_ListAndFilters(t *testing.T) {
 	escalatedItems := extractInboxItems(escalationEscalatedData)
 	require.Equal(t, 1, len(escalatedItems))
 	require.Equal(t, sessionB, extractString(escalatedItems[0], "session_id", "sessionID", "SessionID"))
+	require.True(t, extractBool(escalatedItems[0], "high_risk", "highRisk", "HighRisk"))
 }
 
 func TestOperatorDashboardAPI_Get(t *testing.T) {
@@ -1053,6 +1089,9 @@ func TestOperatorDashboardAPI_Get(t *testing.T) {
 	require.EqualValues(t, 1, extractInt64(overview, "rejected_count", "rejectedCount", "RejectedCount"))
 	require.EqualValues(t, 2, extractInt64(overview, "assigned_count", "assignedCount", "AssignedCount"))
 	require.EqualValues(t, 1, extractInt64(overview, "unassigned_count", "unassignedCount", "UnassignedCount"))
+	require.EqualValues(t, 0, extractInt64(overview, "my_queue_count", "myQueueCount", "MyQueueCount"))
+	require.EqualValues(t, 2, extractInt64(overview, "long_unhandled_count", "longUnhandledCount", "LongUnhandledCount"))
+	require.EqualValues(t, 2, extractInt64(overview, "high_risk_count", "highRiskCount", "HighRiskCount"))
 
 	escalation := extractMap(data, "escalation", "Escalation")
 	require.NotNil(t, escalation)
@@ -1085,6 +1124,188 @@ func TestOperatorDashboardAPI_Get(t *testing.T) {
 	require.Equal(t, "/v1/operator/inbox?escalation_state=escalated", extractString(recommendedFilters, "escalated"))
 }
 
+func TestOperatorTeamDashboardAPI_Get(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(&model.SessionContextM{}))
+
+	incidentA := createAIJobLongPollTestIncident(t, s)
+	incidentB := createAIJobLongPollTestIncident(t, s)
+	incidentC := createAIJobLongPollTestIncident(t, s)
+	incidentA.Namespace = "payments"
+	incidentB.Namespace = "payments"
+	incidentC.Namespace = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentA))
+	require.NoError(t, s.Incident().Update(context.Background(), incidentB))
+	require.NoError(t, s.Incident().Update(context.Background(), incidentC))
+
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	sessionSvc := biz.NewBiz(s).SessionV1()
+
+	jobA := createFailedTraceJob(t, aiBiz, incidentA.IncidentID, "manual", "manual_api", "user:a", "needs manual review")
+	jobB := createFailedTraceJob(t, aiBiz, incidentB.IncidentID, "follow_up", "follow_up_api", "user:b", "follow-up failed")
+	jobC := createFinalizedTraceJob(t, aiBiz, incidentC.IncidentID, "manual", "manual_api", "user:c", buildDiagnosisJSON(
+		"healthy after mitigation",
+		"dependency_timeout",
+		"dependency",
+		0.92,
+		"ev-c-1",
+		"ev-c-2",
+	))
+
+	sessionA := mustHandlerSessionIDByJob(t, s, jobA)
+	sessionB := mustHandlerSessionIDByJob(t, s, jobB)
+	sessionC := mustHandlerSessionIDByJob(t, s, jobC)
+
+	_, err := sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionA,
+		ReviewState: sessionbiz.SessionReviewStateInReview,
+		ReviewedBy:  strPtr("user:reviewer-a"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionB,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewedBy:  strPtr("user:reviewer-b"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionC,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewedBy:  strPtr("user:reviewer-c"),
+	})
+	require.NoError(t, err)
+
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: strPtr("user:lead-a"),
+		AssignedAt: &assignedAtPending,
+	})
+	require.NoError(t, err)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: strPtr("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
+	})
+	require.NoError(t, err)
+
+	teamToken := mustLoginOperatorToken(t, client, baseURL, map[string]any{
+		"operator_id": "oncall-a",
+		"team_ids":    []string{"namespace:payments"},
+		"scopes":      []string{"ai.read", "ai.run"},
+	})
+	status, body, err := doJSONRequestWithHeaders(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/team_dashboard?team_id=namespace:payments&offset=0&limit=10&top_n=2&order=desc", baseURL),
+		nil,
+		map[string]string{"Authorization": "Bearer " + teamToken},
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+
+	data := extractDataContainer(body)
+	require.Equal(t, "namespace:payments", extractString(data, "team_id", "teamId", "TeamID"))
+	require.EqualValues(t, 2, extractInt64(data, "total_count", "totalCount", "TotalCount"))
+	require.EqualValues(t, 0, extractInt64(data, "offset", "Offset"))
+	require.EqualValues(t, 10, extractInt64(data, "limit", "Limit"))
+	require.Equal(t, "desc", extractString(data, "sort_order", "sortOrder", "SortOrder"))
+
+	overview := extractMap(data, "overview", "Overview")
+	require.NotNil(t, overview)
+	require.EqualValues(t, 2, extractInt64(overview, "total_sessions", "totalSessions", "TotalSessions"))
+	require.EqualValues(t, 1, extractInt64(overview, "my_queue_count", "myQueueCount", "MyQueueCount"))
+	require.EqualValues(t, 2, extractInt64(overview, "high_risk_count", "highRiskCount", "HighRiskCount"))
+	require.EqualValues(t, 1, extractInt64(overview, "pending_escalation_count", "pendingEscalationCount", "PendingEscalationCount"))
+	require.EqualValues(t, 1, extractInt64(overview, "escalated_count", "escalatedCount", "EscalatedCount"))
+
+	distribution := extractMap(data, "distribution", "Distribution")
+	require.NotNil(t, distribution)
+	byAssignee := extractMap(distribution, "by_assignee", "byAssignee", "ByAssignee")
+	require.EqualValues(t, 1, extractInt64(byAssignee, "user:oncall-a"))
+	require.EqualValues(t, 1, extractInt64(byAssignee, "user:oncall-b"))
+
+	topHighRisk := extractInboxItems(map[string]any{"items": data["top_high_risk"]})
+	require.NotEmpty(t, topHighRisk)
+	require.True(t, extractBool(topHighRisk[0], "high_risk", "highRisk", "HighRisk"))
+
+	items := extractInboxItems(data)
+	require.Len(t, items, 2)
+	itemsBySession := map[string]map[string]any{}
+	for _, item := range items {
+		itemsBySession[extractString(item, "session_id", "sessionID", "SessionID")] = item
+	}
+	require.Contains(t, itemsBySession, sessionA)
+	require.Contains(t, itemsBySession, sessionB)
+	require.True(t, extractBool(itemsBySession[sessionA], "is_my_queue", "isMyQueue", "IsMyQueue"))
+	require.True(t, extractBool(itemsBySession[sessionA], "long_unhandled", "longUnhandled", "LongUnhandled"))
+	require.True(t, extractBool(itemsBySession[sessionA], "high_risk", "highRisk", "HighRisk"))
+	require.Contains(
+		t,
+		extractString(itemsBySession[sessionA], "workbench_path", "workbenchPath", "WorkbenchPath"),
+		"/v1/sessions/"+sessionA+"/workbench",
+	)
+
+	navigation := extractMap(data, "navigation", "Navigation")
+	require.NotNil(t, navigation)
+	require.Equal(t, "/v1/operator/inbox", extractString(navigation, "inbox_path", "inboxPath", "InboxPath"))
+	require.Equal(
+		t,
+		"/v1/operator/inbox?team_id=namespace%3Apayments",
+		extractString(navigation, "team_inbox_path", "teamInboxPath", "TeamInboxPath"),
+	)
+
+	pageStatus, pageBody, err := doJSONRequestWithHeaders(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/team_dashboard?team_id=namespace:payments&offset=1&limit=1&order=asc", baseURL),
+		nil,
+		map[string]string{"Authorization": "Bearer " + teamToken},
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, pageStatus)
+	pageData := extractDataContainer(pageBody)
+	pageItems := extractInboxItems(pageData)
+	require.Len(t, pageItems, 1)
+
+	teamInboxStatus, teamInboxBody, err := doJSONRequestWithHeaders(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?team_id=namespace:payments&limit=10", baseURL),
+		nil,
+		map[string]string{"Authorization": "Bearer " + teamToken},
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, teamInboxStatus)
+	teamInboxData := extractDataContainer(teamInboxBody)
+	teamInboxItems := extractInboxItems(teamInboxData)
+	require.Len(t, teamInboxItems, 2)
+
+	forbiddenInboxStatus, _, err := doJSONRequestWithHeaders(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/inbox?team_id=namespace:checkout", baseURL),
+		nil,
+		map[string]string{"Authorization": "Bearer " + teamToken},
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, forbiddenInboxStatus)
+
+	forbiddenStatus, _, err := doJSONRequestWithHeaders(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/team_dashboard?team_id=namespace:checkout", baseURL),
+		nil,
+		map[string]string{"Authorization": "Bearer " + teamToken},
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, forbiddenStatus)
+}
+
 func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
 	baseURL, cleanup, _, client := newTestServer(t)
 	defer cleanup()
@@ -1102,6 +1323,24 @@ func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
 		client,
 		http.MethodGet,
 		fmt.Sprintf("%s/v1/operator/inbox?escalation_state=bad", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+
+	status, _, err = doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/team_dashboard?order=bad", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+
+	status, _, err = doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/assignment_history?limit=bad", baseURL),
 		nil,
 	)
 	require.NoError(t, err)
@@ -1320,4 +1559,23 @@ func extractInt64(container map[string]any, keys ...string) int64 {
 		}
 	}
 	return 0
+}
+
+func extractBool(container map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		value, ok := container[key]
+		if !ok {
+			continue
+		}
+		switch v := value.(type) {
+		case bool:
+			return v
+		case string:
+			parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+			if err == nil {
+				return parsed
+			}
+		}
+	}
+	return false
 }

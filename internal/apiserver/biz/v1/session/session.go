@@ -63,6 +63,7 @@ const (
 
 	defaultSessionHistoryListLimit = int64(20)
 	maxSessionHistoryListLimit     = int64(100)
+	maxAssignmentHistorySessionIDs = int64(1000)
 	defaultSessionHistoryActor     = "system"
 	defaultSLAHistoryActor         = "system:sla"
 )
@@ -116,6 +117,10 @@ type SessionBiz interface {
 		ctx context.Context,
 		rq *ListSessionAssignmentHistoryRequest,
 	) (*ListSessionAssignmentHistoryResponse, error)
+	ListGlobalAssignmentHistory(
+		ctx context.Context,
+		rq *ListGlobalAssignmentHistoryRequest,
+	) (*ListGlobalAssignmentHistoryResponse, error)
 	SyncSLAState(ctx context.Context, rq *SyncSessionSLAStateRequest) (*SyncSessionSLAStateResponse, error)
 
 	SessionExpansion
@@ -263,20 +268,33 @@ type ListSessionAssignmentHistoryRequest struct {
 	Order     *string
 }
 
+type ListGlobalAssignmentHistoryRequest struct {
+	SessionID *string
+	Offset    int64
+	Limit     int64
+	Order     *string
+}
+
 type SessionAssignmentHistoryEventReadModel struct {
-	EventID    string `json:"event_id"`
-	EventType  string `json:"event_type"`
-	SessionID  string `json:"session_id"`
-	IncidentID string `json:"incident_id,omitempty"`
-	JobID      string `json:"job_id,omitempty"`
-	Assignee   string `json:"assignee,omitempty"`
-	AssignedBy string `json:"assigned_by,omitempty"`
-	AssignedAt string `json:"assigned_at,omitempty"`
-	Note       string `json:"note,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	EventID          string `json:"event_id"`
+	EventType        string `json:"event_type"`
+	SessionID        string `json:"session_id"`
+	IncidentID       string `json:"incident_id,omitempty"`
+	JobID            string `json:"job_id,omitempty"`
+	Assignee         string `json:"assignee,omitempty"`
+	AssignedBy       string `json:"assigned_by,omitempty"`
+	PreviousAssignee string `json:"previous_assignee,omitempty"`
+	AssignedAt       string `json:"assigned_at,omitempty"`
+	Note             string `json:"note,omitempty"`
+	CreatedAt        string `json:"created_at"`
 }
 
 type ListSessionAssignmentHistoryResponse struct {
+	TotalCount int64                                     `json:"total_count"`
+	Events     []*SessionAssignmentHistoryEventReadModel `json:"events"`
+}
+
+type ListGlobalAssignmentHistoryResponse struct {
 	TotalCount int64                                     `json:"total_count"`
 	Events     []*SessionAssignmentHistoryEventReadModel `json:"events"`
 }
@@ -833,6 +851,68 @@ func (b *sessionBiz) ListAssignmentHistory(
 	}, nil
 }
 
+func (b *sessionBiz) ListGlobalAssignmentHistory(
+	ctx context.Context,
+	rq *ListGlobalAssignmentHistoryRequest,
+) (*ListGlobalAssignmentHistoryResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultSessionHistoryListLimit
+	}
+	if limit > maxSessionHistoryListLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	ascending, err := normalizeSessionHistoryOrder(rq.Order)
+	if err != nil {
+		return nil, err
+	}
+	if !b.isHistoryTableReady(ctx) {
+		return &ListGlobalAssignmentHistoryResponse{
+			TotalCount: 0,
+			Events:     []*SessionAssignmentHistoryEventReadModel{},
+		}, nil
+	}
+
+	targetSessionID := trimOptional(rq.SessionID)
+	sessionIDs, err := b.listAccessibleSessionIDs(ctx, targetSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessionIDs) == 0 {
+		return &ListGlobalAssignmentHistoryResponse{
+			TotalCount: 0,
+			Events:     []*SessionAssignmentHistoryEventReadModel{},
+		}, nil
+	}
+
+	total, list, err := b.store.SessionHistoryEvent().ListBySessionIDsAndEventTypes(
+		ctx,
+		sessionIDs,
+		[]string{SessionHistoryEventAssigned, SessionHistoryEventReassigned},
+		int(offset),
+		int(limit),
+		ascending,
+	)
+	if err != nil {
+		return nil, errno.ErrSessionHistoryListFailed
+	}
+	events := make([]*SessionAssignmentHistoryEventReadModel, 0, len(list))
+	for _, item := range list {
+		events = append(events, sessionAssignmentHistoryEventToReadModel(item))
+	}
+	return &ListGlobalAssignmentHistoryResponse{
+		TotalCount: total,
+		Events:     events,
+	}, nil
+}
+
 func (b *sessionBiz) SyncSLAState(
 	ctx context.Context,
 	rq *SyncSessionSLAStateRequest,
@@ -1048,6 +1128,40 @@ func (b *sessionBiz) loadIncidentForSession(ctx context.Context, sessionObj *mod
 	return incident
 }
 
+func (b *sessionBiz) listAccessibleSessionIDs(ctx context.Context, targetSessionID string) ([]string, error) {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	if targetSessionID != "" {
+		sessionObj, err := b.getSessionByID(ctx, targetSessionID)
+		if err != nil {
+			return nil, err
+		}
+		return []string{strings.TrimSpace(sessionObj.SessionID)}, nil
+	}
+
+	_, sessions, err := b.store.SessionContext().List(
+		ctx,
+		where.T(ctx).P(0, int(maxAssignmentHistorySessionIDs)),
+	)
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+	ids := make([]string, 0, len(sessions))
+	for _, sessionObj := range sessions {
+		if sessionObj == nil {
+			continue
+		}
+		if accessErr := b.ensureOperatorSessionAccess(ctx, sessionObj); accessErr != nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(sessionObj.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		ids = append(ids, sessionID)
+	}
+	return ids, nil
+}
+
 func (b *sessionBiz) isHistoryTableReady(ctx context.Context) bool {
 	db := b.store.DB(ctx)
 	if db == nil || db.Migrator() == nil {
@@ -1125,17 +1239,19 @@ func sessionAssignmentHistoryEventToReadModel(in *model.SessionHistoryEventM) *S
 	if assignee == "" {
 		assignee = strings.TrimSpace(anyToString(payload["current_assignee"]))
 	}
+	previousAssignee := strings.TrimSpace(anyToString(payload["previous_assignee"]))
 	return &SessionAssignmentHistoryEventReadModel{
-		EventID:    strings.TrimSpace(in.EventID),
-		EventType:  strings.TrimSpace(in.EventType),
-		SessionID:  strings.TrimSpace(in.SessionID),
-		IncidentID: trimOptional(in.IncidentID),
-		JobID:      trimOptional(in.JobID),
-		Assignee:   assignee,
-		AssignedBy: assignedBy,
-		AssignedAt: assignedAt,
-		Note:       firstNonEmpty(trimOptional(in.Note), strings.TrimSpace(anyToString(payload["note"]))),
-		CreatedAt:  toRFC3339String(in.CreatedAt),
+		EventID:          strings.TrimSpace(in.EventID),
+		EventType:        strings.TrimSpace(in.EventType),
+		SessionID:        strings.TrimSpace(in.SessionID),
+		IncidentID:       trimOptional(in.IncidentID),
+		JobID:            trimOptional(in.JobID),
+		Assignee:         assignee,
+		AssignedBy:       assignedBy,
+		PreviousAssignee: previousAssignee,
+		AssignedAt:       assignedAt,
+		Note:             firstNonEmpty(trimOptional(in.Note), strings.TrimSpace(anyToString(payload["note"]))),
+		CreatedAt:        toRFC3339String(in.CreatedAt),
 	}
 }
 

@@ -114,6 +114,7 @@ type SessionOperatorInboxRequest struct {
 	NeedsReview     *bool
 	SessionType     *string
 	Assignee        *string
+	TeamID          *string
 	EscalationState *string
 	Offset          int64
 	Limit           int64
@@ -425,6 +426,13 @@ func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq 
 			return errorsx.ErrInvalidArgument
 		}
 		rq.Assignee = &assignee
+	}
+	if rq.TeamID != nil {
+		teamID := strings.TrimSpace(*rq.TeamID)
+		if teamID == "" || len(teamID) > maxSessionActionSourceLength {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.TeamID = &teamID
 	}
 	if rq.EscalationState != nil {
 		escalationState := strings.ToLower(strings.TrimSpace(*rq.EscalationState))

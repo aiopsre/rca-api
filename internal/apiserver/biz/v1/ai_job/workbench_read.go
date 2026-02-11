@@ -2,6 +2,7 @@ package ai_job
 
 import (
 	"context"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,10 @@ const (
 	defaultOperatorDashboardPreviewLimit = int64(3)
 	maxOperatorDashboardPreviewLimit     = int64(10)
 	defaultOperatorDashboardRecentWindow = 24 * time.Hour
+	defaultOperatorTeamDashboardLimit    = int64(20)
+	maxOperatorTeamDashboardLimit        = int64(100)
+	defaultOperatorTeamDashboardTopN     = int64(5)
+	maxOperatorTeamDashboardTopN         = int64(20)
 	operatorInboxTraceProbeLimit         = int64(5)
 	defaultSessionSLAWindow              = 2 * time.Hour
 
@@ -66,6 +71,7 @@ type ListOperatorInboxRequest struct {
 	NeedsReview     *bool
 	SessionType     *string
 	Assignee        *string
+	TeamID          *string
 	EscalationState *string
 	Offset          int64
 	Limit           int64
@@ -81,6 +87,14 @@ type GetOperatorDashboardRequest struct {
 	RecentWindow time.Duration
 }
 
+type GetOperatorTeamDashboardRequest struct {
+	TeamID string
+	Offset int64
+	Limit  int64
+	TopN   int64
+	Order  *string
+}
+
 type GetOperatorDashboardResponse struct {
 	AsOf         string                         `json:"as_of"`
 	Overview     *OperatorDashboardOverview     `json:"overview"`
@@ -91,6 +105,59 @@ type GetOperatorDashboardResponse struct {
 	Navigation   *OperatorDashboardNavigation   `json:"navigation"`
 }
 
+type GetOperatorTeamDashboardResponse struct {
+	AsOf         string                             `json:"as_of"`
+	TeamID       string                             `json:"team_id,omitempty"`
+	Overview     *OperatorTeamDashboardOverview     `json:"overview"`
+	Distribution *OperatorTeamDashboardDistribution `json:"distribution"`
+	TopHighRisk  []*OperatorTeamDashboardSession    `json:"top_high_risk"`
+	TotalCount   int64                              `json:"total_count"`
+	Offset       int64                              `json:"offset"`
+	Limit        int64                              `json:"limit"`
+	Items        []*OperatorTeamDashboardSession    `json:"items"`
+	SortOrder    string                             `json:"sort_order"`
+	Navigation   *OperatorTeamDashboardNavigation   `json:"navigation"`
+}
+
+type OperatorTeamDashboardOverview struct {
+	TotalSessions          int64 `json:"total_sessions"`
+	MyQueueCount           int64 `json:"my_queue_count"`
+	NeedsReviewCount       int64 `json:"needs_review_count"`
+	AssignedCount          int64 `json:"assigned_count"`
+	UnassignedCount        int64 `json:"unassigned_count"`
+	PendingEscalationCount int64 `json:"pending_escalation_count"`
+	EscalatedCount         int64 `json:"escalated_count"`
+	LongUnhandledCount     int64 `json:"long_unhandled_count"`
+	HighRiskCount          int64 `json:"high_risk_count"`
+}
+
+type OperatorTeamDashboardDistribution struct {
+	ByAssignee        map[string]int64 `json:"by_assignee"`
+	ByReviewState     map[string]int64 `json:"by_review_state"`
+	ByEscalationState map[string]int64 `json:"by_escalation_state"`
+	BySessionType     map[string]int64 `json:"by_session_type"`
+}
+
+type OperatorTeamDashboardSession struct {
+	SessionID       string `json:"session_id"`
+	IncidentID      string `json:"incident_id,omitempty"`
+	SessionType     string `json:"session_type"`
+	Assignee        string `json:"assignee,omitempty"`
+	ReviewState     string `json:"review_state"`
+	EscalationState string `json:"escalation_state"`
+	NeedsReview     bool   `json:"needs_review"`
+	IsMyQueue       bool   `json:"is_my_queue"`
+	LongUnhandled   bool   `json:"long_unhandled"`
+	HighRisk        bool   `json:"high_risk"`
+	LastActivityAt  string `json:"last_activity_at,omitempty"`
+	WorkbenchPath   string `json:"workbench_path"`
+}
+
+type OperatorTeamDashboardNavigation struct {
+	InboxPath     string `json:"inbox_path"`
+	TeamInboxPath string `json:"team_inbox_path,omitempty"`
+}
+
 type OperatorDashboardOverview struct {
 	TotalSessions    int64 `json:"total_sessions"`
 	NeedsReviewCount int64 `json:"needs_review_count"`
@@ -99,6 +166,9 @@ type OperatorDashboardOverview struct {
 	RejectedCount    int64 `json:"rejected_count"`
 	AssignedCount    int64 `json:"assigned_count"`
 	UnassignedCount  int64 `json:"unassigned_count"`
+	MyQueueCount     int64 `json:"my_queue_count"`
+	LongUnhandled    int64 `json:"long_unhandled_count"`
+	HighRiskCount    int64 `json:"high_risk_count"`
 }
 
 type OperatorDashboardEscalation struct {
@@ -175,6 +245,9 @@ type OperatorInboxItem struct {
 	LatestCompareAvailable bool     `json:"latest_compare_available"`
 	LastActivityAt         string   `json:"last_activity_at,omitempty"`
 	NeedsReview            bool     `json:"needs_review"`
+	IsMyQueue              bool     `json:"is_my_queue"`
+	LongUnhandled          bool     `json:"long_unhandled"`
+	HighRisk               bool     `json:"high_risk"`
 }
 
 type SessionWorkbenchReadModel struct {
@@ -343,6 +416,7 @@ type operatorInboxFilters struct {
 	SessionType     string
 	Assignee        string
 	EscalationState string
+	TeamID          string
 }
 
 func (b *aiJobBiz) GetSessionWorkbench(
@@ -477,6 +551,9 @@ func (b *aiJobBiz) ListOperatorInbox(
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(filters.TeamID) != "" && !canOperatorScopeTeam(ctx, filters.TeamID) {
+		return nil, errno.ErrPermissionDenied
+	}
 	items, err := b.listOperatorInboxItems(ctx, filters)
 	if err != nil {
 		return nil, err
@@ -558,6 +635,15 @@ func (b *aiJobBiz) GetOperatorDashboard(
 		} else {
 			overview.AssignedCount++
 		}
+		if item.IsMyQueue {
+			overview.MyQueueCount++
+		}
+		if item.LongUnhandled {
+			overview.LongUnhandled++
+		}
+		if item.HighRisk {
+			overview.HighRiskCount++
+		}
 
 		escalationState := normalizeSLAEscalationState(item.EscalationState)
 		if escalationState == "" {
@@ -617,6 +703,142 @@ func (b *aiJobBiz) GetOperatorDashboard(
 				"pending_escalation": "/v1/operator/inbox?escalation_state=pending",
 				"escalated":          "/v1/operator/inbox?escalation_state=escalated",
 			},
+		},
+	}, nil
+}
+
+func (b *aiJobBiz) GetOperatorTeamDashboard(
+	ctx context.Context,
+	rq *GetOperatorTeamDashboardRequest,
+) (*GetOperatorTeamDashboardResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultOperatorTeamDashboardLimit
+	}
+	if limit > maxOperatorTeamDashboardLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	topN := rq.TopN
+	if topN <= 0 {
+		topN = defaultOperatorTeamDashboardTopN
+	}
+	if topN > maxOperatorTeamDashboardTopN {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	ascending, err := normalizeOperatorOrder(rq.Order)
+	if err != nil {
+		return nil, err
+	}
+	teamID := strings.TrimSpace(rq.TeamID)
+	if teamID != "" && !canOperatorScopeTeam(ctx, teamID) {
+		return nil, errno.ErrPermissionDenied
+	}
+
+	items, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{TeamID: teamID})
+	if err != nil {
+		return nil, err
+	}
+	teamItems := make([]*OperatorInboxItem, 0, len(items))
+	teamItems = append(teamItems, items...)
+	sortOperatorTeamDashboardItems(teamItems, ascending)
+
+	now := time.Now().UTC()
+	overview := &OperatorTeamDashboardOverview{
+		TotalSessions: int64(len(teamItems)),
+	}
+	distribution := &OperatorTeamDashboardDistribution{
+		ByAssignee:        map[string]int64{},
+		ByReviewState:     map[string]int64{},
+		ByEscalationState: map[string]int64{},
+		BySessionType:     map[string]int64{},
+	}
+	topHighRisk := make([]*OperatorTeamDashboardSession, 0, int(topN))
+	for _, item := range teamItems {
+		if item == nil {
+			continue
+		}
+		if item.NeedsReview {
+			overview.NeedsReviewCount++
+		}
+		if item.IsMyQueue {
+			overview.MyQueueCount++
+		}
+		if strings.TrimSpace(item.Assignee) == "" {
+			overview.UnassignedCount++
+			distribution.ByAssignee["unassigned"]++
+		} else {
+			overview.AssignedCount++
+			distribution.ByAssignee[strings.TrimSpace(item.Assignee)]++
+		}
+		if item.LongUnhandled {
+			overview.LongUnhandledCount++
+		}
+		if item.HighRisk {
+			overview.HighRiskCount++
+			if len(topHighRisk) < int(topN) {
+				topHighRisk = append(topHighRisk, operatorInboxItemToTeamDashboardSession(item))
+			}
+		}
+		reviewState := normalizeInboxReviewState(item.ReviewState)
+		distribution.ByReviewState[reviewState]++
+		escalationState := normalizeSLAEscalationState(item.EscalationState)
+		if escalationState == "" {
+			escalationState = sessionbiz.SessionEscalationStateNone
+		}
+		distribution.ByEscalationState[escalationState]++
+		switch escalationState {
+		case sessionbiz.SessionEscalationStatePending:
+			overview.PendingEscalationCount++
+		case sessionbiz.SessionEscalationStateEscalated:
+			overview.EscalatedCount++
+		}
+		sessionType := normalizeInboxSessionType(item.SessionType)
+		if sessionType == "" {
+			sessionType = "unknown"
+		}
+		distribution.BySessionType[sessionType]++
+	}
+
+	totalCount := int64(len(teamItems))
+	pagedItems := []*OperatorTeamDashboardSession{}
+	if offset < totalCount {
+		end := offset + limit
+		if end > totalCount {
+			end = totalCount
+		}
+		for _, item := range teamItems[offset:end] {
+			pagedItems = append(pagedItems, operatorInboxItemToTeamDashboardSession(item))
+		}
+	}
+	teamInboxPath := ""
+	if teamID != "" {
+		teamInboxPath = "/v1/operator/inbox?team_id=" + url.QueryEscape(teamID)
+	}
+	sortOrder := "desc"
+	if ascending {
+		sortOrder = "asc"
+	}
+	return &GetOperatorTeamDashboardResponse{
+		AsOf:         toRFC3339String(now),
+		TeamID:       teamID,
+		Overview:     overview,
+		Distribution: distribution,
+		TopHighRisk:  topHighRisk,
+		TotalCount:   totalCount,
+		Offset:       offset,
+		Limit:        limit,
+		Items:        pagedItems,
+		SortOrder:    sortOrder,
+		Navigation: &OperatorTeamDashboardNavigation{
+			InboxPath:     "/v1/operator/inbox",
+			TeamInboxPath: teamInboxPath,
 		},
 	}, nil
 }
@@ -688,6 +910,7 @@ func normalizeOperatorInboxFilters(rq *ListOperatorInboxRequest) (*operatorInbox
 		}
 	}
 	filters.Assignee = strings.TrimSpace(trimOptional(rq.Assignee))
+	filters.TeamID = strings.TrimSpace(trimOptional(rq.TeamID))
 	if value := trimOptional(rq.EscalationState); value != "" {
 		filters.EscalationState = normalizeSLAEscalationState(value)
 		if filters.EscalationState == "" {
@@ -715,7 +938,12 @@ func (b *aiJobBiz) listOperatorInboxItems(
 
 	items := make([]*OperatorInboxItem, 0, len(sessions))
 	for _, sessionObj := range sessions {
-		if !b.canAccessOperatorSession(ctx, sessionObj, nil) {
+		assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
+		if !b.canAccessOperatorSession(ctx, sessionObj, assignmentState) {
+			continue
+		}
+		if strings.TrimSpace(filters.TeamID) != "" &&
+			!b.matchesOperatorTeamFilter(ctx, strings.TrimSpace(filters.TeamID), sessionObj, assignmentState) {
 			continue
 		}
 		item, buildErr := b.buildOperatorInboxItem(ctx, sessionObj)
@@ -871,6 +1099,9 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 	}
 	item.LastActivityAt = firstTraceNonEmpty(item.LatestUpdatedAt, toRFC3339String(sessionObj.UpdatedAt))
 	item.NeedsReview = computeOperatorInboxNeedsReview(item)
+	item.IsMyQueue = isOperatorAssignee(ctx, item.Assignee)
+	item.LongUnhandled = computeOperatorInboxLongUnhandled(item, time.Now().UTC())
+	item.HighRisk = computeOperatorInboxHighRisk(item)
 	return item, nil
 }
 
@@ -892,6 +1123,37 @@ func computeOperatorInboxNeedsReview(item *OperatorInboxItem) bool {
 		containsString(item.NextActionHints, workbenchHintReviewConflicts)
 }
 
+func computeOperatorInboxLongUnhandled(item *OperatorInboxItem, now time.Time) bool {
+	if item == nil {
+		return false
+	}
+	if normalizeInboxReviewState(item.ReviewState) == sessionbiz.SessionReviewStateConfirmed {
+		return false
+	}
+	if dueAt, ok := parseRFC3339Time(item.SlaDueAt); ok && now.After(dueAt) {
+		return true
+	}
+	if strings.TrimSpace(item.Assignee) == "" {
+		if lastActivityAt, ok := parseRFC3339Time(item.LastActivityAt); ok {
+			return now.Sub(lastActivityAt) > defaultOperatorDashboardRecentWindow
+		}
+	}
+	return false
+}
+
+func computeOperatorInboxHighRisk(item *OperatorInboxItem) bool {
+	if item == nil {
+		return false
+	}
+	if normalizeSLAEscalationState(item.EscalationState) == sessionbiz.SessionEscalationStateEscalated {
+		return true
+	}
+	if normalizeSLAEscalationState(item.EscalationState) == sessionbiz.SessionEscalationStatePending && item.LongUnhandled {
+		return true
+	}
+	return item.NeedsReview && (item.ConflictsCount > 0 || item.VerificationPending || item.HumanReviewRequired)
+}
+
 func operatorInboxPriority(item *OperatorInboxItem) int {
 	if item == nil {
 		return 5
@@ -910,6 +1172,122 @@ func operatorInboxPriority(item *OperatorInboxItem) int {
 		}
 		return 3
 	}
+}
+
+func sortOperatorTeamDashboardItems(items []*OperatorInboxItem, ascending bool) {
+	sort.SliceStable(items, func(i, j int) bool {
+		pi := operatorTeamDashboardPriority(items[i])
+		pj := operatorTeamDashboardPriority(items[j])
+		if pi != pj {
+			if ascending {
+				return pi > pj
+			}
+			return pi < pj
+		}
+
+		ti := strings.TrimSpace(items[i].LastActivityAt)
+		tj := strings.TrimSpace(items[j].LastActivityAt)
+		if ti != tj {
+			if ascending {
+				return ti < tj
+			}
+			return ti > tj
+		}
+		return strings.TrimSpace(items[i].SessionID) < strings.TrimSpace(items[j].SessionID)
+	})
+}
+
+func operatorTeamDashboardPriority(item *OperatorInboxItem) int {
+	if item == nil {
+		return 5
+	}
+	if item.HighRisk {
+		return 0
+	}
+	if item.LongUnhandled {
+		return 1
+	}
+	switch normalizeSLAEscalationState(item.EscalationState) {
+	case sessionbiz.SessionEscalationStateEscalated:
+		return 2
+	case sessionbiz.SessionEscalationStatePending:
+		return 3
+	default:
+		if item.NeedsReview {
+			return 4
+		}
+		return 5
+	}
+}
+
+func operatorInboxItemToTeamDashboardSession(item *OperatorInboxItem) *OperatorTeamDashboardSession {
+	if item == nil {
+		return &OperatorTeamDashboardSession{}
+	}
+	return &OperatorTeamDashboardSession{
+		SessionID:       strings.TrimSpace(item.SessionID),
+		IncidentID:      strings.TrimSpace(item.IncidentID),
+		SessionType:     normalizeInboxSessionType(item.SessionType),
+		Assignee:        strings.TrimSpace(item.Assignee),
+		ReviewState:     normalizeInboxReviewState(item.ReviewState),
+		EscalationState: firstTraceNonEmpty(normalizeSLAEscalationState(item.EscalationState), sessionbiz.SessionEscalationStateNone),
+		NeedsReview:     item.NeedsReview,
+		IsMyQueue:       item.IsMyQueue,
+		LongUnhandled:   item.LongUnhandled,
+		HighRisk:        item.HighRisk,
+		LastActivityAt:  strings.TrimSpace(item.LastActivityAt),
+		WorkbenchPath:   strings.TrimSpace(item.WorkbenchPath),
+	}
+}
+
+func isOperatorAssignee(ctx context.Context, assignee string) bool {
+	assignee = strings.ToLower(strings.TrimSpace(assignee))
+	if assignee == "" {
+		return false
+	}
+	identities := []string{
+		strings.ToLower(strings.TrimSpace(contextx.UserID(ctx))),
+		strings.ToLower(strings.TrimSpace(contextx.Username(ctx))),
+	}
+	for _, raw := range identities {
+		if raw == "" {
+			continue
+		}
+		if raw == assignee || "user:"+raw == assignee {
+			return true
+		}
+		if strings.HasPrefix(raw, "user:") && strings.TrimPrefix(raw, "user:") == assignee {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeOperatorOrder(order *string) (bool, error) {
+	if order == nil || strings.TrimSpace(*order) == "" {
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*order)) {
+	case "asc":
+		return true, nil
+	case "desc":
+		return false, nil
+	default:
+		return false, errorsx.ErrInvalidArgument
+	}
+}
+
+func canOperatorScopeTeam(ctx context.Context, teamID string) bool {
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" {
+		return true
+	}
+	probe := &model.SessionContextM{
+		SessionID:   "team-probe",
+		SessionType: sessionbiz.SessionTypeService,
+		BusinessKey: "team:" + teamID,
+	}
+	return sessionbiz.CanOperatorAccessSession(ctx, probe, nil, "")
 }
 
 func normalizeInboxReviewState(raw string) string {
@@ -990,6 +1368,25 @@ func (b *aiJobBiz) loadSessionIncidentForAccess(ctx context.Context, sessionObj 
 		return nil
 	}
 	return incident
+}
+
+func (b *aiJobBiz) matchesOperatorTeamFilter(
+	ctx context.Context,
+	teamID string,
+	sessionObj *model.SessionContextM,
+	assignmentState *sessionAssignmentContextState,
+) bool {
+	teamID = strings.TrimSpace(teamID)
+	if teamID == "" || sessionObj == nil {
+		return teamID == ""
+	}
+	assignee := ""
+	if assignmentState != nil {
+		assignee = strings.TrimSpace(assignmentState.Assignee)
+	}
+	incident := b.loadSessionIncidentForAccess(ctx, sessionObj)
+	filterCtx := contextx.WithOperatorTeams(contextx.WithUserID(context.Background(), "operator:team-filter"), []string{teamID})
+	return sessionbiz.CanOperatorAccessSession(filterCtx, sessionObj, incident, assignee)
 }
 
 func containsString(items []string, target string) bool {
@@ -1116,7 +1513,7 @@ func buildWorkbenchDrillDown(
 	}
 	latestTracePath := buildAIJobTracePath(latestJobID)
 	historyPath := buildSessionHistoryPath(sessionID)
-	assignmentHistoryPath := buildSessionAssignmentHistoryPath(sessionID)
+	assignmentHistoryPath := buildOperatorAssignmentHistoryPath(sessionID)
 	recentHistoryPath := buildSessionHistoryRecentPath(sessionID, 0, defaultSessionWorkbenchHistoryLimit)
 	relatedEvidenceRefs := normalizeStringSlice(pinnedEvidenceRefs)
 	relatedVerificationRefs := []string{}
@@ -1238,12 +1635,13 @@ func buildSessionHistoryPath(sessionID string) string {
 	return "/v1/sessions/" + sessionID + "/history"
 }
 
-func buildSessionAssignmentHistoryPath(sessionID string) string {
+func buildOperatorAssignmentHistoryPath(sessionID string) string {
+	base := "/v1/operator/assignment_history"
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
-		return ""
+		return base
 	}
-	return "/v1/sessions/" + sessionID + "/assignment_history"
+	return base + "?session_id=" + url.QueryEscape(sessionID)
 }
 
 func buildSessionHistoryRecentPath(sessionID string, offset int64, limit int64) string {

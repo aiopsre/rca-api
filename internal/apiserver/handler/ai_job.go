@@ -297,6 +297,38 @@ func (h *Handler) ListSessionAssignmentHistory(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) ListOperatorAssignmentHistory(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &sessionbiz.ListGlobalAssignmentHistoryRequest{}
+	if sessionID := strings.TrimSpace(c.Query("session_id")); sessionID != "" {
+		req.SessionID = strPtr(sessionID)
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		v, err := strconv.ParseInt(offset, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Offset = v
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		v, err := strconv.ParseInt(limit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Limit = v
+	}
+	if order := strings.TrimSpace(c.Query("order")); order != "" {
+		req.Order = strPtr(order)
+	}
+	resp, err := h.biz.SessionV1().ListGlobalAssignmentHistory(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -334,6 +366,9 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	if assignee := strings.TrimSpace(c.Query("assignee")); assignee != "" {
 		req.Assignee = strPtr(assignee)
 	}
+	if teamID := strings.TrimSpace(c.Query("team_id")); teamID != "" {
+		req.TeamID = strPtr(teamID)
+	}
 	if escalationState := strings.TrimSpace(c.Query("escalation_state")); escalationState != "" {
 		req.EscalationState = strPtr(escalationState)
 	}
@@ -360,6 +395,7 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 		NeedsReview:     req.NeedsReview,
 		SessionType:     req.SessionType,
 		Assignee:        req.Assignee,
+		TeamID:          req.TeamID,
 		EscalationState: req.EscalationState,
 		Offset:          req.Offset,
 		Limit:           req.Limit,
@@ -371,6 +407,7 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	req.ReviewState = validateReq.ReviewState
 	req.SessionType = validateReq.SessionType
 	req.Assignee = validateReq.Assignee
+	req.TeamID = validateReq.TeamID
 	req.EscalationState = validateReq.EscalationState
 	req.Offset = validateReq.Offset
 	req.Limit = validateReq.Limit
@@ -385,6 +422,45 @@ func (h *Handler) GetOperatorDashboard(c *gin.Context) {
 		return
 	}
 	resp, err := h.biz.AIJobV1().GetOperatorDashboard(c.Request.Context(), &aijobbiz.GetOperatorDashboardRequest{})
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) GetOperatorTeamDashboard(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.GetOperatorTeamDashboardRequest{
+		TeamID: strings.TrimSpace(c.Query("team_id")),
+	}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		v, err := strconv.ParseInt(offset, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Offset = v
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		v, err := strconv.ParseInt(limit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Limit = v
+	}
+	if topN := strings.TrimSpace(c.Query("top_n")); topN != "" {
+		v, err := strconv.ParseInt(topN, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.TopN = v
+	}
+	if order := strings.TrimSpace(c.Query("order")); order != "" {
+		req.Order = strPtr(order)
+	}
+	resp, err := h.biz.AIJobV1().GetOperatorTeamDashboard(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -771,6 +847,8 @@ func init() {
 		operatorGroup := v1.Group("/operator", append(mws, operatorAuthMW)...)
 		operatorGroup.GET("/inbox", handler.ListOperatorInbox)
 		operatorGroup.GET("/dashboard", handler.GetOperatorDashboard)
+		operatorGroup.GET("/team_dashboard", handler.GetOperatorTeamDashboard)
+		operatorGroup.GET("/assignment_history", handler.ListOperatorAssignmentHistory)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
 }

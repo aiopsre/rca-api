@@ -111,10 +111,10 @@ func TestGetSessionWorkbench_AggregatesAndSuggestsReviewHints(t *testing.T) {
 	require.Equal(t, defaultSessionWorkbenchHistoryLimit, resp.DrillDown.History.RecentLimit)
 	require.Equal(t, "desc", resp.DrillDown.History.Order)
 	require.Equal(t, "/v1/sessions/"+sessionID+"/history?order=desc&offset=0&limit=5", resp.DrillDown.History.RecentPath)
-	require.Equal(t, "/v1/sessions/"+sessionID+"/assignment_history", resp.DrillDown.AssignmentHistoryPath)
+	require.Equal(t, "/v1/operator/assignment_history?session_id="+sessionID, resp.DrillDown.AssignmentHistoryPath)
 	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/ai/jobs/"+followJobID+"/trace")
 	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/sessions/"+sessionID+"/history")
-	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/sessions/"+sessionID+"/assignment_history")
+	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/operator/assignment_history?session_id="+sessionID)
 }
 
 func TestGetSessionWorkbench_InProgressHint(t *testing.T) {
@@ -209,7 +209,7 @@ func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
 	require.Equal(t, "user:oncall-a", confirmed.DrillDown.LatestAssignment.Assignee)
 	require.Equal(t, "user:lead-a", confirmed.DrillDown.LatestAssignment.AssignedBy)
 	require.Equal(t, "manual handoff", confirmed.DrillDown.LatestAssignment.Note)
-	require.Equal(t, "/v1/sessions/"+sessionID+"/assignment_history", confirmed.DrillDown.AssignmentHistoryPath)
+	require.Equal(t, "/v1/operator/assignment_history?session_id="+sessionID, confirmed.DrillDown.AssignmentHistoryPath)
 
 	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
 		SessionID:   sessionID,
@@ -261,7 +261,7 @@ func TestGetSessionWorkbench_IncludesRecentHistorySummary(t *testing.T) {
 	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.DrillDown.History.HistoryPath)
 	require.Equal(t, int64(1), resp.DrillDown.History.RecentReturned)
 	require.Equal(t, "", resp.DrillDown.History.NextPagePath)
-	require.Equal(t, "/v1/sessions/"+sessionID+"/assignment_history", resp.DrillDown.AssignmentHistoryPath)
+	require.Equal(t, "/v1/operator/assignment_history?session_id="+sessionID, resp.DrillDown.AssignmentHistoryPath)
 }
 
 func TestGetSessionWorkbench_SLAEscalationState(t *testing.T) {

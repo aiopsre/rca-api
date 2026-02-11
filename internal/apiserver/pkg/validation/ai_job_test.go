@@ -244,6 +244,7 @@ func TestValidateSessionOperatorInboxRequest(t *testing.T) {
 	reviewState := "in_review"
 	sessionType := "service"
 	assignee := "user:oncall-a"
+	teamID := "namespace:payments"
 	escalationState := "pending"
 	needsReview := true
 	req := &SessionOperatorInboxRequest{
@@ -251,6 +252,7 @@ func TestValidateSessionOperatorInboxRequest(t *testing.T) {
 		NeedsReview:     &needsReview,
 		SessionType:     &sessionType,
 		Assignee:        &assignee,
+		TeamID:          &teamID,
 		EscalationState: &escalationState,
 		Offset:          0,
 		Limit:           10,
@@ -259,6 +261,7 @@ func TestValidateSessionOperatorInboxRequest(t *testing.T) {
 	require.Equal(t, "in_review", *req.ReviewState)
 	require.Equal(t, "service", *req.SessionType)
 	require.Equal(t, "user:oncall-a", *req.Assignee)
+	require.Equal(t, "namespace:payments", *req.TeamID)
 	require.Equal(t, "pending", *req.EscalationState)
 }
 
@@ -279,6 +282,10 @@ func TestValidateSessionOperatorInboxRequest_Invalid(t *testing.T) {
 
 	assignee := " "
 	req = &SessionOperatorInboxRequest{Assignee: &assignee}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+
+	teamID := " "
+	req = &SessionOperatorInboxRequest{TeamID: &teamID}
 	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
 
 	escalationState := "bad"

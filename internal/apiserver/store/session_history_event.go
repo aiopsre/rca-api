@@ -18,6 +18,14 @@ type SessionHistoryEventStore interface {
 		limit int,
 		ascending bool,
 	) (int64, []*model.SessionHistoryEventM, error)
+	ListBySessionIDsAndEventTypes(
+		ctx context.Context,
+		sessionIDs []string,
+		eventTypes []string,
+		offset int,
+		limit int,
+		ascending bool,
+	) (int64, []*model.SessionHistoryEventM, error)
 }
 
 type sessionHistoryEventStore struct {
@@ -39,7 +47,7 @@ func (sse *sessionHistoryEventStore) ListBySession(
 	limit int,
 	ascending bool,
 ) (int64, []*model.SessionHistoryEventM, error) {
-	return sse.listBySession(ctx, sessionID, nil, offset, limit, ascending)
+	return sse.listBySessionIDs(ctx, []string{sessionID}, nil, offset, limit, ascending)
 }
 
 func (sse *sessionHistoryEventStore) ListBySessionAndEventTypes(
@@ -50,19 +58,33 @@ func (sse *sessionHistoryEventStore) ListBySessionAndEventTypes(
 	limit int,
 	ascending bool,
 ) (int64, []*model.SessionHistoryEventM, error) {
-	return sse.listBySession(ctx, sessionID, eventTypes, offset, limit, ascending)
+	return sse.listBySessionIDs(ctx, []string{sessionID}, eventTypes, offset, limit, ascending)
 }
 
-func (sse *sessionHistoryEventStore) listBySession(
+func (sse *sessionHistoryEventStore) ListBySessionIDsAndEventTypes(
 	ctx context.Context,
-	sessionID string,
+	sessionIDs []string,
 	eventTypes []string,
 	offset int,
 	limit int,
 	ascending bool,
 ) (int64, []*model.SessionHistoryEventM, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	db := sse.s.DB(ctx).Where("session_id = ?", sessionID)
+	return sse.listBySessionIDs(ctx, sessionIDs, eventTypes, offset, limit, ascending)
+}
+
+func (sse *sessionHistoryEventStore) listBySessionIDs(
+	ctx context.Context,
+	sessionIDs []string,
+	eventTypes []string,
+	offset int,
+	limit int,
+	ascending bool,
+) (int64, []*model.SessionHistoryEventM, error) {
+	normalizedSessionIDs := normalizeSessionHistorySessionIDs(sessionIDs)
+	if len(normalizedSessionIDs) == 0 {
+		return 0, []*model.SessionHistoryEventM{}, nil
+	}
+	db := sse.s.DB(ctx).Where("session_id IN ?", normalizedSessionIDs)
 	filteredEventTypes := normalizeSessionHistoryEventTypes(eventTypes)
 	if len(filteredEventTypes) > 0 {
 		db = db.Where("event_type IN ?", filteredEventTypes)
@@ -101,6 +123,29 @@ func normalizeSessionHistoryEventTypes(in []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeSessionHistorySessionIDs(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		value := strings.TrimSpace(item)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

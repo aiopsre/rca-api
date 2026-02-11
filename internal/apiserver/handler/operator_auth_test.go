@@ -37,6 +37,14 @@ func TestOperatorAuth_LoginAndTokenGuard(t *testing.T) {
 	status, _, err = doJSONRequestWithHeaders(client, http.MethodGet, fmt.Sprintf("%s/v1/operator/inbox", baseURL), nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusUnauthorized, status)
+
+	status, _, err = doJSONRequestWithHeaders(client, http.MethodGet, fmt.Sprintf("%s/v1/operator/team_dashboard", baseURL), nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, status)
+
+	status, _, err = doJSONRequestWithHeaders(client, http.MethodGet, fmt.Sprintf("%s/v1/operator/assignment_history", baseURL), nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, status)
 }
 
 func TestOperatorAuth_SessionAccessControlByTeamOrSelf(t *testing.T) {
