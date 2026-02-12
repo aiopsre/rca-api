@@ -349,6 +349,13 @@ func (f *fakeAIJobBizForEscalationRunPlan) GetSessionWorkbench(
 	return nil, nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) GetSessionWorkbenchViewer(
+	context.Context,
+	*aijobbiz.GetSessionWorkbenchViewerRequest,
+) (*aijobbiz.GetSessionWorkbenchViewerResponse, error) {
+	return nil, nil
+}
+
 func (f *fakeAIJobBizForEscalationRunPlan) ListOperatorInbox(
 	context.Context,
 	*aijobbiz.ListOperatorInboxRequest,
@@ -360,6 +367,13 @@ func (f *fakeAIJobBizForEscalationRunPlan) GetOperatorDashboard(
 	context.Context,
 	*aijobbiz.GetOperatorDashboardRequest,
 ) (*aijobbiz.GetOperatorDashboardResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeAIJobBizForEscalationRunPlan) GetOperatorDashboardTrends(
+	context.Context,
+	*aijobbiz.GetOperatorDashboardTrendsRequest,
+) (*aijobbiz.GetOperatorDashboardTrendsResponse, error) {
 	return nil, nil
 }
 

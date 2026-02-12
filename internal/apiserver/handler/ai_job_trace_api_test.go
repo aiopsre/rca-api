@@ -1124,6 +1124,195 @@ func TestOperatorDashboardAPI_Get(t *testing.T) {
 	require.Equal(t, "/v1/operator/inbox?escalation_state=escalated", extractString(recommendedFilters, "escalated"))
 }
 
+func TestOperatorDashboardTrendsAPI_Get(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(
+		&model.SessionContextM{},
+		&model.SessionHistoryEventM{},
+	))
+
+	incidentA := createAIJobLongPollTestIncident(t, s)
+	incidentB := createAIJobLongPollTestIncident(t, s)
+	incidentA.Namespace = "payments"
+	incidentB.Namespace = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentA))
+	require.NoError(t, s.Incident().Update(context.Background(), incidentB))
+
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	sessionSvc := biz.NewBiz(s).SessionV1()
+	jobA := createFailedTraceJob(t, aiBiz, incidentA.IncidentID, "manual", "manual_api", "user:a", "trend replay")
+	jobB := createFailedTraceJob(t, aiBiz, incidentB.IncidentID, "manual", "manual_api", "user:b", "trend follow-up")
+	sessionA := mustHandlerSessionIDByJob(t, s, jobA)
+	sessionB := mustHandlerSessionIDByJob(t, s, jobB)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	events := []struct {
+		sessionID string
+		eventType string
+		actor     string
+		createdAt time.Time
+	}{
+		{sessionA, sessionbiz.SessionHistoryEventReplayRequested, "user:alice", now.Add(-2 * 24 * time.Hour)},
+		{sessionA, sessionbiz.SessionHistoryEventReviewStarted, "user:alice", now.Add(-24 * time.Hour)},
+		{sessionB, sessionbiz.SessionHistoryEventFollowUpRequested, "user:bob", now.Add(-23 * time.Hour)},
+		{sessionB, sessionbiz.SessionHistoryEventEscalationEscalated, "system:sla", now.Add(-23 * time.Hour)},
+	}
+	for _, item := range events {
+		item := item
+		_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+			SessionID: item.sessionID,
+			EventType: item.eventType,
+			Actor:     strPtr(item.actor),
+			CreatedAt: &item.createdAt,
+		})
+		require.NoError(t, err)
+	}
+
+	status, body, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/dashboard/trends?window=7d&group_by=operator", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	data := extractDataContainer(body)
+	require.Equal(t, "7d", extractString(data, "window", "Window"))
+	require.Equal(t, "operator", extractString(data, "group_by", "groupBy", "GroupBy"))
+	summary := extractMap(data, "summary", "Summary")
+	require.EqualValues(t, 1, extractInt64(summary, "replay_count", "replayCount", "ReplayCount"))
+	require.EqualValues(t, 1, extractInt64(summary, "follow_up_count", "followUpCount", "FollowUpCount"))
+	require.EqualValues(t, 1, extractInt64(summary, "review_started_count", "reviewStartedCount", "ReviewStartedCount"))
+	require.EqualValues(t, 1, extractInt64(summary, "sla_escalated_count", "slaEscalatedCount", "SLAEscalatedCount"))
+	require.EqualValues(t, 4, extractInt64(summary, "total_count", "totalCount", "TotalCount"))
+	byDay := extractInboxItems(map[string]any{"items": data["by_day"]})
+	require.Len(t, byDay, 7)
+	grouped := extractInboxItems(map[string]any{"items": data["grouped"]})
+	require.NotEmpty(t, grouped)
+	navigation := extractMap(data, "navigation", "Navigation")
+	require.Equal(t, "/v1/operator/dashboard", extractString(navigation, "dashboard_path", "dashboardPath", "DashboardPath"))
+
+	teamToken := mustLoginOperatorToken(t, client, baseURL, map[string]any{
+		"operator_id": "alice",
+		"team_ids":    []string{"namespace:payments"},
+		"scopes":      []string{"ai.read"},
+	})
+	filteredStatus, filteredBody, err := doJSONRequestWithHeaders(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/dashboard/trends?window=7d&group_by=team&team_id=namespace:payments&operator=alice", baseURL),
+		nil,
+		map[string]string{"Authorization": "Bearer " + teamToken},
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, filteredStatus)
+	filteredData := extractDataContainer(filteredBody)
+	filteredSummary := extractMap(filteredData, "summary", "Summary")
+	require.EqualValues(t, 1, extractInt64(filteredSummary, "replay_count", "replayCount", "ReplayCount"))
+	require.EqualValues(t, 1, extractInt64(filteredSummary, "review_started_count", "reviewStartedCount", "ReviewStartedCount"))
+	require.EqualValues(t, 0, extractInt64(filteredSummary, "follow_up_count", "followUpCount", "FollowUpCount"))
+	applied := extractMap(filteredData, "applied", "Applied")
+	require.Equal(t, "alice", extractString(applied, "operator", "Operator"))
+	require.Equal(t, "namespace:payments", extractString(applied, "team_id", "teamID", "TeamID"))
+}
+
+func TestSessionWorkbenchViewerAPI_Get(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(
+		&model.SessionContextM{},
+		&model.SessionHistoryEventM{},
+		&model.IncidentVerificationRunM{},
+		&model.EvidenceM{},
+	))
+
+	incident := createAIJobLongPollTestIncident(t, s)
+	aiBiz := biz.NewBiz(s).AIJobV1()
+	sessionSvc := biz.NewBiz(s).SessionV1()
+
+	leftJobID := createFinalizedTraceJob(t, aiBiz, incident.IncidentID, "manual", "manual_api", "user:manual", buildDiagnosisJSON(
+		"database pool saturation confirmed",
+		"db_pool_exhausted",
+		"db",
+		0.82,
+		"ev-left-1",
+		"ev-left-2",
+	))
+	rightJobID := createFailedTraceJob(t, aiBiz, incident.IncidentID, "replay", "replay_api", "user:replay", "viewer replay failed")
+	sessionID := mustHandlerSessionIDByJob(t, s, rightJobID)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
+		RunID:            "verify-api-viewer-1",
+		IncidentID:       incident.IncidentID,
+		JobID:            strPtr(rightJobID),
+		Actor:            "user:verifier",
+		Source:           "human",
+		StepIndex:        1,
+		Tool:             "kubectl",
+		Observed:         "service recovered",
+		MeetsExpectation: true,
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}))
+	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID: sessionID,
+		EventType: sessionbiz.SessionHistoryEventReviewStarted,
+		JobID:     strPtr(rightJobID),
+		Actor:     strPtr("user:reviewer"),
+	})
+	require.NoError(t, err)
+
+	status, body, err := doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf(
+			"%s/v1/sessions/%s/workbench/viewer?view=compare&left_job_id=%s&right_job_id=%s&history_scope=job&job_id=%s&history_limit=10",
+			baseURL,
+			sessionID,
+			leftJobID,
+			rightJobID,
+			rightJobID,
+		),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+
+	data := extractDataContainer(body)
+	require.Equal(t, sessionID, extractString(data, "session_id", "sessionID", "SessionID"))
+	require.Equal(t, "compare", extractString(data, "selected", "Selected"))
+
+	evidence := extractMap(data, "evidence", "Evidence")
+	require.NotNil(t, evidence)
+	require.Equal(t, fmt.Sprintf("/v1/incidents/%s/evidence", incident.IncidentID), extractString(evidence, "evidence_path", "evidencePath", "EvidencePath"))
+
+	verification := extractMap(data, "verification", "Verification")
+	require.NotNil(t, verification)
+	require.Equal(
+		t,
+		fmt.Sprintf("/v1/incidents/%s/verification-runs", incident.IncidentID),
+		extractString(verification, "verification_path", "verificationPath", "VerificationPath"),
+	)
+
+	compare := extractMap(data, "compare", "Compare")
+	require.NotNil(t, compare)
+	latest := extractMap(compare, "latest", "Latest")
+	require.True(t, extractBool(latest, "compare_available", "compareAvailable", "CompareAvailable"))
+	selectedPair := extractMap(compare, "selected_pair", "selectedPair", "SelectedPair")
+	require.Equal(t, leftJobID, extractString(selectedPair, "left_job_id", "leftJobID", "LeftJobID"))
+	require.Equal(t, rightJobID, extractString(selectedPair, "right_job_id", "rightJobID", "RightJobID"))
+
+	history := extractMap(data, "history", "History")
+	require.NotNil(t, history)
+	require.Equal(t, "job", extractString(history, "scope", "Scope"))
+	require.EqualValues(t, 1, extractInt64(history, "total_count", "totalCount", "TotalCount"))
+	events := extractInboxItems(map[string]any{"items": history["events"]})
+	require.Len(t, events, 1)
+	require.Equal(t, rightJobID, extractString(events[0], "job_id", "jobID", "JobID"))
+}
+
 func TestOperatorTeamDashboardAPI_Get(t *testing.T) {
 	baseURL, cleanup, s, client := newTestServer(t)
 	defer cleanup()
@@ -1345,6 +1534,16 @@ func TestOperatorInboxAPI_InvalidQuery(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusBadRequest, status)
+
+	status, _, err = doJSONRequest(
+		client,
+		http.MethodGet,
+		fmt.Sprintf("%s/v1/operator/dashboard/trends?window=14d", baseURL),
+		nil,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+
 }
 
 func createFinalizedTraceJob(

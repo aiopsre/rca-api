@@ -28,10 +28,18 @@ const (
 	defaultOperatorDashboardPreviewLimit = int64(3)
 	maxOperatorDashboardPreviewLimit     = int64(10)
 	defaultOperatorDashboardRecentWindow = 24 * time.Hour
+	defaultOperatorDashboardTrendWindow  = 7 * 24 * time.Hour
+	operatorDashboardTrendWindow7D       = 7 * 24 * time.Hour
+	operatorDashboardTrendWindow30D      = 30 * 24 * time.Hour
+	defaultOperatorDashboardTrendScan    = int64(2000)
+	maxOperatorDashboardTrendScan        = int64(10000)
 	defaultOperatorTeamDashboardLimit    = int64(20)
 	maxOperatorTeamDashboardLimit        = int64(100)
 	defaultOperatorTeamDashboardTopN     = int64(5)
 	maxOperatorTeamDashboardTopN         = int64(20)
+	defaultWorkbenchViewerLimit          = int64(20)
+	maxWorkbenchViewerLimit              = int64(100)
+	defaultWorkbenchViewerTabsLimit      = int64(5)
 	operatorInboxTraceProbeLimit         = int64(5)
 	defaultSessionSLAWindow              = 2 * time.Hour
 
@@ -44,6 +52,19 @@ const (
 	workbenchHintReviewInProgress    = "review_in_progress"
 	workbenchHintConsiderFollowUp    = "consider_follow_up"
 	workbenchHintConsiderReplay      = "consider_replay"
+
+	operatorDashboardTrendGroupByOperator    = "operator"
+	operatorDashboardTrendGroupByTeam        = "team"
+	operatorDashboardTrendGroupBySessionType = "session_type"
+
+	workbenchViewerTabEvidence     = "evidence"
+	workbenchViewerTabVerification = "verification"
+	workbenchViewerTabCompare      = "compare"
+	workbenchViewerTabHistory      = "history"
+
+	workbenchViewerHistoryScopeSession      = "session"
+	workbenchViewerHistoryScopeJob          = "job"
+	workbenchViewerHistoryScopeCrossSession = "cross_session"
 )
 
 type GetSessionWorkbenchRequest struct {
@@ -95,6 +116,27 @@ type GetOperatorTeamDashboardRequest struct {
 	Order  *string
 }
 
+type GetOperatorDashboardTrendsRequest struct {
+	Window      *string
+	GroupBy     *string
+	Operator    *string
+	TeamID      *string
+	SessionType *string
+	ScanLimit   int64
+}
+
+type GetSessionWorkbenchViewerRequest struct {
+	SessionID     string
+	View          *string
+	JobID         *string
+	LeftJobID     *string
+	RightJobID    *string
+	HistoryScope  *string
+	HistoryOffset int64
+	HistoryLimit  int64
+	HistoryOrder  *string
+}
+
 type GetOperatorDashboardResponse struct {
 	AsOf         string                         `json:"as_of"`
 	Overview     *OperatorDashboardOverview     `json:"overview"`
@@ -103,6 +145,57 @@ type GetOperatorDashboardResponse struct {
 	Activity     *OperatorDashboardActivity     `json:"activity"`
 	QueuePreview *OperatorDashboardQueuePreview `json:"queue_preview"`
 	Navigation   *OperatorDashboardNavigation   `json:"navigation"`
+}
+
+type GetOperatorDashboardTrendsResponse struct {
+	AsOf         string                            `json:"as_of"`
+	Window       string                            `json:"window"`
+	WindowStart  string                            `json:"window_start"`
+	WindowEnd    string                            `json:"window_end"`
+	GroupBy      string                            `json:"group_by"`
+	Applied      *OperatorDashboardTrendFilters    `json:"applied,omitempty"`
+	Summary      *OperatorDashboardTrendCounter    `json:"summary"`
+	ByDay        []*OperatorDashboardTrendDay      `json:"by_day"`
+	Grouped      []*OperatorDashboardTrendGroup    `json:"grouped"`
+	Navigation   *OperatorDashboardTrendNavigation `json:"navigation"`
+	Truncated    bool                              `json:"truncated"`
+	ScannedCount int64                             `json:"scanned_count"`
+}
+
+type OperatorDashboardTrendFilters struct {
+	Operator    string `json:"operator,omitempty"`
+	TeamID      string `json:"team_id,omitempty"`
+	SessionType string `json:"session_type,omitempty"`
+}
+
+type OperatorDashboardTrendCounter struct {
+	ReplayCount           int64 `json:"replay_count"`
+	FollowUpCount         int64 `json:"follow_up_count"`
+	ReviewStartedCount    int64 `json:"review_started_count"`
+	ReviewConfirmedCount  int64 `json:"review_confirmed_count"`
+	ReviewRejectedCount   int64 `json:"review_rejected_count"`
+	SLAPendingCount       int64 `json:"sla_pending_count"`
+	SLAEscalatedCount     int64 `json:"sla_escalated_count"`
+	SLAClearedCount       int64 `json:"sla_cleared_count"`
+	ReviewActionCount     int64 `json:"review_action_count"`
+	EscalationActionCount int64 `json:"escalation_action_count"`
+	TotalCount            int64 `json:"total_count"`
+}
+
+type OperatorDashboardTrendDay struct {
+	Date    string                         `json:"date"`
+	Counter *OperatorDashboardTrendCounter `json:"counter"`
+}
+
+type OperatorDashboardTrendGroup struct {
+	GroupKey string                         `json:"group_key"`
+	Counter  *OperatorDashboardTrendCounter `json:"counter"`
+}
+
+type OperatorDashboardTrendNavigation struct {
+	DashboardPath string            `json:"dashboard_path"`
+	InboxPath     string            `json:"inbox_path"`
+	Filters       map[string]string `json:"filters"`
 }
 
 type GetOperatorTeamDashboardResponse struct {
@@ -117,6 +210,78 @@ type GetOperatorTeamDashboardResponse struct {
 	Items        []*OperatorTeamDashboardSession    `json:"items"`
 	SortOrder    string                             `json:"sort_order"`
 	Navigation   *OperatorTeamDashboardNavigation   `json:"navigation"`
+}
+
+type GetSessionWorkbenchViewerResponse struct {
+	SessionID    string                       `json:"session_id"`
+	IncidentID   string                       `json:"incident_id,omitempty"`
+	Tabs         []string                     `json:"tabs"`
+	Selected     string                       `json:"selected"`
+	Evidence     *WorkbenchEvidenceViewer     `json:"evidence,omitempty"`
+	Verification *WorkbenchVerificationViewer `json:"verification,omitempty"`
+	Compare      *WorkbenchCompareViewer      `json:"compare,omitempty"`
+	History      *WorkbenchHistoryViewer      `json:"history,omitempty"`
+}
+
+type WorkbenchEvidenceViewer struct {
+	IncidentID    string                   `json:"incident_id,omitempty"`
+	EvidencePath  string                   `json:"evidence_path,omitempty"`
+	EvidenceRefs  []string                 `json:"evidence_refs"`
+	Items         []*WorkbenchEvidenceItem `json:"items"`
+	RelatedJobIDs []string                 `json:"related_job_ids"`
+}
+
+type WorkbenchEvidenceItem struct {
+	EvidenceID  string `json:"evidence_id"`
+	JobID       string `json:"job_id,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	ResultBytes int64  `json:"result_size_bytes"`
+	IsTruncated bool   `json:"is_truncated"`
+}
+
+type WorkbenchVerificationViewer struct {
+	IncidentID       string                       `json:"incident_id,omitempty"`
+	VerificationPath string                       `json:"verification_path,omitempty"`
+	VerificationRefs []string                     `json:"verification_refs"`
+	Items            []*WorkbenchVerificationItem `json:"items"`
+	Pending          bool                         `json:"pending"`
+}
+
+type WorkbenchVerificationItem struct {
+	RunID            string `json:"run_id"`
+	JobID            string `json:"job_id,omitempty"`
+	Actor            string `json:"actor,omitempty"`
+	Source           string `json:"source,omitempty"`
+	Tool             string `json:"tool,omitempty"`
+	Observed         string `json:"observed,omitempty"`
+	MeetsExpectation bool   `json:"meets_expectation"`
+	CreatedAt        string `json:"created_at,omitempty"`
+}
+
+type WorkbenchCompareViewer struct {
+	Latest       *WorkbenchCompareDrillDown   `json:"latest"`
+	Paths        []*WorkbenchCompareViewerTab `json:"paths"`
+	SelectedPair *WorkbenchCompareDrillDown   `json:"selected_pair,omitempty"`
+}
+
+type WorkbenchCompareViewerTab struct {
+	Label       string `json:"label"`
+	ComparePath string `json:"compare_path"`
+	LeftJobID   string `json:"left_job_id"`
+	RightJobID  string `json:"right_job_id"`
+}
+
+type WorkbenchHistoryViewer struct {
+	Scope              string                   `json:"scope"`
+	SessionHistoryPath string                   `json:"session_history_path,omitempty"`
+	CrossSessionPath   string                   `json:"cross_session_path,omitempty"`
+	Offset             int64                    `json:"offset"`
+	Limit              int64                    `json:"limit"`
+	Order              string                   `json:"order"`
+	TotalCount         int64                    `json:"total_count"`
+	Events             []*SessionHistorySummary `json:"events"`
 }
 
 type OperatorTeamDashboardOverview struct {
@@ -318,17 +483,22 @@ type WorkbenchReviewFlags struct {
 }
 
 type WorkbenchDrillDown struct {
-	LatestTracePath       string                          `json:"latest_trace_path,omitempty"`
-	LatestComparePath     string                          `json:"latest_compare_path,omitempty"`
-	HistoryPath           string                          `json:"history_path,omitempty"`
-	AssignmentHistoryPath string                          `json:"assignment_history_path,omitempty"`
-	RecommendedNextView   []string                        `json:"recommended_next_view"`
-	LatestDecision        *WorkbenchDecisionDrillDown     `json:"latest_decision,omitempty"`
-	LatestCompare         *WorkbenchCompareDrillDown      `json:"latest_compare,omitempty"`
-	LatestAssignment      *WorkbenchAssignmentDrillDown   `json:"latest_assignment,omitempty"`
-	PinnedEvidence        *WorkbenchEvidenceDrillDown     `json:"pinned_evidence,omitempty"`
-	Verification          *WorkbenchVerificationDrillDown `json:"verification,omitempty"`
-	History               *WorkbenchHistoryDrillDown      `json:"history,omitempty"`
+	LatestTracePath        string                          `json:"latest_trace_path,omitempty"`
+	LatestComparePath      string                          `json:"latest_compare_path,omitempty"`
+	HistoryPath            string                          `json:"history_path,omitempty"`
+	AssignmentHistoryPath  string                          `json:"assignment_history_path,omitempty"`
+	ViewerPath             string                          `json:"viewer_path,omitempty"`
+	EvidenceViewerPath     string                          `json:"evidence_viewer_path,omitempty"`
+	VerificationViewerPath string                          `json:"verification_viewer_path,omitempty"`
+	CompareViewerPath      string                          `json:"compare_viewer_path,omitempty"`
+	HistoryViewerPath      string                          `json:"history_viewer_path,omitempty"`
+	RecommendedNextView    []string                        `json:"recommended_next_view"`
+	LatestDecision         *WorkbenchDecisionDrillDown     `json:"latest_decision,omitempty"`
+	LatestCompare          *WorkbenchCompareDrillDown      `json:"latest_compare,omitempty"`
+	LatestAssignment       *WorkbenchAssignmentDrillDown   `json:"latest_assignment,omitempty"`
+	PinnedEvidence         *WorkbenchEvidenceDrillDown     `json:"pinned_evidence,omitempty"`
+	Verification           *WorkbenchVerificationDrillDown `json:"verification,omitempty"`
+	History                *WorkbenchHistoryDrillDown      `json:"history,omitempty"`
 }
 
 type WorkbenchDecisionDrillDown struct {
@@ -417,6 +587,11 @@ type operatorInboxFilters struct {
 	Assignee        string
 	EscalationState string
 	TeamID          string
+}
+
+type operatorDashboardTrendSessionMeta struct {
+	SessionType string
+	TeamKey     string
 }
 
 func (b *aiJobBiz) GetSessionWorkbench(
@@ -527,6 +702,681 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		HistoryPath:      historyPath,
 		DrillDown:        drillDown,
 	}, nil
+}
+
+func (b *aiJobBiz) GetSessionWorkbenchViewer(
+	ctx context.Context,
+	rq *GetSessionWorkbenchViewerRequest,
+) (*GetSessionWorkbenchViewerResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	selectedView, err := normalizeWorkbenchViewerTab(rq.View)
+	if err != nil {
+		return nil, err
+	}
+	historyScope, err := normalizeWorkbenchViewerHistoryScope(rq.HistoryScope)
+	if err != nil {
+		return nil, err
+	}
+	historyOffset := rq.HistoryOffset
+	if historyOffset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	historyLimit := rq.HistoryLimit
+	if historyLimit <= 0 {
+		historyLimit = defaultWorkbenchViewerLimit
+	}
+	if historyLimit > maxWorkbenchViewerLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	historyAscending, err := normalizeOperatorOrder(rq.HistoryOrder)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionObj, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionContextNotFound
+		}
+		return nil, errno.ErrSessionContextGetFailed
+	}
+	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
+	if !b.canAccessOperatorSession(ctx, sessionObj, assignmentState) {
+		return nil, errno.ErrPermissionDenied
+	}
+
+	traceResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
+		SessionID: strPtr(sessionID),
+		Offset:    0,
+		Limit:     maxSessionWorkbenchRecentLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	recentRuns := traceResp.Summaries
+	latestRun := firstTraceReadSummary(recentRuns)
+	var latestDecision *DecisionTraceReadModel
+	if latestRun != nil && strings.TrimSpace(latestRun.JobID) != "" {
+		latestTraceResp, traceErr := b.GetTraceReadModel(ctx, &GetTraceReadModelRequest{JobID: latestRun.JobID})
+		if traceErr == nil && latestTraceResp != nil {
+			latestDecision = latestTraceResp.DecisionTrace
+		}
+	}
+	incidentID := firstTraceNonEmpty(trimOptional(sessionObj.IncidentID), traceSummaryIncidentID(latestRun))
+	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
+
+	evidenceViewer, err := b.buildWorkbenchEvidenceViewer(ctx, incidentID, latestDecision, pinnedEvidenceRefs, recentRuns)
+	if err != nil {
+		return nil, err
+	}
+	verificationViewer, err := b.buildWorkbenchVerificationViewer(ctx, incidentID, latestDecision, latestRun)
+	if err != nil {
+		return nil, err
+	}
+	compareViewer := b.buildWorkbenchCompareViewer(recentRuns, rq.LeftJobID, rq.RightJobID)
+	historyViewer, err := b.buildWorkbenchHistoryViewer(
+		ctx,
+		sessionID,
+		historyScope,
+		rq.JobID,
+		latestRun,
+		historyOffset,
+		historyLimit,
+		historyAscending,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &GetSessionWorkbenchViewerResponse{
+		SessionID:  sessionID,
+		IncidentID: incidentID,
+		Tabs: []string{
+			workbenchViewerTabEvidence,
+			workbenchViewerTabVerification,
+			workbenchViewerTabCompare,
+			workbenchViewerTabHistory,
+		},
+		Selected:     selectedView,
+		Evidence:     evidenceViewer,
+		Verification: verificationViewer,
+		Compare:      compareViewer,
+		History:      historyViewer,
+	}, nil
+}
+
+func normalizeWorkbenchViewerTab(raw *string) (string, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return workbenchViewerTabEvidence, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*raw)) {
+	case workbenchViewerTabEvidence:
+		return workbenchViewerTabEvidence, nil
+	case workbenchViewerTabVerification:
+		return workbenchViewerTabVerification, nil
+	case workbenchViewerTabCompare:
+		return workbenchViewerTabCompare, nil
+	case workbenchViewerTabHistory:
+		return workbenchViewerTabHistory, nil
+	default:
+		return "", errorsx.ErrInvalidArgument
+	}
+}
+
+func normalizeWorkbenchViewerHistoryScope(raw *string) (string, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return workbenchViewerHistoryScopeSession, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*raw)) {
+	case workbenchViewerHistoryScopeSession:
+		return workbenchViewerHistoryScopeSession, nil
+	case workbenchViewerHistoryScopeJob:
+		return workbenchViewerHistoryScopeJob, nil
+	case workbenchViewerHistoryScopeCrossSession:
+		return workbenchViewerHistoryScopeCrossSession, nil
+	default:
+		return "", errorsx.ErrInvalidArgument
+	}
+}
+
+func (b *aiJobBiz) buildWorkbenchEvidenceViewer(
+	ctx context.Context,
+	incidentID string,
+	latestDecision *DecisionTraceReadModel,
+	pinnedEvidenceRefs []string,
+	recentRuns []*TraceReadSummary,
+) (*WorkbenchEvidenceViewer, error) {
+	viewer := &WorkbenchEvidenceViewer{
+		IncidentID:   strings.TrimSpace(incidentID),
+		EvidencePath: buildIncidentEvidencePath(incidentID),
+		EvidenceRefs: []string{},
+		Items:        []*WorkbenchEvidenceItem{},
+	}
+	evidenceRefs := normalizeStringSlice(pinnedEvidenceRefs)
+	if latestDecision != nil {
+		evidenceRefs = mergeStringSlices(latestDecision.EvidenceRefs, evidenceRefs)
+	}
+	viewer.EvidenceRefs = evidenceRefs
+
+	if strings.TrimSpace(incidentID) == "" {
+		viewer.RelatedJobIDs = uniqueTraceJobIDs(recentRuns, nil)
+		return viewer, nil
+	}
+
+	itemLimit := int(defaultWorkbenchViewerLimit)
+	_, evidenceList, err := b.store.Evidence().List(
+		ctx,
+		where.T(ctx).F("incident_id", strings.TrimSpace(incidentID)).O(0).L(itemLimit),
+	)
+	if err != nil {
+		return nil, errno.ErrEvidenceListFailed
+	}
+	orderedEvidence := reorderEvidenceByRefs(evidenceList, evidenceRefs)
+	viewer.Items = evidenceListToWorkbenchItems(orderedEvidence)
+	viewer.RelatedJobIDs = uniqueTraceJobIDs(recentRuns, orderedEvidence)
+	return viewer, nil
+}
+
+func reorderEvidenceByRefs(list []*model.EvidenceM, refs []string) []*model.EvidenceM {
+	if len(list) == 0 {
+		return []*model.EvidenceM{}
+	}
+	if len(refs) == 0 {
+		return list
+	}
+	evidenceByID := map[string]*model.EvidenceM{}
+	for _, evidence := range list {
+		if evidence == nil {
+			continue
+		}
+		evidenceByID[strings.TrimSpace(evidence.EvidenceID)] = evidence
+	}
+	out := make([]*model.EvidenceM, 0, len(list))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		evidence, ok := evidenceByID[ref]
+		if !ok || evidence == nil {
+			continue
+		}
+		out = append(out, evidence)
+		seen[ref] = struct{}{}
+	}
+	for _, evidence := range list {
+		if evidence == nil {
+			continue
+		}
+		evidenceID := strings.TrimSpace(evidence.EvidenceID)
+		if _, ok := seen[evidenceID]; ok {
+			continue
+		}
+		out = append(out, evidence)
+	}
+	return out
+}
+
+func evidenceListToWorkbenchItems(list []*model.EvidenceM) []*WorkbenchEvidenceItem {
+	items := make([]*WorkbenchEvidenceItem, 0, len(list))
+	for _, evidence := range list {
+		if evidence == nil {
+			continue
+		}
+		summary := strings.TrimSpace(trimOptional(evidence.Summary))
+		if summary == "" {
+			summary = summarizeText(evidence.ResultJSON, 160)
+		}
+		items = append(items, &WorkbenchEvidenceItem{
+			EvidenceID:  strings.TrimSpace(evidence.EvidenceID),
+			JobID:       strings.TrimSpace(trimOptional(evidence.JobID)),
+			Type:        strings.TrimSpace(evidence.Type),
+			Summary:     summary,
+			CreatedAt:   toRFC3339String(evidence.CreatedAt),
+			ResultBytes: evidence.ResultSizeBytes,
+			IsTruncated: evidence.IsTruncated,
+		})
+	}
+	return items
+}
+
+func summarizeText(raw string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return ""
+	}
+	if len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "..."
+}
+
+func uniqueTraceJobIDs(runs []*TraceReadSummary, evidence []*model.EvidenceM) []string {
+	seen := map[string]struct{}{}
+	out := []string{}
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		jobID := strings.TrimSpace(run.JobID)
+		if jobID == "" {
+			continue
+		}
+		if _, ok := seen[jobID]; ok {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		out = append(out, jobID)
+	}
+	for _, item := range evidence {
+		if item == nil {
+			continue
+		}
+		jobID := strings.TrimSpace(trimOptional(item.JobID))
+		if jobID == "" {
+			continue
+		}
+		if _, ok := seen[jobID]; ok {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		out = append(out, jobID)
+	}
+	return out
+}
+
+func (b *aiJobBiz) buildWorkbenchVerificationViewer(
+	ctx context.Context,
+	incidentID string,
+	latestDecision *DecisionTraceReadModel,
+	latestRun *TraceReadSummary,
+) (*WorkbenchVerificationViewer, error) {
+	viewer := &WorkbenchVerificationViewer{
+		IncidentID:       strings.TrimSpace(incidentID),
+		VerificationPath: buildIncidentVerificationPath(incidentID),
+		VerificationRefs: []string{},
+		Items:            []*WorkbenchVerificationItem{},
+		Pending:          false,
+	}
+	if latestDecision != nil {
+		viewer.VerificationRefs = normalizeStringSlice(latestDecision.VerificationRefs)
+	}
+	if strings.TrimSpace(incidentID) == "" {
+		return viewer, nil
+	}
+	_, runs, err := b.store.IncidentVerificationRun().List(
+		ctx,
+		where.T(ctx).F("incident_id", strings.TrimSpace(incidentID)).O(0).L(int(defaultWorkbenchViewerLimit)),
+	)
+	if err != nil {
+		return nil, errno.ErrIncidentVerificationRunListFailed
+	}
+	items := make([]*WorkbenchVerificationItem, 0, len(runs))
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		items = append(items, &WorkbenchVerificationItem{
+			RunID:            strings.TrimSpace(run.RunID),
+			JobID:            strings.TrimSpace(trimOptional(run.JobID)),
+			Actor:            strings.TrimSpace(run.Actor),
+			Source:           strings.TrimSpace(run.Source),
+			Tool:             strings.TrimSpace(run.Tool),
+			Observed:         strings.TrimSpace(run.Observed),
+			MeetsExpectation: run.MeetsExpectation,
+			CreatedAt:        toRFC3339String(run.CreatedAt),
+		})
+	}
+	viewer.Items = items
+	if latestRun != nil && latestRun.VerificationCount > 0 && len(viewer.VerificationRefs) == 0 {
+		viewer.Pending = true
+	}
+	return viewer, nil
+}
+
+func (b *aiJobBiz) buildWorkbenchCompareViewer(
+	recentRuns []*TraceReadSummary,
+	leftJobID *string,
+	rightJobID *string,
+) *WorkbenchCompareViewer {
+	latestLeft, latestRight := pickLatestCompareJobPair(recentRuns)
+	latest := &WorkbenchCompareDrillDown{
+		CompareAvailable: false,
+	}
+	if latestLeft != "" && latestRight != "" {
+		latest.CompareAvailable = true
+		latest.LeftJobID = latestLeft
+		latest.RightJobID = latestRight
+		latest.ComparePath = buildTraceComparePath(latestLeft, latestRight)
+	}
+
+	selectedLeft := strings.TrimSpace(trimOptional(leftJobID))
+	selectedRight := strings.TrimSpace(trimOptional(rightJobID))
+	selected := &WorkbenchCompareDrillDown{
+		CompareAvailable: false,
+	}
+	if selectedLeft == "" || selectedRight == "" {
+		selected = latest
+	} else {
+		selectedPath := buildTraceComparePath(selectedLeft, selectedRight)
+		if selectedPath != "" {
+			selected = &WorkbenchCompareDrillDown{
+				CompareAvailable: true,
+				ComparePath:      selectedPath,
+				LeftJobID:        selectedLeft,
+				RightJobID:       selectedRight,
+			}
+		}
+	}
+
+	paths := []*WorkbenchCompareViewerTab{}
+	for _, pair := range collectWorkbenchComparePairs(recentRuns, int(defaultWorkbenchViewerTabsLimit)) {
+		paths = append(paths, &WorkbenchCompareViewerTab{
+			Label:       pair.label,
+			ComparePath: buildTraceComparePath(pair.leftJobID, pair.rightJobID),
+			LeftJobID:   pair.leftJobID,
+			RightJobID:  pair.rightJobID,
+		})
+	}
+
+	return &WorkbenchCompareViewer{
+		Latest:       latest,
+		Paths:        paths,
+		SelectedPair: selected,
+	}
+}
+
+type workbenchComparePair struct {
+	label      string
+	leftJobID  string
+	rightJobID string
+}
+
+func collectWorkbenchComparePairs(recentRuns []*TraceReadSummary, limit int) []workbenchComparePair {
+	if limit <= 0 {
+		return nil
+	}
+	out := make([]workbenchComparePair, 0, limit)
+	seen := map[string]struct{}{}
+	for idx, right := range recentRuns {
+		if len(out) >= limit {
+			break
+		}
+		if right == nil {
+			continue
+		}
+		rightTrigger := strings.TrimSpace(right.TriggerType)
+		if rightTrigger != "replay" && rightTrigger != "follow_up" {
+			continue
+		}
+		rightJobID := strings.TrimSpace(right.JobID)
+		if rightJobID == "" {
+			continue
+		}
+		for j := idx + 1; j < len(recentRuns); j++ {
+			left := recentRuns[j]
+			if left == nil {
+				continue
+			}
+			leftJobID := strings.TrimSpace(left.JobID)
+			if leftJobID == "" || leftJobID == rightJobID {
+				continue
+			}
+			key := leftJobID + ":" + rightJobID
+			if _, ok := seen[key]; ok {
+				break
+			}
+			seen[key] = struct{}{}
+			out = append(out, workbenchComparePair{
+				label:      rightTrigger + ":" + rightJobID,
+				leftJobID:  leftJobID,
+				rightJobID: rightJobID,
+			})
+			break
+		}
+	}
+	return out
+}
+
+func (b *aiJobBiz) buildWorkbenchHistoryViewer(
+	ctx context.Context,
+	sessionID string,
+	scope string,
+	jobID *string,
+	latestRun *TraceReadSummary,
+	offset int64,
+	limit int64,
+	ascending bool,
+) (*WorkbenchHistoryViewer, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	order := "desc"
+	if ascending {
+		order = "asc"
+	}
+	viewer := &WorkbenchHistoryViewer{
+		Scope:              scope,
+		SessionHistoryPath: buildSessionHistoryPath(sessionID),
+		CrossSessionPath: buildSessionWorkbenchViewerPath(sessionID, map[string]string{
+			"view":          workbenchViewerTabHistory,
+			"history_scope": workbenchViewerHistoryScopeCrossSession,
+			"order":         order,
+			"offset":        strconv.FormatInt(offset, 10),
+			"limit":         strconv.FormatInt(limit, 10),
+		}),
+		Offset: offset,
+		Limit:  limit,
+		Order:  order,
+		Events: []*SessionHistorySummary{},
+	}
+	switch scope {
+	case workbenchViewerHistoryScopeJob:
+		historyJobID := strings.TrimSpace(trimOptional(jobID))
+		if historyJobID == "" && latestRun != nil {
+			historyJobID = strings.TrimSpace(latestRun.JobID)
+		}
+		total, events, err := b.loadWorkbenchHistoryByJob(ctx, sessionID, historyJobID, offset, limit, ascending)
+		if err != nil {
+			return nil, err
+		}
+		viewer.TotalCount = total
+		viewer.Events = events
+	case workbenchViewerHistoryScopeCrossSession:
+		total, events, err := b.loadWorkbenchCrossSessionHistory(ctx, sessionID, offset, limit, ascending)
+		if err != nil {
+			return nil, err
+		}
+		viewer.TotalCount = total
+		viewer.Events = events
+	default:
+		resp, err := b.sessionBiz.ListHistory(ctx, &sessionbiz.ListSessionHistoryRequest{
+			SessionID: sessionID,
+			Offset:    offset,
+			Limit:     limit,
+			Order:     strPtr(order),
+		})
+		if err != nil {
+			return nil, err
+		}
+		viewer.TotalCount = resp.TotalCount
+		viewer.Events = sessionHistoryReadModelsToSummaries(resp.Events)
+	}
+	return viewer, nil
+}
+
+func (b *aiJobBiz) loadWorkbenchHistoryByJob(
+	ctx context.Context,
+	sessionID string,
+	jobID string,
+	offset int64,
+	limit int64,
+	ascending bool,
+) (int64, []*SessionHistorySummary, error) {
+	if strings.TrimSpace(jobID) == "" {
+		return 0, []*SessionHistorySummary{}, nil
+	}
+	total, list, err := b.store.SessionHistoryEvent().ListBySession(
+		ctx,
+		sessionID,
+		0,
+		int(maxOperatorDashboardTrendScan),
+		ascending,
+	)
+	if err != nil {
+		return 0, nil, errno.ErrSessionHistoryListFailed
+	}
+	filtered := make([]*model.SessionHistoryEventM, 0, len(list))
+	for _, item := range list {
+		if item == nil {
+			continue
+		}
+		if strings.TrimSpace(trimOptional(item.JobID)) != strings.TrimSpace(jobID) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	_ = total
+	return int64(len(filtered)), sessionHistoryModelsToSummaries(filtered, offset, limit), nil
+}
+
+func sessionHistoryModelsToSummaries(list []*model.SessionHistoryEventM, offset int64, limit int64) []*SessionHistorySummary {
+	total := int64(len(list))
+	if total == 0 {
+		return []*SessionHistorySummary{}
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return []*SessionHistorySummary{}
+	}
+	if limit <= 0 {
+		limit = defaultWorkbenchViewerLimit
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	summaries := make([]*SessionHistorySummary, 0, end-offset)
+	for _, item := range list[offset:end] {
+		if item == nil {
+			continue
+		}
+		summaries = append(summaries, sessionHistoryModelToSummary(item))
+	}
+	return summaries
+}
+
+func sessionHistoryModelToSummary(in *model.SessionHistoryEventM) *SessionHistorySummary {
+	if in == nil {
+		return &SessionHistorySummary{}
+	}
+	return &SessionHistorySummary{
+		EventID:        strings.TrimSpace(in.EventID),
+		EventType:      strings.TrimSpace(in.EventType),
+		SessionID:      strings.TrimSpace(in.SessionID),
+		IncidentID:     strings.TrimSpace(trimOptional(in.IncidentID)),
+		JobID:          strings.TrimSpace(trimOptional(in.JobID)),
+		Actor:          strings.TrimSpace(in.Actor),
+		Note:           strings.TrimSpace(trimOptional(in.Note)),
+		ReasonCode:     strings.TrimSpace(trimOptional(in.ReasonCode)),
+		PayloadSummary: parseOptionalJSONObject(in.PayloadSummaryJSON),
+		CreatedAt:      toRFC3339String(in.CreatedAt),
+	}
+}
+
+func (b *aiJobBiz) loadWorkbenchCrossSessionHistory(
+	ctx context.Context,
+	sessionID string,
+	offset int64,
+	limit int64,
+	ascending bool,
+) (int64, []*SessionHistorySummary, error) {
+	sessionObj, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
+	if err != nil {
+		return 0, nil, errno.ErrSessionContextGetFailed
+	}
+	incidentID := strings.TrimSpace(trimOptional(sessionObj.IncidentID))
+	if incidentID == "" {
+		order := "desc"
+		if ascending {
+			order = "asc"
+		}
+		resp, listErr := b.sessionBiz.ListHistory(ctx, &sessionbiz.ListSessionHistoryRequest{
+			SessionID: sessionID,
+			Offset:    offset,
+			Limit:     limit,
+			Order:     strPtr(order),
+		})
+		if listErr != nil {
+			return 0, nil, listErr
+		}
+		return resp.TotalCount, sessionHistoryReadModelsToSummaries(resp.Events), nil
+	}
+	_, sessions, err := b.store.SessionContext().List(ctx, where.T(ctx).F("incident_id", incidentID).O(0).L(int(maxOperatorDashboardTrendScan)))
+	if err != nil {
+		return 0, nil, errno.ErrSessionContextListFailed
+	}
+	sessionIDs := make([]string, 0, len(sessions))
+	for _, candidate := range sessions {
+		if candidate == nil {
+			continue
+		}
+		assignment := extractSessionAssignmentState(candidate.ContextStateJSON)
+		if !b.canAccessOperatorSession(ctx, candidate, assignment) {
+			continue
+		}
+		sessionIDs = append(sessionIDs, strings.TrimSpace(candidate.SessionID))
+	}
+	if len(sessionIDs) == 0 {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	total, list, err := b.store.SessionHistoryEvent().ListBySessionIDsAndEventTypes(
+		ctx,
+		sessionIDs,
+		nil,
+		int(offset),
+		int(limit),
+		ascending,
+	)
+	if err != nil {
+		return 0, nil, errno.ErrSessionHistoryListFailed
+	}
+	return total, sessionHistoryModelsToSummaries(list, 0, int64(len(list))), nil
+}
+
+func sessionHistoryReadModelsToSummaries(in []*sessionbiz.SessionHistoryEventReadModel) []*SessionHistorySummary {
+	out := make([]*SessionHistorySummary, 0, len(in))
+	for _, event := range in {
+		if event == nil {
+			continue
+		}
+		out = append(out, &SessionHistorySummary{
+			EventID:        strings.TrimSpace(event.EventID),
+			EventType:      strings.TrimSpace(event.EventType),
+			SessionID:      strings.TrimSpace(event.SessionID),
+			IncidentID:     strings.TrimSpace(event.IncidentID),
+			JobID:          strings.TrimSpace(event.JobID),
+			Actor:          strings.TrimSpace(event.Actor),
+			Note:           strings.TrimSpace(event.Note),
+			ReasonCode:     strings.TrimSpace(event.ReasonCode),
+			PayloadSummary: cloneMapAny(event.PayloadSummary),
+			CreatedAt:      strings.TrimSpace(event.CreatedAt),
+		})
+	}
+	return out
 }
 
 func (b *aiJobBiz) ListOperatorInbox(
@@ -704,6 +1554,148 @@ func (b *aiJobBiz) GetOperatorDashboard(
 				"escalated":          "/v1/operator/inbox?escalation_state=escalated",
 			},
 		},
+	}, nil
+}
+
+func (b *aiJobBiz) GetOperatorDashboardTrends(
+	ctx context.Context,
+	rq *GetOperatorDashboardTrendsRequest,
+) (*GetOperatorDashboardTrendsResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	windowLabel, windowDuration, err := normalizeOperatorDashboardTrendWindow(rq.Window)
+	if err != nil {
+		return nil, err
+	}
+	groupBy, err := normalizeOperatorDashboardTrendGroupBy(rq.GroupBy)
+	if err != nil {
+		return nil, err
+	}
+	scanLimit := rq.ScanLimit
+	if scanLimit <= 0 {
+		scanLimit = defaultOperatorDashboardTrendScan
+	}
+	if scanLimit > maxOperatorDashboardTrendScan {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	operatorFilter := normalizeOperatorActor(trimOptional(rq.Operator))
+	teamFilter := strings.TrimSpace(trimOptional(rq.TeamID))
+	if teamFilter != "" && !canOperatorScopeTeam(ctx, teamFilter) {
+		return nil, errno.ErrPermissionDenied
+	}
+	sessionTypeFilter := ""
+	if value := strings.TrimSpace(trimOptional(rq.SessionType)); value != "" {
+		sessionTypeFilter = normalizeInboxSessionType(value)
+		if sessionTypeFilter == "" {
+			return nil, errorsx.ErrInvalidArgument
+		}
+	}
+
+	now := time.Now().UTC()
+	windowEnd := now
+	windowStart := startOfUTCDay(now).Add(-windowDuration + (24 * time.Hour))
+	dayKeys := buildTrendDayKeys(windowStart, windowEnd)
+	byDayCounters := map[string]*OperatorDashboardTrendCounter{}
+	for _, dayKey := range dayKeys {
+		byDayCounters[dayKey] = &OperatorDashboardTrendCounter{}
+	}
+	summary := &OperatorDashboardTrendCounter{}
+	groupedCounters := map[string]*OperatorDashboardTrendCounter{}
+
+	sessionMeta, err := b.listOperatorDashboardTrendSessions(ctx, teamFilter, sessionTypeFilter, scanLimit)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessionMeta) == 0 {
+		return &GetOperatorDashboardTrendsResponse{
+			AsOf:         toRFC3339String(now),
+			Window:       windowLabel,
+			WindowStart:  toRFC3339String(windowStart),
+			WindowEnd:    toRFC3339String(windowEnd),
+			GroupBy:      groupBy,
+			Applied:      buildOperatorDashboardTrendFilters(operatorFilter, teamFilter, sessionTypeFilter),
+			Summary:      summary,
+			ByDay:        buildOperatorDashboardTrendByDay(dayKeys, byDayCounters),
+			Grouped:      buildOperatorDashboardTrendGrouped(groupedCounters),
+			Navigation:   buildOperatorDashboardTrendNavigation(windowLabel, groupBy, operatorFilter, teamFilter, sessionTypeFilter),
+			Truncated:    false,
+			ScannedCount: 0,
+		}, nil
+	}
+
+	sessionIDs := make([]string, 0, len(sessionMeta))
+	for sessionID := range sessionMeta {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	trendEventTypes := []string{
+		sessionbiz.SessionHistoryEventReplayRequested,
+		sessionbiz.SessionHistoryEventFollowUpRequested,
+		sessionbiz.SessionHistoryEventReviewStarted,
+		sessionbiz.SessionHistoryEventReviewConfirmed,
+		sessionbiz.SessionHistoryEventReviewRejected,
+		sessionbiz.SessionHistoryEventEscalationPending,
+		sessionbiz.SessionHistoryEventEscalationEscalated,
+		sessionbiz.SessionHistoryEventEscalationCleared,
+	}
+	totalEvents, events, err := b.store.SessionHistoryEvent().ListBySessionIDsAndEventTypes(
+		ctx,
+		sessionIDs,
+		trendEventTypes,
+		0,
+		int(scanLimit),
+		false,
+	)
+	if err != nil {
+		return nil, errno.ErrSessionHistoryListFailed
+	}
+
+	scannedCount := int64(0)
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		scannedCount++
+		createdAt := event.CreatedAt.UTC()
+		if createdAt.Before(windowStart) || createdAt.After(windowEnd) {
+			continue
+		}
+		if operatorFilter != "" && !operatorActorMatches(event.Actor, operatorFilter) {
+			continue
+		}
+		if !incrementOperatorDashboardTrendCounter(summary, strings.TrimSpace(event.EventType)) {
+			continue
+		}
+		dayKey := createdAt.Format("2006-01-02")
+		if dayCounter, ok := byDayCounters[dayKey]; ok {
+			incrementOperatorDashboardTrendCounter(dayCounter, strings.TrimSpace(event.EventType))
+		}
+
+		meta := sessionMeta[strings.TrimSpace(event.SessionID)]
+		groupKey := resolveOperatorDashboardTrendGroupKey(groupBy, event, meta)
+		groupCounter, ok := groupedCounters[groupKey]
+		if !ok {
+			groupCounter = &OperatorDashboardTrendCounter{}
+			groupedCounters[groupKey] = groupCounter
+		}
+		incrementOperatorDashboardTrendCounter(groupCounter, strings.TrimSpace(event.EventType))
+	}
+
+	return &GetOperatorDashboardTrendsResponse{
+		AsOf:         toRFC3339String(now),
+		Window:       windowLabel,
+		WindowStart:  toRFC3339String(windowStart),
+		WindowEnd:    toRFC3339String(windowEnd),
+		GroupBy:      groupBy,
+		Applied:      buildOperatorDashboardTrendFilters(operatorFilter, teamFilter, sessionTypeFilter),
+		Summary:      summary,
+		ByDay:        buildOperatorDashboardTrendByDay(dayKeys, byDayCounters),
+		Grouped:      buildOperatorDashboardTrendGrouped(groupedCounters),
+		Navigation:   buildOperatorDashboardTrendNavigation(windowLabel, groupBy, operatorFilter, teamFilter, sessionTypeFilter),
+		Truncated:    totalEvents > int64(len(events)),
+		ScannedCount: scannedCount,
 	}, nil
 }
 
@@ -1277,6 +2269,292 @@ func normalizeOperatorOrder(order *string) (bool, error) {
 	}
 }
 
+func normalizeOperatorDashboardTrendWindow(raw *string) (string, time.Duration, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return "7d", operatorDashboardTrendWindow7D, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*raw)) {
+	case "7d":
+		return "7d", operatorDashboardTrendWindow7D, nil
+	case "30d":
+		return "30d", operatorDashboardTrendWindow30D, nil
+	default:
+		return "", 0, errorsx.ErrInvalidArgument
+	}
+}
+
+func normalizeOperatorDashboardTrendGroupBy(raw *string) (string, error) {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return operatorDashboardTrendGroupBySessionType, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*raw)) {
+	case operatorDashboardTrendGroupByOperator:
+		return operatorDashboardTrendGroupByOperator, nil
+	case operatorDashboardTrendGroupByTeam:
+		return operatorDashboardTrendGroupByTeam, nil
+	case operatorDashboardTrendGroupBySessionType:
+		return operatorDashboardTrendGroupBySessionType, nil
+	default:
+		return "", errorsx.ErrInvalidArgument
+	}
+}
+
+func buildTrendDayKeys(start time.Time, end time.Time) []string {
+	start = startOfUTCDay(start)
+	end = end.UTC()
+	if start.After(end) {
+		return []string{}
+	}
+	keys := []string{}
+	for cursor := start; !cursor.After(end); cursor = cursor.Add(24 * time.Hour) {
+		keys = append(keys, cursor.Format("2006-01-02"))
+	}
+	return keys
+}
+
+func startOfUTCDay(ts time.Time) time.Time {
+	utc := ts.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+func incrementOperatorDashboardTrendCounter(counter *OperatorDashboardTrendCounter, eventType string) bool {
+	if counter == nil {
+		return false
+	}
+	switch strings.TrimSpace(eventType) {
+	case sessionbiz.SessionHistoryEventReplayRequested:
+		counter.ReplayCount++
+	case sessionbiz.SessionHistoryEventFollowUpRequested:
+		counter.FollowUpCount++
+	case sessionbiz.SessionHistoryEventReviewStarted:
+		counter.ReviewStartedCount++
+		counter.ReviewActionCount++
+	case sessionbiz.SessionHistoryEventReviewConfirmed:
+		counter.ReviewConfirmedCount++
+		counter.ReviewActionCount++
+	case sessionbiz.SessionHistoryEventReviewRejected:
+		counter.ReviewRejectedCount++
+		counter.ReviewActionCount++
+	case sessionbiz.SessionHistoryEventEscalationPending:
+		counter.SLAPendingCount++
+		counter.EscalationActionCount++
+	case sessionbiz.SessionHistoryEventEscalationEscalated:
+		counter.SLAEscalatedCount++
+		counter.EscalationActionCount++
+	case sessionbiz.SessionHistoryEventEscalationCleared:
+		counter.SLAClearedCount++
+		counter.EscalationActionCount++
+	default:
+		return false
+	}
+	counter.TotalCount++
+	return true
+}
+
+func resolveOperatorDashboardTrendGroupKey(
+	groupBy string,
+	event *model.SessionHistoryEventM,
+	meta *operatorDashboardTrendSessionMeta,
+) string {
+	switch groupBy {
+	case operatorDashboardTrendGroupByOperator:
+		return firstTraceNonEmpty(normalizeOperatorActor(strings.TrimSpace(event.Actor)), "unknown")
+	case operatorDashboardTrendGroupByTeam:
+		if meta != nil && strings.TrimSpace(meta.TeamKey) != "" {
+			return strings.TrimSpace(meta.TeamKey)
+		}
+		return "unknown"
+	case operatorDashboardTrendGroupBySessionType:
+		fallthrough
+	default:
+		if meta != nil && strings.TrimSpace(meta.SessionType) != "" {
+			return strings.TrimSpace(meta.SessionType)
+		}
+		return "unknown"
+	}
+}
+
+func buildOperatorDashboardTrendByDay(
+	dayKeys []string,
+	dayCounters map[string]*OperatorDashboardTrendCounter,
+) []*OperatorDashboardTrendDay {
+	out := make([]*OperatorDashboardTrendDay, 0, len(dayKeys))
+	for _, dayKey := range dayKeys {
+		counter := dayCounters[dayKey]
+		if counter == nil {
+			counter = &OperatorDashboardTrendCounter{}
+		}
+		out = append(out, &OperatorDashboardTrendDay{
+			Date:    dayKey,
+			Counter: counter,
+		})
+	}
+	return out
+}
+
+func buildOperatorDashboardTrendGrouped(groupedCounters map[string]*OperatorDashboardTrendCounter) []*OperatorDashboardTrendGroup {
+	if len(groupedCounters) == 0 {
+		return []*OperatorDashboardTrendGroup{}
+	}
+	groupKeys := make([]string, 0, len(groupedCounters))
+	for groupKey := range groupedCounters {
+		groupKeys = append(groupKeys, groupKey)
+	}
+	sort.Strings(groupKeys)
+	out := make([]*OperatorDashboardTrendGroup, 0, len(groupKeys))
+	for _, groupKey := range groupKeys {
+		counter := groupedCounters[groupKey]
+		if counter == nil {
+			counter = &OperatorDashboardTrendCounter{}
+		}
+		out = append(out, &OperatorDashboardTrendGroup{
+			GroupKey: groupKey,
+			Counter:  counter,
+		})
+	}
+	return out
+}
+
+func normalizeOperatorActor(raw string) string {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, "user:") {
+		value = strings.TrimPrefix(value, "user:")
+	}
+	return value
+}
+
+func operatorActorMatches(actor string, filter string) bool {
+	actor = normalizeOperatorActor(actor)
+	filter = normalizeOperatorActor(filter)
+	if actor == "" || filter == "" {
+		return false
+	}
+	return actor == filter
+}
+
+func buildOperatorDashboardTrendFilters(
+	operator string,
+	teamID string,
+	sessionType string,
+) *OperatorDashboardTrendFilters {
+	operator = strings.TrimSpace(operator)
+	teamID = strings.TrimSpace(teamID)
+	sessionType = strings.TrimSpace(sessionType)
+	if operator == "" && teamID == "" && sessionType == "" {
+		return nil
+	}
+	return &OperatorDashboardTrendFilters{
+		Operator:    operator,
+		TeamID:      teamID,
+		SessionType: sessionType,
+	}
+}
+
+func buildOperatorDashboardTrendNavigation(
+	window string,
+	groupBy string,
+	operator string,
+	teamID string,
+	sessionType string,
+) *OperatorDashboardTrendNavigation {
+	filters := map[string]string{
+		"window":   strings.TrimSpace(window),
+		"group_by": strings.TrimSpace(groupBy),
+	}
+	if operator != "" {
+		filters["operator"] = operator
+	}
+	if teamID != "" {
+		filters["team_id"] = teamID
+	}
+	if sessionType != "" {
+		filters["session_type"] = sessionType
+	}
+	return &OperatorDashboardTrendNavigation{
+		DashboardPath: "/v1/operator/dashboard",
+		InboxPath:     "/v1/operator/inbox",
+		Filters:       filters,
+	}
+}
+
+func (b *aiJobBiz) listOperatorDashboardTrendSessions(
+	ctx context.Context,
+	teamFilter string,
+	sessionTypeFilter string,
+	scanLimit int64,
+) (map[string]*operatorDashboardTrendSessionMeta, error) {
+	whr := where.T(ctx).O(0).L(int(scanLimit))
+	if sessionTypeFilter != "" {
+		whr = whr.F("session_type", sessionTypeFilter)
+	}
+	_, sessions, err := b.store.SessionContext().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+	out := map[string]*operatorDashboardTrendSessionMeta{}
+	teamFilter = strings.TrimSpace(teamFilter)
+	for _, sessionObj := range sessions {
+		if sessionObj == nil {
+			continue
+		}
+		assignee := strings.TrimSpace(extractSessionAssignmentState(sessionObj.ContextStateJSON).Assignee)
+		incident := b.loadSessionIncidentForAccess(ctx, sessionObj)
+		if !sessionbiz.CanOperatorAccessSession(ctx, sessionObj, incident, assignee) {
+			continue
+		}
+		if teamFilter != "" {
+			filterCtx := contextx.WithOperatorTeams(
+				contextx.WithUserID(context.Background(), "operator:dashboard-trend-team-filter"),
+				[]string{teamFilter},
+			)
+			if !sessionbiz.CanOperatorAccessSession(filterCtx, sessionObj, incident, assignee) {
+				continue
+			}
+		}
+		sessionID := strings.TrimSpace(sessionObj.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		out[sessionID] = &operatorDashboardTrendSessionMeta{
+			SessionType: firstTraceNonEmpty(normalizeInboxSessionType(sessionObj.SessionType), "unknown"),
+			TeamKey:     deriveOperatorDashboardTrendTeamKey(sessionObj, incident),
+		}
+	}
+	return out, nil
+}
+
+func deriveOperatorDashboardTrendTeamKey(sessionObj *model.SessionContextM, incident *model.IncidentM) string {
+	if incident != nil {
+		if namespace := strings.TrimSpace(incident.Namespace); namespace != "" {
+			return "namespace:" + strings.ToLower(namespace)
+		}
+		if tenantID := strings.TrimSpace(incident.TenantID); tenantID != "" {
+			return "tenant:" + strings.ToLower(tenantID)
+		}
+	}
+	if sessionObj != nil {
+		segments := strings.Split(strings.ToLower(strings.TrimSpace(sessionObj.BusinessKey)), ":")
+		for idx := 0; idx+1 < len(segments); idx++ {
+			prefix := strings.TrimSpace(segments[idx])
+			value := strings.TrimSpace(segments[idx+1])
+			if value == "" {
+				continue
+			}
+			switch prefix {
+			case "team", "namespace", "tenant", "ns":
+				if prefix == "ns" {
+					prefix = "namespace"
+				}
+				return prefix + ":" + value
+			}
+		}
+	}
+	return "unknown"
+}
+
 func canOperatorScopeTeam(ctx context.Context, teamID string) bool {
 	teamID = strings.TrimSpace(teamID)
 	if teamID == "" {
@@ -1515,6 +2793,20 @@ func buildWorkbenchDrillDown(
 	historyPath := buildSessionHistoryPath(sessionID)
 	assignmentHistoryPath := buildOperatorAssignmentHistoryPath(sessionID)
 	recentHistoryPath := buildSessionHistoryRecentPath(sessionID, 0, defaultSessionWorkbenchHistoryLimit)
+	viewerPath := buildSessionWorkbenchViewerPath(sessionID, nil)
+	evidenceViewerPath := buildSessionWorkbenchViewerPath(sessionID, map[string]string{
+		"view": workbenchViewerTabEvidence,
+	})
+	verificationViewerPath := buildSessionWorkbenchViewerPath(sessionID, map[string]string{
+		"view": workbenchViewerTabVerification,
+	})
+	historyViewerPath := buildSessionWorkbenchViewerPath(sessionID, map[string]string{
+		"view":          workbenchViewerTabHistory,
+		"history_scope": workbenchViewerHistoryScopeSession,
+		"order":         "desc",
+		"offset":        "0",
+		"limit":         strconv.FormatInt(defaultSessionWorkbenchHistoryLimit, 10),
+	})
 	relatedEvidenceRefs := normalizeStringSlice(pinnedEvidenceRefs)
 	relatedVerificationRefs := []string{}
 	if latestDecision != nil {
@@ -1528,12 +2820,22 @@ func buildWorkbenchDrillDown(
 		CompareAvailable: false,
 	}
 	latestComparePath := ""
+	compareViewerPath := buildSessionWorkbenchViewerPath(sessionID, map[string]string{
+		"view": workbenchViewerTabCompare,
+	})
 	if latestCompare != nil {
 		compare.LeftJobID = strings.TrimSpace(latestCompare.LeftJobID)
 		compare.RightJobID = strings.TrimSpace(latestCompare.RightJobID)
 		latestComparePath = buildTraceComparePath(compare.LeftJobID, compare.RightJobID)
 		compare.ComparePath = latestComparePath
 		compare.CompareAvailable = latestComparePath != ""
+		if compare.LeftJobID != "" && compare.RightJobID != "" {
+			compareViewerPath = buildSessionWorkbenchViewerPath(sessionID, map[string]string{
+				"view":         workbenchViewerTabCompare,
+				"left_job_id":  compare.LeftJobID,
+				"right_job_id": compare.RightJobID,
+			})
+		}
 	}
 
 	incidentEvidencePath := buildIncidentEvidencePath(incidentID)
@@ -1547,6 +2849,21 @@ func buildWorkbenchDrillDown(
 	}
 	if historyPath != "" {
 		recommendedNextView = appendUniqueHint(recommendedNextView, historyPath)
+	}
+	if viewerPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, viewerPath)
+	}
+	if evidenceViewerPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, evidenceViewerPath)
+	}
+	if verificationViewerPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, verificationViewerPath)
+	}
+	if compareViewerPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, compareViewerPath)
+	}
+	if historyViewerPath != "" {
+		recommendedNextView = appendUniqueHint(recommendedNextView, historyViewerPath)
 	}
 	if assignmentHistoryPath != "" {
 		recommendedNextView = appendUniqueHint(recommendedNextView, assignmentHistoryPath)
@@ -1576,11 +2893,16 @@ func buildWorkbenchDrillDown(
 	}
 
 	return &WorkbenchDrillDown{
-		LatestTracePath:       latestTracePath,
-		LatestComparePath:     latestComparePath,
-		HistoryPath:           historyPath,
-		AssignmentHistoryPath: assignmentHistoryPath,
-		RecommendedNextView:   recommendedNextView,
+		LatestTracePath:        latestTracePath,
+		LatestComparePath:      latestComparePath,
+		HistoryPath:            historyPath,
+		AssignmentHistoryPath:  assignmentHistoryPath,
+		ViewerPath:             viewerPath,
+		EvidenceViewerPath:     evidenceViewerPath,
+		VerificationViewerPath: verificationViewerPath,
+		CompareViewerPath:      compareViewerPath,
+		HistoryViewerPath:      historyViewerPath,
+		RecommendedNextView:    recommendedNextView,
 		LatestDecision: &WorkbenchDecisionDrillDown{
 			JobID:                   latestJobID,
 			TracePath:               latestTracePath,
@@ -1633,6 +2955,35 @@ func buildSessionHistoryPath(sessionID string) string {
 		return ""
 	}
 	return "/v1/sessions/" + sessionID + "/history"
+}
+
+func buildSessionWorkbenchViewerPath(sessionID string, params map[string]string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	base := "/v1/sessions/" + sessionID + "/workbench/viewer"
+	if len(params) == 0 {
+		return base
+	}
+	values := url.Values{}
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := strings.TrimSpace(params[key])
+		if value == "" {
+			continue
+		}
+		values.Set(key, value)
+	}
+	encoded := values.Encode()
+	if encoded == "" {
+		return base
+	}
+	return base + "?" + encoded
 }
 
 func buildOperatorAssignmentHistoryPath(sessionID string) string {

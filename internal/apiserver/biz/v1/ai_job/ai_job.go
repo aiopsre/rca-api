@@ -99,8 +99,16 @@ type AIJobExpansion interface {
 	ListTraceReadModels(ctx context.Context, rq *ListTraceReadModelsRequest) (*ListTraceReadModelsResponse, error)
 	CompareTraceReadModels(ctx context.Context, rq *CompareTraceReadModelsRequest) (*CompareTraceReadModelsResponse, error)
 	GetSessionWorkbench(ctx context.Context, rq *GetSessionWorkbenchRequest) (*GetSessionWorkbenchResponse, error)
+	GetSessionWorkbenchViewer(
+		ctx context.Context,
+		rq *GetSessionWorkbenchViewerRequest,
+	) (*GetSessionWorkbenchViewerResponse, error)
 	ListOperatorInbox(ctx context.Context, rq *ListOperatorInboxRequest) (*ListOperatorInboxResponse, error)
 	GetOperatorDashboard(ctx context.Context, rq *GetOperatorDashboardRequest) (*GetOperatorDashboardResponse, error)
+	GetOperatorDashboardTrends(
+		ctx context.Context,
+		rq *GetOperatorDashboardTrendsRequest,
+	) (*GetOperatorDashboardTrendsResponse, error)
 	GetOperatorTeamDashboard(ctx context.Context, rq *GetOperatorTeamDashboardRequest) (*GetOperatorTeamDashboardResponse, error)
 }
 

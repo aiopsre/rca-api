@@ -673,6 +673,227 @@ func TestOperatorAccessControl_WorkbenchAndInbox(t *testing.T) {
 	require.Equal(t, sessionB, selfWorkbench.Session.SessionID)
 }
 
+func TestGetSessionWorkbenchViewer_IncludesEvidenceVerificationCompareAndHistory(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	manualJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		DiagnosisJSON: `{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"database pool saturation confirmed",
+				"statement":"database pool saturation confirmed",
+				"confidence":0.91,
+				"evidence_ids":["ev-manual-1","ev-manual-2"]
+			},
+			"hypotheses":[{"statement":"pool limit reached","confidence":0.91,"supporting_evidence_ids":["ev-manual-1","ev-manual-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-manual-1", "ev-manual-2"},
+	})
+	replayJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "replay",
+		TriggerSource: "replay_api",
+		Initiator:     "user:replay",
+		ErrorMessage:  "replay failed for test",
+	})
+	sessionID := mustSessionIDByJob(t, s, replayJobID)
+
+	createdAt := time.Now().UTC().Add(-15 * time.Minute).Truncate(time.Second)
+	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
+		RunID:            "verify-viewer-1",
+		IncidentID:       incident.IncidentID,
+		JobID:            ptrAIString(replayJobID),
+		Actor:            "user:verifier",
+		Source:           "human",
+		StepIndex:        1,
+		Tool:             "kubectl",
+		Observed:         "service recovered",
+		MeetsExpectation: true,
+		CreatedAt:        createdAt,
+		UpdatedAt:        createdAt,
+	}))
+
+	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID:  sessionID,
+		EventType:  sessionbiz.SessionHistoryEventReviewStarted,
+		Actor:      ptrAIString("user:reviewer"),
+		JobID:      ptrAIString(replayJobID),
+		ReasonCode: ptrAIString("viewer_test"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID: sessionID,
+		EventType: sessionbiz.SessionHistoryEventReplayRequested,
+		Actor:     ptrAIString("user:replay"),
+		JobID:     ptrAIString(manualJobID),
+	})
+	require.NoError(t, err)
+
+	workbench, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.NotNil(t, workbench.DrillDown)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/workbench/viewer", workbench.DrillDown.ViewerPath)
+	require.Equal(
+		t,
+		"/v1/sessions/"+sessionID+"/workbench/viewer?view=evidence",
+		workbench.DrillDown.EvidenceViewerPath,
+	)
+	require.Equal(
+		t,
+		"/v1/sessions/"+sessionID+"/workbench/viewer?view=verification",
+		workbench.DrillDown.VerificationViewerPath,
+	)
+	require.Equal(
+		t,
+		"/v1/sessions/"+sessionID+"/workbench/viewer?history_scope=session&limit=5&offset=0&order=desc&view=history",
+		workbench.DrillDown.HistoryViewerPath,
+	)
+
+	viewer, err := biz.GetSessionWorkbenchViewer(context.Background(), &GetSessionWorkbenchViewerRequest{
+		SessionID:    sessionID,
+		View:         ptrAIString(workbenchViewerTabCompare),
+		LeftJobID:    ptrAIString(manualJobID),
+		RightJobID:   ptrAIString(replayJobID),
+		HistoryScope: ptrAIString(workbenchViewerHistoryScopeJob),
+		JobID:        ptrAIString(replayJobID),
+		HistoryLimit: 10,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, viewer)
+	require.Equal(t, sessionID, viewer.SessionID)
+	require.Equal(t, workbenchViewerTabCompare, viewer.Selected)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabEvidence)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabVerification)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabCompare)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabHistory)
+
+	require.NotNil(t, viewer.Evidence)
+	require.Equal(t, incident.IncidentID, viewer.Evidence.IncidentID)
+	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/evidence", viewer.Evidence.EvidencePath)
+	require.NotEmpty(t, viewer.Evidence.Items)
+	require.NotEmpty(t, viewer.Evidence.RelatedJobIDs)
+
+	require.NotNil(t, viewer.Verification)
+	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/verification-runs", viewer.Verification.VerificationPath)
+	require.NotEmpty(t, viewer.Verification.Items)
+
+	require.NotNil(t, viewer.Compare)
+	require.NotNil(t, viewer.Compare.Latest)
+	require.True(t, viewer.Compare.Latest.CompareAvailable)
+	require.Equal(t, manualJobID, viewer.Compare.Latest.LeftJobID)
+	require.Equal(t, replayJobID, viewer.Compare.Latest.RightJobID)
+	require.NotNil(t, viewer.Compare.SelectedPair)
+	require.Equal(t, manualJobID, viewer.Compare.SelectedPair.LeftJobID)
+	require.Equal(t, replayJobID, viewer.Compare.SelectedPair.RightJobID)
+	require.NotEmpty(t, viewer.Compare.Paths)
+
+	require.NotNil(t, viewer.History)
+	require.Equal(t, workbenchViewerHistoryScopeJob, viewer.History.Scope)
+	require.Equal(t, int64(1), viewer.History.TotalCount)
+	require.Len(t, viewer.History.Events, 1)
+	require.Equal(t, replayJobID, viewer.History.Events[0].JobID)
+}
+
+func TestGetOperatorDashboardTrends_AggregatesWindowAndFilters(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentA.Namespace = "payments"
+	incidentB.Namespace = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentA))
+	require.NoError(t, s.Incident().Update(context.Background(), incidentB))
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "needs trend test",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "needs trend test",
+	})
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	events := []struct {
+		sessionID string
+		eventType string
+		actor     string
+		createdAt time.Time
+	}{
+		{sessionA, sessionbiz.SessionHistoryEventReplayRequested, "user:alice", now.Add(-48 * time.Hour)},
+		{sessionA, sessionbiz.SessionHistoryEventReviewStarted, "user:alice", now.Add(-24 * time.Hour)},
+		{sessionB, sessionbiz.SessionHistoryEventFollowUpRequested, "user:bob", now.Add(-23 * time.Hour)},
+		{sessionB, sessionbiz.SessionHistoryEventEscalationEscalated, "system:sla", now.Add(-23 * time.Hour)},
+	}
+	for _, item := range events {
+		item := item
+		_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+			SessionID: item.sessionID,
+			EventType: item.eventType,
+			Actor:     ptrAIString(item.actor),
+			CreatedAt: &item.createdAt,
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := biz.GetOperatorDashboardTrends(context.Background(), &GetOperatorDashboardTrendsRequest{
+		Window:  ptrAIString("7d"),
+		GroupBy: ptrAIString("operator"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, "7d", resp.Window)
+	require.Equal(t, operatorDashboardTrendGroupByOperator, resp.GroupBy)
+	require.NotNil(t, resp.Summary)
+	require.EqualValues(t, 1, resp.Summary.ReplayCount)
+	require.EqualValues(t, 1, resp.Summary.FollowUpCount)
+	require.EqualValues(t, 1, resp.Summary.ReviewStartedCount)
+	require.EqualValues(t, 1, resp.Summary.SLAEscalatedCount)
+	require.EqualValues(t, 4, resp.Summary.TotalCount)
+	require.Len(t, resp.ByDay, 7)
+	require.NotEmpty(t, resp.Grouped)
+	require.NotNil(t, resp.Navigation)
+	require.Equal(t, "/v1/operator/dashboard", resp.Navigation.DashboardPath)
+	require.Equal(t, "/v1/operator/inbox", resp.Navigation.InboxPath)
+
+	filtered, err := biz.GetOperatorDashboardTrends(context.Background(), &GetOperatorDashboardTrendsRequest{
+		Window:   ptrAIString("7d"),
+		GroupBy:  ptrAIString("team"),
+		TeamID:   ptrAIString("namespace:payments"),
+		Operator: ptrAIString("alice"),
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, filtered.Summary.ReplayCount)
+	require.EqualValues(t, 1, filtered.Summary.ReviewStartedCount)
+	require.EqualValues(t, 0, filtered.Summary.FollowUpCount)
+	require.EqualValues(t, 0, filtered.Summary.SLAEscalatedCount)
+	require.EqualValues(t, 2, filtered.Summary.TotalCount)
+	require.NotNil(t, filtered.Applied)
+	require.Equal(t, "alice", filtered.Applied.Operator)
+	require.Equal(t, "namespace:payments", filtered.Applied.TeamID)
+}
+
 type workbenchRunSpec struct {
 	Status        string
 	TriggerType   string

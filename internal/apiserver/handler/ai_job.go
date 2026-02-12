@@ -351,6 +351,57 @@ func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) GetSessionWorkbenchViewer(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	sessionID := strings.TrimSpace(c.Param("sessionID"))
+	if err := h.ensureOperatorSessionAccess(c.Request.Context(), sessionID); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.GetSessionWorkbenchViewerRequest{
+		SessionID: sessionID,
+	}
+	if view := strings.TrimSpace(c.Query("view")); view != "" {
+		req.View = strPtr(view)
+	}
+	if jobID := strings.TrimSpace(c.Query("job_id")); jobID != "" {
+		req.JobID = strPtr(jobID)
+	}
+	if leftJobID := strings.TrimSpace(c.Query("left_job_id")); leftJobID != "" {
+		req.LeftJobID = strPtr(leftJobID)
+	}
+	if rightJobID := strings.TrimSpace(c.Query("right_job_id")); rightJobID != "" {
+		req.RightJobID = strPtr(rightJobID)
+	}
+	if historyScope := strings.TrimSpace(c.Query("history_scope")); historyScope != "" {
+		req.HistoryScope = strPtr(historyScope)
+	}
+	if historyOffset := strings.TrimSpace(c.Query("history_offset")); historyOffset != "" {
+		v, err := strconv.ParseInt(historyOffset, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.HistoryOffset = v
+	}
+	if historyLimit := strings.TrimSpace(c.Query("history_limit")); historyLimit != "" {
+		v, err := strconv.ParseInt(historyLimit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.HistoryLimit = v
+	}
+	if historyOrder := strings.TrimSpace(c.Query("history_order")); historyOrder != "" {
+		req.HistoryOrder = strPtr(historyOrder)
+	}
+	resp, err := h.biz.AIJobV1().GetSessionWorkbenchViewer(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -422,6 +473,39 @@ func (h *Handler) GetOperatorDashboard(c *gin.Context) {
 		return
 	}
 	resp, err := h.biz.AIJobV1().GetOperatorDashboard(c.Request.Context(), &aijobbiz.GetOperatorDashboardRequest{})
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) GetOperatorDashboardTrends(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &aijobbiz.GetOperatorDashboardTrendsRequest{}
+	if window := strings.TrimSpace(c.Query("window")); window != "" {
+		req.Window = strPtr(window)
+	}
+	if groupBy := strings.TrimSpace(c.Query("group_by")); groupBy != "" {
+		req.GroupBy = strPtr(groupBy)
+	}
+	if operator := strings.TrimSpace(c.Query("operator")); operator != "" {
+		req.Operator = strPtr(operator)
+	}
+	if teamID := strings.TrimSpace(c.Query("team_id")); teamID != "" {
+		req.TeamID = strPtr(teamID)
+	}
+	if sessionType := strings.TrimSpace(c.Query("session_type")); sessionType != "" {
+		req.SessionType = strPtr(sessionType)
+	}
+	if scanLimit := strings.TrimSpace(c.Query("scan_limit")); scanLimit != "" {
+		v, err := strconv.ParseInt(scanLimit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ScanLimit = v
+	}
+	resp, err := h.biz.AIJobV1().GetOperatorDashboardTrends(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -836,6 +920,7 @@ func init() {
 		sessionGroup.GET("/:sessionID/history", handler.ListSessionHistory)
 		sessionGroup.GET("/:sessionID/assignment_history", handler.ListSessionAssignmentHistory)
 		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
+		sessionGroup.GET("/:sessionID/workbench/viewer", handler.GetSessionWorkbenchViewer)
 		sessionGroup.POST("/:sessionID/actions/replay", handler.ReplaySessionAI)
 		sessionGroup.POST("/:sessionID/actions/follow-up", handler.FollowUpSessionAI)
 		sessionGroup.POST("/:sessionID/actions/review-start", handler.StartSessionReview)
@@ -847,6 +932,7 @@ func init() {
 		operatorGroup := v1.Group("/operator", append(mws, operatorAuthMW)...)
 		operatorGroup.GET("/inbox", handler.ListOperatorInbox)
 		operatorGroup.GET("/dashboard", handler.GetOperatorDashboard)
+		operatorGroup.GET("/dashboard/trends", handler.GetOperatorDashboardTrends)
 		operatorGroup.GET("/team_dashboard", handler.GetOperatorTeamDashboard)
 		operatorGroup.GET("/assignment_history", handler.ListOperatorAssignmentHistory)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
