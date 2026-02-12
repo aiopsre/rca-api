@@ -19,6 +19,7 @@ import (
 	triggerbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	authpkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/auth"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
@@ -1284,6 +1285,9 @@ func (h *Handler) dispatchSessionAIAction(c *gin.Context, triggerType string, de
 				)
 			}
 		}
+		cachex.InvalidateSessionReadModels(c.Request.Context(), historySessionID)
+		cachex.InvalidateOperatorReadModels(c.Request.Context())
+		cachex.InvalidateTraceReadModels(c.Request.Context(), resp.JobID)
 		h.jobQueueNotifier.Notify()
 		if h.jobQueueWakeup != nil {
 			_ = h.jobQueueWakeup.PublishAIJobQueueSignal(c.Request.Context())
@@ -1402,6 +1406,10 @@ func (h *Handler) dispatchSessionReviewAction(c *gin.Context, reviewState string
 		resp.ReviewedAt = strings.TrimSpace(updateResp.Review.ReviewedAt)
 		resp.ReasonCode = strings.TrimSpace(updateResp.Review.ReasonCode)
 	}
+	if err == nil {
+		cachex.InvalidateSessionReadModels(c.Request.Context(), sessionID)
+		cachex.InvalidateOperatorReadModels(c.Request.Context())
+	}
 	core.WriteResponse(c, resp, err)
 }
 
@@ -1448,6 +1456,10 @@ func (h *Handler) dispatchSessionAssignAction(c *gin.Context, message string) {
 		resp.AssignedBy = strings.TrimSpace(updateResp.Assignment.AssignedBy)
 		resp.AssignedAt = strings.TrimSpace(updateResp.Assignment.AssignedAt)
 		resp.AssignNote = strings.TrimSpace(updateResp.Assignment.Note)
+	}
+	if err == nil {
+		cachex.InvalidateSessionReadModels(c.Request.Context(), sessionID)
+		cachex.InvalidateOperatorReadModels(c.Request.Context())
 	}
 	core.WriteResponse(c, resp, err)
 }

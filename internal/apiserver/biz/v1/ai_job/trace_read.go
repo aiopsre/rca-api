@@ -7,6 +7,7 @@ import (
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
@@ -138,6 +139,11 @@ func (b *aiJobBiz) GetTraceReadModel(
 	if jobID == "" {
 		return nil, errorsx.ErrInvalidArgument
 	}
+	cacheKey := cachex.BuildTraceKey(jobID)
+	var cached GetTraceReadModelResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) && strings.TrimSpace(cached.JobID) != "" {
+		return &cached, nil
+	}
 	job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
 	if err != nil {
 		return nil, toAIJobGetError(err)
@@ -148,11 +154,13 @@ func (b *aiJobBiz) GetTraceReadModel(
 		runTrace = fallbackRunTraceReadModel(job)
 	}
 	decisionTrace := decisionTracePayloadToReadModel(parseDecisionTraceJSON(job.DecisionTraceJSON))
-	return &GetTraceReadModelResponse{
+	resp := &GetTraceReadModelResponse{
 		JobID:         jobID,
 		RunTrace:      runTrace,
 		DecisionTrace: decisionTrace,
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLTrace)
+	return resp, nil
 }
 
 func (b *aiJobBiz) ListTraceReadModels(
@@ -215,6 +223,11 @@ func (b *aiJobBiz) CompareTraceReadModels(
 	if leftJobID == rightJobID {
 		return nil, errorsx.ErrInvalidArgument
 	}
+	cacheKey := cachex.BuildCompareKey(leftJobID, rightJobID)
+	var cached CompareTraceReadModelsResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) && cached.Left != nil && cached.Right != nil {
+		return &cached, nil
+	}
 
 	left, err := b.GetTraceReadModel(ctx, &GetTraceReadModelRequest{JobID: leftJobID})
 	if err != nil {
@@ -243,14 +256,16 @@ func (b *aiJobBiz) CompareTraceReadModels(
 
 	leftSide := buildTraceCompareSide(left)
 	rightSide := buildTraceCompareSide(right)
-	return &CompareTraceReadModelsResponse{
+	resp := &CompareTraceReadModelsResponse{
 		Left:              leftSide,
 		Right:             rightSide,
 		SameSession:       sameSession,
 		SameIncident:      sameIncident,
 		ChangedRootCause:  strings.TrimSpace(leftSide.RootCauseSummary) != strings.TrimSpace(rightSide.RootCauseSummary),
 		ChangedConfidence: leftSide.Confidence != rightSide.Confidence,
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLCompare)
+	return resp, nil
 }
 
 func traceSummaryFromAIJob(job *model.AIJobM) *TraceReadSummary {

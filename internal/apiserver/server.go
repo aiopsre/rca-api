@@ -10,6 +10,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/handler"
 	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
 	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
@@ -72,6 +73,9 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	noticepkg.SetConfiguredNoticeBaseURL(cfg.NoticeBaseURL)
 	noticepkg.SetNoticeDeliverySignalPublisher(nil)
 	if err := cfg.configureNoticeDeliverySignalPublisher(ctx); err != nil {
+		return nil, err
+	}
+	if err := cfg.configureOperatorReadCacheClient(ctx); err != nil {
 		return nil, err
 	}
 
@@ -170,6 +174,8 @@ func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) e
 		}
 		return err
 	}
+	// Reuse the same redis client for read-side cache whenever notice stream client is available.
+	cachex.ConfigureRedisClient(client)
 	noticepkg.SetNoticeDeliverySignalPublisher(noticepkg.NewRedisNoticeDeliveryStream(
 		client,
 		noticepkg.RedisNoticeDeliveryStreamOptions{
@@ -178,6 +184,38 @@ func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) e
 			Group:   streamOpts.ConsumerGroup,
 		},
 	))
+	return nil
+}
+
+func (cfg *Config) configureOperatorReadCacheClient(ctx context.Context) error {
+	if cfg == nil {
+		cachex.ConfigureRedisClient(nil)
+		return nil
+	}
+	if cachex.Enabled() {
+		return nil
+	}
+	opts := cfg.RedisOptions
+	opts.ApplyDefaults()
+	if !opts.Enabled {
+		cachex.ConfigureRedisClient(nil)
+		return nil
+	}
+	client, err := redisx.NewClient(ctx, opts)
+	if err != nil {
+		if opts.FailOpen {
+			slog.Error("operator read cache init failed, fallback to db-only read aggregation",
+				"addr", opts.Addr,
+				"capability", "read_cache",
+				"fallback", true,
+				"error", err,
+			)
+			cachex.ConfigureRedisClient(nil)
+			return nil
+		}
+		return err
+	}
+	cachex.ConfigureRedisClient(client)
 	return nil
 }
 
@@ -212,6 +250,9 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := s.cfg.Handler.Close(); err != nil {
 			slog.Warn("server component close failed", "component", "handler.biz", "error", err)
 		}
+	}
+	if err := cachex.Close(); err != nil {
+		slog.Warn("server component close failed", "component", "redis.read_cache", "error", err)
 	}
 
 	slog.Info("server exited successfully")

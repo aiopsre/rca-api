@@ -16,6 +16,7 @@ import (
 
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	"github.com/aiopsre/rca-api/pkg/store/where"
@@ -600,6 +601,15 @@ type sessionSLAContextState struct {
 	ReasonCode      string
 }
 
+type sessionContextStateSnapshot struct {
+	SessionID          string                         `json:"session_id"`
+	SessionUpdatedAt   string                         `json:"session_updated_at"`
+	PinnedEvidenceRefs []string                       `json:"pinned_evidence_refs"`
+	Review             *sessionReviewContextState     `json:"review,omitempty"`
+	Assignment         *sessionAssignmentContextState `json:"assignment,omitempty"`
+	SLA                *sessionSLAContextState        `json:"sla,omitempty"`
+}
+
 type operatorInboxFilters struct {
 	ReviewState     string
 	HasNeedsReview  bool
@@ -670,7 +680,11 @@ func newOperatorReadCache(ttl time.Duration) *operatorReadCache {
 	}
 }
 
-func (c *operatorReadCache) getInboxItem(sessionID string, now time.Time) (*OperatorInboxItem, bool, bool) {
+func (c *operatorReadCache) getInboxItem(
+	sessionID string,
+	now time.Time,
+	sourceUpdatedAt time.Time,
+) (*OperatorInboxItem, bool, bool) {
 	if c == nil {
 		return nil, false, false
 	}
@@ -685,6 +699,9 @@ func (c *operatorReadCache) getInboxItem(sessionID string, now time.Time) (*Oper
 		return nil, false, false
 	}
 	stale := now.Sub(entry.RefreshedAt) > c.ttl
+	if !stale && !sourceUpdatedAt.IsZero() && entry.RefreshedAt.Before(sourceUpdatedAt.UTC()) {
+		stale = true
+	}
 	return cloneOperatorInboxItem(entry.Item), true, stale
 }
 
@@ -756,6 +773,9 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	if limit > maxSessionWorkbenchRecentLimit {
 		return nil, errorsx.ErrInvalidArgument
 	}
+	sessionCacheKey := cachex.BuildWorkbenchKey(sessionID)
+	asyncRefresh := rq.AsyncRefresh != nil && *rq.AsyncRefresh
+	canUseWorkbenchCache := limit == defaultSessionWorkbenchRecentLimit
 
 	sessionObj, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", sessionID))
 	if err != nil {
@@ -768,9 +788,23 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	if !b.canAccessOperatorSession(ctx, sessionObj, assignmentState) {
 		return nil, errno.ErrPermissionDenied
 	}
-	if rq.AsyncRefresh != nil && *rq.AsyncRefresh {
+	if canUseWorkbenchCache && !asyncRefresh {
+		var cached GetSessionWorkbenchResponse
+		if cachex.GetJSON(ctx, sessionCacheKey, &cached) &&
+			cached.Session != nil &&
+			strings.TrimSpace(cached.Session.SessionID) == sessionID &&
+			strings.TrimSpace(cached.Session.UpdatedAt) == toRFC3339String(sessionObj.UpdatedAt) {
+			return &cached, nil
+		}
+	}
+	if asyncRefresh {
 		b.refreshOperatorInboxSnapshotAsync(ctx, sessionObj)
 	}
+	stateSnapshot := b.getOrLoadSessionStateSnapshot(ctx, sessionObj)
+	assignmentState = cloneSessionAssignmentContextState(stateSnapshot.Assignment)
+	reviewState := cloneSessionReviewContextState(stateSnapshot.Review)
+	baseSLAState := cloneSessionSLAContextState(stateSnapshot.SLA)
+	pinnedEvidenceRefs := append([]string(nil), stateSnapshot.PinnedEvidenceRefs...)
 
 	listResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
 		SessionID: &sessionID,
@@ -798,9 +832,6 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		return nil, err
 	}
 
-	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
-	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
-	baseSLAState := extractSessionSLAState(sessionObj.ContextStateJSON)
 	slaState := evaluateSessionSLAContext(
 		time.Now().UTC(),
 		reviewState,
@@ -834,7 +865,7 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		nextHints,
 	)
 
-	return &GetSessionWorkbenchResponse{
+	resp := &GetSessionWorkbenchResponse{
 		Session:          sessionToWorkbench(sessionObj, pinnedEvidenceRefs, reviewState, assignmentState, slaState),
 		Incident:         incidentBlock,
 		LatestRun:        latestRun,
@@ -847,7 +878,11 @@ func (b *aiJobBiz) GetSessionWorkbench(
 		RecentHistory:    recentHistory,
 		HistoryPath:      historyPath,
 		DrillDown:        drillDown,
-	}, nil
+	}
+	if canUseWorkbenchCache {
+		_ = cachex.SetJSON(ctx, sessionCacheKey, resp, cachex.TTLWorkbench)
+	}
+	return resp, nil
 }
 
 func (b *aiJobBiz) GetSessionWorkbenchViewer(
@@ -1554,6 +1589,13 @@ func (b *aiJobBiz) ListOperatorInbox(
 	if err != nil {
 		return nil, err
 	}
+	cacheKey := b.buildOperatorInboxCacheKey(ctx, filters, offset, limit, opts)
+	if !opts.AsyncRefresh {
+		var cached ListOperatorInboxResponse
+		if cachex.GetJSON(ctx, cacheKey, &cached) {
+			return &cached, nil
+		}
+	}
 	listResult, err := b.listOperatorInboxItems(ctx, filters, opts)
 	if err != nil {
 		return nil, err
@@ -1562,11 +1604,13 @@ func (b *aiJobBiz) ListOperatorInbox(
 
 	totalCount := int64(len(items))
 	if offset >= totalCount {
-		return &ListOperatorInboxResponse{
+		resp := &ListOperatorInboxResponse{
 			TotalCount:     totalCount,
 			Items:          []*OperatorInboxItem{},
 			Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
-		}, nil
+		}
+		_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLInbox)
+		return resp, nil
 	}
 	end := offset + limit
 	if end > totalCount {
@@ -1574,11 +1618,13 @@ func (b *aiJobBiz) ListOperatorInbox(
 	}
 	startIdx := int(offset)
 	endIdx := int(end)
-	return &ListOperatorInboxResponse{
+	resp := &ListOperatorInboxResponse{
 		TotalCount:     totalCount,
 		Items:          items[startIdx:endIdx],
 		Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLInbox)
+	return resp, nil
 }
 
 func (b *aiJobBiz) GetOperatorDashboard(
@@ -1602,6 +1648,13 @@ func (b *aiJobBiz) GetOperatorDashboard(
 	opts, err := normalizeOperatorReadQueryOptions(rq.ScanLimit, rq.Shard, rq.ShardCount, rq.AsyncRefresh)
 	if err != nil {
 		return nil, err
+	}
+	cacheKey := b.buildOperatorDashboardCacheKey(ctx, "", previewLimit, recentWindow, opts)
+	if !opts.AsyncRefresh {
+		var cached GetOperatorDashboardResponse
+		if cachex.GetJSON(ctx, cacheKey, &cached) && cached.Overview != nil {
+			return &cached, nil
+		}
 	}
 	listResult, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{}, opts)
 	if err != nil {
@@ -1699,7 +1752,7 @@ func (b *aiJobBiz) GetOperatorDashboard(
 		}
 	}
 
-	return &GetOperatorDashboardResponse{
+	resp := &GetOperatorDashboardResponse{
 		AsOf:         toRFC3339String(now),
 		Overview:     overview,
 		Escalation:   escalation,
@@ -1716,7 +1769,9 @@ func (b *aiJobBiz) GetOperatorDashboard(
 			},
 		},
 		Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLDashboard)
+	return resp, nil
 }
 
 func (b *aiJobBiz) GetOperatorDashboardTrends(
@@ -1899,6 +1954,13 @@ func (b *aiJobBiz) GetOperatorTeamDashboard(
 	if err != nil {
 		return nil, err
 	}
+	cacheKey := b.buildOperatorDashboardCacheKey(ctx, teamID, limit, 0, opts)
+	if !opts.AsyncRefresh {
+		var cached GetOperatorTeamDashboardResponse
+		if cachex.GetJSON(ctx, cacheKey, &cached) && cached.Overview != nil {
+			return &cached, nil
+		}
+	}
 	listResult, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{TeamID: teamID}, opts)
 	if err != nil {
 		return nil, err
@@ -1984,7 +2046,7 @@ func (b *aiJobBiz) GetOperatorTeamDashboard(
 	if ascending {
 		sortOrder = "asc"
 	}
-	return &GetOperatorTeamDashboardResponse{
+	resp := &GetOperatorTeamDashboardResponse{
 		AsOf:         toRFC3339String(now),
 		TeamID:       teamID,
 		Overview:     overview,
@@ -2000,7 +2062,9 @@ func (b *aiJobBiz) GetOperatorTeamDashboard(
 			TeamInboxPath: teamInboxPath,
 		},
 		Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLDashboard)
+	return resp, nil
 }
 
 func buildOperatorDashboardQueuePreview(items []*OperatorInboxItem, previewLimit int) *OperatorDashboardQueuePreview {
@@ -2261,6 +2325,107 @@ func buildOperatorPreaggregationMeta(
 	}
 }
 
+func (b *aiJobBiz) buildOperatorInboxCacheKey(
+	ctx context.Context,
+	filters *operatorInboxFilters,
+	offset int64,
+	limit int64,
+	opts *operatorReadQueryOptions,
+) string {
+	if filters == nil {
+		filters = &operatorInboxFilters{}
+	}
+	normalizedOpts, err := normalizeOperatorReadQueryOptionsFromValue(opts)
+	if err != nil {
+		normalizedOpts = &operatorReadQueryOptions{
+			ScanLimit:    maxOperatorInboxScan,
+			Shard:        0,
+			ShardCount:   1,
+			AsyncRefresh: false,
+		}
+	}
+	filterHash := cachex.HashKeyPart(
+		filters.ReviewState,
+		strconv.FormatBool(filters.HasNeedsReview),
+		strconv.FormatBool(filters.NeedsReview),
+		filters.SessionType,
+		filters.Assignee,
+		filters.EscalationState,
+		filters.TeamID,
+		strconv.FormatInt(offset, 10),
+		strconv.FormatInt(limit, 10),
+		strconv.FormatInt(normalizedOpts.ScanLimit, 10),
+		strconv.FormatInt(normalizedOpts.Shard, 10),
+		strconv.FormatInt(normalizedOpts.ShardCount, 10),
+		strconv.FormatBool(normalizedOpts.AsyncRefresh),
+	)
+	return cachex.BuildInboxKey(resolveOperatorCacheIdentity(ctx), filterHash)
+}
+
+func (b *aiJobBiz) buildOperatorDashboardCacheKey(
+	ctx context.Context,
+	teamID string,
+	limit int64,
+	recentWindow time.Duration,
+	opts *operatorReadQueryOptions,
+) string {
+	normalizedOpts, err := normalizeOperatorReadQueryOptionsFromValue(opts)
+	if err != nil {
+		normalizedOpts = &operatorReadQueryOptions{
+			ScanLimit:    maxOperatorInboxScan,
+			Shard:        0,
+			ShardCount:   1,
+			AsyncRefresh: false,
+		}
+	}
+	scopeTeam := resolveDashboardCacheTeamID(ctx, teamID)
+	filterHash := cachex.HashKeyPart(
+		strconv.FormatInt(limit, 10),
+		strconv.FormatInt(int64(recentWindow/time.Second), 10),
+		strconv.FormatInt(normalizedOpts.ScanLimit, 10),
+		strconv.FormatInt(normalizedOpts.Shard, 10),
+		strconv.FormatInt(normalizedOpts.ShardCount, 10),
+		strconv.FormatBool(normalizedOpts.AsyncRefresh),
+	)
+	return cachex.BuildDashboardKey(scopeTeam) + ":" + filterHash
+}
+
+func resolveOperatorCacheIdentity(ctx context.Context) string {
+	if ctx == nil {
+		return "anonymous"
+	}
+	if userID := strings.TrimSpace(contextx.UserID(ctx)); userID != "" {
+		return userID
+	}
+	if username := strings.TrimSpace(contextx.Username(ctx)); username != "" {
+		return username
+	}
+	return "anonymous"
+}
+
+func resolveDashboardCacheTeamID(ctx context.Context, explicitTeamID string) string {
+	teamID := strings.TrimSpace(explicitTeamID)
+	if teamID != "" {
+		return teamID
+	}
+	teams := contextx.OperatorTeams(ctx)
+	if len(teams) > 0 {
+		normalized := make([]string, 0, len(teams))
+		for _, item := range teams {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			normalized = append(normalized, item)
+		}
+		sort.Strings(normalized)
+		if len(normalized) > 0 {
+			return strings.Join(normalized, ",")
+		}
+	}
+	return "global"
+}
+
 func (b *aiJobBiz) getOrBuildOperatorInboxItem(
 	ctx context.Context,
 	sessionObj *model.SessionContextM,
@@ -2275,7 +2440,7 @@ func (b *aiJobBiz) getOrBuildOperatorInboxItem(
 	}
 	now := time.Now().UTC()
 	if b != nil && b.operatorReadCache != nil {
-		if cached, ok, stale := b.operatorReadCache.getInboxItem(sessionID, now); ok {
+		if cached, ok, stale := b.operatorReadCache.getInboxItem(sessionID, now, sessionObj.UpdatedAt); ok {
 			if opts != nil && opts.AsyncRefresh {
 				if stale {
 					_ = b.refreshOperatorInboxSnapshotAsync(ctx, sessionObj)
@@ -2373,9 +2538,10 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 		return &OperatorInboxItem{}, nil
 	}
 	sessionID := strings.TrimSpace(sessionObj.SessionID)
-	reviewState := extractSessionReviewState(sessionObj.ContextStateJSON)
-	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
-	pinnedEvidenceRefs := extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON)
+	stateSnapshot := b.getOrLoadSessionStateSnapshot(ctx, sessionObj)
+	reviewState := cloneSessionReviewContextState(stateSnapshot.Review)
+	assignmentState := cloneSessionAssignmentContextState(stateSnapshot.Assignment)
+	pinnedEvidenceRefs := append([]string(nil), stateSnapshot.PinnedEvidenceRefs...)
 	listResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
 		SessionID: strPtr(sessionID),
 		Offset:    0,
@@ -2394,7 +2560,7 @@ func (b *aiJobBiz) buildOperatorInboxItem(
 		}
 	}
 	reviewFlags := buildWorkbenchReviewFlags(latestDecision, latestRun, pinnedEvidenceRefs)
-	baseSLAState := extractSessionSLAState(sessionObj.ContextStateJSON)
+	baseSLAState := cloneSessionSLAContextState(stateSnapshot.SLA)
 	slaState := evaluateSessionSLAContext(
 		time.Now().UTC(),
 		reviewState,
@@ -2617,6 +2783,78 @@ func cloneOperatorInboxItem(in *OperatorInboxItem) *OperatorInboxItem {
 		out.NextActionHints = append([]string(nil), in.NextActionHints...)
 	} else {
 		out.NextActionHints = nil
+	}
+	return &out
+}
+
+func (b *aiJobBiz) getOrLoadSessionStateSnapshot(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+) *sessionContextStateSnapshot {
+	if sessionObj == nil {
+		return &sessionContextStateSnapshot{}
+	}
+	sessionID := strings.TrimSpace(sessionObj.SessionID)
+	updatedAt := toRFC3339String(sessionObj.UpdatedAt)
+	cacheKey := cachex.BuildSessionStateKey(sessionID)
+	var cached sessionContextStateSnapshot
+	if cachex.GetJSON(ctx, cacheKey, &cached) &&
+		strings.TrimSpace(cached.SessionID) == sessionID &&
+		strings.TrimSpace(cached.SessionUpdatedAt) == updatedAt {
+		return cloneSessionContextStateSnapshot(&cached)
+	}
+
+	snapshot := &sessionContextStateSnapshot{
+		SessionID:          sessionID,
+		SessionUpdatedAt:   updatedAt,
+		PinnedEvidenceRefs: extractPinnedEvidenceRefs(sessionObj.PinnedEvidenceJSON),
+		Review:             extractSessionReviewState(sessionObj.ContextStateJSON),
+		Assignment:         extractSessionAssignmentState(sessionObj.ContextStateJSON),
+		SLA:                extractSessionSLAState(sessionObj.ContextStateJSON),
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, snapshot, cachex.TTLSession)
+	return cloneSessionContextStateSnapshot(snapshot)
+}
+
+func cloneSessionContextStateSnapshot(in *sessionContextStateSnapshot) *sessionContextStateSnapshot {
+	if in == nil {
+		return &sessionContextStateSnapshot{}
+	}
+	return &sessionContextStateSnapshot{
+		SessionID:          strings.TrimSpace(in.SessionID),
+		SessionUpdatedAt:   strings.TrimSpace(in.SessionUpdatedAt),
+		PinnedEvidenceRefs: append([]string(nil), in.PinnedEvidenceRefs...),
+		Review:             cloneSessionReviewContextState(in.Review),
+		Assignment:         cloneSessionAssignmentContextState(in.Assignment),
+		SLA:                cloneSessionSLAContextState(in.SLA),
+	}
+}
+
+func cloneSessionReviewContextState(in *sessionReviewContextState) *sessionReviewContextState {
+	if in == nil {
+		return &sessionReviewContextState{State: sessionbiz.SessionReviewStatePending}
+	}
+	out := *in
+	out.State = normalizeWorkbenchReviewState(out.State)
+	return &out
+}
+
+func cloneSessionAssignmentContextState(in *sessionAssignmentContextState) *sessionAssignmentContextState {
+	if in == nil {
+		return &sessionAssignmentContextState{}
+	}
+	out := *in
+	return &out
+}
+
+func cloneSessionSLAContextState(in *sessionSLAContextState) *sessionSLAContextState {
+	if in == nil {
+		return &sessionSLAContextState{EscalationState: sessionbiz.SessionEscalationStateNone}
+	}
+	out := *in
+	out.EscalationState = normalizeSLAEscalationState(out.EscalationState)
+	if out.EscalationState == "" {
+		out.EscalationState = sessionbiz.SessionEscalationStateNone
 	}
 	return &out
 }

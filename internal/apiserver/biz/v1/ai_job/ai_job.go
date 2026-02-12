@@ -19,6 +19,7 @@ import (
 	verificationbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/verification"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
 	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
@@ -783,6 +784,11 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	}
 	if targetStatus == jobStatusSucceeded {
 		b.runKBBestEffort(ctx, jobID)
+	}
+	cachex.InvalidateTraceReadModels(ctx, jobID)
+	if sessionPatch != nil {
+		cachex.InvalidateSessionReadModels(ctx, sessionPatch.SessionID)
+		cachex.InvalidateOperatorReadModels(ctx)
 	}
 
 	return &v1.FinalizeAIJobResponse{}, nil

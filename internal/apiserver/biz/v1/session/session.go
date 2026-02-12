@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
@@ -555,6 +556,8 @@ func (b *sessionBiz) Update(ctx context.Context, rq *UpdateSessionContextRequest
 		}
 		return nil, errno.ErrSessionContextUpdateFailed
 	}
+	cachex.InvalidateSessionReadModels(ctx, out.SessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
 
 	return &UpdateSessionContextResponse{Session: out}, nil
 }
@@ -636,6 +639,8 @@ func (b *sessionBiz) UpdateReviewState(
 			Actor:           ptrString(firstNonEmpty(review.ReviewedBy, defaultSLAHistoryActor)),
 		})
 	}
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
 	return &UpdateReviewStateResponse{Session: out, Review: review}, nil
 }
 
@@ -717,6 +722,8 @@ func (b *sessionBiz) UpdateAssignment(
 			"previous_assignee": strings.TrimSpace(previousAssignment.Assignee),
 		},
 	})
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
 	return &UpdateAssignmentResponse{Session: out, Assignment: assignment}, nil
 }
 
@@ -784,6 +791,8 @@ func (b *sessionBiz) AppendHistoryEvent(
 	if err := b.store.SessionHistoryEvent().Create(ctx, obj); err != nil {
 		return nil, errno.ErrSessionHistoryCreateFailed
 	}
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
 	return &AppendSessionHistoryEventResponse{
 		Event: sessionHistoryEventToReadModel(obj),
 	}, nil
@@ -819,6 +828,11 @@ func (b *sessionBiz) ListHistory(
 	if err != nil {
 		return nil, err
 	}
+	cacheKey := cachex.BuildHistoryKey(sessionID, offset, limit, ascending)
+	var cached ListSessionHistoryResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) {
+		return &cached, nil
+	}
 	if !b.isHistoryTableReady(ctx) {
 		return &ListSessionHistoryResponse{TotalCount: 0, Events: []*SessionHistoryEventReadModel{}}, nil
 	}
@@ -837,10 +851,12 @@ func (b *sessionBiz) ListHistory(
 	for _, item := range list {
 		events = append(events, sessionHistoryEventToReadModel(item))
 	}
-	return &ListSessionHistoryResponse{
+	resp := &ListSessionHistoryResponse{
 		TotalCount: total,
 		Events:     events,
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLHistory)
+	return resp, nil
 }
 
 func (b *sessionBiz) ListAssignmentHistory(
@@ -873,6 +889,11 @@ func (b *sessionBiz) ListAssignmentHistory(
 	if err != nil {
 		return nil, err
 	}
+	cacheKey := cachex.BuildHistoryKey(sessionID, offset, limit, ascending) + ":assignment"
+	var cached ListSessionAssignmentHistoryResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) {
+		return &cached, nil
+	}
 	if !b.isHistoryTableReady(ctx) {
 		return &ListSessionAssignmentHistoryResponse{
 			TotalCount: 0,
@@ -895,10 +916,12 @@ func (b *sessionBiz) ListAssignmentHistory(
 	for _, item := range list {
 		events = append(events, sessionAssignmentHistoryEventToReadModel(item))
 	}
-	return &ListSessionAssignmentHistoryResponse{
+	resp := &ListSessionAssignmentHistoryResponse{
 		TotalCount: total,
 		Events:     events,
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLHistory)
+	return resp, nil
 }
 
 func (b *sessionBiz) ListGlobalAssignmentHistory(
@@ -923,14 +946,27 @@ func (b *sessionBiz) ListGlobalAssignmentHistory(
 	if err != nil {
 		return nil, err
 	}
+	targetSessionID := trimOptional(rq.SessionID)
+	cacheKey := "history:global_assignment:" + cachex.HashKeyPart(
+		targetSessionID,
+		strconv.FormatInt(offset, 10),
+		strconv.FormatInt(limit, 10),
+		strconv.FormatBool(ascending),
+		strings.TrimSpace(contextx.UserID(ctx)),
+		strings.TrimSpace(contextx.Username(ctx)),
+		strings.Join(contextx.OperatorTeams(ctx), ","),
+		strings.Join(contextx.OperatorScopes(ctx), ","),
+	)
+	var cached ListGlobalAssignmentHistoryResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) {
+		return &cached, nil
+	}
 	if !b.isHistoryTableReady(ctx) {
 		return &ListGlobalAssignmentHistoryResponse{
 			TotalCount: 0,
 			Events:     []*SessionAssignmentHistoryEventReadModel{},
 		}, nil
 	}
-
-	targetSessionID := trimOptional(rq.SessionID)
 	sessionIDs, err := b.listAccessibleSessionIDs(ctx, targetSessionID)
 	if err != nil {
 		return nil, err
@@ -957,10 +993,12 @@ func (b *sessionBiz) ListGlobalAssignmentHistory(
 	for _, item := range list {
 		events = append(events, sessionAssignmentHistoryEventToReadModel(item))
 	}
-	return &ListGlobalAssignmentHistoryResponse{
+	resp := &ListGlobalAssignmentHistoryResponse{
 		TotalCount: total,
 		Events:     events,
-	}, nil
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLHistory)
+	return resp, nil
 }
 
 func (b *sessionBiz) SyncSLAState(
@@ -1043,6 +1081,8 @@ func (b *sessionBiz) SyncSLAState(
 			},
 		})
 	}
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
 	return &SyncSessionSLAStateResponse{Session: out, Changed: true}, nil
 }
 
