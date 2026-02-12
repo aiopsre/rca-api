@@ -2,10 +2,13 @@ package ai_job
 
 import (
 	"context"
+	"hash/fnv"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
@@ -25,6 +28,7 @@ const (
 	defaultOperatorInboxLimit            = int64(20)
 	maxOperatorInboxLimit                = int64(100)
 	maxOperatorInboxScan                 = int64(500)
+	maxOperatorInboxScanHardLimit        = int64(5000)
 	defaultOperatorDashboardPreviewLimit = int64(3)
 	maxOperatorDashboardPreviewLimit     = int64(10)
 	defaultOperatorDashboardRecentWindow = 24 * time.Hour
@@ -40,6 +44,7 @@ const (
 	defaultWorkbenchViewerLimit          = int64(20)
 	maxWorkbenchViewerLimit              = int64(100)
 	defaultWorkbenchViewerTabsLimit      = int64(5)
+	defaultOperatorReadCacheTTL          = 30 * time.Second
 	operatorInboxTraceProbeLimit         = int64(5)
 	defaultSessionSLAWindow              = 2 * time.Hour
 
@@ -68,8 +73,9 @@ const (
 )
 
 type GetSessionWorkbenchRequest struct {
-	SessionID   string
-	RecentLimit int64
+	SessionID    string
+	RecentLimit  int64
+	AsyncRefresh *bool
 }
 
 type GetSessionWorkbenchResponse struct {
@@ -96,24 +102,37 @@ type ListOperatorInboxRequest struct {
 	EscalationState *string
 	Offset          int64
 	Limit           int64
+	ScanLimit       int64
+	Shard           *int64
+	ShardCount      *int64
+	AsyncRefresh    *bool
 }
 
 type ListOperatorInboxResponse struct {
-	TotalCount int64                `json:"total_count"`
-	Items      []*OperatorInboxItem `json:"items"`
+	TotalCount     int64                       `json:"total_count"`
+	Items          []*OperatorInboxItem        `json:"items"`
+	Preaggregation *OperatorPreaggregationMeta `json:"preaggregation,omitempty"`
 }
 
 type GetOperatorDashboardRequest struct {
 	PreviewLimit int64
 	RecentWindow time.Duration
+	ScanLimit    int64
+	Shard        *int64
+	ShardCount   *int64
+	AsyncRefresh *bool
 }
 
 type GetOperatorTeamDashboardRequest struct {
-	TeamID string
-	Offset int64
-	Limit  int64
-	TopN   int64
-	Order  *string
+	TeamID       string
+	Offset       int64
+	Limit        int64
+	TopN         int64
+	Order        *string
+	ScanLimit    int64
+	Shard        *int64
+	ShardCount   *int64
+	AsyncRefresh *bool
 }
 
 type GetOperatorDashboardTrendsRequest struct {
@@ -138,13 +157,14 @@ type GetSessionWorkbenchViewerRequest struct {
 }
 
 type GetOperatorDashboardResponse struct {
-	AsOf         string                         `json:"as_of"`
-	Overview     *OperatorDashboardOverview     `json:"overview"`
-	Escalation   *OperatorDashboardEscalation   `json:"escalation"`
-	Distribution *OperatorDashboardDistribution `json:"distribution"`
-	Activity     *OperatorDashboardActivity     `json:"activity"`
-	QueuePreview *OperatorDashboardQueuePreview `json:"queue_preview"`
-	Navigation   *OperatorDashboardNavigation   `json:"navigation"`
+	AsOf           string                         `json:"as_of"`
+	Overview       *OperatorDashboardOverview     `json:"overview"`
+	Escalation     *OperatorDashboardEscalation   `json:"escalation"`
+	Distribution   *OperatorDashboardDistribution `json:"distribution"`
+	Activity       *OperatorDashboardActivity     `json:"activity"`
+	QueuePreview   *OperatorDashboardQueuePreview `json:"queue_preview"`
+	Navigation     *OperatorDashboardNavigation   `json:"navigation"`
+	Preaggregation *OperatorPreaggregationMeta    `json:"preaggregation,omitempty"`
 }
 
 type GetOperatorDashboardTrendsResponse struct {
@@ -199,17 +219,18 @@ type OperatorDashboardTrendNavigation struct {
 }
 
 type GetOperatorTeamDashboardResponse struct {
-	AsOf         string                             `json:"as_of"`
-	TeamID       string                             `json:"team_id,omitempty"`
-	Overview     *OperatorTeamDashboardOverview     `json:"overview"`
-	Distribution *OperatorTeamDashboardDistribution `json:"distribution"`
-	TopHighRisk  []*OperatorTeamDashboardSession    `json:"top_high_risk"`
-	TotalCount   int64                              `json:"total_count"`
-	Offset       int64                              `json:"offset"`
-	Limit        int64                              `json:"limit"`
-	Items        []*OperatorTeamDashboardSession    `json:"items"`
-	SortOrder    string                             `json:"sort_order"`
-	Navigation   *OperatorTeamDashboardNavigation   `json:"navigation"`
+	AsOf           string                             `json:"as_of"`
+	TeamID         string                             `json:"team_id,omitempty"`
+	Overview       *OperatorTeamDashboardOverview     `json:"overview"`
+	Distribution   *OperatorTeamDashboardDistribution `json:"distribution"`
+	TopHighRisk    []*OperatorTeamDashboardSession    `json:"top_high_risk"`
+	TotalCount     int64                              `json:"total_count"`
+	Offset         int64                              `json:"offset"`
+	Limit          int64                              `json:"limit"`
+	Items          []*OperatorTeamDashboardSession    `json:"items"`
+	SortOrder      string                             `json:"sort_order"`
+	Navigation     *OperatorTeamDashboardNavigation   `json:"navigation"`
+	Preaggregation *OperatorPreaggregationMeta        `json:"preaggregation,omitempty"`
 }
 
 type GetSessionWorkbenchViewerResponse struct {
@@ -594,6 +615,128 @@ type operatorDashboardTrendSessionMeta struct {
 	TeamKey     string
 }
 
+type operatorReadQueryOptions struct {
+	ScanLimit    int64
+	Shard        int64
+	ShardCount   int64
+	AsyncRefresh bool
+}
+
+type operatorReadListResult struct {
+	Items []*OperatorInboxItem
+	Stats *operatorPreaggregationStats
+}
+
+type operatorPreaggregationStats struct {
+	ScannedCount   int64
+	BuiltCount     int64
+	CacheHitCount  int64
+	CacheMissCount int64
+	RefreshQueued  int64
+}
+
+type OperatorPreaggregationMeta struct {
+	ScanLimit      int64 `json:"scan_limit"`
+	Shard          int64 `json:"shard"`
+	ShardCount     int64 `json:"shard_count"`
+	AsyncRefresh   bool  `json:"async_refresh"`
+	ScannedCount   int64 `json:"scanned_count"`
+	BuiltCount     int64 `json:"built_count"`
+	CacheHitCount  int64 `json:"cache_hit_count"`
+	CacheMissCount int64 `json:"cache_miss_count"`
+	RefreshQueued  int64 `json:"refresh_queued"`
+}
+
+type operatorReadCacheEntry struct {
+	Item        *OperatorInboxItem
+	RefreshedAt time.Time
+}
+
+type operatorReadCache struct {
+	ttl        time.Duration
+	mu         sync.RWMutex
+	inboxItems map[string]*operatorReadCacheEntry
+	inFlight   map[string]struct{}
+}
+
+func newOperatorReadCache(ttl time.Duration) *operatorReadCache {
+	if ttl <= 0 {
+		ttl = defaultOperatorReadCacheTTL
+	}
+	return &operatorReadCache{
+		ttl:        ttl,
+		inboxItems: map[string]*operatorReadCacheEntry{},
+		inFlight:   map[string]struct{}{},
+	}
+}
+
+func (c *operatorReadCache) getInboxItem(sessionID string, now time.Time) (*OperatorInboxItem, bool, bool) {
+	if c == nil {
+		return nil, false, false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, false, false
+	}
+	c.mu.RLock()
+	entry := c.inboxItems[sessionID]
+	c.mu.RUnlock()
+	if entry == nil || entry.Item == nil {
+		return nil, false, false
+	}
+	stale := now.Sub(entry.RefreshedAt) > c.ttl
+	return cloneOperatorInboxItem(entry.Item), true, stale
+}
+
+func (c *operatorReadCache) setInboxItem(sessionID string, item *OperatorInboxItem, refreshedAt time.Time) {
+	if c == nil || item == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	if refreshedAt.IsZero() {
+		refreshedAt = time.Now().UTC()
+	}
+	c.mu.Lock()
+	c.inboxItems[sessionID] = &operatorReadCacheEntry{
+		Item:        cloneOperatorInboxItem(item),
+		RefreshedAt: refreshedAt.UTC(),
+	}
+	c.mu.Unlock()
+}
+
+func (c *operatorReadCache) beginRefresh(sessionID string) bool {
+	if c == nil {
+		return false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.inFlight[sessionID]; exists {
+		return false
+	}
+	c.inFlight[sessionID] = struct{}{}
+	return true
+}
+
+func (c *operatorReadCache) endRefresh(sessionID string) {
+	if c == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.inFlight, sessionID)
+	c.mu.Unlock()
+}
+
 func (b *aiJobBiz) GetSessionWorkbench(
 	ctx context.Context,
 	rq *GetSessionWorkbenchRequest,
@@ -624,6 +767,9 @@ func (b *aiJobBiz) GetSessionWorkbench(
 	assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
 	if !b.canAccessOperatorSession(ctx, sessionObj, assignmentState) {
 		return nil, errno.ErrPermissionDenied
+	}
+	if rq.AsyncRefresh != nil && *rq.AsyncRefresh {
+		b.refreshOperatorInboxSnapshotAsync(ctx, sessionObj)
 	}
 
 	listResp, err := b.ListTraceReadModels(ctx, &ListTraceReadModelsRequest{
@@ -1404,14 +1550,23 @@ func (b *aiJobBiz) ListOperatorInbox(
 	if strings.TrimSpace(filters.TeamID) != "" && !canOperatorScopeTeam(ctx, filters.TeamID) {
 		return nil, errno.ErrPermissionDenied
 	}
-	items, err := b.listOperatorInboxItems(ctx, filters)
+	opts, err := normalizeOperatorReadQueryOptions(rq.ScanLimit, rq.Shard, rq.ShardCount, rq.AsyncRefresh)
 	if err != nil {
 		return nil, err
 	}
+	listResult, err := b.listOperatorInboxItems(ctx, filters, opts)
+	if err != nil {
+		return nil, err
+	}
+	items := listResult.Items
 
 	totalCount := int64(len(items))
 	if offset >= totalCount {
-		return &ListOperatorInboxResponse{TotalCount: totalCount, Items: []*OperatorInboxItem{}}, nil
+		return &ListOperatorInboxResponse{
+			TotalCount:     totalCount,
+			Items:          []*OperatorInboxItem{},
+			Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
+		}, nil
 	}
 	end := offset + limit
 	if end > totalCount {
@@ -1420,8 +1575,9 @@ func (b *aiJobBiz) ListOperatorInbox(
 	startIdx := int(offset)
 	endIdx := int(end)
 	return &ListOperatorInboxResponse{
-		TotalCount: totalCount,
-		Items:      items[startIdx:endIdx],
+		TotalCount:     totalCount,
+		Items:          items[startIdx:endIdx],
+		Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
 	}, nil
 }
 
@@ -1443,10 +1599,15 @@ func (b *aiJobBiz) GetOperatorDashboard(
 	if recentWindow <= 0 {
 		recentWindow = defaultOperatorDashboardRecentWindow
 	}
-	items, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{})
+	opts, err := normalizeOperatorReadQueryOptions(rq.ScanLimit, rq.Shard, rq.ShardCount, rq.AsyncRefresh)
 	if err != nil {
 		return nil, err
 	}
+	listResult, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	items := listResult.Items
 
 	now := time.Now().UTC()
 	recentThreshold := now.Add(-recentWindow)
@@ -1554,6 +1715,7 @@ func (b *aiJobBiz) GetOperatorDashboard(
 				"escalated":          "/v1/operator/inbox?escalation_state=escalated",
 			},
 		},
+		Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
 	}, nil
 }
 
@@ -1733,10 +1895,15 @@ func (b *aiJobBiz) GetOperatorTeamDashboard(
 		return nil, errno.ErrPermissionDenied
 	}
 
-	items, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{TeamID: teamID})
+	opts, err := normalizeOperatorReadQueryOptions(rq.ScanLimit, rq.Shard, rq.ShardCount, rq.AsyncRefresh)
 	if err != nil {
 		return nil, err
 	}
+	listResult, err := b.listOperatorInboxItems(ctx, &operatorInboxFilters{TeamID: teamID}, opts)
+	if err != nil {
+		return nil, err
+	}
+	items := listResult.Items
 	teamItems := make([]*OperatorInboxItem, 0, len(items))
 	teamItems = append(teamItems, items...)
 	sortOperatorTeamDashboardItems(teamItems, ascending)
@@ -1832,6 +1999,7 @@ func (b *aiJobBiz) GetOperatorTeamDashboard(
 			InboxPath:     "/v1/operator/inbox",
 			TeamInboxPath: teamInboxPath,
 		},
+		Preaggregation: buildOperatorPreaggregationMeta(opts, listResult.Stats),
 	}, nil
 }
 
@@ -1915,11 +2083,16 @@ func normalizeOperatorInboxFilters(rq *ListOperatorInboxRequest) (*operatorInbox
 func (b *aiJobBiz) listOperatorInboxItems(
 	ctx context.Context,
 	filters *operatorInboxFilters,
-) ([]*OperatorInboxItem, error) {
+	opts *operatorReadQueryOptions,
+) (*operatorReadListResult, error) {
 	if filters == nil {
 		filters = &operatorInboxFilters{}
 	}
-	whr := where.T(ctx).O(0).L(int(maxOperatorInboxScan))
+	normalizedOpts, err := normalizeOperatorReadQueryOptionsFromValue(opts)
+	if err != nil {
+		return nil, err
+	}
+	whr := where.T(ctx).O(0).L(int(normalizedOpts.ScanLimit))
 	if filters.SessionType != "" {
 		whr = whr.F("session_type", filters.SessionType)
 	}
@@ -1929,7 +2102,12 @@ func (b *aiJobBiz) listOperatorInboxItems(
 	}
 
 	items := make([]*OperatorInboxItem, 0, len(sessions))
+	stats := &operatorPreaggregationStats{}
 	for _, sessionObj := range sessions {
+		if !operatorReadShardMatches(strings.TrimSpace(sessionObj.SessionID), normalizedOpts.Shard, normalizedOpts.ShardCount) {
+			continue
+		}
+		stats.ScannedCount++
 		assignmentState := extractSessionAssignmentState(sessionObj.ContextStateJSON)
 		if !b.canAccessOperatorSession(ctx, sessionObj, assignmentState) {
 			continue
@@ -1938,9 +2116,27 @@ func (b *aiJobBiz) listOperatorInboxItems(
 			!b.matchesOperatorTeamFilter(ctx, strings.TrimSpace(filters.TeamID), sessionObj, assignmentState) {
 			continue
 		}
-		item, buildErr := b.buildOperatorInboxItem(ctx, sessionObj)
+		sessionID := strings.TrimSpace(sessionObj.SessionID)
+		item, cacheHit, buildErr := b.getOrBuildOperatorInboxItem(ctx, sessionObj, normalizedOpts)
 		if buildErr != nil {
 			return nil, buildErr
+		}
+		if cacheHit {
+			stats.CacheHitCount++
+		} else {
+			stats.CacheMissCount++
+			stats.BuiltCount++
+		}
+		if normalizedOpts.AsyncRefresh && cacheHit {
+			if b.refreshOperatorInboxSnapshotAsync(ctx, sessionObj) {
+				stats.RefreshQueued++
+			}
+		}
+		if item == nil {
+			continue
+		}
+		if strings.TrimSpace(item.SessionID) == "" {
+			item.SessionID = sessionID
 		}
 		if !matchesOperatorInboxFilters(item, filters) {
 			continue
@@ -1948,7 +2144,10 @@ func (b *aiJobBiz) listOperatorInboxItems(
 		items = append(items, item)
 	}
 	sortOperatorInboxItems(items)
-	return items, nil
+	return &operatorReadListResult{
+		Items: items,
+		Stats: stats,
+	}, nil
 }
 
 func matchesOperatorInboxFilters(item *OperatorInboxItem, filters *operatorInboxFilters) bool {
@@ -1971,6 +2170,183 @@ func matchesOperatorInboxFilters(item *OperatorInboxItem, filters *operatorInbox
 		return false
 	}
 	return true
+}
+
+func normalizeOperatorReadQueryOptions(
+	scanLimit int64,
+	shard *int64,
+	shardCount *int64,
+	asyncRefresh *bool,
+) (*operatorReadQueryOptions, error) {
+	out := &operatorReadQueryOptions{}
+	out.ScanLimit = scanLimit
+	if out.ScanLimit <= 0 {
+		out.ScanLimit = maxOperatorInboxScan
+	}
+	if out.ScanLimit > maxOperatorInboxScanHardLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	out.Shard = 0
+	if shard != nil {
+		out.Shard = *shard
+	}
+	out.ShardCount = 1
+	if shardCount != nil && *shardCount > 0 {
+		out.ShardCount = *shardCount
+	}
+	if out.Shard < 0 || out.ShardCount <= 0 || out.Shard >= out.ShardCount {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	out.AsyncRefresh = false
+	if asyncRefresh != nil {
+		out.AsyncRefresh = *asyncRefresh
+	}
+	return out, nil
+}
+
+func normalizeOperatorReadQueryOptionsFromValue(in *operatorReadQueryOptions) (*operatorReadQueryOptions, error) {
+	if in == nil {
+		return normalizeOperatorReadQueryOptions(0, nil, nil, nil)
+	}
+	return normalizeOperatorReadQueryOptions(
+		in.ScanLimit,
+		&in.Shard,
+		&in.ShardCount,
+		&in.AsyncRefresh,
+	)
+}
+
+func operatorReadShardMatches(sessionID string, shard int64, shardCount int64) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	if shardCount <= 1 {
+		return true
+	}
+	if shard < 0 || shard >= shardCount {
+		return false
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(sessionID))
+	return int64(hasher.Sum32())%shardCount == shard
+}
+
+func buildOperatorPreaggregationMeta(
+	opts *operatorReadQueryOptions,
+	stats *operatorPreaggregationStats,
+) *OperatorPreaggregationMeta {
+	normalizedOpts, err := normalizeOperatorReadQueryOptionsFromValue(opts)
+	if err != nil {
+		normalizedOpts = &operatorReadQueryOptions{
+			ScanLimit:    maxOperatorInboxScan,
+			Shard:        0,
+			ShardCount:   1,
+			AsyncRefresh: false,
+		}
+	}
+	if stats == nil {
+		stats = &operatorPreaggregationStats{}
+	}
+	return &OperatorPreaggregationMeta{
+		ScanLimit:      normalizedOpts.ScanLimit,
+		Shard:          normalizedOpts.Shard,
+		ShardCount:     normalizedOpts.ShardCount,
+		AsyncRefresh:   normalizedOpts.AsyncRefresh,
+		ScannedCount:   stats.ScannedCount,
+		BuiltCount:     stats.BuiltCount,
+		CacheHitCount:  stats.CacheHitCount,
+		CacheMissCount: stats.CacheMissCount,
+		RefreshQueued:  stats.RefreshQueued,
+	}
+}
+
+func (b *aiJobBiz) getOrBuildOperatorInboxItem(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+	opts *operatorReadQueryOptions,
+) (*OperatorInboxItem, bool, error) {
+	if sessionObj == nil {
+		return &OperatorInboxItem{}, false, nil
+	}
+	sessionID := strings.TrimSpace(sessionObj.SessionID)
+	if sessionID == "" {
+		return &OperatorInboxItem{}, false, nil
+	}
+	now := time.Now().UTC()
+	if b != nil && b.operatorReadCache != nil {
+		if cached, ok, stale := b.operatorReadCache.getInboxItem(sessionID, now); ok {
+			if opts != nil && opts.AsyncRefresh {
+				if stale {
+					_ = b.refreshOperatorInboxSnapshotAsync(ctx, sessionObj)
+				}
+				return cached, true, nil
+			}
+			if !stale {
+				return cached, true, nil
+			}
+		}
+	}
+	item, err := b.buildOperatorInboxItem(ctx, sessionObj)
+	if err != nil {
+		return nil, false, err
+	}
+	if b != nil && b.operatorReadCache != nil && item != nil {
+		b.operatorReadCache.setInboxItem(sessionID, item, now)
+	}
+	return item, false, nil
+}
+
+func (b *aiJobBiz) refreshOperatorInboxSnapshotAsync(ctx context.Context, sessionObj *model.SessionContextM) bool {
+	if b == nil || b.operatorReadCache == nil || sessionObj == nil {
+		return false
+	}
+	sessionID := strings.TrimSpace(sessionObj.SessionID)
+	if sessionID == "" {
+		return false
+	}
+	if !b.operatorReadCache.beginRefresh(sessionID) {
+		return false
+	}
+	refreshCtx := cloneOperatorReadContext(ctx)
+	go func(obj *model.SessionContextM) {
+		defer b.operatorReadCache.endRefresh(sessionID)
+		item, err := b.buildOperatorInboxItem(refreshCtx, obj)
+		if err != nil {
+			slog.WarnContext(refreshCtx, "operator inbox snapshot async refresh failed",
+				"session_id", sessionID,
+				"error", err,
+			)
+			return
+		}
+		if item != nil {
+			b.operatorReadCache.setInboxItem(sessionID, item, time.Now().UTC())
+		}
+	}(sessionObj)
+	return true
+}
+
+func cloneOperatorReadContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	out := context.Background()
+	if requestID := strings.TrimSpace(contextx.RequestID(ctx)); requestID != "" {
+		out = contextx.WithRequestID(out, requestID)
+	}
+	if userID := strings.TrimSpace(contextx.UserID(ctx)); userID != "" {
+		out = contextx.WithUserID(out, userID)
+	}
+	if username := strings.TrimSpace(contextx.Username(ctx)); username != "" {
+		out = contextx.WithUsername(out, username)
+	}
+	if teams := contextx.OperatorTeams(ctx); len(teams) > 0 {
+		out = contextx.WithOperatorTeams(out, teams)
+	}
+	if scopes := contextx.OperatorScopes(ctx); len(scopes) > 0 {
+		out = contextx.WithOperatorScopes(out, scopes)
+	}
+	return out
 }
 
 func sortOperatorInboxItems(items []*OperatorInboxItem) {
@@ -2230,6 +2606,19 @@ func operatorInboxItemToTeamDashboardSession(item *OperatorInboxItem) *OperatorT
 		LastActivityAt:  strings.TrimSpace(item.LastActivityAt),
 		WorkbenchPath:   strings.TrimSpace(item.WorkbenchPath),
 	}
+}
+
+func cloneOperatorInboxItem(in *OperatorInboxItem) *OperatorInboxItem {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if len(in.NextActionHints) > 0 {
+		out.NextActionHints = append([]string(nil), in.NextActionHints...)
+	} else {
+		out.NextActionHints = nil
+	}
+	return &out
 }
 
 func isOperatorAssignee(ctx context.Context, assignee string) bool {

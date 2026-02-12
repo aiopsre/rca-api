@@ -3,8 +3,11 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"hash/fnv"
 	"log/slog"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
@@ -63,6 +67,7 @@ const (
 
 	defaultSessionHistoryListLimit = int64(20)
 	maxSessionHistoryListLimit     = int64(100)
+	maxSessionSLABatchLimit        = int64(5000)
 	maxAssignmentHistorySessionIDs = int64(1000)
 	defaultSessionHistoryActor     = "system"
 	defaultSLAHistoryActor         = "system:sla"
@@ -122,6 +127,8 @@ type SessionBiz interface {
 		rq *ListGlobalAssignmentHistoryRequest,
 	) (*ListGlobalAssignmentHistoryResponse, error)
 	SyncSLAState(ctx context.Context, rq *SyncSessionSLAStateRequest) (*SyncSessionSLAStateResponse, error)
+	TouchSLAOnAction(ctx context.Context, rq *TouchSessionSLAOnActionRequest) (*SyncSessionSLAStateResponse, error)
+	SyncSLABatch(ctx context.Context, rq *SyncSessionSLABatchRequest) (*SyncSessionSLABatchResponse, error)
 
 	SessionExpansion
 }
@@ -130,7 +137,9 @@ type SessionBiz interface {
 type SessionExpansion interface{}
 
 type sessionBiz struct {
-	store store.IStore
+	store       store.IStore
+	slaBatchMu  sync.Mutex
+	slaBatchRun map[string]struct{}
 }
 
 type ResolveOrCreateRequest struct {
@@ -314,11 +323,43 @@ type SyncSessionSLAStateResponse struct {
 	Changed bool
 }
 
+type TouchSessionSLAOnActionRequest struct {
+	SessionID  string
+	ActionType string
+	Actor      *string
+}
+
+type SyncSessionSLABatchRequest struct {
+	Offset     int64
+	Limit      int64
+	Shard      *int64
+	ShardCount *int64
+	Async      *bool
+	Now        *time.Time
+}
+
+type SyncSessionSLABatchResponse struct {
+	Accepted       bool  `json:"accepted"`
+	Async          bool  `json:"async"`
+	Offset         int64 `json:"offset"`
+	Limit          int64 `json:"limit"`
+	Shard          int64 `json:"shard"`
+	ShardCount     int64 `json:"shard_count"`
+	ScannedCount   int64 `json:"scanned_count"`
+	UpdatedCount   int64 `json:"updated_count"`
+	OverdueCount   int64 `json:"overdue_count"`
+	EscalatedCount int64 `json:"escalated_count"`
+	NextOffset     int64 `json:"next_offset"`
+}
+
 var _ SessionBiz = (*sessionBiz)(nil)
 
 // New creates session context biz.
 func New(store store.IStore) *sessionBiz {
-	return &sessionBiz{store: store}
+	return &sessionBiz{
+		store:       store,
+		slaBatchRun: map[string]struct{}{},
+	}
 }
 
 func (b *sessionBiz) ResolveOrCreate(ctx context.Context, rq *ResolveOrCreateRequest) (*ResolveOrCreateResponse, error) {
@@ -584,6 +625,15 @@ func (b *sessionBiz) UpdateReviewState(
 				"review_state": review.State,
 				"reviewed_at":  review.ReviewedAt,
 			},
+		})
+	}
+	if review.State == SessionReviewStateConfirmed {
+		_, _ = b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
+			SessionID:       sessionID,
+			EscalationState: SessionEscalationStateNone,
+			EscalationLevel: 0,
+			ReasonCode:      ptrString("review_confirmed"),
+			Actor:           ptrString(firstNonEmpty(review.ReviewedBy, defaultSLAHistoryActor)),
 		})
 	}
 	return &UpdateReviewStateResponse{Session: out, Review: review}, nil
@@ -996,6 +1046,183 @@ func (b *sessionBiz) SyncSLAState(
 	return &SyncSessionSLAStateResponse{Session: out, Changed: true}, nil
 }
 
+func (b *sessionBiz) TouchSLAOnAction(
+	ctx context.Context,
+	rq *TouchSessionSLAOnActionRequest,
+) (*SyncSessionSLAStateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	actionType := strings.ToLower(strings.TrimSpace(rq.ActionType))
+	if actionType != "replay" && actionType != "follow_up" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionObj, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	assignment := extractAssignmentState(sessionObj.ContextStateJSON)
+	if strings.TrimSpace(assignment.Assignee) == "" {
+		return &SyncSessionSLAStateResponse{Session: sessionObj, Changed: false}, nil
+	}
+	now := time.Now().UTC()
+	assignedAt := now.Format(time.RFC3339Nano)
+	dueAt := now.Add(defaultSessionSLAWindow).Format(time.RFC3339Nano)
+	actor := firstNonEmpty(trimOptional(rq.Actor), defaultSLAHistoryActor)
+	reasonCode := "operator_" + actionType + "_requested"
+	return b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
+		SessionID:       sessionID,
+		AssignedAt:      &assignedAt,
+		DueAt:           &dueAt,
+		EscalationState: SessionEscalationStateNone,
+		EscalationLevel: 0,
+		ReasonCode:      &reasonCode,
+		Actor:           &actor,
+	})
+}
+
+func (b *sessionBiz) SyncSLABatch(
+	ctx context.Context,
+	rq *SyncSessionSLABatchRequest,
+) (*SyncSessionSLABatchResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = maxSessionHistoryListLimit
+	}
+	if limit > maxSessionSLABatchLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	shard := int64(0)
+	if rq.Shard != nil {
+		shard = *rq.Shard
+	}
+	shardCount := int64(1)
+	if rq.ShardCount != nil && *rq.ShardCount > 0 {
+		shardCount = *rq.ShardCount
+	}
+	if shard < 0 || shardCount <= 0 || shard >= shardCount {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	now := time.Now().UTC()
+	if rq.Now != nil && !rq.Now.IsZero() {
+		now = rq.Now.UTC()
+	}
+	asyncMode := false
+	if rq.Async != nil {
+		asyncMode = *rq.Async
+	}
+	if asyncMode {
+		key := sessionSLABatchKey(shard, shardCount)
+		if !b.beginSLABatch(key) {
+			return &SyncSessionSLABatchResponse{
+				Accepted:   true,
+				Async:      true,
+				Offset:     offset,
+				Limit:      limit,
+				Shard:      shard,
+				ShardCount: shardCount,
+				NextOffset: offset + limit,
+			}, nil
+		}
+		asyncCtx := cloneOperatorSessionContext(ctx)
+		go func() {
+			defer b.endSLABatch(key)
+			_, _ = b.syncSLABatchInternal(asyncCtx, offset, limit, shard, shardCount, now)
+		}()
+		return &SyncSessionSLABatchResponse{
+			Accepted:   true,
+			Async:      true,
+			Offset:     offset,
+			Limit:      limit,
+			Shard:      shard,
+			ShardCount: shardCount,
+			NextOffset: offset + limit,
+		}, nil
+	}
+	resp, err := b.syncSLABatchInternal(ctx, offset, limit, shard, shardCount, now)
+	if err != nil {
+		return nil, err
+	}
+	resp.Accepted = true
+	resp.Async = false
+	return resp, nil
+}
+
+func (b *sessionBiz) syncSLABatchInternal(
+	ctx context.Context,
+	offset int64,
+	limit int64,
+	shard int64,
+	shardCount int64,
+	now time.Time,
+) (*SyncSessionSLABatchResponse, error) {
+	_, sessions, err := b.store.SessionContext().List(ctx, where.T(ctx).P(int(offset), int(limit)))
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+	resp := &SyncSessionSLABatchResponse{
+		Offset:     offset,
+		Limit:      limit,
+		Shard:      shard,
+		ShardCount: shardCount,
+		NextOffset: offset + limit,
+	}
+	for _, sessionObj := range sessions {
+		if sessionObj == nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(sessionObj.SessionID)
+		if sessionID == "" || !sessionSLAShardMatches(sessionID, shard, shardCount) {
+			continue
+		}
+		if accessErr := b.ensureOperatorSessionAccess(ctx, sessionObj); accessErr != nil {
+			continue
+		}
+		resp.ScannedCount++
+		target := evaluateSessionSLAAutomationState(now, sessionObj)
+		if target == nil {
+			continue
+		}
+		if target.EscalationState == SessionEscalationStatePending || target.EscalationState == SessionEscalationStateEscalated {
+			resp.OverdueCount++
+		}
+		if target.EscalationState == SessionEscalationStateEscalated {
+			resp.EscalatedCount++
+		}
+		syncResp, syncErr := b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
+			SessionID:       sessionID,
+			AssignedAt:      ptrString(target.AssignedAt),
+			DueAt:           ptrString(target.DueAt),
+			EscalationState: target.EscalationState,
+			EscalationLevel: target.EscalationLevel,
+			ReasonCode:      ptrString(target.ReasonCode),
+			Actor:           ptrString(defaultSLAHistoryActor),
+		})
+		if syncErr != nil {
+			slog.WarnContext(ctx, "sync session sla batch skipped",
+				"session_id", sessionID,
+				"error", syncErr,
+			)
+			continue
+		}
+		if syncResp != nil && syncResp.Changed {
+			resp.UpdatedCount++
+		}
+	}
+	return resp, nil
+}
+
 func normalizeSessionType(input string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(input))
 	if normalized == "" {
@@ -1301,6 +1528,29 @@ func extractAssignmentState(raw *string) *AssignmentState {
 	return out
 }
 
+type sessionReviewState struct {
+	State string
+}
+
+func extractReviewState(raw *string) *sessionReviewState {
+	out := &sessionReviewState{State: SessionReviewStatePending}
+	stateObj := parseContextStateJSONObject(raw)
+	reviewRaw, ok := stateObj[sessionContextStateReviewKey]
+	if !ok {
+		return out
+	}
+	reviewObj, ok := reviewRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	state := strings.ToLower(strings.TrimSpace(anyToString(reviewObj["state"])))
+	if _, exists := allowedSessionReviewStates[state]; !exists {
+		return out
+	}
+	out.State = state
+	return out
+}
+
 type sessionSLAState struct {
 	AssignedAt      string
 	DueAt           string
@@ -1338,6 +1588,143 @@ func extractSLAState(stateObj map[string]any) *sessionSLAState {
 		out.EscalationLevel = int64(value)
 	case float64:
 		out.EscalationLevel = int64(value)
+	}
+	return out
+}
+
+func evaluateSessionSLAAutomationState(now time.Time, sessionObj *model.SessionContextM) *sessionSLAState {
+	if sessionObj == nil {
+		return nil
+	}
+	stateObj := parseContextStateJSONObject(sessionObj.ContextStateJSON)
+	current := extractSLAState(stateObj)
+	assignment := extractAssignmentState(sessionObj.ContextStateJSON)
+	review := extractReviewState(sessionObj.ContextStateJSON)
+
+	if strings.TrimSpace(assignment.Assignee) == "" {
+		current.EscalationState = SessionEscalationStateNone
+		current.EscalationLevel = 0
+		current.ReasonCode = "no_assignee"
+		return current
+	}
+	if review != nil && strings.TrimSpace(review.State) == SessionReviewStateConfirmed {
+		current.EscalationState = SessionEscalationStateNone
+		current.EscalationLevel = 0
+		current.ReasonCode = "review_confirmed"
+		return current
+	}
+
+	assignedAtRaw := firstNonEmpty(strings.TrimSpace(current.AssignedAt), strings.TrimSpace(assignment.AssignedAt))
+	assignedAt, ok := parseRFC3339Time(assignedAtRaw)
+	if !ok {
+		assignedAt = now.UTC()
+	}
+	current.AssignedAt = assignedAt.UTC().Format(time.RFC3339Nano)
+
+	dueAtRaw := strings.TrimSpace(current.DueAt)
+	dueAt, ok := parseRFC3339Time(dueAtRaw)
+	if !ok {
+		dueAt = assignedAt.Add(defaultSessionSLAWindow)
+	}
+	current.DueAt = dueAt.UTC().Format(time.RFC3339Nano)
+
+	switch {
+	case now.After(dueAt.Add(defaultSessionSLAWindow)):
+		current.EscalationState = SessionEscalationStateEscalated
+		current.EscalationLevel = 2
+		current.ReasonCode = "sla_timeout_escalated"
+	case now.After(dueAt):
+		current.EscalationState = SessionEscalationStatePending
+		current.EscalationLevel = 1
+		current.ReasonCode = "sla_due_passed"
+	default:
+		current.EscalationState = SessionEscalationStateNone
+		current.EscalationLevel = 0
+		if current.ReasonCode == "" {
+			current.ReasonCode = "within_sla"
+		}
+	}
+	return current
+}
+
+func parseRFC3339Time(raw string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
+func (b *sessionBiz) beginSLABatch(key string) bool {
+	if b == nil {
+		return false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	b.slaBatchMu.Lock()
+	defer b.slaBatchMu.Unlock()
+	if _, ok := b.slaBatchRun[key]; ok {
+		return false
+	}
+	b.slaBatchRun[key] = struct{}{}
+	return true
+}
+
+func (b *sessionBiz) endSLABatch(key string) {
+	if b == nil {
+		return
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	b.slaBatchMu.Lock()
+	delete(b.slaBatchRun, key)
+	b.slaBatchMu.Unlock()
+}
+
+func sessionSLABatchKey(shard int64, shardCount int64) string {
+	return strconv.FormatInt(shard, 10) + "/" + strconv.FormatInt(shardCount, 10)
+}
+
+func sessionSLAShardMatches(sessionID string, shard int64, shardCount int64) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	if shardCount <= 1 {
+		return true
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(sessionID))
+	return int64(hasher.Sum32())%shardCount == shard
+}
+
+func cloneOperatorSessionContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	out := context.Background()
+	if requestID := strings.TrimSpace(contextx.RequestID(ctx)); requestID != "" {
+		out = contextx.WithRequestID(out, requestID)
+	}
+	if userID := strings.TrimSpace(contextx.UserID(ctx)); userID != "" {
+		out = contextx.WithUserID(out, userID)
+	}
+	if username := strings.TrimSpace(contextx.Username(ctx)); username != "" {
+		out = contextx.WithUsername(out, username)
+	}
+	if teams := contextx.OperatorTeams(ctx); len(teams) > 0 {
+		out = contextx.WithOperatorTeams(out, teams)
+	}
+	if scopes := contextx.OperatorScopes(ctx); len(scopes) > 0 {
+		out = contextx.WithOperatorScopes(out, scopes)
 	}
 	return out
 }

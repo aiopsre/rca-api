@@ -113,8 +113,9 @@ type AIJobExpansion interface {
 }
 
 type aiJobBiz struct {
-	store      store.IStore
-	sessionBiz sessionbiz.SessionBiz
+	store             store.IStore
+	sessionBiz        sessionbiz.SessionBiz
+	operatorReadCache *operatorReadCache
 }
 
 // RecordToolCallAuditRequest writes one audit row to ai_tool_calls without AI job status gating.
@@ -156,8 +157,9 @@ var _ AIJobBiz = (*aiJobBiz)(nil)
 // New creates ai job biz.
 func New(store store.IStore) *aiJobBiz {
 	return &aiJobBiz{
-		store:      store,
-		sessionBiz: sessionbiz.New(store),
+		store:             store,
+		sessionBiz:        sessionbiz.New(store),
+		operatorReadCache: newOperatorReadCache(defaultOperatorReadCacheTTL),
 	}
 }
 

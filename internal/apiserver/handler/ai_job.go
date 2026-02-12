@@ -347,6 +347,14 @@ func (h *Handler) GetSessionAIWorkbench(c *gin.Context) {
 			req.RecentLimit = v
 		}
 	}
+	if asyncRefresh := strings.TrimSpace(c.Query("async_refresh")); asyncRefresh != "" {
+		v, err := strconv.ParseBool(asyncRefresh)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.AsyncRefresh = &v
+	}
 	resp, err := h.biz.AIJobV1().GetSessionWorkbench(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
 }
@@ -441,6 +449,38 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 			req.Limit = v
 		}
 	}
+	if scanLimit := strings.TrimSpace(c.Query("scan_limit")); scanLimit != "" {
+		v, err := strconv.ParseInt(scanLimit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ScanLimit = v
+	}
+	if shard := strings.TrimSpace(c.Query("shard")); shard != "" {
+		v, err := strconv.ParseInt(shard, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Shard = &v
+	}
+	if shardCount := strings.TrimSpace(c.Query("shard_count")); shardCount != "" {
+		v, err := strconv.ParseInt(shardCount, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ShardCount = &v
+	}
+	if asyncRefresh := strings.TrimSpace(c.Query("async_refresh")); asyncRefresh != "" {
+		v, err := strconv.ParseBool(asyncRefresh)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.AsyncRefresh = &v
+	}
 	validateReq := &validation.SessionOperatorInboxRequest{
 		ReviewState:     req.ReviewState,
 		NeedsReview:     req.NeedsReview,
@@ -450,6 +490,10 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 		EscalationState: req.EscalationState,
 		Offset:          req.Offset,
 		Limit:           req.Limit,
+		ScanLimit:       req.ScanLimit,
+		Shard:           req.Shard,
+		ShardCount:      req.ShardCount,
+		AsyncRefresh:    req.AsyncRefresh,
 	}
 	if err := h.val.ValidateSessionOperatorInboxRequest(c.Request.Context(), validateReq); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -462,6 +506,10 @@ func (h *Handler) ListOperatorInbox(c *gin.Context) {
 	req.EscalationState = validateReq.EscalationState
 	req.Offset = validateReq.Offset
 	req.Limit = validateReq.Limit
+	req.ScanLimit = validateReq.ScanLimit
+	req.Shard = validateReq.Shard
+	req.ShardCount = validateReq.ShardCount
+	req.AsyncRefresh = validateReq.AsyncRefresh
 
 	resp, err := h.biz.AIJobV1().ListOperatorInbox(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
@@ -472,7 +520,40 @@ func (h *Handler) GetOperatorDashboard(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	resp, err := h.biz.AIJobV1().GetOperatorDashboard(c.Request.Context(), &aijobbiz.GetOperatorDashboardRequest{})
+	req := &aijobbiz.GetOperatorDashboardRequest{}
+	if scanLimit := strings.TrimSpace(c.Query("scan_limit")); scanLimit != "" {
+		v, err := strconv.ParseInt(scanLimit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ScanLimit = v
+	}
+	if shard := strings.TrimSpace(c.Query("shard")); shard != "" {
+		v, err := strconv.ParseInt(shard, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Shard = &v
+	}
+	if shardCount := strings.TrimSpace(c.Query("shard_count")); shardCount != "" {
+		v, err := strconv.ParseInt(shardCount, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ShardCount = &v
+	}
+	if asyncRefresh := strings.TrimSpace(c.Query("async_refresh")); asyncRefresh != "" {
+		v, err := strconv.ParseBool(asyncRefresh)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.AsyncRefresh = &v
+	}
+	resp, err := h.biz.AIJobV1().GetOperatorDashboard(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -544,7 +625,89 @@ func (h *Handler) GetOperatorTeamDashboard(c *gin.Context) {
 	if order := strings.TrimSpace(c.Query("order")); order != "" {
 		req.Order = strPtr(order)
 	}
+	if scanLimit := strings.TrimSpace(c.Query("scan_limit")); scanLimit != "" {
+		v, err := strconv.ParseInt(scanLimit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ScanLimit = v
+	}
+	if shard := strings.TrimSpace(c.Query("shard")); shard != "" {
+		v, err := strconv.ParseInt(shard, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Shard = &v
+	}
+	if shardCount := strings.TrimSpace(c.Query("shard_count")); shardCount != "" {
+		v, err := strconv.ParseInt(shardCount, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ShardCount = &v
+	}
+	if asyncRefresh := strings.TrimSpace(c.Query("async_refresh")); asyncRefresh != "" {
+		v, err := strconv.ParseBool(asyncRefresh)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.AsyncRefresh = &v
+	}
 	resp, err := h.biz.AIJobV1().GetOperatorTeamDashboard(c.Request.Context(), req)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) SyncOperatorSLAEscalation(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req := &sessionbiz.SyncSessionSLABatchRequest{}
+	if offset := strings.TrimSpace(c.Query("offset")); offset != "" {
+		v, err := strconv.ParseInt(offset, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Offset = v
+	}
+	if limit := strings.TrimSpace(c.Query("limit")); limit != "" {
+		v, err := strconv.ParseInt(limit, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Limit = v
+	}
+	if shard := strings.TrimSpace(c.Query("shard")); shard != "" {
+		v, err := strconv.ParseInt(shard, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Shard = &v
+	}
+	if shardCount := strings.TrimSpace(c.Query("shard_count")); shardCount != "" {
+		v, err := strconv.ParseInt(shardCount, 10, 64)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.ShardCount = &v
+	}
+	if asyncMode := strings.TrimSpace(c.Query("async")); asyncMode != "" {
+		v, err := strconv.ParseBool(asyncMode)
+		if err != nil {
+			core.WriteResponse(c, nil, errorsx.ErrInvalidArgument)
+			return
+		}
+		req.Async = &v
+	}
+	resp, err := h.biz.SessionV1().SyncSLABatch(c.Request.Context(), req)
 	core.WriteResponse(c, resp, err)
 }
 
@@ -934,6 +1097,7 @@ func init() {
 		operatorGroup.GET("/dashboard", handler.GetOperatorDashboard)
 		operatorGroup.GET("/dashboard/trends", handler.GetOperatorDashboardTrends)
 		operatorGroup.GET("/team_dashboard", handler.GetOperatorTeamDashboard)
+		operatorGroup.POST("/sla/escalation-sync", handler.SyncOperatorSLAEscalation)
 		operatorGroup.GET("/assignment_history", handler.ListOperatorAssignmentHistory)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
@@ -1106,6 +1270,17 @@ func (h *Handler) dispatchSessionAIAction(c *gin.Context, triggerType string, de
 					"session_id", historySessionID,
 					"event_type", historyEventType,
 					"error", historyErr,
+				)
+			}
+			if _, slaErr := h.biz.SessionV1().TouchSLAOnAction(c.Request.Context(), &sessionbiz.TouchSessionSLAOnActionRequest{
+				SessionID:  historySessionID,
+				ActionType: triggerType,
+				Actor:      strPtr(initiator),
+			}); slaErr != nil {
+				slog.WarnContext(c.Request.Context(), "touch session sla on action skipped",
+					"session_id", historySessionID,
+					"action_type", triggerType,
+					"error", slaErr,
 				)
 			}
 		}

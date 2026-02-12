@@ -247,6 +247,10 @@ func TestValidateSessionOperatorInboxRequest(t *testing.T) {
 	teamID := "namespace:payments"
 	escalationState := "pending"
 	needsReview := true
+	scanLimit := int64(500)
+	shard := int64(0)
+	shardCount := int64(2)
+	asyncRefresh := true
 	req := &SessionOperatorInboxRequest{
 		ReviewState:     &reviewState,
 		NeedsReview:     &needsReview,
@@ -256,6 +260,10 @@ func TestValidateSessionOperatorInboxRequest(t *testing.T) {
 		EscalationState: &escalationState,
 		Offset:          0,
 		Limit:           10,
+		ScanLimit:       scanLimit,
+		Shard:           &shard,
+		ShardCount:      &shardCount,
+		AsyncRefresh:    &asyncRefresh,
 	}
 	require.NoError(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
 	require.Equal(t, "in_review", *req.ReviewState)
@@ -290,6 +298,15 @@ func TestValidateSessionOperatorInboxRequest_Invalid(t *testing.T) {
 
 	escalationState := "bad"
 	req = &SessionOperatorInboxRequest{EscalationState: &escalationState}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+
+	badScanLimit := int64(6000)
+	req = &SessionOperatorInboxRequest{ScanLimit: badScanLimit}
+	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
+
+	shard := int64(2)
+	shardCount := int64(2)
+	req = &SessionOperatorInboxRequest{Shard: &shard, ShardCount: &shardCount}
 	require.Error(t, val.ValidateSessionOperatorInboxRequest(context.Background(), req))
 }
 

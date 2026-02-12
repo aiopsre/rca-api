@@ -118,6 +118,10 @@ type SessionOperatorInboxRequest struct {
 	EscalationState *string
 	Offset          int64
 	Limit           int64
+	ScanLimit       int64
+	Shard           *int64
+	ShardCount      *int64
+	AsyncRefresh    *bool
 }
 
 func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJobRequest) error {
@@ -440,6 +444,20 @@ func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq 
 			return errorsx.ErrInvalidArgument
 		}
 		rq.EscalationState = &escalationState
+	}
+	if rq.ScanLimit < 0 || rq.ScanLimit > 5000 {
+		return errorsx.ErrInvalidArgument
+	}
+	shard := int64(0)
+	if rq.Shard != nil {
+		shard = *rq.Shard
+	}
+	shardCount := int64(1)
+	if rq.ShardCount != nil {
+		shardCount = *rq.ShardCount
+	}
+	if shardCount <= 0 || shard < 0 || shard >= shardCount {
+		return errorsx.ErrInvalidArgument
 	}
 	return nil
 }

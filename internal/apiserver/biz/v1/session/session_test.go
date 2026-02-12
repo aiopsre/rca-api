@@ -491,6 +491,119 @@ func TestSessionHistory_SyncSLAStateRecordsEscalationTransition(t *testing.T) {
 	require.Contains(t, eventTypes, SessionHistoryEventEscalationCleared)
 }
 
+func TestTouchSLAOnAction_ClearsEscalation(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: "incident-touch-sla",
+		IncidentID:  ptrString("incident-touch-sla"),
+	})
+	require.NoError(t, err)
+
+	oldAssignedAt := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+		SessionID:  created.Session.SessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrString("user:lead-a"),
+		AssignedAt: &oldAssignedAt,
+	})
+	require.NoError(t, err)
+
+	assignedAt := oldAssignedAt.Format(time.RFC3339Nano)
+	dueAt := oldAssignedAt.Add(defaultSessionSLAWindow).Format(time.RFC3339Nano)
+	_, err = biz.SyncSLAState(context.Background(), &SyncSessionSLAStateRequest{
+		SessionID:       created.Session.SessionID,
+		AssignedAt:      &assignedAt,
+		DueAt:           &dueAt,
+		EscalationState: SessionEscalationStateEscalated,
+		EscalationLevel: 2,
+		ReasonCode:      ptrString("sla_timeout_escalated"),
+	})
+	require.NoError(t, err)
+
+	touchResp, err := biz.TouchSLAOnAction(context.Background(), &TouchSessionSLAOnActionRequest{
+		SessionID:  created.Session.SessionID,
+		ActionType: "replay",
+		Actor:      ptrString("user:oncall-a"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, touchResp)
+	require.True(t, touchResp.Changed)
+
+	sessionResp, err := biz.Get(context.Background(), &GetSessionContextRequest{
+		SessionID: ptrString(created.Session.SessionID),
+	})
+	require.NoError(t, err)
+	stateObj := parseContextStateJSONObject(sessionResp.Session.ContextStateJSON)
+	slaObj := parseNestedObject(stateObj, "sla")
+	require.Equal(t, "none", slaObj["escalation_state"])
+	require.EqualValues(t, 0, slaObj["escalation_level"])
+	require.Equal(t, "operator_replay_requested", slaObj["reason_code"])
+}
+
+func TestSyncSLABatch_UpdatesOverdueByShard(t *testing.T) {
+	biz := newSessionBizForTest(t)
+
+	createAndAssign := func(key string, assignee string, assignedAt time.Time) string {
+		t.Helper()
+		created, err := biz.ResolveOrCreate(context.Background(), &ResolveOrCreateRequest{
+			SessionType: SessionTypeIncident,
+			BusinessKey: key,
+			IncidentID:  ptrString(key),
+		})
+		require.NoError(t, err)
+		_, err = biz.UpdateAssignment(context.Background(), &UpdateAssignmentRequest{
+			SessionID:  created.Session.SessionID,
+			Assignee:   assignee,
+			AssignedBy: ptrString("user:lead"),
+			AssignedAt: &assignedAt,
+		})
+		require.NoError(t, err)
+		return created.Session.SessionID
+	}
+
+	old := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	sessionA := createAndAssign("incident-sla-batch-a", "user:oncall-a", old)
+	sessionB := createAndAssign("incident-sla-batch-b", "user:oncall-b", old)
+
+	shardCount := int64(2)
+	shardZero := int64(0)
+	shardOne := int64(1)
+	respA, err := biz.SyncSLABatch(context.Background(), &SyncSessionSLABatchRequest{
+		Offset:     0,
+		Limit:      100,
+		Shard:      &shardZero,
+		ShardCount: &shardCount,
+	})
+	require.NoError(t, err)
+	respB, err := biz.SyncSLABatch(context.Background(), &SyncSessionSLABatchRequest{
+		Offset:     0,
+		Limit:      100,
+		Shard:      &shardOne,
+		ShardCount: &shardCount,
+	})
+	require.NoError(t, err)
+	require.True(t, respA.Accepted)
+	require.True(t, respB.Accepted)
+	require.GreaterOrEqual(t, respA.OverdueCount+respB.OverdueCount, int64(2))
+	require.GreaterOrEqual(t, respA.EscalatedCount+respB.EscalatedCount, int64(2))
+	require.GreaterOrEqual(t, respA.UpdatedCount+respB.UpdatedCount, int64(2))
+
+	verifyEscalated := func(sessionID string) {
+		sessionResp, getErr := biz.Get(context.Background(), &GetSessionContextRequest{
+			SessionID: ptrString(sessionID),
+		})
+		require.NoError(t, getErr)
+		stateObj := parseContextStateJSONObject(sessionResp.Session.ContextStateJSON)
+		slaObj := parseNestedObject(stateObj, "sla")
+		require.Equal(t, "escalated", slaObj["escalation_state"])
+		require.EqualValues(t, 2, slaObj["escalation_level"])
+	}
+	verifyEscalated(sessionA)
+	verifyEscalated(sessionB)
+}
+
 func TestSessionAccessControl_AssigneeScope(t *testing.T) {
 	biz := newSessionBizForTest(t)
 
@@ -541,6 +654,21 @@ func TestSessionAccessControl_TeamScope(t *testing.T) {
 	otherTeamCtx := contextx.WithOperatorTeams(contextx.WithUserID(context.Background(), "operator:team-b"), []string{"namespace:checkout"})
 	_, err = biz.Get(otherTeamCtx, &GetSessionContextRequest{SessionID: ptrString(created.Session.SessionID)})
 	require.ErrorIs(t, err, errno.ErrPermissionDenied)
+}
+
+func parseNestedObject(obj map[string]any, key string) map[string]any {
+	if obj == nil {
+		return map[string]any{}
+	}
+	raw, ok := obj[key]
+	if !ok {
+		return map[string]any{}
+	}
+	out, ok := raw.(map[string]any)
+	if !ok || out == nil {
+		return map[string]any{}
+	}
+	return out
 }
 
 func newSessionBizForTest(t *testing.T) *sessionBiz {
