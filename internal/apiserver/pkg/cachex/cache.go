@@ -6,9 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -20,6 +22,8 @@ const (
 	defaultCacheOpTimeout = 1500 * time.Millisecond
 	defaultScanCount      = int64(200)
 	defaultStatsInterval  = 30 * time.Second
+	luaDeleteScanCount    = int64(500)
+	ttlAdaptiveWindow     = 60 * time.Second
 
 	// Read-side cache TTLs.
 	TTLInbox     = 45 * time.Second
@@ -32,6 +36,20 @@ const (
 )
 
 const globalAssignmentHistoryPrefix = "history:global_assignment:"
+
+type moduleTTLPolicy struct {
+	Base     time.Duration
+	Min      time.Duration
+	Max      time.Duration
+	Dynamic  bool
+	FixedTTL bool
+}
+
+type moduleTTLStat struct {
+	WindowStart      time.Time
+	AccessCount      int64
+	InvalidationHits int64
+}
 
 var (
 	clientMu sync.RWMutex
@@ -85,6 +103,42 @@ var (
 		Name: "rca_cache_redis_key_count",
 		Help: "Redis key counts by DB section from INFO keyspace.",
 	}, []string{"db"})
+
+	cacheTTLEffectiveSeconds = promauto.With(prometheus.DefaultRegisterer).NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rca_cache_ttl_effective_seconds",
+		Help: "Current effective ttl seconds selected by adaptive ttl policy per module.",
+	}, []string{"module"})
+
+	cacheTTLAdjustTotal = promauto.With(prometheus.DefaultRegisterer).NewCounterVec(prometheus.CounterOpts{
+		Name: "rca_cache_ttl_adjust_total",
+		Help: "Total adaptive ttl decisions by module/decision.",
+	}, []string{"module", "decision"})
+
+	deleteByPrefixLua = redis.NewScript(`
+local pattern = ARGV[1]
+local scan_count = tonumber(ARGV[2])
+local max_delete = tonumber(ARGV[3])
+local res = redis.call('SCAN', '0', 'MATCH', pattern, 'COUNT', scan_count)
+local keys = res[2]
+local deleted = 0
+if #keys > 0 then
+  if max_delete > 0 and #keys > max_delete then
+    while #keys > max_delete do
+      table.remove(keys)
+    end
+  end
+  local unlink_result = redis.pcall('UNLINK', unpack(keys))
+  if type(unlink_result) == 'table' and unlink_result['err'] then
+    redis.call('DEL', unpack(keys))
+  end
+  deleted = #keys
+end
+return {deleted}
+`)
+
+	disableDeleteByPrefixLua uint32
+	ttlStateMu               sync.Mutex
+	ttlStateByModule         = map[string]*moduleTTLStat{}
 )
 
 func init() {
@@ -94,6 +148,8 @@ func init() {
 	cacheConfiguredTTLSeconds.WithLabelValues("trace").Set(TTLTrace.Seconds())
 	cacheConfiguredTTLSeconds.WithLabelValues("compare").Set(TTLCompare.Seconds())
 	cacheConfiguredTTLSeconds.WithLabelValues("history").Set(TTLHistory.Seconds())
+	cacheConfiguredTTLSeconds.WithLabelValues("assignment_history").Set(TTLHistory.Seconds())
+	cacheConfiguredTTLSeconds.WithLabelValues("assignment_history_global").Set(TTLHistory.Seconds())
 	cacheConfiguredTTLSeconds.WithLabelValues("session_state").Set(TTLSession.Seconds())
 
 	cacheOperationTotal.WithLabelValues("get", "unknown", "hit").Add(0)
@@ -104,6 +160,18 @@ func init() {
 	cacheInvalidationTotal.WithLabelValues("session", "ok").Add(0)
 	cacheInvalidationTotal.WithLabelValues("operator", "ok").Add(0)
 	cacheInvalidationTotal.WithLabelValues("trace", "ok").Add(0)
+	cacheTTLEffectiveSeconds.WithLabelValues("inbox").Set(TTLInbox.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("workbench").Set(TTLWorkbench.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("dashboard").Set(TTLDashboard.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("trace").Set(TTLTrace.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("compare").Set(TTLCompare.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("history").Set(TTLHistory.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("assignment_history").Set(TTLHistory.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("assignment_history_global").Set(TTLHistory.Seconds())
+	cacheTTLEffectiveSeconds.WithLabelValues("session_state").Set(TTLSession.Seconds())
+	cacheTTLAdjustTotal.WithLabelValues("inbox", "baseline").Add(0)
+	cacheTTLAdjustTotal.WithLabelValues("dashboard", "baseline").Add(0)
+	cacheTTLAdjustTotal.WithLabelValues("trace", "baseline").Add(0)
 	cacheRedisCollectorTotal.WithLabelValues("ok").Add(0)
 	cacheRedisCollectorTotal.WithLabelValues("error").Add(0)
 	cacheRedisCollectorTotal.WithLabelValues("skipped").Add(0)
@@ -156,11 +224,163 @@ func Enabled() bool {
 	return loadClient() != nil
 }
 
+func defaultTTLByModule(module string) time.Duration {
+	switch module {
+	case "inbox":
+		return TTLInbox
+	case "workbench":
+		return TTLWorkbench
+	case "dashboard":
+		return TTLDashboard
+	case "trace":
+		return TTLTrace
+	case "compare":
+		return TTLCompare
+	case "history", "assignment_history", "assignment_history_global":
+		return TTLHistory
+	case "session_state":
+		return TTLSession
+	default:
+		return TTLInbox
+	}
+}
+
+func ttlPolicy(module string) moduleTTLPolicy {
+	switch module {
+	case "inbox":
+		return moduleTTLPolicy{Base: TTLInbox, Min: 30 * time.Second, Max: 1 * time.Minute, Dynamic: true}
+	case "workbench":
+		return moduleTTLPolicy{Base: TTLWorkbench, Min: 30 * time.Second, Max: 1 * time.Minute, Dynamic: true}
+	case "history", "assignment_history", "assignment_history_global":
+		return moduleTTLPolicy{Base: TTLHistory, Min: 30 * time.Second, Max: 1 * time.Minute, Dynamic: true}
+	case "session_state":
+		return moduleTTLPolicy{Base: TTLSession, Min: 30 * time.Second, Max: 1 * time.Minute, Dynamic: true}
+	case "dashboard":
+		return moduleTTLPolicy{Base: TTLDashboard, Min: 1 * time.Minute, Max: 1 * time.Minute, Dynamic: false, FixedTTL: true}
+	case "trace":
+		return moduleTTLPolicy{Base: TTLTrace, Min: 1 * time.Minute, Max: 5 * time.Minute, Dynamic: true}
+	case "compare":
+		return moduleTTLPolicy{Base: TTLCompare, Min: 1 * time.Minute, Max: 5 * time.Minute, Dynamic: true}
+	default:
+		base := defaultTTLByModule(module)
+		return moduleTTLPolicy{Base: base, Min: base, Max: base, Dynamic: false}
+	}
+}
+
+func shouldApplyAdaptiveTTL(requested time.Duration, policy moduleTTLPolicy) bool {
+	if requested <= 0 {
+		return true
+	}
+	// Preserve explicit custom TTL (e.g. tests with very short expiry).
+	return requested == policy.Base
+}
+
+func resolveEffectiveTTL(module string, requested time.Duration) time.Duration {
+	module = normalizeMetricLabel(module)
+	policy := ttlPolicy(module)
+	target := requested
+	if target <= 0 {
+		target = policy.Base
+	}
+	if requested > 0 && !shouldApplyAdaptiveTTL(requested, policy) {
+		cacheTTLEffectiveSeconds.WithLabelValues(module).Set(requested.Seconds())
+		cacheTTLAdjustTotal.WithLabelValues(module, "explicit").Inc()
+		return requested
+	}
+
+	decision := "baseline"
+	if policy.FixedTTL {
+		target = policy.Base
+		decision = "fixed"
+	} else if policy.Dynamic && shouldApplyAdaptiveTTL(requested, policy) {
+		accessCount, invalidationCount := snapshotTTLAdaptiveStats(module)
+		switch {
+		case invalidationCount >= 20 && invalidationCount >= accessCount:
+			target = policy.Min
+			decision = "shorten_hot_invalidation"
+		case accessCount >= 200 && invalidationCount < 20:
+			target = policy.Max
+			decision = "extend_hot_read"
+		case accessCount >= 80 && invalidationCount < 10:
+			target = clampDuration(policy.Base+15*time.Second, policy.Min, policy.Max)
+			decision = "extend_warm_read"
+		case invalidationCount >= 10:
+			target = clampDuration(policy.Base-15*time.Second, policy.Min, policy.Max)
+			decision = "shorten_warm_invalidation"
+		default:
+			target = clampDuration(policy.Base, policy.Min, policy.Max)
+			decision = "baseline"
+		}
+	}
+	target = clampDuration(target, policy.Min, policy.Max)
+	cacheTTLEffectiveSeconds.WithLabelValues(module).Set(target.Seconds())
+	cacheTTLAdjustTotal.WithLabelValues(module, decision).Inc()
+	return target
+}
+
+func clampDuration(value time.Duration, min time.Duration, max time.Duration) time.Duration {
+	if min > 0 && value < min {
+		return min
+	}
+	if max > 0 && value > max {
+		return max
+	}
+	return value
+}
+
+func recordTTLAccess(module string) {
+	module = normalizeMetricLabel(module)
+	now := time.Now().UTC()
+	ttlStateMu.Lock()
+	defer ttlStateMu.Unlock()
+	state := ttlStateByModule[module]
+	if state == nil || now.Sub(state.WindowStart) >= ttlAdaptiveWindow {
+		state = &moduleTTLStat{WindowStart: now}
+		ttlStateByModule[module] = state
+	}
+	state.AccessCount++
+}
+
+func recordTTLInvalidation(module string, count int64) {
+	module = normalizeMetricLabel(module)
+	if count <= 0 {
+		count = 1
+	}
+	now := time.Now().UTC()
+	ttlStateMu.Lock()
+	defer ttlStateMu.Unlock()
+	state := ttlStateByModule[module]
+	if state == nil || now.Sub(state.WindowStart) >= ttlAdaptiveWindow {
+		state = &moduleTTLStat{WindowStart: now}
+		ttlStateByModule[module] = state
+	}
+	state.InvalidationHits += count
+}
+
+func snapshotTTLAdaptiveStats(module string) (int64, int64) {
+	module = normalizeMetricLabel(module)
+	now := time.Now().UTC()
+	ttlStateMu.Lock()
+	defer ttlStateMu.Unlock()
+	state := ttlStateByModule[module]
+	if state == nil {
+		return 0, 0
+	}
+	if now.Sub(state.WindowStart) >= ttlAdaptiveWindow {
+		state.WindowStart = now
+		state.AccessCount = 0
+		state.InvalidationHits = 0
+		return 0, 0
+	}
+	return state.AccessCount, state.InvalidationHits
+}
+
 // GetJSON reads one json value from redis cache.
 func GetJSON(ctx context.Context, key string, out any) bool {
 	c := loadClient()
 	key = strings.TrimSpace(key)
 	module := cacheModuleFromKey(key)
+	recordTTLAccess(module)
 	start := time.Now()
 	defer recordCacheOperationLatency("get", module, time.Since(start))
 	if c == nil || key == "" || out == nil {
@@ -201,9 +421,7 @@ func SetJSON(ctx context.Context, key string, value any, ttl time.Duration) bool
 		recordCacheOperation("set", module, "bypass")
 		return false
 	}
-	if ttl <= 0 {
-		ttl = TTLInbox
-	}
+	ttl = resolveEffectiveTTL(module, ttl)
 	raw, err := json.Marshal(value)
 	if err != nil {
 		recordCacheOperation("set", module, "error")
@@ -252,6 +470,7 @@ func Delete(ctx context.Context, keys ...string) bool {
 		module := cacheModuleFromKey(key)
 		recordCacheOperation("delete", module, "ok")
 		cacheInvalidatedKeysTotal.WithLabelValues(module).Inc()
+		recordTTLInvalidation(module, 1)
 	}
 	return true
 }
@@ -271,35 +490,130 @@ func DeleteByPrefix(ctx context.Context, prefix string, maxKeys int64) int64 {
 		maxKeys = defaultScanCount
 	}
 
-	var cursor uint64
-	var deleted int64
-	pattern := prefix + "*"
-	for {
-		opCtx, cancel := operationContext(ctx)
-		keys, nextCursor, err := c.Scan(opCtx, cursor, pattern, maxKeys).Result()
-		cancel()
-		if err != nil {
-			recordCacheOperation("delete_prefix", module, "error")
-			return deleted
-		}
-		if len(keys) > 0 {
-			opCtx, cancel = operationContext(ctx)
-			n, delErr := c.Del(opCtx, keys...).Result()
-			cancel()
-			if delErr == nil {
-				deleted += n
-				cacheInvalidatedKeysTotal.WithLabelValues(module).Add(float64(n))
-			} else {
-				recordCacheOperation("delete_prefix", module, "error")
-			}
-		}
-		cursor = nextCursor
-		if cursor == 0 || deleted >= maxKeys {
-			break
-		}
+	deleted := deleteByPrefixWithLuaOrScan(ctx, c, prefix, maxKeys)
+	cacheInvalidatedKeysTotal.WithLabelValues(module).Add(float64(deleted))
+	if deleted > 0 {
+		recordTTLInvalidation(module, deleted)
 	}
 	recordCacheOperation("delete_prefix", module, "ok")
 	return deleted
+}
+
+func deleteByPrefixWithLuaOrScan(ctx context.Context, c *redis.Client, prefix string, maxKeys int64) int64 {
+	pattern := prefix + "*"
+	deleted := int64(0)
+	luaEnabled := atomic.LoadUint32(&disableDeleteByPrefixLua) == 0
+	scanCount := maxKeys
+	if scanCount <= 0 || scanCount > luaDeleteScanCount {
+		scanCount = luaDeleteScanCount
+	}
+
+	for {
+		remaining := maxKeys - deleted
+		if remaining <= 0 {
+			break
+		}
+		if luaEnabled {
+			opCtx, cancel := operationContext(ctx)
+			n, err := runDeleteByPrefixLua(opCtx, c, pattern, scanCount, remaining)
+			cancel()
+			if err == nil {
+				deleted += n
+				if deleted >= maxKeys {
+					break
+				}
+				if n == 0 {
+					break
+				}
+				continue
+			}
+			luaEnabled = false
+			atomic.StoreUint32(&disableDeleteByPrefixLua, 1)
+		}
+
+		nextDeleted, done := deleteByPrefixScanFallback(ctx, c, pattern, scanCount, remaining)
+		deleted += nextDeleted
+		if done || deleted >= maxKeys {
+			break
+		}
+		// Fallback path scans from zero each round; break when no progress.
+		if nextDeleted == 0 {
+			break
+		}
+	}
+	return deleted
+}
+
+func runDeleteByPrefixLua(
+	ctx context.Context,
+	c *redis.Client,
+	pattern string,
+	scanCount int64,
+	maxDelete int64,
+) (int64, error) {
+	raw, err := deleteByPrefixLua.Run(
+		ctx,
+		c,
+		nil,
+		pattern,
+		scanCount,
+		maxDelete,
+	).Result()
+	if err != nil {
+		return 0, err
+	}
+	array, ok := raw.([]any)
+	if !ok || len(array) < 1 {
+		return 0, fmt.Errorf("unexpected lua response: %T", raw)
+	}
+	return parseLuaInt64(array[0]), nil
+}
+
+func deleteByPrefixScanFallback(
+	ctx context.Context,
+	c *redis.Client,
+	pattern string,
+	scanCount int64,
+	maxDelete int64,
+) (int64, bool) {
+	opCtx, cancel := operationContext(ctx)
+	keys, _, scanErr := c.Scan(opCtx, 0, pattern, scanCount).Result()
+	cancel()
+	if scanErr != nil {
+		return 0, true
+	}
+	if len(keys) == 0 {
+		return 0, true
+	}
+	opCtx, cancel = operationContext(ctx)
+	deleted, delErr := c.Del(opCtx, keys...).Result()
+	cancel()
+	if delErr != nil {
+		return 0, true
+	}
+	if maxDelete > 0 && deleted > maxDelete {
+		deleted = maxDelete
+	}
+	return deleted, deleted == 0 || (maxDelete > 0 && deleted >= maxDelete)
+}
+
+func parseLuaInt64(raw any) int64 {
+	switch v := raw.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case uint64:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 // HashKeyPart returns a stable short hash for cache key composition.

@@ -2,6 +2,8 @@ package cachex
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,6 +127,110 @@ func TestCacheMetricsHitMissAndInvalidation(t *testing.T) {
 	require.GreaterOrEqual(t, invalidateAfter-invalidateBefore, float64(1))
 }
 
+func TestDeleteByPrefix_RemovesLargeKeySet(t *testing.T) {
+	ctx := context.Background()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ConfigureRedisClient(client)
+	defer func() { _ = Close() }()
+
+	for i := 0; i < 650; i++ {
+		key := BuildInboxKey("operator:test", fmt.Sprintf("f-%03d", i))
+		require.True(t, SetJSON(ctx, key, map[string]any{"idx": i}, TTLInbox))
+	}
+
+	deleted := DeleteByPrefix(ctx, "inbox:operator_test:", 1000)
+	require.GreaterOrEqual(t, deleted, int64(600))
+	require.Equal(t, 0, len(mr.Keys()))
+}
+
+func TestDeleteByPrefix_ConcurrentInvalidationIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ConfigureRedisClient(client)
+	defer func() { _ = Close() }()
+
+	for i := 0; i < 300; i++ {
+		key := BuildDashboardKey(fmt.Sprintf("team-%03d", i))
+		require.True(t, SetJSON(ctx, key, map[string]any{"idx": i}, TTLDashboard))
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = DeleteByPrefix(ctx, "dashboard:", 2000)
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, 0, len(mr.Keys()))
+}
+
+func TestAdaptiveTTL_ExtendsAndShortensWithinBounds(t *testing.T) {
+	ctx := context.Background()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ConfigureRedisClient(client)
+	defer func() { _ = Close() }()
+	resetTTLAdaptiveStateForTest()
+
+	module := "inbox"
+	key := BuildInboxKey("operator:test", "adaptive")
+	for i := 0; i < 240; i++ {
+		recordTTLAccess(module)
+	}
+	require.True(t, SetJSON(ctx, key, map[string]any{"mode": "hot_read"}, TTLInbox))
+	hotReadTTL := mr.TTL(key)
+	require.GreaterOrEqual(t, hotReadTTL, 58*time.Second)
+	require.LessOrEqual(t, hotReadTTL, 60*time.Second)
+	hotGauge := testutil.ToFloat64(cacheTTLEffectiveSeconds.WithLabelValues(module))
+	require.GreaterOrEqual(t, hotGauge, float64(58))
+
+	for i := 0; i < 40; i++ {
+		recordTTLInvalidation(module, 1)
+	}
+	require.True(t, SetJSON(ctx, key, map[string]any{"mode": "hot_invalidation"}, TTLInbox))
+	hotInvalidationTTL := mr.TTL(key)
+	require.GreaterOrEqual(t, hotInvalidationTTL, 29*time.Second)
+	require.LessOrEqual(t, hotInvalidationTTL, 31*time.Second)
+	shortGauge := testutil.ToFloat64(cacheTTLEffectiveSeconds.WithLabelValues(module))
+	require.GreaterOrEqual(t, shortGauge, float64(29))
+	require.LessOrEqual(t, shortGauge, float64(31))
+}
+
+func TestAdaptiveTTL_TraceModuleBoundedRange(t *testing.T) {
+	ctx := context.Background()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ConfigureRedisClient(client)
+	defer func() { _ = Close() }()
+	resetTTLAdaptiveStateForTest()
+
+	module := "trace"
+	key := BuildTraceKey("job-ttl-adaptive")
+	for i := 0; i < 260; i++ {
+		recordTTLAccess(module)
+	}
+	require.True(t, SetJSON(ctx, key, map[string]any{"job_id": "job-ttl-adaptive"}, TTLTrace))
+	ttl := mr.TTL(key)
+	require.GreaterOrEqual(t, ttl, 4*time.Minute+58*time.Second)
+	require.LessOrEqual(t, ttl, 5*time.Minute)
+}
+
 func TestParseRedisInfoPairsAndKeyspace(t *testing.T) {
 	info := `# Stats
 keyspace_hits:12
@@ -138,4 +244,10 @@ db0:keys=9,expires=2,avg_ttl=1234`
 	keys, ok := parseRedisKeyspaceKeys(parsed["db0"])
 	require.True(t, ok)
 	require.Equal(t, float64(9), keys)
+}
+
+func resetTTLAdaptiveStateForTest() {
+	ttlStateMu.Lock()
+	defer ttlStateMu.Unlock()
+	ttlStateByModule = map[string]*moduleTTLStat{}
 }
