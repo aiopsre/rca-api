@@ -118,22 +118,29 @@ var (
 local pattern = ARGV[1]
 local scan_count = tonumber(ARGV[2])
 local max_delete = tonumber(ARGV[3])
-local res = redis.call('SCAN', '0', 'MATCH', pattern, 'COUNT', scan_count)
-local keys = res[2]
 local deleted = 0
-if #keys > 0 then
-  if max_delete > 0 and #keys > max_delete then
-    while #keys > max_delete do
-      table.remove(keys)
+local cursor = "0"
+repeat
+  local res = redis.call('SCAN', cursor, 'MATCH', pattern, 'COUNT', scan_count)
+  cursor = res[1]
+  local keys = res[2]
+  if #keys > 0 then
+    if max_delete > 0 and deleted + #keys > max_delete then
+      local allow = max_delete - deleted
+      while #keys > allow do
+        table.remove(keys)
+      end
+    end
+    if #keys > 0 then
+      local unlink_result = redis.pcall('UNLINK', unpack(keys))
+      if type(unlink_result) == 'table' and unlink_result['err'] then
+        redis.call('DEL', unpack(keys))
+      end
+      deleted = deleted + #keys
     end
   end
-  local unlink_result = redis.pcall('UNLINK', unpack(keys))
-  if type(unlink_result) == 'table' and unlink_result['err'] then
-    redis.call('DEL', unpack(keys))
-  end
-  deleted = #keys
-end
-return {deleted}
+until cursor == "0" or (max_delete > 0 and deleted >= max_delete)
+return deleted
 `)
 
 	disableDeleteByPrefixLua uint32
@@ -562,11 +569,17 @@ func runDeleteByPrefixLua(
 	if err != nil {
 		return 0, err
 	}
-	array, ok := raw.([]any)
-	if !ok || len(array) < 1 {
+	switch v := raw.(type) {
+	case int64, int, uint64, float64, string:
+		return parseLuaInt64(v), nil
+	case []any:
+		if len(v) == 0 {
+			return 0, nil
+		}
+		return parseLuaInt64(v[0]), nil
+	default:
 		return 0, fmt.Errorf("unexpected lua response: %T", raw)
 	}
-	return parseLuaInt64(array[0]), nil
 }
 
 func deleteByPrefixScanFallback(

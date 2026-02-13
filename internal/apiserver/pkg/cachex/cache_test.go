@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,6 +172,29 @@ func TestDeleteByPrefix_ConcurrentInvalidationIsIdempotent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	require.Equal(t, 0, len(mr.Keys()))
+}
+
+func TestDeleteByPrefix_ScanFallbackWhenLuaDisabled(t *testing.T) {
+	ctx := context.Background()
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ConfigureRedisClient(client)
+	defer func() { _ = Close() }()
+
+	atomic.StoreUint32(&disableDeleteByPrefixLua, 1)
+	defer atomic.StoreUint32(&disableDeleteByPrefixLua, 0)
+
+	for i := 0; i < 320; i++ {
+		key := BuildHistoryKey(fmt.Sprintf("session-%03d", i), 0, 10, false)
+		require.True(t, SetJSON(ctx, key, map[string]any{"idx": i}, TTLHistory))
+	}
+
+	deleted := DeleteByPrefix(ctx, "history:", 1000)
+	require.GreaterOrEqual(t, deleted, int64(300))
 	require.Equal(t, 0, len(mr.Keys()))
 }
 
