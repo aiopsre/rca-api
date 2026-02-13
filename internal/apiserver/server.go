@@ -176,6 +176,7 @@ func (cfg *Config) configureNoticeDeliverySignalPublisher(ctx context.Context) e
 	}
 	// Reuse the same redis client for read-side cache whenever notice stream client is available.
 	cachex.ConfigureRedisClient(client)
+	cachex.StartRuntimeStatsCollector(ctx, 30*time.Second)
 	noticepkg.SetNoticeDeliverySignalPublisher(noticepkg.NewRedisNoticeDeliveryStream(
 		client,
 		noticepkg.RedisNoticeDeliveryStreamOptions{
@@ -193,6 +194,7 @@ func (cfg *Config) configureOperatorReadCacheClient(ctx context.Context) error {
 		return nil
 	}
 	if cachex.Enabled() {
+		cachex.StartRuntimeStatsCollector(ctx, 30*time.Second)
 		return nil
 	}
 	opts := cfg.RedisOptions
@@ -216,6 +218,7 @@ func (cfg *Config) configureOperatorReadCacheClient(ctx context.Context) error {
 		return err
 	}
 	cachex.ConfigureRedisClient(client)
+	cachex.StartRuntimeStatsCollector(ctx, 30*time.Second)
 	return nil
 }
 

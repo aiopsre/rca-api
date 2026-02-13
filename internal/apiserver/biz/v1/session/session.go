@@ -310,13 +310,14 @@ type ListGlobalAssignmentHistoryResponse struct {
 }
 
 type SyncSessionSLAStateRequest struct {
-	SessionID       string
-	AssignedAt      *string
-	DueAt           *string
-	EscalationState string
-	EscalationLevel int64
-	ReasonCode      *string
-	Actor           *string
+	SessionID                     string
+	AssignedAt                    *string
+	DueAt                         *string
+	EscalationState               string
+	EscalationLevel               int64
+	ReasonCode                    *string
+	Actor                         *string
+	SkipOperatorCacheInvalidation bool
 }
 
 type SyncSessionSLAStateResponse struct {
@@ -947,7 +948,7 @@ func (b *sessionBiz) ListGlobalAssignmentHistory(
 		return nil, err
 	}
 	targetSessionID := trimOptional(rq.SessionID)
-	cacheKey := "history:global_assignment:" + cachex.HashKeyPart(
+	cacheKey := cachex.BuildGlobalAssignmentHistoryKey(
 		targetSessionID,
 		strconv.FormatInt(offset, 10),
 		strconv.FormatInt(limit, 10),
@@ -1082,7 +1083,9 @@ func (b *sessionBiz) SyncSLAState(
 		})
 	}
 	cachex.InvalidateSessionReadModels(ctx, sessionID)
-	cachex.InvalidateOperatorReadModels(ctx)
+	if !rq.SkipOperatorCacheInvalidation {
+		cachex.InvalidateOperatorReadModels(ctx)
+	}
 	return &SyncSessionSLAStateResponse{Session: out, Changed: true}, nil
 }
 
@@ -1241,13 +1244,14 @@ func (b *sessionBiz) syncSLABatchInternal(
 			resp.EscalatedCount++
 		}
 		syncResp, syncErr := b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
-			SessionID:       sessionID,
-			AssignedAt:      ptrString(target.AssignedAt),
-			DueAt:           ptrString(target.DueAt),
-			EscalationState: target.EscalationState,
-			EscalationLevel: target.EscalationLevel,
-			ReasonCode:      ptrString(target.ReasonCode),
-			Actor:           ptrString(defaultSLAHistoryActor),
+			SessionID:                     sessionID,
+			AssignedAt:                    ptrString(target.AssignedAt),
+			DueAt:                         ptrString(target.DueAt),
+			EscalationState:               target.EscalationState,
+			EscalationLevel:               target.EscalationLevel,
+			ReasonCode:                    ptrString(target.ReasonCode),
+			Actor:                         ptrString(defaultSLAHistoryActor),
+			SkipOperatorCacheInvalidation: true,
 		})
 		if syncErr != nil {
 			slog.WarnContext(ctx, "sync session sla batch skipped",
@@ -1259,6 +1263,9 @@ func (b *sessionBiz) syncSLABatchInternal(
 		if syncResp != nil && syncResp.Changed {
 			resp.UpdatedCount++
 		}
+	}
+	if resp.UpdatedCount > 0 {
+		cachex.InvalidateOperatorReadModels(ctx)
 	}
 	return resp, nil
 }
