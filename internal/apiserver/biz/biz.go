@@ -14,6 +14,7 @@ import (
 	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
 	orchestratortemplatev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_template"
 	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
+	rbacv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/rbac"
 	sessionv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
 	triggerv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
@@ -38,6 +39,7 @@ type IBiz interface {
 	OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz
 	OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz
 	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
+	RBACV1() rbacv1.RBACBiz
 	SessionV1() sessionv1.SessionBiz
 	SilenceV1() silencev1.SilenceBiz
 	TriggerV1() triggerv1.TriggerBiz
@@ -67,6 +69,8 @@ type biz struct {
 	orchestratorTemplateBiz    orchestratortemplatev1.TemplateBiz
 	orchestratorToolsetOnce    sync.Once
 	orchestratorToolsetBiz     orchestratortoolsetv1.ToolsetBiz
+	rbacOnce                   sync.Once
+	rbacBiz                    rbacv1.RBACBiz
 	sessionOnce                sync.Once
 	sessionBiz                 sessionv1.SessionBiz
 	silenceOnce                sync.Once
@@ -151,6 +155,13 @@ func (b *biz) OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz {
 	return b.orchestratorToolsetBiz
 }
 
+func (b *biz) RBACV1() rbacv1.RBACBiz {
+	b.rbacOnce.Do(func() {
+		b.rbacBiz = rbacv1.New(b.store)
+	})
+	return b.rbacBiz
+}
+
 func (b *biz) SessionV1() sessionv1.SessionBiz {
 	b.sessionOnce.Do(func() {
 		b.sessionBiz = sessionv1.New(b.store)
@@ -194,6 +205,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.orchestratorStrategyBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorTemplateBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)
+		errs = appendCloseIfSupported(errs, b.rbacBiz)
 		errs = appendCloseIfSupported(errs, b.sessionBiz)
 		errs = appendCloseIfSupported(errs, b.silenceBiz)
 		errs = appendCloseIfSupported(errs, b.triggerBiz)

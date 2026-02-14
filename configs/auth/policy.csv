@@ -1,0 +1,20 @@
+# policy rows (p): p, role_id, resource_pattern, action
+p, operator, /v1/operator/*, ai.read
+p, operator, /v1/sessions/:sessionID/workbench, ai.read
+p, operator, /v1/sessions/:sessionID/workbench/viewer, ai.read
+p, operator, /v1/sessions/:sessionID/actions/replay, ai.run
+p, operator, /v1/sessions/:sessionID/actions/follow-up, ai.run
+
+p, reviewer, /v1/sessions/:sessionID/actions/review-start, session.review
+p, reviewer, /v1/sessions/:sessionID/actions/review-confirm, session.review
+p, reviewer, /v1/sessions/:sessionID/actions/review-reject, session.review
+
+p, admin, /v1/config/*, config.admin
+p, admin, /v1/users/*, rbac.admin
+p, admin, /v1/roles/*, rbac.admin
+p, admin, /v1/permissions/*, rbac.admin
+
+# grouping rows (g): g, user_id, role_id
+g, alice, operator
+g, bob, reviewer
+g, admin01, admin

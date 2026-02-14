@@ -184,7 +184,7 @@ func (h *Handler) UpsertSLAConfig(c *gin.Context) {
 }
 
 func (h *Handler) GetSessionAssignmentConfig(c *gin.Context) {
-	if err := authz.RequireAnyScope(c, authz.ScopeAIRead, authz.ScopeAIRun, authz.ScopeConfigAdmin); err != nil {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead, authz.ScopeAIRun, authz.ScopeSessionAssign, authz.ScopeConfigAdmin); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
@@ -198,7 +198,7 @@ func (h *Handler) GetSessionAssignmentConfig(c *gin.Context) {
 }
 
 func (h *Handler) AssignSessionConfig(c *gin.Context) {
-	if err := authz.RequireAnyScope(c, authz.ScopeAIRun, authz.ScopeConfigAdmin); err != nil {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun, authz.ScopeSessionAssign, authz.ScopeConfigAdmin); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
@@ -247,18 +247,20 @@ func (h *Handler) AssignSessionConfig(c *gin.Context) {
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
 		tokenMW := authpkg.RequireOperatorToken()
+		configRBACMW := handler.RequireRBAC(authz.ScopeConfigAdmin)
+		sessionAssignRBACMW := handler.RequireRBAC(authz.ScopeSessionAssign)
 		configGroup := v1.Group("/config", append(mws, tokenMW)...)
-		configGroup.GET("/pipeline/:alert_source", handler.GetPipelineConfig)
-		configGroup.POST("/pipeline/update", handler.UpsertPipelineConfig)
-		configGroup.GET("/trigger/:trigger_type", handler.GetTriggerConfig)
-		configGroup.POST("/trigger/update", handler.UpsertTriggerConfig)
-		configGroup.GET("/toolset/:pipeline_id", handler.GetToolsetConfig)
-		configGroup.POST("/toolset/update", handler.UpsertToolsetConfig)
-		configGroup.GET("/sla/:session_type", handler.GetSLAConfig)
-		configGroup.POST("/sla/update", handler.UpsertSLAConfig)
+		configGroup.GET("/pipeline/:alert_source", configRBACMW, handler.GetPipelineConfig)
+		configGroup.POST("/pipeline/update", configRBACMW, handler.UpsertPipelineConfig)
+		configGroup.GET("/trigger/:trigger_type", configRBACMW, handler.GetTriggerConfig)
+		configGroup.POST("/trigger/update", configRBACMW, handler.UpsertTriggerConfig)
+		configGroup.GET("/toolset/:pipeline_id", configRBACMW, handler.GetToolsetConfig)
+		configGroup.POST("/toolset/update", configRBACMW, handler.UpsertToolsetConfig)
+		configGroup.GET("/sla/:session_type", configRBACMW, handler.GetSLAConfig)
+		configGroup.POST("/sla/update", configRBACMW, handler.UpsertSLAConfig)
 
 		sessionGroup := v1.Group("/session", append(mws, tokenMW)...)
-		sessionGroup.GET("/:sessionID/assignment", handler.GetSessionAssignmentConfig)
-		sessionGroup.POST("/:sessionID/assign", handler.AssignSessionConfig)
+		sessionGroup.GET("/:sessionID/assignment", sessionAssignRBACMW, handler.GetSessionAssignmentConfig)
+		sessionGroup.POST("/:sessionID/assign", sessionAssignRBACMW, handler.AssignSessionConfig)
 	})
 }

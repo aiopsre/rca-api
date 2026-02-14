@@ -1,0 +1,22 @@
+{
+  "policies": [
+    {"role_id": "operator", "resource": "/v1/operator/*", "action": "ai.read"},
+    {"role_id": "operator", "resource": "/v1/sessions/:sessionID/workbench", "action": "ai.read"},
+    {"role_id": "operator", "resource": "/v1/sessions/:sessionID/actions/replay", "action": "ai.run"},
+    {"role_id": "operator", "resource": "/v1/sessions/:sessionID/actions/follow-up", "action": "ai.run"},
+
+    {"role_id": "reviewer", "resource": "/v1/sessions/:sessionID/actions/review-start", "action": "session.review"},
+    {"role_id": "reviewer", "resource": "/v1/sessions/:sessionID/actions/review-confirm", "action": "session.review"},
+    {"role_id": "reviewer", "resource": "/v1/sessions/:sessionID/actions/review-reject", "action": "session.review"},
+
+    {"role_id": "admin", "resource": "/v1/config/*", "action": "config.admin"},
+    {"role_id": "admin", "resource": "/v1/users/*", "action": "rbac.admin"},
+    {"role_id": "admin", "resource": "/v1/roles/*", "action": "rbac.admin"},
+    {"role_id": "admin", "resource": "/v1/permissions/*", "action": "rbac.admin"}
+  ],
+  "groupings": [
+    {"user_id": "alice", "role_id": "operator"},
+    {"user_id": "bob", "role_id": "reviewer"},
+    {"user_id": "admin01", "role_id": "admin"}
+  ]
+}

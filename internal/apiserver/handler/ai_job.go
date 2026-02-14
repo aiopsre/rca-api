@@ -1080,26 +1080,32 @@ func init() {
 
 		operatorAuthMW := authpkg.RequireOperatorToken()
 		sessionGroup := v1.Group("/sessions", append(mws, operatorAuthMW)...)
-		sessionGroup.GET("/:sessionID/ai/traces", handler.ListSessionAIJobTraces)
-		sessionGroup.GET("/:sessionID/history", handler.ListSessionHistory)
-		sessionGroup.GET("/:sessionID/assignment_history", handler.ListSessionAssignmentHistory)
-		sessionGroup.GET("/:sessionID/workbench", handler.GetSessionAIWorkbench)
-		sessionGroup.GET("/:sessionID/workbench/viewer", handler.GetSessionWorkbenchViewer)
-		sessionGroup.POST("/:sessionID/actions/replay", handler.ReplaySessionAI)
-		sessionGroup.POST("/:sessionID/actions/follow-up", handler.FollowUpSessionAI)
-		sessionGroup.POST("/:sessionID/actions/review-start", handler.StartSessionReview)
-		sessionGroup.POST("/:sessionID/actions/review-confirm", handler.ConfirmSessionReview)
-		sessionGroup.POST("/:sessionID/actions/review-reject", handler.RejectSessionReview)
-		sessionGroup.POST("/:sessionID/actions/assign", handler.AssignSessionOwner)
-		sessionGroup.POST("/:sessionID/actions/reassign", handler.ReassignSessionOwner)
+		sessionReadRBAC := handler.RequireRBAC(authz.ScopeAIRead)
+		sessionRunRBAC := handler.RequireRBAC(authz.ScopeAIRun)
+		sessionReviewRBAC := handler.RequireRBAC(authz.ScopeSessionReview)
+		sessionAssignRBAC := handler.RequireRBAC(authz.ScopeSessionAssign)
+		sessionGroup.GET("/:sessionID/ai/traces", sessionReadRBAC, handler.ListSessionAIJobTraces)
+		sessionGroup.GET("/:sessionID/history", sessionReadRBAC, handler.ListSessionHistory)
+		sessionGroup.GET("/:sessionID/assignment_history", sessionReadRBAC, handler.ListSessionAssignmentHistory)
+		sessionGroup.GET("/:sessionID/workbench", sessionReadRBAC, handler.GetSessionAIWorkbench)
+		sessionGroup.GET("/:sessionID/workbench/viewer", sessionReadRBAC, handler.GetSessionWorkbenchViewer)
+		sessionGroup.POST("/:sessionID/actions/replay", sessionRunRBAC, handler.ReplaySessionAI)
+		sessionGroup.POST("/:sessionID/actions/follow-up", sessionRunRBAC, handler.FollowUpSessionAI)
+		sessionGroup.POST("/:sessionID/actions/review-start", sessionReviewRBAC, handler.StartSessionReview)
+		sessionGroup.POST("/:sessionID/actions/review-confirm", sessionReviewRBAC, handler.ConfirmSessionReview)
+		sessionGroup.POST("/:sessionID/actions/review-reject", sessionReviewRBAC, handler.RejectSessionReview)
+		sessionGroup.POST("/:sessionID/actions/assign", sessionAssignRBAC, handler.AssignSessionOwner)
+		sessionGroup.POST("/:sessionID/actions/reassign", sessionAssignRBAC, handler.ReassignSessionOwner)
 
 		operatorGroup := v1.Group("/operator", append(mws, operatorAuthMW)...)
-		operatorGroup.GET("/inbox", handler.ListOperatorInbox)
-		operatorGroup.GET("/dashboard", handler.GetOperatorDashboard)
-		operatorGroup.GET("/dashboard/trends", handler.GetOperatorDashboardTrends)
-		operatorGroup.GET("/team_dashboard", handler.GetOperatorTeamDashboard)
-		operatorGroup.POST("/sla/escalation-sync", handler.SyncOperatorSLAEscalation)
-		operatorGroup.GET("/assignment_history", handler.ListOperatorAssignmentHistory)
+		operatorReadRBAC := handler.RequireRBAC(authz.ScopeAIRead)
+		operatorRunRBAC := handler.RequireRBAC(authz.ScopeAIRun)
+		operatorGroup.GET("/inbox", operatorReadRBAC, handler.ListOperatorInbox)
+		operatorGroup.GET("/dashboard", operatorReadRBAC, handler.GetOperatorDashboard)
+		operatorGroup.GET("/dashboard/trends", operatorReadRBAC, handler.GetOperatorDashboardTrends)
+		operatorGroup.GET("/team_dashboard", operatorReadRBAC, handler.GetOperatorTeamDashboard)
+		operatorGroup.POST("/sla/escalation-sync", operatorRunRBAC, handler.SyncOperatorSLAEscalation)
+		operatorGroup.GET("/assignment_history", operatorReadRBAC, handler.ListOperatorAssignmentHistory)
 		v1.GET("/ai/jobs:trace-compare", handler.CompareAIJobTrace)
 	})
 }
@@ -1359,7 +1365,7 @@ func buildSessionActionInputHints(triggerType string, reason string, operatorNot
 }
 
 func (h *Handler) dispatchSessionReviewAction(c *gin.Context, reviewState string, message string) {
-	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+	if err := authz.RequireAnyScope(c, authz.ScopeSessionReview, authz.ScopeAIRun); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}
@@ -1414,7 +1420,7 @@ func (h *Handler) dispatchSessionReviewAction(c *gin.Context, reviewState string
 }
 
 func (h *Handler) dispatchSessionAssignAction(c *gin.Context, message string) {
-	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+	if err := authz.RequireAnyScope(c, authz.ScopeSessionAssign, authz.ScopeAIRun); err != nil {
 		core.WriteResponse(c, nil, err)
 		return
 	}

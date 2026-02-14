@@ -46,6 +46,7 @@ type IStore interface {
 	SessionContext() SessionContextStore
 	SessionHistoryEvent() SessionHistoryEventStore
 	InternalStrategyConfig() InternalStrategyConfigStore
+	RBAC() RBACStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -181,4 +182,8 @@ func (s *store) SessionHistoryEvent() SessionHistoryEventStore {
 
 func (s *store) InternalStrategyConfig() InternalStrategyConfigStore {
 	return newInternalStrategyConfigStore(s)
+}
+
+func (s *store) RBAC() RBACStore {
+	return newRBACStore(s)
 }
