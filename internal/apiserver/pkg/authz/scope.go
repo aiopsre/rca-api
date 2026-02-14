@@ -11,7 +11,7 @@ import (
 const (
 	scopeHeader = "X-Scopes"
 
-	ScopeIncidentRead = "incident.read"
+	ScopeIncidentRead  = "incident.read"
 	ScopeIncidentWrite = "incident.write"
 
 	ScopeAlertRead      = "alert.read"
@@ -26,6 +26,7 @@ const (
 	ScopeEvidenceRead    = "evidence.read"
 	ScopeAIRun           = "ai.run"
 	ScopeAIRead          = "ai.read"
+	ScopeConfigAdmin     = "config.admin"
 	ScopeAIJobRead       = "ai_job.read"
 	ScopeToolCallRead    = "toolcall.read"
 	ScopeAICancel        = "ai.cancel"

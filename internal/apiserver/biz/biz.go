@@ -9,6 +9,7 @@ import (
 	datasourcev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
+	internalstrategyconfigv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
 	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
 	orchestratortemplatev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_template"
@@ -33,6 +34,7 @@ type IBiz interface {
 	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
+	InternalStrategyConfigV1() internalstrategyconfigv1.ConfigBiz
 	OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz
 	OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz
 	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
@@ -47,30 +49,32 @@ type IBiz interface {
 type biz struct {
 	store store.IStore
 
-	incidentOnce             sync.Once
-	incidentBiz              incidentv1.IncidentBiz
-	alertEventOnce           sync.Once
-	alertEventBiz            alerteventv1.AlertEventBiz
-	datasourceOnce           sync.Once
-	datasourceBiz            datasourcev1.DatasourceBiz
-	evidenceOnce             sync.Once
-	evidenceBiz              evidencev1.EvidenceBiz
-	aiJobOnce                sync.Once
-	aiJobBiz                 aijobv1.AIJobBiz
-	orchestratorStrategyOnce sync.Once
-	orchestratorStrategyBiz  orchestratorstrategyv1.StrategyBiz
-	orchestratorTemplateOnce sync.Once
-	orchestratorTemplateBiz  orchestratortemplatev1.TemplateBiz
-	orchestratorToolsetOnce  sync.Once
-	orchestratorToolsetBiz   orchestratortoolsetv1.ToolsetBiz
-	sessionOnce              sync.Once
-	sessionBiz               sessionv1.SessionBiz
-	silenceOnce              sync.Once
-	silenceBiz               silencev1.SilenceBiz
-	triggerOnce              sync.Once
-	triggerBiz               triggerv1.TriggerBiz
-	noticeOnce               sync.Once
-	noticeBiz                noticev1.NoticeBiz
+	incidentOnce               sync.Once
+	incidentBiz                incidentv1.IncidentBiz
+	alertEventOnce             sync.Once
+	alertEventBiz              alerteventv1.AlertEventBiz
+	datasourceOnce             sync.Once
+	datasourceBiz              datasourcev1.DatasourceBiz
+	evidenceOnce               sync.Once
+	evidenceBiz                evidencev1.EvidenceBiz
+	aiJobOnce                  sync.Once
+	aiJobBiz                   aijobv1.AIJobBiz
+	internalStrategyConfigOnce sync.Once
+	internalStrategyConfigBiz  internalstrategyconfigv1.ConfigBiz
+	orchestratorStrategyOnce   sync.Once
+	orchestratorStrategyBiz    orchestratorstrategyv1.StrategyBiz
+	orchestratorTemplateOnce   sync.Once
+	orchestratorTemplateBiz    orchestratortemplatev1.TemplateBiz
+	orchestratorToolsetOnce    sync.Once
+	orchestratorToolsetBiz     orchestratortoolsetv1.ToolsetBiz
+	sessionOnce                sync.Once
+	sessionBiz                 sessionv1.SessionBiz
+	silenceOnce                sync.Once
+	silenceBiz                 silencev1.SilenceBiz
+	triggerOnce                sync.Once
+	triggerBiz                 triggerv1.TriggerBiz
+	noticeOnce                 sync.Once
+	noticeBiz                  noticev1.NoticeBiz
 
 	closeOnce sync.Once
 	closeErr  error
@@ -119,9 +123,16 @@ func (b *biz) AIJobV1() aijobv1.AIJobBiz {
 	return b.aiJobBiz
 }
 
+func (b *biz) InternalStrategyConfigV1() internalstrategyconfigv1.ConfigBiz {
+	b.internalStrategyConfigOnce.Do(func() {
+		b.internalStrategyConfigBiz = internalstrategyconfigv1.New(b.store)
+	})
+	return b.internalStrategyConfigBiz
+}
+
 func (b *biz) OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz {
 	b.orchestratorStrategyOnce.Do(func() {
-		b.orchestratorStrategyBiz = orchestratorstrategyv1.New()
+		b.orchestratorStrategyBiz = orchestratorstrategyv1.New(b.store)
 	})
 	return b.orchestratorStrategyBiz
 }
@@ -135,7 +146,7 @@ func (b *biz) OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz {
 
 func (b *biz) OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz {
 	b.orchestratorToolsetOnce.Do(func() {
-		b.orchestratorToolsetBiz = orchestratortoolsetv1.New()
+		b.orchestratorToolsetBiz = orchestratortoolsetv1.New(b.store)
 	})
 	return b.orchestratorToolsetBiz
 }
@@ -179,6 +190,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.datasourceBiz)
 		errs = appendCloseIfSupported(errs, b.evidenceBiz)
 		errs = appendCloseIfSupported(errs, b.aiJobBiz)
+		errs = appendCloseIfSupported(errs, b.internalStrategyConfigBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorStrategyBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorTemplateBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)

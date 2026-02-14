@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	aijobbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
+	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
@@ -113,6 +114,15 @@ type triggerBiz struct {
 	incidentStore incidentStore
 	runAIJobBiz   aiJobRunner
 	sessionBiz    incidentSessionEnsurer
+	configBiz     triggerConfigResolver
+}
+
+type triggerConfigResolver interface {
+	ResolveTriggerPipeline(ctx context.Context, triggerType string) (pipelineID string, sessionType string, source string, err error)
+	GetPipeline(
+		ctx context.Context,
+		rq *internalstrategyconfig.GetPipelineConfigRequest,
+	) (*internalstrategyconfig.PipelineConfigView, error)
 }
 
 var _ TriggerBiz = (*triggerBiz)(nil)
@@ -122,14 +132,21 @@ func New(store store.IStore) *triggerBiz {
 		incidentStore: store.Incident(),
 		runAIJobBiz:   aijobbiz.New(store),
 		sessionBiz:    sessionbiz.New(store),
+		configBiz:     internalstrategyconfig.New(store),
 	}
 }
 
-func newWithDeps(incidentStore incidentStore, runAIJobBiz aiJobRunner, sessionBiz incidentSessionEnsurer) *triggerBiz {
+func newWithDeps(
+	incidentStore incidentStore,
+	runAIJobBiz aiJobRunner,
+	sessionBiz incidentSessionEnsurer,
+	configBiz triggerConfigResolver,
+) *triggerBiz {
 	return &triggerBiz{
 		incidentStore: incidentStore,
 		runAIJobBiz:   runAIJobBiz,
 		sessionBiz:    sessionBiz,
+		configBiz:     configBiz,
 	}
 }
 
@@ -143,7 +160,7 @@ func (b *triggerBiz) Dispatch(ctx context.Context, rq *TriggerRequest) (*Trigger
 		return nil, err
 	}
 
-	runReq, err := normalized.toRunAIJobRequest(incident.IncidentID)
+	runReq, err := b.buildRunRequest(ctx, normalized, incident.IncidentID)
 	if err != nil {
 		return nil, err
 	}
@@ -710,6 +727,56 @@ func buildRunRequest(r *normalizedTriggerRequest, incidentID string) (*v1.RunAIJ
 		return nil, errorsx.ErrInvalidArgument
 	}
 
+	return runReq, nil
+}
+
+func (b *triggerBiz) buildRunRequest(
+	ctx context.Context,
+	r *normalizedTriggerRequest,
+	incidentID string,
+) (*v1.RunAIJobRequest, error) {
+	if r == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	runReq := cloneRunRequest(r.runRequest)
+	if runReq == nil {
+		runReq = &v1.RunAIJobRequest{}
+	}
+	runReq.IncidentID = incidentID
+
+	if pipeline := trimOptional(r.pipeline); pipeline != "" {
+		runReq.Pipeline = strPtr(pipeline)
+	}
+	if trimOptional(runReq.Pipeline) == "" && b != nil && b.configBiz != nil {
+		resolvedPipeline, _, _, err := b.configBiz.ResolveTriggerPipeline(ctx, r.triggerType)
+		if err == nil && strings.TrimSpace(resolvedPipeline) != "" {
+			runReq.Pipeline = strPtr(strings.TrimSpace(resolvedPipeline))
+		}
+	}
+	if trimOptional(runReq.Pipeline) == "" && b != nil && b.configBiz != nil {
+		pipelineCfg, err := b.configBiz.GetPipeline(ctx, &internalstrategyconfig.GetPipelineConfigRequest{
+			AlertSource: r.triggerType,
+			Service:     payloadString(r.payload, "service"),
+			Namespace:   payloadString(r.payload, "namespace"),
+		})
+		if err == nil && pipelineCfg != nil && strings.TrimSpace(pipelineCfg.PipelineID) != "" {
+			runReq.Pipeline = strPtr(strings.TrimSpace(pipelineCfg.PipelineID))
+		}
+	}
+	if trimOptional(runReq.Pipeline) == "" {
+		runReq.Pipeline = strPtr(defaultPipeline)
+	}
+
+	if trigger := trimOptional(runReq.Trigger); trigger == "" {
+		runReq.Trigger = strPtr(defaultTriggerByType(r.triggerType))
+	}
+
+	applyTimeRange(runReq, r.timeRange)
+	start := runReq.GetTimeRangeStart().AsTime().UTC()
+	end := runReq.GetTimeRangeEnd().AsTime().UTC()
+	if start.IsZero() || end.IsZero() || start.After(end) {
+		return nil, errorsx.ErrInvalidArgument
+	}
 	return runReq, nil
 }
 

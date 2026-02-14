@@ -677,7 +677,8 @@ func (b *sessionBiz) UpdateAssignment(
 		assignedAt = rq.AssignedAt.UTC()
 	}
 	assignment.AssignedAt = assignedAt.Format(time.RFC3339Nano)
-	dueAt := assignedAt.Add(defaultSessionSLAWindow)
+	dueWindow, _ := b.resolveSLAWindows(ctx, out.SessionType)
+	dueAt := assignedAt.Add(dueWindow)
 
 	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
 	stateObj[sessionContextStateAssignKey] = map[string]any{
@@ -723,6 +724,7 @@ func (b *sessionBiz) UpdateAssignment(
 			"previous_assignee": strings.TrimSpace(previousAssignment.Assignee),
 		},
 	})
+	b.syncSessionAssignmentRecordBestEffort(ctx, out, assignment, assignedAt)
 	cachex.InvalidateSessionReadModels(ctx, sessionID)
 	cachex.InvalidateOperatorReadModels(ctx)
 	return &UpdateAssignmentResponse{Session: out, Assignment: assignment}, nil
@@ -1114,7 +1116,8 @@ func (b *sessionBiz) TouchSLAOnAction(
 	}
 	now := time.Now().UTC()
 	assignedAt := now.Format(time.RFC3339Nano)
-	dueAt := now.Add(defaultSessionSLAWindow).Format(time.RFC3339Nano)
+	dueWindow, _ := b.resolveSLAWindows(ctx, sessionObj.SessionType)
+	dueAt := now.Add(dueWindow).Format(time.RFC3339Nano)
 	actor := firstNonEmpty(trimOptional(rq.Actor), defaultSLAHistoryActor)
 	reasonCode := "operator_" + actionType + "_requested"
 	return b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
@@ -1233,7 +1236,8 @@ func (b *sessionBiz) syncSLABatchInternal(
 			continue
 		}
 		resp.ScannedCount++
-		target := evaluateSessionSLAAutomationState(now, sessionObj)
+		dueWindow, escalationWindow := b.resolveSLAWindows(ctx, sessionObj.SessionType)
+		target := evaluateSessionSLAAutomationState(now, sessionObj, dueWindow, escalationWindow)
 		if target == nil {
 			continue
 		}
@@ -1639,9 +1643,20 @@ func extractSLAState(stateObj map[string]any) *sessionSLAState {
 	return out
 }
 
-func evaluateSessionSLAAutomationState(now time.Time, sessionObj *model.SessionContextM) *sessionSLAState {
+func evaluateSessionSLAAutomationState(
+	now time.Time,
+	sessionObj *model.SessionContextM,
+	dueWindow time.Duration,
+	escalationWindow time.Duration,
+) *sessionSLAState {
 	if sessionObj == nil {
 		return nil
+	}
+	if dueWindow <= 0 {
+		dueWindow = defaultSessionSLAWindow
+	}
+	if escalationWindow <= dueWindow {
+		escalationWindow = dueWindow * 2
 	}
 	stateObj := parseContextStateJSONObject(sessionObj.ContextStateJSON)
 	current := extractSLAState(stateObj)
@@ -1671,12 +1686,12 @@ func evaluateSessionSLAAutomationState(now time.Time, sessionObj *model.SessionC
 	dueAtRaw := strings.TrimSpace(current.DueAt)
 	dueAt, ok := parseRFC3339Time(dueAtRaw)
 	if !ok {
-		dueAt = assignedAt.Add(defaultSessionSLAWindow)
+		dueAt = assignedAt.Add(dueWindow)
 	}
 	current.DueAt = dueAt.UTC().Format(time.RFC3339Nano)
 
 	switch {
-	case now.After(dueAt.Add(defaultSessionSLAWindow)):
+	case now.After(dueAt.Add(escalationWindow - dueWindow)):
 		current.EscalationState = SessionEscalationStateEscalated
 		current.EscalationLevel = 2
 		current.ReasonCode = "sla_timeout_escalated"
@@ -1692,6 +1707,65 @@ func evaluateSessionSLAAutomationState(now time.Time, sessionObj *model.SessionC
 		}
 	}
 	return current
+}
+
+func (b *sessionBiz) resolveSLAWindows(ctx context.Context, sessionType string) (time.Duration, time.Duration) {
+	dueWindow := defaultSessionSLAWindow
+	escalationWindow := defaultSessionSLAWindow * 2
+	if b == nil || b.store == nil || b.store.InternalStrategyConfig() == nil {
+		return dueWindow, escalationWindow
+	}
+	sessionType = strings.ToLower(strings.TrimSpace(sessionType))
+	if sessionType == "" {
+		sessionType = SessionTypeIncident
+	}
+	obj, err := b.store.InternalStrategyConfig().GetSLAEscalationConfig(ctx, sessionType)
+	if err != nil || obj == nil {
+		return dueWindow, escalationWindow
+	}
+	if obj.DueSeconds > 0 {
+		dueWindow = time.Duration(obj.DueSeconds) * time.Second
+	}
+	if obj.EscalationThresholdsJSON != nil && strings.TrimSpace(*obj.EscalationThresholdsJSON) != "" {
+		var thresholds []int64
+		if unmarshalErr := json.Unmarshal([]byte(*obj.EscalationThresholdsJSON), &thresholds); unmarshalErr == nil {
+			for _, value := range thresholds {
+				if value <= 0 {
+					continue
+				}
+				if time.Duration(value)*time.Second > dueWindow {
+					escalationWindow = time.Duration(value) * time.Second
+					break
+				}
+			}
+		}
+	}
+	if escalationWindow <= dueWindow {
+		escalationWindow = dueWindow * 2
+	}
+	return dueWindow, escalationWindow
+}
+
+func (b *sessionBiz) syncSessionAssignmentRecordBestEffort(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+	assignment *AssignmentState,
+	assignedAt time.Time,
+) {
+	if b == nil || b.store == nil || b.store.InternalStrategyConfig() == nil || sessionObj == nil || assignment == nil {
+		return
+	}
+	assignmentNote := strings.TrimSpace(assignment.Note)
+	notePtr := ptrString(assignmentNote)
+	if err := b.store.InternalStrategyConfig().UpsertSessionAssignment(ctx, &model.SessionAssignmentM{
+		SessionID:  strings.TrimSpace(sessionObj.SessionID),
+		Assignee:   strings.TrimSpace(assignment.Assignee),
+		AssignedBy: strings.TrimSpace(assignment.AssignedBy),
+		AssignedAt: &assignedAt,
+		Note:       notePtr,
+	}); err != nil {
+		slog.DebugContext(ctx, "session assignment read model sync skipped", "session_id", sessionObj.SessionID, "error", err)
+	}
 }
 
 func parseRFC3339Time(raw string) (time.Time, bool) {

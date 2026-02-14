@@ -1,0 +1,15 @@
+pipelines:
+  - alert_source: "alert"
+    service: ""
+    namespace: ""
+    pipeline_id: "basic_rca"
+    graph_id: "basic_rca"
+    toolset_list:
+      - "canonical_default"
+  - alert_source: "manual"
+    service: ""
+    namespace: ""
+    pipeline_id: "basic_rca"
+    graph_id: "basic_rca"
+    toolset_list:
+      - "canonical_default"

@@ -1,0 +1,25 @@
+triggers:
+  - trigger_type: "alert"
+    pipeline_id: "basic_rca"
+    session_type: "incident"
+    fallback: true
+  - trigger_type: "manual"
+    pipeline_id: "basic_rca"
+    session_type: "incident"
+    fallback: true
+  - trigger_type: "replay"
+    pipeline_id: "basic_rca"
+    session_type: "incident"
+    fallback: true
+  - trigger_type: "follow_up"
+    pipeline_id: "basic_rca"
+    session_type: "incident"
+    fallback: true
+  - trigger_type: "cron"
+    pipeline_id: "basic_rca"
+    session_type: "service"
+    fallback: true
+  - trigger_type: "change"
+    pipeline_id: "basic_rca"
+    session_type: "change"
+    fallback: true

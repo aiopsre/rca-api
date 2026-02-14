@@ -32,7 +32,7 @@ func TestDispatchManual_EnsuresSessionAndRunsAIJob(t *testing.T) {
 			Session: &model.SessionContextM{SessionID: "session-1"},
 		},
 	}
-	biz := newWithDeps(incidentStore, runner, sessionSvc)
+	biz := newWithDeps(incidentStore, runner, sessionSvc, nil)
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-30 * time.Minute)
@@ -81,7 +81,7 @@ func TestDispatchAlert_DefaultsPipelineAndTrigger(t *testing.T) {
 	incidentStore := &fakeIncidentStore{incident: incident}
 	runner := &fakeAIJobRunner{resp: &v1.RunAIJobResponse{JobID: "ai-job-2"}}
 	sessionSvc := &fakeSessionEnsurer{}
-	biz := newWithDeps(incidentStore, runner, sessionSvc)
+	biz := newWithDeps(incidentStore, runner, sessionSvc, nil)
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-time.Hour)
@@ -121,7 +121,7 @@ func TestDispatchReplay_ResolvesIncidentFromSessionID(t *testing.T) {
 			},
 		},
 	}
-	biz := newWithDeps(incidentStore, runner, sessionSvc)
+	biz := newWithDeps(incidentStore, runner, sessionSvc, nil)
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-45 * time.Minute)
@@ -169,7 +169,7 @@ func TestDispatchFollowUp_UsesIncidentAndEnsuresSession(t *testing.T) {
 			},
 		},
 	}
-	biz := newWithDeps(incidentStore, runner, sessionSvc)
+	biz := newWithDeps(incidentStore, runner, sessionSvc, nil)
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-30 * time.Minute)
@@ -215,7 +215,7 @@ func TestDispatchCron_BusinessKeySessionAndIncidentCreate(t *testing.T) {
 			},
 		},
 	}
-	biz := newWithDeps(incidentStore, runner, sessionSvc)
+	biz := newWithDeps(incidentStore, runner, sessionSvc, nil)
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-15 * time.Minute)
@@ -271,7 +271,7 @@ func TestDispatchChange_BusinessKeySessionAndIncidentCreate(t *testing.T) {
 			},
 		},
 	}
-	biz := newWithDeps(incidentStore, runner, sessionSvc)
+	biz := newWithDeps(incidentStore, runner, sessionSvc, nil)
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-20 * time.Minute)
@@ -322,6 +322,7 @@ func TestDispatch_ReturnsIncidentNotFound(t *testing.T) {
 		&fakeIncidentStore{err: gorm.ErrRecordNotFound},
 		&fakeAIJobRunner{},
 		&fakeSessionEnsurer{},
+		nil,
 	)
 
 	_, err := biz.Dispatch(context.Background(), &TriggerRequest{
@@ -341,7 +342,7 @@ func TestDispatch_ReturnsIncidentNotFound(t *testing.T) {
 }
 
 func TestDispatch_InvalidRequest(t *testing.T) {
-	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{})
+	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{}, nil)
 	_, err := biz.Dispatch(context.Background(), &TriggerRequest{
 		TriggerType: "unknown",
 	})
@@ -350,7 +351,7 @@ func TestDispatch_InvalidRequest(t *testing.T) {
 }
 
 func TestDispatchReplay_InvalidWithoutIncidentOrSession(t *testing.T) {
-	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{})
+	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{}, nil)
 	_, err := biz.Dispatch(context.Background(), &TriggerRequest{
 		TriggerType: TriggerTypeReplay,
 		Source:      "replay_api",
@@ -368,7 +369,7 @@ func TestDispatchReplay_InvalidWithoutIncidentOrSession(t *testing.T) {
 }
 
 func TestDispatchCron_InvalidWithoutBusinessKeySessionOrIncident(t *testing.T) {
-	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{})
+	biz := newWithDeps(&fakeIncidentStore{}, &fakeAIJobRunner{}, &fakeSessionEnsurer{}, nil)
 	_, err := biz.Dispatch(context.Background(), &TriggerRequest{
 		TriggerType: TriggerTypeCron,
 		Source:      "cron_router",

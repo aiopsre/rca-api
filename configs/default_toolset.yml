@@ -1,0 +1,7 @@
+toolsets:
+  - pipeline_id: "basic_rca"
+    toolset_name: "canonical_default"
+    allowed_tools:
+      - "metrics.query_range"
+      - "logs.search"
+      - "k8s.get_objects"

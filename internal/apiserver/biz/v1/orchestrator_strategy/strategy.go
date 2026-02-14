@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/orchestratorcfg"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
@@ -21,13 +22,15 @@ type StrategyBiz interface {
 //nolint:modernize // Keep explicit placeholder for future extensions.
 type StrategyExpansion interface{}
 
-type strategyBiz struct{}
+type strategyBiz struct {
+	store store.IStore
+}
 
 var _ StrategyBiz = (*strategyBiz)(nil)
 
 // New creates orchestrator strategy biz.
-func New() *strategyBiz {
-	return &strategyBiz{}
+func New(store store.IStore) *strategyBiz {
+	return &strategyBiz{store: store}
 }
 
 func (b *strategyBiz) Resolve(
