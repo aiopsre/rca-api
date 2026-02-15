@@ -93,3 +93,5 @@ frontend/tsconfig.tsbuildinfo
 *.ntvs*
 *.njsproj
 *.sln
+
+vue-vben-admin/
