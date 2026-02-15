@@ -2,12 +2,20 @@
 p, operator, /v1/operator/*, ai.read
 p, operator, /v1/sessions/:sessionID/workbench, ai.read
 p, operator, /v1/sessions/:sessionID/workbench/viewer, ai.read
+p, operator, /v1/sessions/:sessionID/history, ai.read
+p, operator, /v1/sessions/:sessionID/assignment_history, ai.read
+p, operator, /v1/operator/assignment_history, ai.read
 p, operator, /v1/sessions/:sessionID/actions/replay, ai.run
 p, operator, /v1/sessions/:sessionID/actions/follow-up, ai.run
+p, operator, /v1/operator/sla/escalation-sync, ai.run
 
 p, reviewer, /v1/sessions/:sessionID/actions/review-start, session.review
 p, reviewer, /v1/sessions/:sessionID/actions/review-confirm, session.review
 p, reviewer, /v1/sessions/:sessionID/actions/review-reject, session.review
+
+p, owner, /v1/sessions/:sessionID/actions/assign, session.assignment
+p, owner, /v1/sessions/:sessionID/actions/reassign, session.assignment
+p, owner, /v1/session/:sessionID/assign, session.assignment
 
 p, admin, /v1/config/*, config.admin
 p, admin, /v1/users/*, rbac.admin
@@ -17,4 +25,5 @@ p, admin, /v1/permissions/*, rbac.admin
 # grouping rows (g): g, user_id, role_id
 g, alice, operator
 g, bob, reviewer
+g, carol, owner
 g, admin01, admin

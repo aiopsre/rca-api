@@ -296,9 +296,11 @@ func parsePositiveInt(raw string, fallback int) int {
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
 		tokenMW := authpkg.RequireOperatorToken()
+		swaggerRBACMW := handler.RequireSwaggerRBAC()
+		sensitiveAuditMW := handler.AuditSensitiveOperatorAction()
 		rbacMW := handler.RequireRBAC(authz.ScopeRBACAdmin)
 
-		users := v1.Group("/users", append(mws, tokenMW)...)
+		users := v1.Group("/users", append(mws, tokenMW, swaggerRBACMW, sensitiveAuditMW)...)
 		users.GET("", rbacMW, handler.ListUsers)
 		users.POST("", rbacMW, handler.UpsertUser)
 		users.GET("/:id", rbacMW, handler.GetUser)
@@ -306,7 +308,7 @@ func init() {
 		users.DELETE("/:id", rbacMW, handler.DeleteUser)
 		users.POST("/:id/roles", rbacMW, handler.AssignUserRoles)
 
-		roles := v1.Group("/roles", append(mws, tokenMW)...)
+		roles := v1.Group("/roles", append(mws, tokenMW, swaggerRBACMW, sensitiveAuditMW)...)
 		roles.GET("", rbacMW, handler.ListRoles)
 		roles.POST("", rbacMW, handler.UpsertRole)
 		roles.GET("/:id", rbacMW, handler.GetRole)
@@ -314,7 +316,7 @@ func init() {
 		roles.DELETE("/:id", rbacMW, handler.DeleteRole)
 		roles.POST("/:id/permissions", rbacMW, handler.AssignRolePermissions)
 
-		permissions := v1.Group("/permissions", append(mws, tokenMW)...)
+		permissions := v1.Group("/permissions", append(mws, tokenMW, swaggerRBACMW, sensitiveAuditMW)...)
 		permissions.GET("", rbacMW, handler.ListPermissions)
 		permissions.POST("", rbacMW, handler.UpsertPermission)
 		permissions.GET("/:id", rbacMW, handler.GetPermission)

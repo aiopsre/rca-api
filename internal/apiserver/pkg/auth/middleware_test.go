@@ -50,3 +50,23 @@ func TestRequireOperatorToken_MissingTokenDenied(t *testing.T) {
 	require.True(t, c.IsAborted())
 	require.Equal(t, http.StatusUnauthorized, w.Code)
 }
+
+func TestRequireOperatorToken_RejectRefreshToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+
+	refreshResp, err := IssueToken(&IssueTokenRequest{
+		OperatorID: "operator:alice",
+		TokenType:  tokenTypeRefresh,
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/operator/inbox", nil)
+	req.Header.Set("Authorization", "Bearer "+refreshResp.Token)
+	c.Request = req
+
+	RequireOperatorToken()(c)
+	require.True(t, c.IsAborted())
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}

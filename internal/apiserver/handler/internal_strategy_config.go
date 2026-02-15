@@ -247,9 +247,11 @@ func (h *Handler) AssignSessionConfig(c *gin.Context) {
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
 		tokenMW := authpkg.RequireOperatorToken()
+		swaggerRBACMW := handler.RequireSwaggerRBAC()
+		sensitiveAuditMW := handler.AuditSensitiveOperatorAction()
 		configRBACMW := handler.RequireRBAC(authz.ScopeConfigAdmin)
 		sessionAssignRBACMW := handler.RequireRBAC(authz.ScopeSessionAssign)
-		configGroup := v1.Group("/config", append(mws, tokenMW)...)
+		configGroup := v1.Group("/config", append(mws, tokenMW, swaggerRBACMW, sensitiveAuditMW)...)
 		configGroup.GET("/pipeline/:alert_source", configRBACMW, handler.GetPipelineConfig)
 		configGroup.POST("/pipeline/update", configRBACMW, handler.UpsertPipelineConfig)
 		configGroup.GET("/trigger/:trigger_type", configRBACMW, handler.GetTriggerConfig)
@@ -259,7 +261,7 @@ func init() {
 		configGroup.GET("/sla/:session_type", configRBACMW, handler.GetSLAConfig)
 		configGroup.POST("/sla/update", configRBACMW, handler.UpsertSLAConfig)
 
-		sessionGroup := v1.Group("/session", append(mws, tokenMW)...)
+		sessionGroup := v1.Group("/session", append(mws, tokenMW, swaggerRBACMW, sensitiveAuditMW)...)
 		sessionGroup.GET("/:sessionID/assignment", sessionAssignRBACMW, handler.GetSessionAssignmentConfig)
 		sessionGroup.POST("/:sessionID/assign", sessionAssignRBACMW, handler.AssignSessionConfig)
 	})

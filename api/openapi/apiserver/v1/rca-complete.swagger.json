@@ -1,0 +1,5863 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "RCA API Complete",
+    "version": "v1",
+    "description": "Complete API surface scanned from Gin route registrations with RBAC hints."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "AIJob"
+    },
+    {
+      "name": "Alert"
+    },
+    {
+      "name": "Auth"
+    },
+    {
+      "name": "Config"
+    },
+    {
+      "name": "Datasource"
+    },
+    {
+      "name": "Incident"
+    },
+    {
+      "name": "MCP"
+    },
+    {
+      "name": "Notice"
+    },
+    {
+      "name": "Operator"
+    },
+    {
+      "name": "Orchestrator"
+    },
+    {
+      "name": "RBAC"
+    },
+    {
+      "name": "RCA"
+    },
+    {
+      "name": "Session"
+    },
+    {
+      "name": "SessionConfig"
+    },
+    {
+      "name": "Silence"
+    }
+  ],
+  "paths": {
+    "/v1/ai/jobs": {
+      "get": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "ListAIJobs",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListAIJobs`.",
+        "operationId": "ListAIJobs_GET_v1_ai_jobs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListAIJobs",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/ai/jobs/{jobID}": {
+      "get": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "GetAIJob",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetAIJob`.",
+        "operationId": "GetAIJob_GET_v1_ai_jobs_jobID",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetAIJob",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/ai/jobs/{jobID}/cancel": {
+      "post": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "CancelAIJob",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CancelAIJob`.",
+        "operationId": "CancelAIJob_POST_v1_ai_jobs_jobID_cancel",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CancelAIJob",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/jobs/{jobID}/finalize": {
+      "post": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "FinalizeAIJob",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `FinalizeAIJob`.",
+        "operationId": "FinalizeAIJob_POST_v1_ai_jobs_jobID_finalize",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "FinalizeAIJob",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/jobs/{jobID}/heartbeat": {
+      "post": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "RenewAIJobLease",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `RenewAIJobLease`.",
+        "operationId": "RenewAIJobLease_POST_v1_ai_jobs_jobID_heartbeat",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "RenewAIJobLease",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/jobs/{jobID}/start": {
+      "post": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "StartAIJob",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `StartAIJob`.",
+        "operationId": "StartAIJob_POST_v1_ai_jobs_jobID_start",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "StartAIJob",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/jobs/{jobID}/tool-calls": {
+      "get": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "ListAIToolCalls",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListAIToolCalls`.",
+        "operationId": "ListAIToolCalls_GET_v1_ai_jobs_jobID_tool_calls",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListAIToolCalls",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      },
+      "post": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "CreateAIToolCall",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateAIToolCall`.",
+        "operationId": "CreateAIToolCall_POST_v1_ai_jobs_jobID_tool_calls",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateAIToolCall",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ai/jobs/{jobID}/trace": {
+      "get": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "GetAIJobTrace",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetAIJobTrace`.",
+        "operationId": "GetAIJobTrace_GET_v1_ai_jobs_jobID_trace",
+        "parameters": [
+          {
+            "name": "jobID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetAIJobTrace",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/ai/jobs:trace-compare": {
+      "get": {
+        "tags": [
+          "AIJob"
+        ],
+        "summary": "CompareAIJobTrace",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `CompareAIJobTrace`.",
+        "operationId": "CompareAIJobTrace_GET_v1_ai_jobstrace_compare",
+        "parameters": [
+          {
+            "name": "left_job_id",
+            "in": "query",
+            "required": false,
+            "description": "Left job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "right_job_id",
+            "in": "query",
+            "required": false,
+            "description": "Right job ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "description": "Optional session ID for compare context.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "CompareAIJobTrace",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/alert-events/{eventID}/ack": {
+      "post": {
+        "tags": [
+          "Alert"
+        ],
+        "summary": "AckAlertEvent",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `AckAlertEvent`.",
+        "operationId": "AckAlertEvent_POST_v1_alert_events_eventID_ack",
+        "parameters": [
+          {
+            "name": "eventID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "AckAlertEvent",
+        "x-source-file": "internal/apiserver/handler/alert_event.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/alert-events:action": {
+      "get": {
+        "tags": [
+          "Alert"
+        ],
+        "summary": "AlertEventsGetAction",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `AlertEventsGetAction`.",
+        "operationId": "AlertEventsGetAction_GET_v1_alert_eventsaction",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "AlertEventsGetAction",
+        "x-source-file": "internal/apiserver/handler/alert_event.go"
+      },
+      "post": {
+        "tags": [
+          "Alert"
+        ],
+        "summary": "AlertEventsPostAction",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `AlertEventsPostAction`.",
+        "operationId": "AlertEventsPostAction_POST_v1_alert_eventsaction",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "AlertEventsPostAction",
+        "x-source-file": "internal/apiserver/handler/alert_event.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/alerts/ingest/{adapter}": {
+      "post": {
+        "tags": [
+          "Alert"
+        ],
+        "summary": "IngestAlertEventByAdapter",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `IngestAlertEventByAdapter`.",
+        "operationId": "IngestAlertEventByAdapter_POST_v1_alerts_ingest_adapter",
+        "parameters": [
+          {
+            "name": "adapter",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "IngestAlertEventByAdapter",
+        "x-source-file": "internal/apiserver/handler/alert_event.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "LoginOperator",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `public`. Handler: `LoginOperator`.",
+        "operationId": "LoginOperator_POST_v1_auth_login",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [],
+        "x-rbac-scope": "public",
+        "x-handler": "LoginOperator",
+        "x-source-file": "internal/apiserver/handler/auth.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "operator_id": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "team_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "ttl_seconds": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/refresh": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "RefreshOperatorToken",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `public`. Handler: `RefreshOperatorToken`.",
+        "operationId": "RefreshOperatorToken_POST_v1_auth_refresh",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [],
+        "x-rbac-scope": "public",
+        "x-handler": "RefreshOperatorToken",
+        "x-source-file": "internal/apiserver/handler/auth.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/config/pipeline/{alert_source}": {
+      "get": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "GetPipelineConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `GetPipelineConfig`.",
+        "operationId": "GetPipelineConfig_GET_v1_config_pipeline_alert_source",
+        "parameters": [
+          {
+            "name": "alert_source",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "GetPipelineConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go"
+      }
+    },
+    "/v1/config/pipeline/update": {
+      "post": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "UpsertPipelineConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `UpsertPipelineConfig`.",
+        "operationId": "UpsertPipelineConfig_POST_v1_config_pipeline_update",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "UpsertPipelineConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "alert_source": {
+                    "type": "string"
+                  },
+                  "service": {
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "type": "string"
+                  },
+                  "pipeline_id": {
+                    "type": "string"
+                  },
+                  "graph_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/config/sla/{session_type}": {
+      "get": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "GetSLAConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `GetSLAConfig`.",
+        "operationId": "GetSLAConfig_GET_v1_config_sla_session_type",
+        "parameters": [
+          {
+            "name": "session_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "GetSLAConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go"
+      }
+    },
+    "/v1/config/sla/update": {
+      "post": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "UpsertSLAConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `UpsertSLAConfig`.",
+        "operationId": "UpsertSLAConfig_POST_v1_config_sla_update",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "UpsertSLAConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "session_type": {
+                    "type": "string"
+                  },
+                  "due_seconds": {
+                    "type": "integer"
+                  },
+                  "escalation_thresholds": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/config/toolset/{pipeline_id}": {
+      "get": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "GetToolsetConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `GetToolsetConfig`.",
+        "operationId": "GetToolsetConfig_GET_v1_config_toolset_pipeline_id",
+        "parameters": [
+          {
+            "name": "pipeline_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "GetToolsetConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go"
+      }
+    },
+    "/v1/config/toolset/update": {
+      "post": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "UpsertToolsetConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `UpsertToolsetConfig`.",
+        "operationId": "UpsertToolsetConfig_POST_v1_config_toolset_update",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "UpsertToolsetConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "pipeline_id": {
+                    "type": "string"
+                  },
+                  "toolset_name": {
+                    "type": "string"
+                  },
+                  "allowed_tools": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/config/trigger/{trigger_type}": {
+      "get": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "GetTriggerConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `GetTriggerConfig`.",
+        "operationId": "GetTriggerConfig_GET_v1_config_trigger_trigger_type",
+        "parameters": [
+          {
+            "name": "trigger_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "GetTriggerConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go"
+      }
+    },
+    "/v1/config/trigger/update": {
+      "post": {
+        "tags": [
+          "Config"
+        ],
+        "summary": "UpsertTriggerConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `config.admin`. Handler: `UpsertTriggerConfig`.",
+        "operationId": "UpsertTriggerConfig_POST_v1_config_trigger_update",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "config.admin",
+        "x-handler": "UpsertTriggerConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "trigger_type": {
+                    "type": "string"
+                  },
+                  "pipeline_id": {
+                    "type": "string"
+                  },
+                  "session_type": {
+                    "type": "string"
+                  },
+                  "fallback": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/datasources": {
+      "get": {
+        "tags": [
+          "Datasource"
+        ],
+        "summary": "ListDatasource",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListDatasource`.",
+        "operationId": "ListDatasource_GET_v1_datasources",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListDatasource",
+        "x-source-file": "internal/apiserver/handler/datasource.go"
+      },
+      "post": {
+        "tags": [
+          "Datasource"
+        ],
+        "summary": "CreateDatasource",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateDatasource`.",
+        "operationId": "CreateDatasource_POST_v1_datasources",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateDatasource",
+        "x-source-file": "internal/apiserver/handler/datasource.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/datasources/{datasourceID}": {
+      "delete": {
+        "tags": [
+          "Datasource"
+        ],
+        "summary": "DeleteDatasource",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `DeleteDatasource`.",
+        "operationId": "DeleteDatasource_DELETE_v1_datasources_datasourceID",
+        "parameters": [
+          {
+            "name": "datasourceID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "DeleteDatasource",
+        "x-source-file": "internal/apiserver/handler/datasource.go"
+      },
+      "get": {
+        "tags": [
+          "Datasource"
+        ],
+        "summary": "GetDatasource",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetDatasource`.",
+        "operationId": "GetDatasource_GET_v1_datasources_datasourceID",
+        "parameters": [
+          {
+            "name": "datasourceID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetDatasource",
+        "x-source-file": "internal/apiserver/handler/datasource.go"
+      }
+    },
+    "/v1/evidence/{evidenceID}": {
+      "get": {
+        "tags": [
+          "RCA"
+        ],
+        "summary": "GetEvidence",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetEvidence`.",
+        "operationId": "GetEvidence_GET_v1_evidence_evidenceID",
+        "parameters": [
+          {
+            "name": "evidenceID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetEvidence",
+        "x-source-file": "internal/apiserver/handler/evidence.go"
+      }
+    },
+    "/v1/evidence:action": {
+      "post": {
+        "tags": [
+          "RCA"
+        ],
+        "summary": "QueryEvidenceAction",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `QueryEvidenceAction`.",
+        "operationId": "QueryEvidenceAction_POST_v1_evidenceaction",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "QueryEvidenceAction",
+        "x-source-file": "internal/apiserver/handler/evidence.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/healthz": {
+      "get": {
+        "tags": [
+          "RCA"
+        ],
+        "summary": "GET /v1/healthz",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: ``.",
+        "operationId": "route_GET_v1_healthz",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "",
+        "x-source-file": "internal/apiserver/httpserver.go"
+      }
+    },
+    "/v1/incidents": {
+      "delete": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "DeleteIncident",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `DeleteIncident`.",
+        "operationId": "DeleteIncident_DELETE_v1_incidents",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "DeleteIncident",
+        "x-source-file": "internal/apiserver/handler/incident.go"
+      },
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "ListIncident",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListIncident`.",
+        "operationId": "ListIncident_GET_v1_incidents",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListIncident",
+        "x-source-file": "internal/apiserver/handler/incident.go"
+      },
+      "post": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "CreateIncident",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateIncident`.",
+        "operationId": "CreateIncident_POST_v1_incidents",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateIncident",
+        "x-source-file": "internal/apiserver/handler/incident.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentID}": {
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "GetIncident",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetIncident`.",
+        "operationId": "GetIncident_GET_v1_incidents_incidentID",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetIncident",
+        "x-source-file": "internal/apiserver/handler/incident.go"
+      },
+      "put": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "UpdateIncident",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `UpdateIncident`.",
+        "operationId": "UpdateIncident_PUT_v1_incidents_incidentID",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "UpdateIncident",
+        "x-source-file": "internal/apiserver/handler/incident.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentID}/actions": {
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "ListIncidentActions",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListIncidentActions`.",
+        "operationId": "ListIncidentActions_GET_v1_incidents_incidentID_actions",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListIncidentActions",
+        "x-source-file": "internal/apiserver/handler/incident.go"
+      },
+      "post": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "CreateIncidentAction",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateIncidentAction`.",
+        "operationId": "CreateIncidentAction_POST_v1_incidents_incidentID_actions",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateIncidentAction",
+        "x-source-file": "internal/apiserver/handler/incident.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentID}/ai": {
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "ListIncidentAIJobs",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListIncidentAIJobs`.",
+        "operationId": "ListIncidentAIJobs_GET_v1_incidents_incidentID_ai",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListIncidentAIJobs",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/incidents/{incidentID}/ai/scheduled-run": {
+      "post": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "TriggerIncidentScheduledRun",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `TriggerIncidentScheduledRun`.",
+        "operationId": "TriggerIncidentScheduledRun_POST_v1_incidents_incidentID_ai_scheduled_run",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "TriggerIncidentScheduledRun",
+        "x-source-file": "internal/apiserver/handler/incident.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentID}/ai/traces": {
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "ListIncidentAIJobTraces",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListIncidentAIJobTraces`.",
+        "operationId": "ListIncidentAIJobTraces_GET_v1_incidents_incidentID_ai_traces",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListIncidentAIJobTraces",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/incidents/{incidentID}/ai:run": {
+      "post": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "RunIncidentAIJob",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `RunIncidentAIJob`.",
+        "operationId": "RunIncidentAIJob_POST_v1_incidents_incidentID_airun",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "RunIncidentAIJob",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentID}/evidence": {
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "ListIncidentEvidence",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListIncidentEvidence`.",
+        "operationId": "ListIncidentEvidence_GET_v1_incidents_incidentID_evidence",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListIncidentEvidence",
+        "x-source-file": "internal/apiserver/handler/evidence.go"
+      },
+      "post": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "SaveIncidentEvidence",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `SaveIncidentEvidence`.",
+        "operationId": "SaveIncidentEvidence_POST_v1_incidents_incidentID_evidence",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "SaveIncidentEvidence",
+        "x-source-file": "internal/apiserver/handler/evidence.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/incidents/{incidentID}/verification-runs": {
+      "get": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "ListIncidentVerificationRuns",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListIncidentVerificationRuns`.",
+        "operationId": "ListIncidentVerificationRuns_GET_v1_incidents_incidentID_verification_runs",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListIncidentVerificationRuns",
+        "x-source-file": "internal/apiserver/handler/incident.go"
+      },
+      "post": {
+        "tags": [
+          "Incident"
+        ],
+        "summary": "CreateIncidentVerificationRun",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateIncidentVerificationRun`.",
+        "operationId": "CreateIncidentVerificationRun_POST_v1_incidents_incidentID_verification_runs",
+        "parameters": [
+          {
+            "name": "incidentID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateIncidentVerificationRun",
+        "x-source-file": "internal/apiserver/handler/incident.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mcp/tools": {
+      "get": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "ListMCPTools",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListMCPTools`.",
+        "operationId": "ListMCPTools_GET_v1_mcp_tools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListMCPTools",
+        "x-source-file": "internal/apiserver/handler/mcp.go"
+      }
+    },
+    "/v1/mcp/tools/call": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "CallMCPTool",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CallMCPTool`.",
+        "operationId": "CallMCPTool_POST_v1_mcp_tools_call",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CallMCPTool",
+        "x-source-file": "internal/apiserver/handler/mcp.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notice-channels": {
+      "get": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "ListNoticeChannels",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListNoticeChannels`.",
+        "operationId": "ListNoticeChannels_GET_v1_notice_channels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListNoticeChannels",
+        "x-source-file": "internal/apiserver/handler/notice.go"
+      },
+      "post": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "CreateNoticeChannel",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateNoticeChannel`.",
+        "operationId": "CreateNoticeChannel_POST_v1_notice_channels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateNoticeChannel",
+        "x-source-file": "internal/apiserver/handler/notice.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notice-channels/{channelID}": {
+      "delete": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "DeleteNoticeChannel",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `DeleteNoticeChannel`.",
+        "operationId": "DeleteNoticeChannel_DELETE_v1_notice_channels_channelID",
+        "parameters": [
+          {
+            "name": "channelID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "DeleteNoticeChannel",
+        "x-source-file": "internal/apiserver/handler/notice.go"
+      },
+      "get": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "GetNoticeChannel",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetNoticeChannel`.",
+        "operationId": "GetNoticeChannel_GET_v1_notice_channels_channelID",
+        "parameters": [
+          {
+            "name": "channelID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetNoticeChannel",
+        "x-source-file": "internal/apiserver/handler/notice.go"
+      }
+    },
+    "/v1/notice-deliveries": {
+      "get": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "ListNoticeDeliveries",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListNoticeDeliveries`.",
+        "operationId": "ListNoticeDeliveries_GET_v1_notice_deliveries",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListNoticeDeliveries",
+        "x-source-file": "internal/apiserver/handler/notice.go"
+      }
+    },
+    "/v1/notice-deliveries/{deliveryID}": {
+      "get": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "GetNoticeDelivery",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetNoticeDelivery`.",
+        "operationId": "GetNoticeDelivery_GET_v1_notice_deliveries_deliveryID",
+        "parameters": [
+          {
+            "name": "deliveryID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetNoticeDelivery",
+        "x-source-file": "internal/apiserver/handler/notice.go"
+      },
+      "post": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "OperateNoticeDelivery",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `OperateNoticeDelivery`.",
+        "operationId": "OperateNoticeDelivery_POST_v1_notice_deliveries_deliveryID",
+        "parameters": [
+          {
+            "name": "deliveryID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "OperateNoticeDelivery",
+        "x-source-file": "internal/apiserver/handler/notice.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notice-deliveries/{deliveryID}/cancel": {
+      "post": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "CancelNoticeDelivery",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CancelNoticeDelivery`.",
+        "operationId": "CancelNoticeDelivery_POST_v1_notice_deliveries_deliveryID_cancel",
+        "parameters": [
+          {
+            "name": "deliveryID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CancelNoticeDelivery",
+        "x-source-file": "internal/apiserver/handler/notice.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/notice-deliveries/{deliveryID}/replay": {
+      "post": {
+        "tags": [
+          "Notice"
+        ],
+        "summary": "ReplayNoticeDelivery",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `ReplayNoticeDelivery`.",
+        "operationId": "ReplayNoticeDelivery_POST_v1_notice_deliveries_deliveryID_replay",
+        "parameters": [
+          {
+            "name": "deliveryID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "ReplayNoticeDelivery",
+        "x-source-file": "internal/apiserver/handler/notice.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/operator/assignment_history": {
+      "get": {
+        "tags": [
+          "Operator"
+        ],
+        "summary": "ListOperatorAssignmentHistory",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListOperatorAssignmentHistory`.",
+        "operationId": "ListOperatorAssignmentHistory_GET_v1_operator_assignment_history",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Sort by created time.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListOperatorAssignmentHistory",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/operator/dashboard": {
+      "get": {
+        "tags": [
+          "Operator"
+        ],
+        "summary": "GetOperatorDashboard",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetOperatorDashboard`.",
+        "operationId": "GetOperatorDashboard_GET_v1_operator_dashboard",
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "description": "Team scope for dashboard aggregation.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetOperatorDashboard",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/operator/dashboard/trends": {
+      "get": {
+        "tags": [
+          "Operator"
+        ],
+        "summary": "GetOperatorDashboardTrends",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetOperatorDashboardTrends`.",
+        "operationId": "GetOperatorDashboardTrends_GET_v1_operator_dashboard_trends",
+        "parameters": [
+          {
+            "name": "window",
+            "in": "query",
+            "required": false,
+            "description": "Trend window.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "7d",
+                "30d"
+              ],
+              "default": "7d"
+            }
+          },
+          {
+            "name": "operator_id",
+            "in": "query",
+            "required": false,
+            "description": "Operator scope for aggregation.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "description": "Team scope for aggregation.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_type",
+            "in": "query",
+            "required": false,
+            "description": "Optional session_type filter.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetOperatorDashboardTrends",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/operator/inbox": {
+      "get": {
+        "tags": [
+          "Operator"
+        ],
+        "summary": "ListOperatorInbox",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListOperatorInbox`.",
+        "operationId": "ListOperatorInbox_GET_v1_operator_inbox",
+        "parameters": [
+          {
+            "name": "assignee",
+            "in": "query",
+            "required": false,
+            "description": "Filter by assignee operator ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "review_state",
+            "in": "query",
+            "required": false,
+            "description": "Filter by review state.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "needs_review",
+            "in": "query",
+            "required": false,
+            "description": "Filter by needs_review flag.",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "escalation_state",
+            "in": "query",
+            "required": false,
+            "description": "Filter by escalation state.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by session_type.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "trigger_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by latest trigger_type.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Sort order by activity time.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListOperatorInbox",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/operator/sla/escalation-sync": {
+      "post": {
+        "tags": [
+          "Operator"
+        ],
+        "summary": "SyncOperatorSLAEscalation",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `SyncOperatorSLAEscalation`.",
+        "operationId": "SyncOperatorSLAEscalation_POST_v1_operator_sla_escalation_sync",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "SyncOperatorSLAEscalation",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/operator/team_dashboard": {
+      "get": {
+        "tags": [
+          "Operator"
+        ],
+        "summary": "GetOperatorTeamDashboard",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetOperatorTeamDashboard`.",
+        "operationId": "GetOperatorTeamDashboard_GET_v1_operator_team_dashboard",
+        "parameters": [
+          {
+            "name": "team_id",
+            "in": "query",
+            "required": false,
+            "description": "Team ID for owner/team aggregation.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Sort order by risk/activity.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetOperatorTeamDashboard",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/orchestrator/strategies/resolve": {
+      "get": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "ResolveOrchestratorStrategy",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ResolveOrchestratorStrategy`.",
+        "operationId": "ResolveOrchestratorStrategy_GET_v1_orchestrator_strategies_resolve",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ResolveOrchestratorStrategy",
+        "x-source-file": "internal/apiserver/handler/orchestrator_strategy.go"
+      }
+    },
+    "/v1/orchestrator/templates": {
+      "get": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "ListOrchestratorTemplates",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListOrchestratorTemplates`.",
+        "operationId": "ListOrchestratorTemplates_GET_v1_orchestrator_templates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListOrchestratorTemplates",
+        "x-source-file": "internal/apiserver/handler/orchestrator_template.go"
+      }
+    },
+    "/v1/orchestrator/templates/register": {
+      "post": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "RegisterOrchestratorTemplates",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `RegisterOrchestratorTemplates`.",
+        "operationId": "RegisterOrchestratorTemplates_POST_v1_orchestrator_templates_register",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "RegisterOrchestratorTemplates",
+        "x-source-file": "internal/apiserver/handler/orchestrator_template.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/orchestrator/toolsets/resolve": {
+      "get": {
+        "tags": [
+          "Orchestrator"
+        ],
+        "summary": "ResolveOrchestratorToolset",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ResolveOrchestratorToolset`.",
+        "operationId": "ResolveOrchestratorToolset_GET_v1_orchestrator_toolsets_resolve",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ResolveOrchestratorToolset",
+        "x-source-file": "internal/apiserver/handler/orchestrator_toolset.go"
+      }
+    },
+    "/v1/permissions": {
+      "get": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "ListPermissions",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `ListPermissions`.",
+        "operationId": "ListPermissions_GET_v1_permissions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "ListPermissions",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "post": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "UpsertPermission",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `UpsertPermission`.",
+        "operationId": "UpsertPermission_POST_v1_permissions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "UpsertPermission",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "permission_id": {
+                    "type": "string"
+                  },
+                  "resource": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/permissions/{id}": {
+      "delete": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "DeletePermission",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `DeletePermission`.",
+        "operationId": "DeletePermission_DELETE_v1_permissions_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "DeletePermission",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "get": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "GetPermission",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `GetPermission`.",
+        "operationId": "GetPermission_GET_v1_permissions_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "GetPermission",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "put": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "UpsertPermission",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `UpsertPermission`.",
+        "operationId": "UpsertPermission_PUT_v1_permissions_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "UpsertPermission",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "permission_id": {
+                    "type": "string"
+                  },
+                  "resource": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roles": {
+      "get": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "ListRoles",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `ListRoles`.",
+        "operationId": "ListRoles_GET_v1_roles",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "ListRoles",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "post": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "UpsertRole",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `UpsertRole`.",
+        "operationId": "UpsertRole_POST_v1_roles",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "UpsertRole",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role_id": {
+                    "type": "string"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roles/{id}": {
+      "delete": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "DeleteRole",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `DeleteRole`.",
+        "operationId": "DeleteRole_DELETE_v1_roles_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "DeleteRole",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "get": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "GetRole",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `GetRole`.",
+        "operationId": "GetRole_GET_v1_roles_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "GetRole",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "put": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "UpsertRole",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `UpsertRole`.",
+        "operationId": "UpsertRole_PUT_v1_roles_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "UpsertRole",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role_id": {
+                    "type": "string"
+                  },
+                  "display_name": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/roles/{id}/permissions": {
+      "post": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "AssignRolePermissions",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `AssignRolePermissions`.",
+        "operationId": "AssignRolePermissions_POST_v1_roles_id_permissions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "AssignRolePermissions",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "permission_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/session/{sessionID}/assign": {
+      "post": {
+        "tags": [
+          "SessionConfig"
+        ],
+        "summary": "AssignSessionConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `session.assignment`. Handler: `AssignSessionConfig`.",
+        "operationId": "AssignSessionConfig_POST_v1_session_sessionID_assign",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "session.assignment",
+        "x-handler": "AssignSessionConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "assignee"
+                ],
+                "properties": {
+                  "assignee": {
+                    "type": "string"
+                  },
+                  "assigned_by": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/session/{sessionID}/assignment": {
+      "get": {
+        "tags": [
+          "SessionConfig"
+        ],
+        "summary": "GetSessionAssignmentConfig",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read|session.assignment`. Handler: `GetSessionAssignmentConfig`.",
+        "operationId": "GetSessionAssignmentConfig_GET_v1_session_sessionID_assignment",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read|session.assignment",
+        "x-handler": "GetSessionAssignmentConfig",
+        "x-source-file": "internal/apiserver/handler/internal_strategy_config.go"
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/assign": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "AssignSessionOwner",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `session.assignment`. Handler: `AssignSessionOwner`.",
+        "operationId": "AssignSessionOwner_POST_v1_sessions_sessionID_actions_assign",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "session.assignment",
+        "x-handler": "AssignSessionOwner",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "assignee"
+                ],
+                "properties": {
+                  "assignee": {
+                    "type": "string"
+                  },
+                  "assigned_by": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/follow-up": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "FollowUpSessionAI",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `FollowUpSessionAI`.",
+        "operationId": "FollowUpSessionAI_POST_v1_sessions_sessionID_actions_follow_up",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "FollowUpSessionAI",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "operator_note": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/reassign": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "ReassignSessionOwner",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `session.assignment`. Handler: `ReassignSessionOwner`.",
+        "operationId": "ReassignSessionOwner_POST_v1_sessions_sessionID_actions_reassign",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "session.assignment",
+        "x-handler": "ReassignSessionOwner",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "assignee"
+                ],
+                "properties": {
+                  "assignee": {
+                    "type": "string"
+                  },
+                  "assigned_by": {
+                    "type": "string"
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/replay": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "ReplaySessionAI",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `ReplaySessionAI`.",
+        "operationId": "ReplaySessionAI_POST_v1_sessions_sessionID_actions_replay",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "ReplaySessionAI",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reason": {
+                    "type": "string"
+                  },
+                  "operator_note": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/review-confirm": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "ConfirmSessionReview",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `session.review`. Handler: `ConfirmSessionReview`.",
+        "operationId": "ConfirmSessionReview_POST_v1_sessions_sessionID_actions_review_confirm",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "session.review",
+        "x-handler": "ConfirmSessionReview",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "note": {
+                    "type": "string"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/review-reject": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "RejectSessionReview",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `session.review`. Handler: `RejectSessionReview`.",
+        "operationId": "RejectSessionReview_POST_v1_sessions_sessionID_actions_review_reject",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "session.review",
+        "x-handler": "RejectSessionReview",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "note": {
+                    "type": "string"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/actions/review-start": {
+      "post": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "StartSessionReview",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `session.review`. Handler: `StartSessionReview`.",
+        "operationId": "StartSessionReview_POST_v1_sessions_sessionID_actions_review_start",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "session.review",
+        "x-handler": "StartSessionReview",
+        "x-source-file": "internal/apiserver/handler/ai_job.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "note": {
+                    "type": "string"
+                  },
+                  "reason_code": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{sessionID}/ai/traces": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "ListSessionAIJobTraces",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListSessionAIJobTraces`.",
+        "operationId": "ListSessionAIJobTraces_GET_v1_sessions_sessionID_ai_traces",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListSessionAIJobTraces",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/sessions/{sessionID}/assignment_history": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "ListSessionAssignmentHistory",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListSessionAssignmentHistory`.",
+        "operationId": "ListSessionAssignmentHistory_GET_v1_sessions_sessionID_assignment_history",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Sort by created time.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListSessionAssignmentHistory",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/sessions/{sessionID}/history": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "ListSessionHistory",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListSessionHistory`.",
+        "operationId": "ListSessionHistory_GET_v1_sessions_sessionID_history",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "Sort by created time.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "desc",
+                "asc"
+              ],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListSessionHistory",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/sessions/{sessionID}/workbench": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "GetSessionAIWorkbench",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetSessionAIWorkbench`.",
+        "operationId": "GetSessionAIWorkbench_GET_v1_sessions_sessionID_workbench",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetSessionAIWorkbench",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/sessions/{sessionID}/workbench/viewer": {
+      "get": {
+        "tags": [
+          "Session"
+        ],
+        "summary": "GetSessionWorkbenchViewer",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetSessionWorkbenchViewer`.",
+        "operationId": "GetSessionWorkbenchViewer_GET_v1_sessions_sessionID_workbench_viewer",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tab",
+            "in": "query",
+            "required": false,
+            "description": "Viewer tab selector.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Pagination offset for long lists in viewer.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Pagination limit for long lists in viewer.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetSessionWorkbenchViewer",
+        "x-source-file": "internal/apiserver/handler/ai_job.go"
+      }
+    },
+    "/v1/silences": {
+      "get": {
+        "tags": [
+          "Silence"
+        ],
+        "summary": "ListSilences",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `ListSilences`.",
+        "operationId": "ListSilences_GET_v1_silences",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "ListSilences",
+        "x-source-file": "internal/apiserver/handler/silence.go"
+      },
+      "post": {
+        "tags": [
+          "Silence"
+        ],
+        "summary": "CreateSilence",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `CreateSilence`.",
+        "operationId": "CreateSilence_POST_v1_silences",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "CreateSilence",
+        "x-source-file": "internal/apiserver/handler/silence.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/silences/{silenceID}": {
+      "delete": {
+        "tags": [
+          "Silence"
+        ],
+        "summary": "DeleteSilence",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.run`. Handler: `DeleteSilence`.",
+        "operationId": "DeleteSilence_DELETE_v1_silences_silenceID",
+        "parameters": [
+          {
+            "name": "silenceID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.run",
+        "x-handler": "DeleteSilence",
+        "x-source-file": "internal/apiserver/handler/silence.go"
+      },
+      "get": {
+        "tags": [
+          "Silence"
+        ],
+        "summary": "GetSilence",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `ai.read`. Handler: `GetSilence`.",
+        "operationId": "GetSilence_GET_v1_silences_silenceID",
+        "parameters": [
+          {
+            "name": "silenceID",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "ai.read",
+        "x-handler": "GetSilence",
+        "x-source-file": "internal/apiserver/handler/silence.go"
+      }
+    },
+    "/v1/users": {
+      "get": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "ListUsers",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `ListUsers`.",
+        "operationId": "ListUsers_GET_v1_users",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "ListUsers",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "post": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "UpsertUser",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `UpsertUser`.",
+        "operationId": "UpsertUser_POST_v1_users",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "UpsertUser",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "team_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{id}": {
+      "delete": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "DeleteUser",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `DeleteUser`.",
+        "operationId": "DeleteUser_DELETE_v1_users_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "DeleteUser",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "get": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "GetUser",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `GetUser`.",
+        "operationId": "GetUser_GET_v1_users_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "GetUser",
+        "x-source-file": "internal/apiserver/handler/rbac.go"
+      },
+      "put": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "UpsertUser",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `UpsertUser`.",
+        "operationId": "UpsertUser_PUT_v1_users_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "UpsertUser",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "user_id": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "team_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users/{id}/roles": {
+      "post": {
+        "tags": [
+          "RBAC"
+        ],
+        "summary": "AssignUserRoles",
+        "description": "Auto-generated from handler route registration. RBAC scope/action hint: `rbac.admin`. Handler: `AssignUserRoles`.",
+        "operationId": "AssignUserRoles_POST_v1_users_id_roles",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          },
+          "500": {
+            "description": "Internal Error"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-rbac-scope": "rbac.admin",
+        "x-handler": "AssignUserRoles",
+        "x-source-file": "internal/apiserver/handler/rbac.go",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "role_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "ApiEnvelope": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

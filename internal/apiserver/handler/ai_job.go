@@ -1079,7 +1079,9 @@ func init() {
 		jobGroup.GET("/:jobID/tool-calls", handler.ListAIToolCalls)
 
 		operatorAuthMW := authpkg.RequireOperatorToken()
-		sessionGroup := v1.Group("/sessions", append(mws, operatorAuthMW)...)
+		swaggerRBACMW := handler.RequireSwaggerRBAC()
+		sensitiveAuditMW := handler.AuditSensitiveOperatorAction()
+		sessionGroup := v1.Group("/sessions", append(mws, operatorAuthMW, swaggerRBACMW, sensitiveAuditMW)...)
 		sessionReadRBAC := handler.RequireRBAC(authz.ScopeAIRead)
 		sessionRunRBAC := handler.RequireRBAC(authz.ScopeAIRun)
 		sessionReviewRBAC := handler.RequireRBAC(authz.ScopeSessionReview)
@@ -1097,7 +1099,7 @@ func init() {
 		sessionGroup.POST("/:sessionID/actions/assign", sessionAssignRBAC, handler.AssignSessionOwner)
 		sessionGroup.POST("/:sessionID/actions/reassign", sessionAssignRBAC, handler.ReassignSessionOwner)
 
-		operatorGroup := v1.Group("/operator", append(mws, operatorAuthMW)...)
+		operatorGroup := v1.Group("/operator", append(mws, operatorAuthMW, swaggerRBACMW, sensitiveAuditMW)...)
 		operatorReadRBAC := handler.RequireRBAC(authz.ScopeAIRead)
 		operatorRunRBAC := handler.RequireRBAC(authz.ScopeAIRun)
 		operatorGroup.GET("/inbox", operatorReadRBAC, handler.ListOperatorInbox)

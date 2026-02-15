@@ -225,8 +225,9 @@ type RoleAccessView struct {
 }
 
 type ResolveLoginProfileRequest struct {
-	UserID   string
-	Password string
+	UserID            string
+	Password          string
+	SkipPasswordCheck bool
 }
 
 type LoginProfile struct {
@@ -755,13 +756,15 @@ func (b *rbacBiz) ResolveLoginProfile(ctx context.Context, rq *ResolveLoginProfi
 	}
 
 	hash := strings.TrimSpace(ptrString(obj.PasswordHash))
-	if hash != "" {
+	if hash != "" && !rq.SkipPasswordCheck {
 		if strings.TrimSpace(rq.Password) == "" {
 			return nil, errno.ErrUnauthenticated
 		}
 		if compareErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(strings.TrimSpace(rq.Password))); compareErr != nil {
 			return nil, errno.ErrUnauthenticated
 		}
+		profile.PasswordValidated = true
+	} else if rq.SkipPasswordCheck {
 		profile.PasswordValidated = true
 	}
 

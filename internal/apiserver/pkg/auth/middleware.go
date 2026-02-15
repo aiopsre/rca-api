@@ -25,7 +25,7 @@ func RequireOperatorToken() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		claims, err := ParseToken(token)
+		claims, err := ParseAccessToken(token)
 		if err != nil {
 			core.WriteResponse(c, nil, errno.ErrTokenInvalid)
 			c.Abort()
