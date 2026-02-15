@@ -40,7 +40,7 @@ func DefaultCorsConfig() CorsConfig {
 	return CorsConfig{
 		AllowedOrigins:   []string{"*"}, // Allow all origins by default
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		AllowedHeaders:   []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Operator-ID", "X-Operator-Teams"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}
