@@ -96,6 +96,8 @@ type AIJobBiz interface {
 }
 
 type AIJobExpansion interface {
+	GetJobSessionContext(ctx context.Context, rq *GetJobSessionContextRequest) (*GetJobSessionContextResponse, error)
+	PatchJobSessionContext(ctx context.Context, rq *PatchJobSessionContextRequest) (*PatchJobSessionContextResponse, error)
 	GetTraceReadModel(ctx context.Context, rq *GetTraceReadModelRequest) (*GetTraceReadModelResponse, error)
 	ListTraceReadModels(ctx context.Context, rq *ListTraceReadModelsRequest) (*ListTraceReadModelsResponse, error)
 	CompareTraceReadModels(ctx context.Context, rq *CompareTraceReadModelsRequest) (*CompareTraceReadModelsResponse, error)

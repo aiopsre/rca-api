@@ -19,6 +19,12 @@ type InternalStrategyConfigStore interface {
 	ListToolsetConfigsByPipeline(ctx context.Context, pipelineID string) ([]*model.ToolsetConfigDynamicM, error)
 	UpsertToolsetConfig(ctx context.Context, obj *model.ToolsetConfigDynamicM) error
 
+	GetSkillRelease(ctx context.Context, skillID string, version string) (*model.SkillReleaseM, error)
+	UpsertSkillRelease(ctx context.Context, obj *model.SkillReleaseM) error
+
+	ListSkillsetConfigsByPipeline(ctx context.Context, pipelineID string) ([]*model.SkillsetConfigDynamicM, error)
+	UpsertSkillsetConfig(ctx context.Context, obj *model.SkillsetConfigDynamicM) error
+
 	GetSLAEscalationConfig(ctx context.Context, sessionType string) (*model.SLAEscalationConfigM, error)
 	UpsertSLAEscalationConfig(ctx context.Context, obj *model.SLAEscalationConfigM) error
 
@@ -121,6 +127,73 @@ func (isc *internalStrategyConfigStore) UpsertToolsetConfig(ctx context.Context,
 			Columns: []clause.Column{{Name: "pipeline_id"}, {Name: "toolset_name"}},
 			DoUpdates: clause.AssignmentColumns([]string{
 				"allowed_tools_json",
+				"updated_at",
+			}),
+		}).
+		Create(obj).Error
+}
+
+func (isc *internalStrategyConfigStore) GetSkillRelease(
+	ctx context.Context,
+	skillID string,
+	version string,
+) (*model.SkillReleaseM, error) {
+	out := &model.SkillReleaseM{}
+	if err := isc.s.DB(ctx).Model(&model.SkillReleaseM{}).
+		Where("skill_id = ?", strings.TrimSpace(skillID)).
+		Where("version = ?", strings.TrimSpace(version)).
+		First(out).Error; err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (isc *internalStrategyConfigStore) UpsertSkillRelease(ctx context.Context, obj *model.SkillReleaseM) error {
+	if obj == nil {
+		return nil
+	}
+	return isc.s.DB(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "skill_id"}, {Name: "version"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"bundle_digest",
+				"artifact_url",
+				"manifest_json",
+				"status",
+				"created_by",
+				"updated_at",
+			}),
+		}).
+		Create(obj).Error
+}
+
+func (isc *internalStrategyConfigStore) ListSkillsetConfigsByPipeline(
+	ctx context.Context,
+	pipelineID string,
+) ([]*model.SkillsetConfigDynamicM, error) {
+	var out []*model.SkillsetConfigDynamicM
+	err := isc.s.DB(ctx).Model(&model.SkillsetConfigDynamicM{}).
+		Where("pipeline_id = ?", strings.TrimSpace(pipelineID)).
+		Order("id ASC").
+		Find(&out).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return []*model.SkillsetConfigDynamicM{}, nil
+	}
+	return out, nil
+}
+
+func (isc *internalStrategyConfigStore) UpsertSkillsetConfig(ctx context.Context, obj *model.SkillsetConfigDynamicM) error {
+	if obj == nil {
+		return nil
+	}
+	return isc.s.DB(ctx).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "pipeline_id"}, {Name: "skillset_name"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"skill_refs_json",
 				"updated_at",
 			}),
 		}).

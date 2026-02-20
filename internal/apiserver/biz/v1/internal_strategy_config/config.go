@@ -34,6 +34,11 @@ type ConfigBiz interface {
 	GetToolsets(ctx context.Context, rq *GetToolsetConfigRequest) (*ToolsetConfigView, error)
 	UpsertToolset(ctx context.Context, rq *UpsertToolsetConfigRequest) (*ToolsetConfigView, error)
 
+	GetSkillsets(ctx context.Context, rq *GetSkillsetConfigRequest) (*SkillsetConfigView, error)
+	UpsertSkillset(ctx context.Context, rq *UpsertSkillsetConfigRequest) (*SkillsetConfigView, error)
+	GetSkillRelease(ctx context.Context, rq *GetSkillReleaseRequest) (*SkillReleaseView, error)
+	RegisterSkillRelease(ctx context.Context, rq *RegisterSkillReleaseRequest) (*SkillReleaseView, error)
+
 	GetSLA(ctx context.Context, rq *GetSLAConfigRequest) (*SLAConfigView, error)
 	UpsertSLA(ctx context.Context, rq *UpsertSLAConfigRequest) (*SLAConfigView, error)
 
@@ -42,6 +47,7 @@ type ConfigBiz interface {
 
 	ResolveTriggerPipeline(ctx context.Context, triggerType string) (pipelineID string, sessionType string, source string, err error)
 	ResolveToolsetByPipeline(ctx context.Context, pipelineID string) ([]*ToolsetItem, string, error)
+	ResolveSkillsetByPipeline(ctx context.Context, pipelineID string) ([]*SkillsetItem, string, error)
 	ResolveSLABySessionType(ctx context.Context, sessionType string) (*SLAConfigView, string, error)
 
 	ConfigExpansion
@@ -400,6 +406,221 @@ func mapToolsetModelList(in []*model.ToolsetConfigDynamicM) []*ToolsetItem {
 	return out
 }
 
+type GetSkillsetConfigRequest struct {
+	PipelineID string
+}
+
+type UpsertSkillsetConfigRequest struct {
+	PipelineID   string
+	SkillsetName string
+	Skills       []*SkillRef
+}
+
+type GetSkillReleaseRequest struct {
+	SkillID string
+	Version string
+}
+
+type RegisterSkillReleaseRequest struct {
+	SkillID      string
+	Version      string
+	BundleDigest string
+	ArtifactURL  string
+	ManifestJSON string
+	Status       string
+	CreatedBy    *string
+}
+
+type SkillRef struct {
+	SkillID string `json:"skill_id"`
+	Version string `json:"version"`
+}
+
+type SkillsetItem struct {
+	SkillsetName string      `json:"skillset_name"`
+	Skills       []*SkillRef `json:"skills"`
+}
+
+type SkillsetConfigView struct {
+	PipelineID string          `json:"pipeline_id"`
+	Items      []*SkillsetItem `json:"items"`
+	Source     string          `json:"source"`
+}
+
+type SkillReleaseView struct {
+	SkillID      string `json:"skill_id"`
+	Version      string `json:"version"`
+	BundleDigest string `json:"bundle_digest"`
+	ArtifactURL  string `json:"artifact_url"`
+	ManifestJSON string `json:"manifest_json,omitempty"`
+	Status       string `json:"status"`
+	CreatedBy    string `json:"created_by,omitempty"`
+	Source       string `json:"source"`
+}
+
+func (b *configBiz) GetSkillsets(ctx context.Context, rq *GetSkillsetConfigRequest) (*SkillsetConfigView, error) {
+	if rq == nil || b == nil || b.store == nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	pipelineID := strings.ToLower(strings.TrimSpace(rq.PipelineID))
+	if pipelineID == "" {
+		return nil, errno.ErrInvalidArgument
+	}
+	items, source, err := b.ResolveSkillsetByPipeline(ctx, pipelineID)
+	if err != nil {
+		if errorsx.Is(err, errno.ErrNotFound) {
+			return &SkillsetConfigView{PipelineID: pipelineID, Items: []*SkillsetItem{}, Source: "empty"}, nil
+		}
+		return nil, errno.ErrInternal
+	}
+	return &SkillsetConfigView{PipelineID: pipelineID, Items: items, Source: source}, nil
+}
+
+func (b *configBiz) UpsertSkillset(ctx context.Context, rq *UpsertSkillsetConfigRequest) (*SkillsetConfigView, error) {
+	if rq == nil || b == nil || b.store == nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	pipelineID := strings.ToLower(strings.TrimSpace(rq.PipelineID))
+	skillsetName := strings.TrimSpace(rq.SkillsetName)
+	skills := normalizeSkillRefs(rq.Skills)
+	if pipelineID == "" || skillsetName == "" || len(skills) == 0 {
+		return nil, errno.ErrInvalidArgument
+	}
+	rawSkills, _ := json.Marshal(skills)
+	rawSkillsString := string(rawSkills)
+	obj := &model.SkillsetConfigDynamicM{
+		PipelineID:    pipelineID,
+		SkillsetName:  skillsetName,
+		SkillRefsJSON: &rawSkillsString,
+	}
+	if err := b.store.InternalStrategyConfig().UpsertSkillsetConfig(ctx, obj); err != nil {
+		return nil, errno.ErrInternal
+	}
+	return b.GetSkillsets(ctx, &GetSkillsetConfigRequest{PipelineID: pipelineID})
+}
+
+func (b *configBiz) GetSkillRelease(ctx context.Context, rq *GetSkillReleaseRequest) (*SkillReleaseView, error) {
+	if rq == nil || b == nil || b.store == nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	skillID := strings.TrimSpace(rq.SkillID)
+	version := strings.TrimSpace(rq.Version)
+	if skillID == "" || version == "" {
+		return nil, errno.ErrInvalidArgument
+	}
+	obj, err := b.store.InternalStrategyConfig().GetSkillRelease(ctx, skillID, version)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrNotFound
+		}
+		return nil, errno.ErrInternal
+	}
+	return mapSkillReleaseModel(obj, "dynamic_db"), nil
+}
+
+func (b *configBiz) RegisterSkillRelease(
+	ctx context.Context,
+	rq *RegisterSkillReleaseRequest,
+) (*SkillReleaseView, error) {
+	if rq == nil || b == nil || b.store == nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	skillID := strings.TrimSpace(rq.SkillID)
+	version := strings.TrimSpace(rq.Version)
+	bundleDigest := strings.TrimSpace(rq.BundleDigest)
+	artifactURL := strings.TrimSpace(rq.ArtifactURL)
+	manifestJSON := strings.TrimSpace(rq.ManifestJSON)
+	status := strings.ToLower(strings.TrimSpace(rq.Status))
+	if skillID == "" || version == "" || bundleDigest == "" || artifactURL == "" || manifestJSON == "" {
+		return nil, errno.ErrInvalidArgument
+	}
+	if status == "" {
+		status = "active"
+	}
+	if err := validateSkillManifest(manifestJSON, skillID, version); err != nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	obj := &model.SkillReleaseM{
+		SkillID:      skillID,
+		Version:      version,
+		BundleDigest: bundleDigest,
+		ArtifactURL:  artifactURL,
+		ManifestJSON: &manifestJSON,
+		Status:       status,
+		CreatedBy:    trimStringPtr(rq.CreatedBy),
+	}
+	if err := b.store.InternalStrategyConfig().UpsertSkillRelease(ctx, obj); err != nil {
+		return nil, errno.ErrInternal
+	}
+	return b.GetSkillRelease(ctx, &GetSkillReleaseRequest{SkillID: skillID, Version: version})
+}
+
+func (b *configBiz) ResolveSkillsetByPipeline(
+	ctx context.Context,
+	pipelineID string,
+) ([]*SkillsetItem, string, error) {
+	if b == nil || b.store == nil {
+		return nil, "", errno.ErrInvalidArgument
+	}
+	pipelineID = strings.ToLower(strings.TrimSpace(pipelineID))
+	if pipelineID == "" {
+		return nil, "", errno.ErrInvalidArgument
+	}
+	configStore := b.store.InternalStrategyConfig()
+	if configStore == nil {
+		return nil, "", errno.ErrNotFound
+	}
+	list, err := configStore.ListSkillsetConfigsByPipeline(ctx, pipelineID)
+	if err != nil {
+		return nil, "", err
+	}
+	mapped := mapSkillsetModelList(list)
+	if len(mapped) == 0 {
+		return nil, "", errno.ErrNotFound
+	}
+	return mapped, "dynamic_db", nil
+}
+
+func mapSkillsetModelList(in []*model.SkillsetConfigDynamicM) []*SkillsetItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*SkillsetItem, 0, len(in))
+	for _, item := range in {
+		if item == nil {
+			continue
+		}
+		skills := decodeJSONSkillRefs(item.SkillRefsJSON)
+		if len(skills) == 0 {
+			continue
+		}
+		out = append(out, &SkillsetItem{
+			SkillsetName: strings.TrimSpace(item.SkillsetName),
+			Skills:       skills,
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mapSkillReleaseModel(obj *model.SkillReleaseM, source string) *SkillReleaseView {
+	if obj == nil {
+		return nil
+	}
+	return &SkillReleaseView{
+		SkillID:      strings.TrimSpace(obj.SkillID),
+		Version:      strings.TrimSpace(obj.Version),
+		BundleDigest: strings.TrimSpace(obj.BundleDigest),
+		ArtifactURL:  strings.TrimSpace(obj.ArtifactURL),
+		ManifestJSON: strings.TrimSpace(ptrString(obj.ManifestJSON)),
+		Status:       strings.TrimSpace(obj.Status),
+		CreatedBy:    strings.TrimSpace(ptrString(obj.CreatedBy)),
+		Source:       source,
+	}
+}
+
 type GetSLAConfigRequest struct {
 	SessionType string
 }
@@ -678,6 +899,17 @@ func decodeJSONInt64List(raw *string) []int64 {
 	return normalizeInt64List(out)
 }
 
+func decodeJSONSkillRefs(raw *string) []*SkillRef {
+	if raw == nil || strings.TrimSpace(*raw) == "" {
+		return nil
+	}
+	var out []*SkillRef
+	if err := json.Unmarshal([]byte(*raw), &out); err != nil {
+		return nil
+	}
+	return normalizeSkillRefs(out)
+}
+
 func normalizeInt64List(in []int64) []int64 {
 	if len(in) == 0 {
 		return nil
@@ -693,6 +925,34 @@ func normalizeInt64List(in []int64) []int64 {
 		}
 		seen[item] = struct{}{}
 		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]*SkillRef, 0, len(in))
+	seen := map[string]struct{}{}
+	for _, item := range in {
+		if item == nil {
+			continue
+		}
+		skillID := strings.TrimSpace(item.SkillID)
+		version := strings.TrimSpace(item.Version)
+		if skillID == "" || version == "" {
+			continue
+		}
+		key := skillID + "\x00" + version
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, &SkillRef{SkillID: skillID, Version: version})
 	}
 	if len(out) == 0 {
 		return nil
@@ -748,6 +1008,35 @@ func anyToString(value any) string {
 	default:
 		return ""
 	}
+}
+
+func validateSkillManifest(raw string, expectedSkillID string, expectedVersion string) error {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return err
+	}
+	if value := strings.TrimSpace(anyToString(payload["skill_id"])); value != "" && value != expectedSkillID {
+		return errno.ErrInvalidArgument
+	}
+	if value := strings.TrimSpace(anyToString(payload["version"])); value != "" && value != expectedVersion {
+		return errno.ErrInvalidArgument
+	}
+	if value := strings.TrimSpace(anyToString(payload["runtime"])); value != "" && value != "python" {
+		return errno.ErrInvalidArgument
+	}
+	entrypoint, _ := payload["entrypoint"].(map[string]any)
+	if entrypoint == nil {
+		return errno.ErrInvalidArgument
+	}
+	module := strings.TrimSpace(anyToString(entrypoint["module"]))
+	callable := strings.TrimSpace(anyToString(entrypoint["callable"]))
+	if module == "" || callable == "" {
+		return errno.ErrInvalidArgument
+	}
+	if _, ok := payload["allowed_tools"].([]any); !ok {
+		return errno.ErrInvalidArgument
+	}
+	return nil
 }
 
 func maxInt64(value int64, fallback int64) int64 {

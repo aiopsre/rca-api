@@ -38,6 +38,8 @@ message AIJob {
   optional google.protobuf.Timestamp finishedAt = 15;
   // createdBy is actor identifier: system|user:{id}|ai:{job_id}.
   string createdBy = 16;
+  // sessionID is the reusable RCA session identifier associated with this run.
+  optional string sessionID = 17;
 }
 
 // RunAIJobRequest creates one AI job for an incident.

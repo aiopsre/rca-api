@@ -38,6 +38,8 @@ class Settings:
     post_finalize_wait_max_interval_ms: int
     toolset_config_path: str
     toolset_config_json: str
+    skills_cache_dir: str = "/tmp/rca-ai-orchestrator/skills-cache"
+    skills_local_paths: str = ""
 
 
 def _env_int(name: str, default: int) -> int:
@@ -110,4 +112,6 @@ def load_settings() -> Settings:
         post_finalize_wait_max_interval_ms=post_finalize_wait_max_interval_ms,
         toolset_config_path=os.getenv("TOOLSET_CONFIG_PATH", "").strip(),
         toolset_config_json=os.getenv("TOOLSET_CONFIG_JSON", "").strip(),
+        skills_cache_dir=os.getenv("SKILLS_CACHE_DIR", "/tmp/rca-ai-orchestrator/skills-cache").strip(),
+        skills_local_paths=os.getenv("SKILLS_LOCAL_PATHS", "").strip(),
     )

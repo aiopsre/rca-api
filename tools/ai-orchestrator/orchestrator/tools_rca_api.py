@@ -15,8 +15,10 @@ from .sdk.runtime_contract import (
     ClaimStartRequest,
     EvidencePublishRequest,
     FinalizeRequest,
+    GetJobSessionContextRequest,
     ListToolCallsRequest,
     ListVerificationRunsRequest,
+    PatchJobSessionContextRequest,
     RenewHeartbeatRequest,
     ToolCallReportRequest,
     VerificationReportRequest,
@@ -308,6 +310,17 @@ class RCAApiClient:
             raise RuntimeError("invalid resolve_strategy strategy payload")
         return strategy
 
+    def resolve_skillsets(self, pipeline: str) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        normalized_pipeline = str(pipeline or "").strip()
+        if normalized_pipeline:
+            params["pipeline"] = normalized_pipeline
+        payload = self._request("GET", "/v1/orchestrator/skillsets/resolve", params=params or None)
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid resolve_skillsets response")
+        return data
+
     def register_templates(self, instance_id: str, templates: list[dict[str, Any]]) -> Dict[str, Any]:
         normalized_instance_id = str(instance_id or "").strip()
         if not normalized_instance_id:
@@ -329,6 +342,36 @@ class RCAApiClient:
 
     def renew_job_lease(self, job_id: str) -> None:
         self.runtime.renew_job_lease(RenewHeartbeatRequest(job_id=job_id))
+
+    def get_job_session_context(self, job_id: str) -> Dict[str, Any]:
+        return self.runtime.get_job_session_context(GetJobSessionContextRequest(job_id=job_id))
+
+    def patch_job_session_context(
+        self,
+        job_id: str,
+        *,
+        session_revision: str | None = None,
+        latest_summary: Dict[str, Any] | None = None,
+        pinned_evidence_append: list[dict[str, Any]] | None = None,
+        pinned_evidence_remove: list[str] | None = None,
+        context_state_patch: Dict[str, Any] | None = None,
+        actor: str | None = None,
+        note: str | None = None,
+        source: str | None = None,
+    ) -> Dict[str, Any]:
+        return self.runtime.patch_job_session_context(
+            PatchJobSessionContextRequest(
+                job_id=job_id,
+                session_revision=session_revision,
+                latest_summary=latest_summary,
+                pinned_evidence_append=pinned_evidence_append,
+                pinned_evidence_remove=pinned_evidence_remove,
+                context_state_patch=context_state_patch,
+                actor=actor,
+                note=note,
+                source=source,
+            )
+        )
 
     def add_tool_call(
         self,

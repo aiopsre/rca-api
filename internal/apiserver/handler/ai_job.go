@@ -1025,6 +1025,39 @@ func (h *Handler) CreateAIToolCall(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) GetAIJobSessionContext(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun, authz.ScopeAIRead); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	if !requireOrchestratorInstanceID(c) {
+		return
+	}
+	resp, err := h.biz.AIJobV1().GetJobSessionContext(
+		withOrchestratorInstanceID(c),
+		&aijobbiz.GetJobSessionContextRequest{JobID: strings.TrimSpace(c.Param("jobID"))},
+	)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) PatchAIJobSessionContext(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRun); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	if !requireOrchestratorInstanceID(c) {
+		return
+	}
+	var req aijobbiz.PatchJobSessionContextRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	req.JobID = strings.TrimSpace(c.Param("jobID"))
+	resp, err := h.biz.AIJobV1().PatchJobSessionContext(withOrchestratorInstanceID(c), &req)
+	core.WriteResponse(c, resp, err)
+}
+
 //nolint:gocognit // Query parsing intentionally keeps explicit field handling for guardrails.
 func (h *Handler) ListAIToolCalls(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead); err != nil {
@@ -1077,6 +1110,8 @@ func init() {
 		jobGroup.POST("/:jobID/finalize", handler.FinalizeAIJob)
 		jobGroup.POST("/:jobID/tool-calls", handler.CreateAIToolCall)
 		jobGroup.GET("/:jobID/tool-calls", handler.ListAIToolCalls)
+		jobGroup.GET("/:jobID/session-context", handler.GetAIJobSessionContext)
+		jobGroup.PATCH("/:jobID/session-context", handler.PatchAIJobSessionContext)
 
 		operatorAuthMW := authpkg.RequireOperatorToken()
 		swaggerRBACMW := handler.RequireSwaggerRBAC()

@@ -12,6 +12,7 @@ import (
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	internalstrategyconfigv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
+	orchestratorskillsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_skillset"
 	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
 	orchestratortemplatev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_template"
 	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
@@ -39,6 +40,7 @@ type IBiz interface {
 	AIJobV1() aijobv1.AIJobBiz
 	InternalStrategyConfigV1() internalstrategyconfigv1.ConfigBiz
 	OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz
+	OrchestratorSkillsetV1() orchestratorskillsetv1.SkillsetBiz
 	OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz
 	OrchestratorToolsetV1() orchestratortoolsetv1.ToolsetBiz
 	RBACV1() rbacv1.RBACBiz
@@ -69,6 +71,8 @@ type biz struct {
 	internalStrategyConfigBiz  internalstrategyconfigv1.ConfigBiz
 	orchestratorStrategyOnce   sync.Once
 	orchestratorStrategyBiz    orchestratorstrategyv1.StrategyBiz
+	orchestratorSkillsetOnce   sync.Once
+	orchestratorSkillsetBiz    orchestratorskillsetv1.SkillsetBiz
 	orchestratorTemplateOnce   sync.Once
 	orchestratorTemplateBiz    orchestratortemplatev1.TemplateBiz
 	orchestratorToolsetOnce    sync.Once
@@ -149,6 +153,13 @@ func (b *biz) OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz {
 	return b.orchestratorStrategyBiz
 }
 
+func (b *biz) OrchestratorSkillsetV1() orchestratorskillsetv1.SkillsetBiz {
+	b.orchestratorSkillsetOnce.Do(func() {
+		b.orchestratorSkillsetBiz = orchestratorskillsetv1.New(b.store)
+	})
+	return b.orchestratorSkillsetBiz
+}
+
 func (b *biz) OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz {
 	b.orchestratorTemplateOnce.Do(func() {
 		b.orchestratorTemplateBiz = orchestratortemplatev1.New()
@@ -225,6 +236,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.aiJobBiz)
 		errs = appendCloseIfSupported(errs, b.internalStrategyConfigBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorStrategyBiz)
+		errs = appendCloseIfSupported(errs, b.orchestratorSkillsetBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorTemplateBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorToolsetBiz)
 		errs = appendCloseIfSupported(errs, b.rbacBiz)

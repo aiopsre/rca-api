@@ -8,8 +8,10 @@ from .runtime_contract import (
     ClaimStartRequest,
     EvidencePublishRequest,
     FinalizeRequest,
+    GetJobSessionContextRequest,
     ListToolCallsRequest,
     ListVerificationRunsRequest,
+    PatchJobSessionContextRequest,
     RenewHeartbeatRequest,
     ToolCallReportRequest,
     VerificationReportRequest,
@@ -82,6 +84,14 @@ class RuntimeAPIClient:
 
     def renew_job_lease(self, request: RenewHeartbeatRequest) -> None:
         self._request("POST", request.path())
+
+    def get_job_session_context(self, request: GetJobSessionContextRequest) -> dict[str, Any]:
+        payload = self._request("GET", request.path())
+        return extract_data(payload, default={})
+
+    def patch_job_session_context(self, request: PatchJobSessionContextRequest) -> dict[str, Any]:
+        payload = self._request("PATCH", request.path(), json_body=request.to_api_body())
+        return extract_data(payload, default={})
 
     def report_tool_call(self, request: ToolCallReportRequest) -> None:
         self._request("POST", request.path(), json_body=request.to_api_body())

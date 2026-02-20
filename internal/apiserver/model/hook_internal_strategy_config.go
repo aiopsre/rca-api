@@ -7,6 +7,8 @@ func init() {
 	registry.Register(&PipelineConfigM{})
 	registry.Register(&TriggerConfigM{})
 	registry.Register(&ToolsetConfigDynamicM{})
+	registry.Register(&SkillReleaseM{})
+	registry.Register(&SkillsetConfigDynamicM{})
 	registry.Register(&SLAEscalationConfigM{})
 	registry.Register(&SessionAssignmentM{})
 }

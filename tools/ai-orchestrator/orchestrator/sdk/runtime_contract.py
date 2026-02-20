@@ -57,6 +57,59 @@ class RenewHeartbeatRequest:
 
 
 @dataclass(frozen=True)
+class GetJobSessionContextRequest:
+    """Canonical request model for job-scoped session context reads."""
+
+    job_id: str
+
+    def path(self) -> str:
+        return f"/v1/ai/jobs/{_trim_text(self.job_id)}/session-context"
+
+
+@dataclass(frozen=True)
+class PatchJobSessionContextRequest:
+    """Canonical request model for job-scoped session context patching."""
+
+    job_id: str
+    session_revision: str | None = None
+    latest_summary: dict[str, Any] | None = None
+    pinned_evidence_append: list[dict[str, Any]] | None = None
+    pinned_evidence_remove: list[str] | None = None
+    context_state_patch: dict[str, Any] | None = None
+    actor: str | None = None
+    note: str | None = None
+    source: str | None = None
+
+    def path(self) -> str:
+        return f"/v1/ai/jobs/{_trim_text(self.job_id)}/session-context"
+
+    def to_api_body(self) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if self.session_revision is not None:
+            body["session_revision"] = _trim_text(self.session_revision)
+        if isinstance(self.latest_summary, dict):
+            body["latest_summary"] = self.latest_summary
+        append_items = [item for item in (self.pinned_evidence_append or []) if isinstance(item, dict)]
+        if append_items:
+            body["pinned_evidence_append"] = append_items
+        remove_items = normalize_string_list(self.pinned_evidence_remove)
+        if remove_items:
+            body["pinned_evidence_remove"] = remove_items
+        if isinstance(self.context_state_patch, dict):
+            body["context_state_patch"] = self.context_state_patch
+        actor = _trim_text(self.actor)
+        if actor:
+            body["actor"] = actor
+        note = _trim_text(self.note)
+        if note:
+            body["note"] = note
+        source = _trim_text(self.source)
+        if source:
+            body["source"] = source
+        return body
+
+
+@dataclass(frozen=True)
 class ToolCallReportRequest:
     """Canonical request model for tool call reporting."""
 

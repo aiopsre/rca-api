@@ -13,6 +13,7 @@ from ..langgraph.registry import (
     normalize_pipeline,
 )
 from ..runtime.runtime import OrchestratorRuntime
+from ..skills import SkillRuntime, apply_session_patch_to_state, load_session_snapshot_into_state
 from ..state import GraphState
 from ..tooling import (
     ToolInvoker,
@@ -311,6 +312,123 @@ def _report_toolset_selection_observation(
         _log(f"job={job_id} pre-graph toolset observation failed: {exc}")
 
 
+def _extract_skillset_ids(strategy_payload: dict[str, Any]) -> list[str]:
+    raw = (
+        strategy_payload.get("skillsetIDs")
+        or strategy_payload.get("skillsetIds")
+        or strategy_payload.get("skillset_ids")
+        or []
+    )
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _parse_skills_local_paths(raw: str) -> list[str]:
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def _build_skill_runtime(
+    *,
+    settings: Settings,
+    client: RCAApiClient,
+    pipeline: str,
+    strategy_payload: dict[str, Any] | None,
+) -> tuple[SkillRuntime | None, list[str], str]:
+    local_override_paths = _parse_skills_local_paths(settings.skills_local_paths)
+    strategy_skillsets = _extract_skillset_ids(strategy_payload or {})
+    if not strategy_skillsets and not local_override_paths:
+        return None, [], ""
+
+    resolved_payload: dict[str, Any] = {"skillsets": []}
+    if strategy_skillsets:
+        resolved_payload = client.resolve_skillsets(pipeline)
+        if not isinstance(resolved_payload, dict):
+            raise RuntimeError("resolve_skillsets returned invalid payload")
+    raw_skillsets = resolved_payload.get("skillsets")
+    if raw_skillsets is None:
+        raw_skillsets = []
+    if not isinstance(raw_skillsets, list):
+        raise RuntimeError("resolve_skillsets payload missing skillsets list")
+
+    skill_runtime = SkillRuntime.from_resolved_skillsets(
+        skillsets_payload=raw_skillsets,
+        cache_dir=settings.skills_cache_dir,
+        local_override_paths=local_override_paths,
+    )
+    if not skill_runtime.has_skills():
+        return None, strategy_skillsets, "empty"
+    if local_override_paths and strategy_skillsets:
+        source = "strategy_resolve+local_override"
+    elif local_override_paths:
+        source = "local_override"
+    else:
+        source = "strategy_resolve"
+    selected_skillsets = skill_runtime.skillset_ids() or strategy_skillsets
+    return skill_runtime, selected_skillsets, source
+
+
+def _report_skillset_selection_observation(
+    *,
+    runtime: OrchestratorRuntime,
+    job_id: str,
+    pipeline: str,
+    skill_runtime: SkillRuntime | None,
+    skillsets: list[str],
+    skillset_source: str,
+) -> None:
+    if skill_runtime is None:
+        return
+    report_observation = getattr(runtime, "report_observation", None)
+    if not callable(report_observation):
+        return
+    try:
+        report_observation(
+            tool="skillset.select",
+            node_name="runner.pre_graph",
+            params={"pipeline": normalize_pipeline(pipeline)},
+            response={
+                "status": "ok",
+                "skillsets": [str(item).strip() for item in skillsets if str(item).strip()],
+                "source": str(skillset_source).strip(),
+                "skills": skill_runtime.describe(),
+            },
+            evidence_ids=[],
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} pre-graph skillset observation failed: {exc}")
+
+
+def _apply_session_patch_if_needed(runtime: OrchestratorRuntime, state: GraphState) -> GraphState:
+    patch = state.session_patch if isinstance(state.session_patch, dict) else {}
+    if not patch:
+        return state
+    response = runtime.patch_job_session_context(
+        session_revision=str(state.session_snapshot.get("session_revision") or "").strip() or None,
+        latest_summary=patch.get("latest_summary") if isinstance(patch.get("latest_summary"), dict) else None,
+        pinned_evidence_append=patch.get("pinned_evidence_append")
+        if isinstance(patch.get("pinned_evidence_append"), list)
+        else None,
+        pinned_evidence_remove=patch.get("pinned_evidence_remove")
+        if isinstance(patch.get("pinned_evidence_remove"), list)
+        else None,
+        context_state_patch=patch.get("context_state_patch") if isinstance(patch.get("context_state_patch"), dict) else None,
+        actor=str(patch.get("actor") or "").strip() or None,
+        note=str(patch.get("note") or "").strip() or None,
+        source=str(patch.get("source") or "").strip() or None,
+    )
+    apply_session_patch_to_state(state, response)
+    return state
+
+
 def _extract_toolset_id(toolset_payload: dict[str, Any]) -> str:
     for key in ("toolsetID", "toolsetId", "toolset_id"):
         value = str(toolset_payload.get(key) or "").strip()
@@ -371,9 +489,13 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     selected_template_id = ""
     template_builder = None
     tool_invoker = None
+    skill_runtime = None
     selected_toolsets: list[str] = []
     selected_toolset_source = ""
+    selected_skillsets: list[str] = []
+    selected_skillset_source = ""
     selection_error_message = ""
+    prefetched_job: dict[str, Any] = {}
 
     try:
         prefetched_job = client.get_job(job_id)
@@ -390,11 +512,23 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 pipeline=selected_pipeline,
                 strategy_payload=strategy_payload,
             )
+            skill_runtime, selected_skillsets, selected_skillset_source = _build_skill_runtime(
+                settings=settings,
+                client=client,
+                pipeline=selected_pipeline,
+                strategy_payload=strategy_payload,
+            )
         else:
             selected_template_id = normalize_pipeline(selected_pipeline)
             template_builder = get_template_builder(selected_template_id)
             tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
                 settings, client, selected_pipeline
+            )
+            skill_runtime, selected_skillsets, selected_skillset_source = _build_skill_runtime(
+                settings=settings,
+                client=client,
+                pipeline=selected_pipeline,
+                strategy_payload=None,
             )
     except UnknownPipelineError as exc:
         _log(
@@ -429,6 +563,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         verification_max_total_bytes=settings.verification_max_total_bytes,
         verification_dedupe_enabled=settings.verification_dedupe_enabled,
         tool_invoker=tool_invoker,
+        skill_runtime=skill_runtime,
     )
     if not runtime.start():
         if debug:
@@ -472,17 +607,37 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         toolset_source=selected_toolset_source,
         tool_invoker=tool_invoker,
     )
+    _report_skillset_selection_observation(
+        runtime=runtime,
+        job_id=job_id,
+        pipeline=selected_pipeline,
+        skill_runtime=skill_runtime,
+        skillsets=selected_skillsets,
+        skillset_source=selected_skillset_source,
+    )
 
     if debug:
         selected_toolsets_text = ",".join(selected_toolsets) if selected_toolsets else "<none>"
+        selected_skillsets_text = ",".join(selected_skillsets) if selected_skillsets else "<none>"
         _log(
             f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
             f"template_id={selected_template_id or '<empty>'} "
-            f"template={template_builder.__name__} toolsets={selected_toolsets_text}"
+            f"template={template_builder.__name__} toolsets={selected_toolsets_text} "
+            f"skillsets={selected_skillsets_text}"
         )
 
     try:
         state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
+        if isinstance(prefetched_job, dict):
+            state.session_id = (
+                str(prefetched_job.get("sessionID") or prefetched_job.get("session_id") or "").strip() or None
+            )
+        try:
+            session_snapshot = runtime.get_job_session_context()
+            load_session_snapshot_into_state(state, session_snapshot)
+        except Exception as exc:  # noqa: BLE001
+            if debug:
+                _log(f"[DEBUG] job={job_id} session snapshot load skipped: {exc}")
         compiled_graph = template_builder(runtime, graph_cfg)
         final_state = compiled_graph.invoke(state)
     finally:
@@ -490,6 +645,10 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
     if isinstance(final_state, dict):
         final_state = GraphState.model_validate(final_state)
+    try:
+        final_state = _apply_session_patch_if_needed(runtime, final_state)
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} session patch apply failed: {exc}")
 
     if debug:
         _log(
@@ -536,7 +695,9 @@ def main() -> None:
         f"verification_dedupe_enabled={int(settings.verification_dedupe_enabled)} "
         f"post_finalize_wait_timeout_seconds={settings.post_finalize_wait_timeout_seconds} "
         f"post_finalize_wait_interval_ms={settings.post_finalize_wait_interval_ms} "
-        f"post_finalize_wait_max_interval_ms={settings.post_finalize_wait_max_interval_ms}"
+        f"post_finalize_wait_max_interval_ms={settings.post_finalize_wait_max_interval_ms} "
+        f"skills_cache_dir={settings.skills_cache_dir} "
+        f"skills_local_paths_set={int(bool(settings.skills_local_paths))}"
     )
 
     poll_client = _new_client(settings)

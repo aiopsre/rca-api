@@ -16,6 +16,7 @@ from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
 if TYPE_CHECKING:
+    from ..skills.runtime import SkillRuntime
     from ..tooling.invoker import ToolInvoker, ToolInvokerChain
 
 
@@ -144,12 +145,14 @@ class OrchestratorRuntime:
         verification_max_total_bytes: int = 0,
         verification_dedupe_enabled: bool = True,
         tool_invoker: ToolInvoker | ToolInvokerChain | None = None,
+        skill_runtime: SkillRuntime | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
         self._instance_id = str(instance_id).strip()
         self._log_func = log_func
         self._tool_invoker = tool_invoker
+        self._skill_runtime = skill_runtime
         self._started = False
         if not self._job_id:
             raise RuntimeError("job_id is required")
@@ -218,6 +221,11 @@ class OrchestratorRuntime:
             if raw_single:
                 return [raw_single]
         return []
+
+    def skill_ids(self) -> list[str]:
+        if self._skill_runtime is None:
+            return []
+        return self._skill_runtime.skill_ids()
 
     def report_observation(
         self,
@@ -489,6 +497,107 @@ class OrchestratorRuntime:
         target_job_id = str(job_id or self._job_id).strip() or self._job_id
         return self._execute_with_retry("job.get", lambda: self._client.get_job(target_job_id))
 
+    def get_job_session_context(self, job_id: str | None = None) -> dict[str, Any]:
+        target_job_id = str(job_id or self._job_id).strip() or self._job_id
+        return self._execute_with_retry(
+            "job.session_context.get",
+            lambda: self._client.get_job_session_context(target_job_id),
+        )
+
+    def patch_job_session_context(
+        self,
+        *,
+        session_revision: str | None = None,
+        latest_summary: dict[str, Any] | None = None,
+        pinned_evidence_append: list[dict[str, Any]] | None = None,
+        pinned_evidence_remove: list[str] | None = None,
+        context_state_patch: dict[str, Any] | None = None,
+        actor: str | None = None,
+        note: str | None = None,
+        source: str | None = None,
+    ) -> dict[str, Any]:
+        return self._execute_with_retry(
+            "job.session_context.patch",
+            lambda: self._client.patch_job_session_context(
+                self._job_id,
+                session_revision=session_revision,
+                latest_summary=latest_summary,
+                pinned_evidence_append=pinned_evidence_append,
+                pinned_evidence_remove=pinned_evidence_remove,
+                context_state_patch=context_state_patch,
+                actor=actor,
+                note=note,
+                source=source,
+            ),
+        )
+
+    def execute_skill(
+        self,
+        skill_id: str,
+        *,
+        input_payload: dict[str, Any] | None,
+        graph_state: Any,
+    ) -> dict[str, Any]:
+        if self._skill_runtime is None:
+            raise RuntimeError("skill runtime is not configured")
+        normalized_skill_id = str(skill_id).strip()
+        if not normalized_skill_id:
+            raise RuntimeError("skill_id is required")
+        prepared = self._skill_runtime.get(normalized_skill_id)
+        started_at = time.monotonic()
+        try:
+            result = self._execute_with_retry(
+                f"skill.execute:{normalized_skill_id}",
+                lambda: self._skill_runtime.execute(
+                    skill_id=normalized_skill_id,
+                    input_payload=input_payload or {},
+                    graph_state=graph_state,
+                    session_snapshot=getattr(graph_state, "session_snapshot", {}),
+                    tool_executor=self.call_tool,
+                ),
+            )
+            _merge_state_session_patch(graph_state, result.get("session_patch"))
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.execute",
+                node_name="runtime.execute_skill",
+                params={
+                    "skill_id": prepared.manifest.skill_id,
+                    "version": prepared.manifest.version,
+                    "source": prepared.source,
+                    "input_keys": sorted((input_payload or {}).keys()),
+                },
+                response={
+                    "status": "ok",
+                    "latency_ms": latency_ms,
+                    "skill_id": prepared.manifest.skill_id,
+                    "version": prepared.manifest.version,
+                    "source": prepared.source,
+                    "result_keys": sorted(result.keys()),
+                },
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.execute",
+                node_name="runtime.execute_skill",
+                params={
+                    "skill_id": prepared.manifest.skill_id,
+                    "version": prepared.manifest.version,
+                    "source": prepared.source,
+                },
+                response={
+                    "status": "error",
+                    "latency_ms": latency_ms,
+                    "skill_id": prepared.manifest.skill_id,
+                    "version": prepared.manifest.version,
+                    "source": prepared.source,
+                    "error": _trim_text(exc),
+                },
+            )
+            raise
+
     def get_incident(self, incident_id: str) -> dict[str, Any]:
         normalized = str(incident_id).strip()
         if not normalized:
@@ -668,3 +777,28 @@ class OrchestratorRuntime:
     def shutdown(self) -> None:
         self._started = False
         self._lease_manager.shutdown()
+
+
+def _merge_state_session_patch(graph_state: Any, patch: Any) -> None:
+    if not isinstance(patch, dict) or graph_state is None:
+        return
+    existing = getattr(graph_state, "session_patch", None)
+    if not isinstance(existing, dict):
+        existing = {}
+        setattr(graph_state, "session_patch", existing)
+    for key, value in patch.items():
+        if key in {"pinned_evidence_append"} and isinstance(value, list):
+            current = existing.get(key)
+            if not isinstance(current, list):
+                current = []
+            current.extend(item for item in value if isinstance(item, dict))
+            existing[key] = current
+            continue
+        if key in {"pinned_evidence_remove"} and isinstance(value, list):
+            current_remove = existing.get(key)
+            if not isinstance(current_remove, list):
+                current_remove = []
+            current_remove.extend(str(item).strip() for item in value if str(item).strip())
+            existing[key] = current_remove
+            continue
+        existing[key] = value

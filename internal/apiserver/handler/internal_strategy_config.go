@@ -35,6 +35,27 @@ type upsertToolsetConfigRequest struct {
 	AllowedTools []string `json:"allowed_tools"`
 }
 
+type skillRefRequest struct {
+	SkillID string `json:"skill_id"`
+	Version string `json:"version"`
+}
+
+type upsertSkillsetConfigRequest struct {
+	PipelineID   string            `json:"pipeline_id"`
+	SkillsetName string            `json:"skillset_name"`
+	Skills       []skillRefRequest `json:"skills"`
+}
+
+type registerSkillReleaseRequest struct {
+	SkillID      string  `json:"skill_id"`
+	Version      string  `json:"version"`
+	BundleDigest string  `json:"bundle_digest"`
+	ArtifactURL  string  `json:"artifact_url"`
+	ManifestJSON string  `json:"manifest_json"`
+	Status       string  `json:"status,omitempty"`
+	CreatedBy    *string `json:"created_by,omitempty"`
+}
+
 type upsertSLAConfigRequest struct {
 	SessionType          string  `json:"session_type"`
 	DueSeconds           int64   `json:"due_seconds"`
@@ -151,6 +172,88 @@ func (h *Handler) UpsertToolsetConfig(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) GetSkillsetConfig(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead, authz.ScopeConfigAdmin); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	pipelineID := strings.TrimSpace(c.Param("pipeline_id"))
+	if pipelineID == "" {
+		core.WriteResponse(c, nil, errno.ErrInvalidArgument)
+		return
+	}
+	resp, err := h.biz.InternalStrategyConfigV1().GetSkillsets(
+		c.Request.Context(),
+		&internalstrategyconfig.GetSkillsetConfigRequest{PipelineID: pipelineID},
+	)
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) UpsertSkillsetConfig(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeConfigAdmin); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	var req upsertSkillsetConfigRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	skills := make([]*internalstrategyconfig.SkillRef, 0, len(req.Skills))
+	for _, item := range req.Skills {
+		skills = append(skills, &internalstrategyconfig.SkillRef{
+			SkillID: item.SkillID,
+			Version: item.Version,
+		})
+	}
+	resp, err := h.biz.InternalStrategyConfigV1().UpsertSkillset(c.Request.Context(), &internalstrategyconfig.UpsertSkillsetConfigRequest{
+		PipelineID:   req.PipelineID,
+		SkillsetName: req.SkillsetName,
+		Skills:       skills,
+	})
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) GetSkillReleaseConfig(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeAIRead, authz.ScopeConfigAdmin); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	skillID := strings.TrimSpace(c.Param("skill_id"))
+	version := strings.TrimSpace(c.Param("version"))
+	if skillID == "" || version == "" {
+		core.WriteResponse(c, nil, errno.ErrInvalidArgument)
+		return
+	}
+	resp, err := h.biz.InternalStrategyConfigV1().GetSkillRelease(c.Request.Context(), &internalstrategyconfig.GetSkillReleaseRequest{
+		SkillID: skillID,
+		Version: version,
+	})
+	core.WriteResponse(c, resp, err)
+}
+
+func (h *Handler) RegisterSkillReleaseConfig(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeConfigAdmin); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	var req registerSkillReleaseRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	resp, err := h.biz.InternalStrategyConfigV1().RegisterSkillRelease(c.Request.Context(), &internalstrategyconfig.RegisterSkillReleaseRequest{
+		SkillID:      req.SkillID,
+		Version:      req.Version,
+		BundleDigest: req.BundleDigest,
+		ArtifactURL:  req.ArtifactURL,
+		ManifestJSON: req.ManifestJSON,
+		Status:       req.Status,
+		CreatedBy:    req.CreatedBy,
+	})
+	core.WriteResponse(c, resp, err)
+}
+
 func (h *Handler) GetSLAConfig(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead, authz.ScopeConfigAdmin); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -258,6 +361,10 @@ func init() {
 		configGroup.POST("/trigger/update", configRBACMW, handler.UpsertTriggerConfig)
 		configGroup.GET("/toolset/:pipeline_id", configRBACMW, handler.GetToolsetConfig)
 		configGroup.POST("/toolset/update", configRBACMW, handler.UpsertToolsetConfig)
+		configGroup.GET("/skillset/:pipeline_id", configRBACMW, handler.GetSkillsetConfig)
+		configGroup.POST("/skillset/update", configRBACMW, handler.UpsertSkillsetConfig)
+		configGroup.GET("/skill-release/:skill_id/:version", configRBACMW, handler.GetSkillReleaseConfig)
+		configGroup.POST("/skill-release/register", configRBACMW, handler.RegisterSkillReleaseConfig)
 		configGroup.GET("/sla/:session_type", configRBACMW, handler.GetSLAConfig)
 		configGroup.POST("/sla/update", configRBACMW, handler.UpsertSLAConfig)
 

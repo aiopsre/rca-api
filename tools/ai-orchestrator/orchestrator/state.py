@@ -10,6 +10,12 @@ class GraphState(BaseModel):
     instance_id: Optional[str] = None
     incident_id: Optional[str] = None
     datasource_id: Optional[str] = None
+    session_id: Optional[str] = None
+    session_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    session_patch: Dict[str, Any] = Field(default_factory=dict)
+    latest_summary: Dict[str, Any] = Field(default_factory=dict)
+    pinned_evidence_refs: List[str] = Field(default_factory=list)
+    session_context: Dict[str, Any] = Field(default_factory=dict)
 
     evidence_ids: List[str] = Field(default_factory=list)
     evidence_meta: List[Dict[str, Any]] = Field(default_factory=list)

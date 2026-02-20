@@ -231,6 +231,78 @@ class RCAApiClientRequestTest(unittest.TestCase):
         self.assertNotIn("errorMessage", body)
         self.assertEqual(captured["kwargs"]["timeout_s"], 30.0)
 
+    def test_resolve_skillsets_uses_expected_endpoint_and_params(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"pipeline": "basic_rca", "skillsets": [{"skillsetID": "default"}]}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        response = client.resolve_skillsets("basic_rca")
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["path"], "/v1/orchestrator/skillsets/resolve")
+        self.assertEqual(captured["kwargs"]["params"], {"pipeline": "basic_rca"})
+        self.assertEqual(response["pipeline"], "basic_rca")
+
+    def test_get_job_session_context_uses_expected_endpoint(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"sessionID": "sess-1", "sessionRevision": "rev-1"}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        response = client.get_job_session_context("job-42")
+        self.assertEqual(captured["method"], "GET")
+        self.assertEqual(captured["path"], "/v1/ai/jobs/job-42/session-context")
+        self.assertEqual(response["sessionID"], "sess-1")
+
+    def test_patch_job_session_context_uses_expected_payload(self) -> None:
+        client = RCAApiClient("http://example.com", scopes="*")
+        captured: dict[str, Any] = {}
+
+        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            captured["method"] = method
+            captured["path"] = path
+            captured["kwargs"] = kwargs
+            return {"data": {"sessionID": "sess-1", "sessionRevision": "rev-2"}}
+
+        client._request = _fake_request  # type: ignore[method-assign]
+        response = client.patch_job_session_context(
+            "job-42",
+            session_revision="rev-1",
+            latest_summary={"summary": "updated"},
+            pinned_evidence_append=[{"evidence_id": "ev-1"}],
+            pinned_evidence_remove=["ev-2", "ev-2"],
+            context_state_patch={"foo": "bar"},
+            actor="ai:job-42",
+            note="patched",
+            source="skill.execute",
+        )
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(captured["path"], "/v1/ai/jobs/job-42/session-context")
+        self.assertEqual(
+            captured["kwargs"]["json_body"],
+            {
+                "session_revision": "rev-1",
+                "latest_summary": {"summary": "updated"},
+                "pinned_evidence_append": [{"evidence_id": "ev-1"}],
+                "pinned_evidence_remove": ["ev-2"],
+                "context_state_patch": {"foo": "bar"},
+                "actor": "ai:job-42",
+                "note": "patched",
+                "source": "skill.execute",
+            },
+        )
+        self.assertEqual(response["sessionRevision"], "rev-2")
+
     def test_save_mock_evidence_uses_expected_payload(self) -> None:
         client = RCAApiClient("http://example.com", scopes="*")
         captured: dict[str, Any] = {}

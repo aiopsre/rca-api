@@ -55,7 +55,9 @@ type AIJob struct {
 	StartedAt  *timestamppb.Timestamp `protobuf:"bytes,14,opt,name=startedAt,proto3,oneof" json:"startedAt,omitempty"`
 	FinishedAt *timestamppb.Timestamp `protobuf:"bytes,15,opt,name=finishedAt,proto3,oneof" json:"finishedAt,omitempty"`
 	// createdBy is actor identifier: system|user:{id}|ai:{job_id}.
-	CreatedBy     string `protobuf:"bytes,16,opt,name=createdBy,proto3" json:"createdBy,omitempty"`
+	CreatedBy string `protobuf:"bytes,16,opt,name=createdBy,proto3" json:"createdBy,omitempty"`
+	// sessionID is the reusable RCA session identifier associated with this run.
+	SessionID     *string `protobuf:"bytes,17,opt,name=sessionID,proto3,oneof" json:"sessionID,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -198,6 +200,13 @@ func (x *AIJob) GetFinishedAt() *timestamppb.Timestamp {
 func (x *AIJob) GetCreatedBy() string {
 	if x != nil {
 		return x.CreatedBy
+	}
+	return ""
+}
+
+func (x *AIJob) GetSessionID() string {
+	if x != nil && x.SessionID != nil {
+		return *x.SessionID
 	}
 	return ""
 }
@@ -1453,7 +1462,7 @@ var File_apiserver_v1_ai_job_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"\n" +
-	"\x19apiserver/v1/ai_job.proto\x12\fapiserver.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb2\x06\n" +
+	"\x19apiserver/v1/ai_job.proto\x12\fapiserver.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe3\x06\n" +
 	"\x05AIJob\x12\x14\n" +
 	"\x05jobID\x18\x01 \x01(\tR\x05jobID\x12\x1e\n" +
 	"\n" +
@@ -1477,7 +1486,8 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"\n" +
 	"finishedAt\x18\x0f \x01(\v2\x1a.google.protobuf.TimestampH\x06R\n" +
 	"finishedAt\x88\x01\x01\x12\x1c\n" +
-	"\tcreatedBy\x18\x10 \x01(\tR\tcreatedByB\x11\n" +
+	"\tcreatedBy\x18\x10 \x01(\tR\tcreatedBy\x12!\n" +
+	"\tsessionID\x18\x11 \x01(\tH\aR\tsessionID\x88\x01\x01B\x11\n" +
 	"\x0f_inputHintsJSONB\x10\n" +
 	"\x0e_outputSummaryB\r\n" +
 	"\v_outputJSONB\x12\n" +
@@ -1485,7 +1495,9 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"\r_errorMessageB\f\n" +
 	"\n" +
 	"_startedAtB\r\n" +
-	"\v_finishedAt\"\xbf\x03\n" +
+	"\v_finishedAtB\f\n" +
+	"\n" +
+	"_sessionID\"\xbf\x03\n" +
 	"\x0fRunAIJobRequest\x12\x1e\n" +
 	"\n" +
 	"incidentID\x18\x01 \x01(\tR\n" +

@@ -270,6 +270,73 @@ func TestAIJobFinalize_UpdatesSessionContextAndClearsActiveRun(t *testing.T) {
 	require.Len(t, refsAny, 2)
 }
 
+func TestAIJobSessionRuntime_GetAndPatch(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	sessionResp, err := biz.GetJobSessionContext(context.Background(), &GetJobSessionContextRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+	require.NotEmpty(t, sessionResp.SessionID)
+	require.NotEmpty(t, sessionResp.SessionRevision)
+
+	patchResp, err := biz.PatchJobSessionContext(context.Background(), &PatchJobSessionContextRequest{
+		JobID:           runResp.JobID,
+		SessionRevision: ptrAIString(sessionResp.SessionRevision),
+		LatestSummary:   rawJSONPtr(`{"summary":"claude skill summary"}`),
+		PinnedEvidenceAppend: []map[string]any{
+			{"evidence_id": "evidence-1", "source": "claude_skill"},
+		},
+		ContextStatePatch: rawJSONPtr(`{"claude_skill":{"last_skill":"analysis"}}`),
+		Actor:             ptrAIString("ai:job-session-runtime"),
+		Note:              ptrAIString("session patch"),
+		Source:            ptrAIString("claude_agent_skill"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claude skill summary", anyToString(patchResp.LatestSummary["summary"]))
+	require.Len(t, patchResp.PinnedEvidence, 1)
+	require.Equal(t, "analysis", anyToString(patchResp.ContextState["claude_skill"].(map[string]any)["last_skill"]))
+
+	sessionObj, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", sessionResp.SessionID))
+	require.NoError(t, err)
+	require.Contains(t, trimOptional(sessionObj.LatestSummaryJSON), "claude skill summary")
+	require.Contains(t, trimOptional(sessionObj.ContextStateJSON), "claude_skill")
+
+	sessionSvc := sessionbiz.New(s)
+	historyResp, err := sessionSvc.ListHistory(context.Background(), &sessionbiz.ListSessionHistoryRequest{
+		SessionID: sessionResp.SessionID,
+		Offset:    0,
+		Limit:     20,
+	})
+	require.NoError(t, err)
+	foundContextPatched := false
+	for _, item := range historyResp.Events {
+		if item != nil && item.EventType == sessionbiz.SessionHistoryEventContextPatched {
+			foundContextPatched = true
+			break
+		}
+	}
+	require.True(t, foundContextPatched)
+
+	_, err = biz.PatchJobSessionContext(context.Background(), &PatchJobSessionContextRequest{
+		JobID:           runResp.JobID,
+		SessionRevision: ptrAIString(sessionResp.SessionRevision),
+		LatestSummary:   rawJSONPtr(`{"summary":"stale"}`),
+	})
+	require.ErrorIs(t, err, errno.ErrSessionContextRevisionConflict)
+}
+
 func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -1945,3 +2012,8 @@ func orchestratorCtx() context.Context {
 }
 
 func ptrAIString(v string) *string { return &v }
+
+func rawJSONPtr(v string) *json.RawMessage {
+	raw := json.RawMessage(v)
+	return &raw
+}

@@ -5,7 +5,9 @@ package orchestrator_strategy
 import (
 	"context"
 	"errors"
+	"strings"
 
+	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/orchestratorcfg"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
@@ -23,14 +25,18 @@ type StrategyBiz interface {
 type StrategyExpansion interface{}
 
 type strategyBiz struct {
-	store store.IStore
+	store     store.IStore
+	configBiz internalstrategyconfig.ConfigBiz
 }
 
 var _ StrategyBiz = (*strategyBiz)(nil)
 
 // New creates orchestrator strategy biz.
 func New(store store.IStore) *strategyBiz {
-	return &strategyBiz{store: store}
+	return &strategyBiz{
+		store:     store,
+		configBiz: internalstrategyconfig.New(store),
+	}
 }
 
 func (b *strategyBiz) Resolve(
@@ -57,6 +63,21 @@ func (b *strategyBiz) Resolve(
 	}
 	if strategy == nil {
 		return nil, errno.ErrOrchestratorStrategyNotFound
+	}
+	if b != nil && b.configBiz != nil {
+		items, _, resolveErr := b.configBiz.ResolveSkillsetByPipeline(ctx, strategy.GetPipeline())
+		if resolveErr == nil && len(items) > 0 {
+			skillsetIDs := make([]string, 0, len(items))
+			for _, item := range items {
+				if item == nil {
+					continue
+				}
+				if skillsetID := strings.TrimSpace(item.SkillsetName); skillsetID != "" {
+					skillsetIDs = append(skillsetIDs, skillsetID)
+				}
+			}
+			strategy.SkillsetIDs = skillsetIDs
+		}
 	}
 
 	return &v1.ResolveOrchestratorStrategyResponse{Strategy: strategy}, nil

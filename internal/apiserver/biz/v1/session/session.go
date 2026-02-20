@@ -65,6 +65,7 @@ const (
 	SessionHistoryEventEscalationPending   = "escalation_pending"
 	SessionHistoryEventEscalationEscalated = "escalation_escalated"
 	SessionHistoryEventEscalationCleared   = "escalation_cleared"
+	SessionHistoryEventContextPatched      = "context_patched"
 
 	defaultSessionHistoryListLimit = int64(20)
 	maxSessionHistoryListLimit     = int64(100)
@@ -105,6 +106,7 @@ var allowedSessionHistoryEventTypes = map[string]struct{}{
 	SessionHistoryEventEscalationPending:   {},
 	SessionHistoryEventEscalationEscalated: {},
 	SessionHistoryEventEscalationCleared:   {},
+	SessionHistoryEventContextPatched:      {},
 }
 
 // SessionBiz defines internal session context operations.

@@ -119,6 +119,46 @@ func TestConfigBiz_SLAConfigDynamic(t *testing.T) {
 	require.Equal(t, []int64{1800, 3600}, updated.EscalationThresholds)
 }
 
+func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
+	ctx := context.Background()
+	biz, _ := newConfigBizTestSetup(t)
+
+	release, err := biz.RegisterSkillRelease(ctx, &RegisterSkillReleaseRequest{
+		SkillID:      "claude.analysis",
+		Version:      "1.0.0",
+		BundleDigest: "8f990ba0b577b51cf009ea049368c16bbda1b21e1b93be07a824758bb253c39b",
+		ArtifactURL:  "https://artifacts.example.com/skills/claude.analysis-1.0.0.zip",
+		ManifestJSON: `{"skill_id":"claude.analysis","version":"1.0.0","runtime":"python","entrypoint":{"module":"skills.analysis","callable":"run"},"instruction_file":"SKILL.md","resource_files":["templates/guide.md"],"allowed_tools":["query_logs"]}`,
+		Status:       "active",
+		CreatedBy:    strPtr("user:config-admin"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claude.analysis", release.SkillID)
+	require.Equal(t, "dynamic_db", release.Source)
+
+	view, err := biz.UpsertSkillset(ctx, &UpsertSkillsetConfigRequest{
+		PipelineID:   "basic_rca",
+		SkillsetName: "claude_default",
+		Skills: []*SkillRef{
+			{SkillID: "claude.analysis", Version: "1.0.0"},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "dynamic_db", view.Source)
+	require.Len(t, view.Items, 1)
+	require.Equal(t, "claude_default", view.Items[0].SkillsetName)
+	require.Len(t, view.Items[0].Skills, 1)
+	require.Equal(t, "claude.analysis", view.Items[0].Skills[0].SkillID)
+
+	resolved, source, err := biz.ResolveSkillsetByPipeline(ctx, "basic_rca")
+	require.NoError(t, err)
+	require.Equal(t, "dynamic_db", source)
+	require.Len(t, resolved, 1)
+	require.Equal(t, "claude_default", resolved[0].SkillsetName)
+	require.Len(t, resolved[0].Skills, 1)
+	require.Equal(t, "1.0.0", resolved[0].Skills[0].Version)
+}
+
 func newConfigBizTestSetup(t *testing.T) (*configBiz, store.IStore) {
 	t.Helper()
 	store.ResetForTest()
@@ -132,6 +172,8 @@ func newConfigBizTestSetup(t *testing.T) (*configBiz, store.IStore) {
 		&model.PipelineConfigM{},
 		&model.TriggerConfigM{},
 		&model.ToolsetConfigDynamicM{},
+		&model.SkillReleaseM{},
+		&model.SkillsetConfigDynamicM{},
 		&model.SLAEscalationConfigM{},
 		&model.SessionAssignmentM{},
 	))
