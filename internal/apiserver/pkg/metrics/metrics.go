@@ -351,11 +351,9 @@ func Init(scope string) error {
 		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "dedup").Add(0)
 		alertIngestPolicyBackendErrorTotal.WithLabelValues("redis", "burst").Add(0)
 		alertingPolicyLoadTotal.WithLabelValues("ok", "default").Add(0)
-		alertingPolicyLoadTotal.WithLabelValues("ok", "yaml").Add(0)
-		alertingPolicyLoadTotal.WithLabelValues("ok", "cli").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("ok", "dynamic_db").Add(0)
 		alertingPolicyLoadTotal.WithLabelValues("error", "default").Add(0)
-		alertingPolicyLoadTotal.WithLabelValues("error", "yaml").Add(0)
-		alertingPolicyLoadTotal.WithLabelValues("error", "cli").Add(0)
+		alertingPolicyLoadTotal.WithLabelValues("error", "dynamic_db").Add(0)
 		noticeStreamReadTotal.WithLabelValues("ok").Add(0)
 		noticeStreamReadTotal.WithLabelValues("error").Add(0)
 		noticeStreamMessagesTotal.WithLabelValues("xadd").Add(0)
@@ -519,7 +517,7 @@ func (m *Metrics) RecordAlertIngestPolicyBackendError(backend string, op string)
 	m.AlertIngestPolicyBackendErrorTotal.WithLabelValues(backend, op).Inc()
 }
 
-// RecordAlertingPolicyLoad records one external alerting policy load attempt.
+// RecordAlertingPolicyLoad records one alerting policy runtime refresh attempt.
 func (m *Metrics) RecordAlertingPolicyLoad(result string, source string) {
 	if m == nil || m.AlertingPolicyLoadTotal == nil {
 		return
@@ -532,7 +530,7 @@ func (m *Metrics) RecordAlertingPolicyLoad(result string, source string) {
 	}
 	source = strings.TrimSpace(strings.ToLower(source))
 	switch source {
-	case "cli", "yaml", "default":
+	case "dynamic_db", "default":
 	default:
 		source = "default"
 	}

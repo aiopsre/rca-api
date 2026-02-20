@@ -1,25 +1,6 @@
 package internalstrategycfg
 
-import (
-	"errors"
-	"os"
-	"path/filepath"
-	"strings"
-
-	"gopkg.in/yaml.v3"
-)
-
-const (
-	envDefaultPipelineConfigPath = "RCA_DEFAULT_PIPELINE_CONFIG_PATH"
-	envDefaultToolsetConfigPath  = "RCA_DEFAULT_TOOLSET_CONFIG_PATH"
-	envDefaultTriggerConfigPath  = "RCA_DEFAULT_TRIGGER_CONFIG_PATH"
-	envCacheConfigPath           = "RCA_CACHE_CONFIG_PATH"
-
-	defaultPipelineConfigPath = "configs/default_pipeline.yml"
-	defaultToolsetConfigPath  = "configs/default_toolset.yml"
-	defaultTriggerConfigPath  = "configs/default_trigger.yml"
-	defaultCacheConfigPath    = "configs/cache_config.yml"
-)
+import "strings"
 
 type PipelineDefault struct {
 	AlertSource string   `json:"alert_source" yaml:"alert_source"`
@@ -41,18 +22,6 @@ type ToolsetDefault struct {
 	PipelineID   string   `json:"pipeline_id" yaml:"pipeline_id"`
 	ToolsetName  string   `json:"toolset_name" yaml:"toolset_name"`
 	AllowedTools []string `json:"allowed_tools" yaml:"allowed_tools"`
-}
-
-type CacheConfig struct {
-	InboxTTLSeconds        int64 `json:"inbox_ttl_seconds" yaml:"inbox_ttl_seconds"`
-	WorkbenchTTLSeconds    int64 `json:"workbench_ttl_seconds" yaml:"workbench_ttl_seconds"`
-	DashboardTTLSeconds    int64 `json:"dashboard_ttl_seconds" yaml:"dashboard_ttl_seconds"`
-	TraceTTLSeconds        int64 `json:"trace_ttl_seconds" yaml:"trace_ttl_seconds"`
-	CompareTTLSeconds      int64 `json:"compare_ttl_seconds" yaml:"compare_ttl_seconds"`
-	HistoryTTLSeconds      int64 `json:"history_ttl_seconds" yaml:"history_ttl_seconds"`
-	SessionStateTTLSeconds int64 `json:"session_state_ttl_seconds" yaml:"session_state_ttl_seconds"`
-	BatchSize              int64 `json:"batch_size" yaml:"batch_size"`
-	MaxDelete              int64 `json:"max_delete" yaml:"max_delete"`
 }
 
 var builtinPipelineDefaults = []PipelineDefault{
@@ -91,122 +60,58 @@ var builtinToolsetDefaults = []ToolsetDefault{
 	},
 }
 
-func LoadPipelineDefaults() ([]PipelineDefault, error) {
-	var payload struct {
-		Pipelines []PipelineDefault `json:"pipelines" yaml:"pipelines"`
-	}
-	if err := decodeOptionalConfigFile(resolveConfigPath(envDefaultPipelineConfigPath, defaultPipelineConfigPath), &payload); err != nil {
-		return nil, err
-	}
-	if len(payload.Pipelines) == 0 {
-		return normalizePipelineDefaults(builtinPipelineDefaults), nil
-	}
-	return normalizePipelineDefaults(payload.Pipelines), nil
+func BuiltinPipelineDefaults() []PipelineDefault {
+	return normalizePipelineDefaults(builtinPipelineDefaults)
 }
 
-func LoadTriggerDefaults() ([]TriggerDefault, error) {
-	var payload struct {
-		Triggers []TriggerDefault `json:"triggers" yaml:"triggers"`
-	}
-	if err := decodeOptionalConfigFile(resolveConfigPath(envDefaultTriggerConfigPath, defaultTriggerConfigPath), &payload); err != nil {
-		return nil, err
-	}
-	if len(payload.Triggers) == 0 {
-		return normalizeTriggerDefaults(builtinTriggerDefaults), nil
-	}
-	return normalizeTriggerDefaults(payload.Triggers), nil
-}
-
-func LoadToolsetDefaults() ([]ToolsetDefault, error) {
-	var payload struct {
-		Toolsets []ToolsetDefault `json:"toolsets" yaml:"toolsets"`
-	}
-	if err := decodeOptionalConfigFile(resolveConfigPath(envDefaultToolsetConfigPath, defaultToolsetConfigPath), &payload); err != nil {
-		return nil, err
-	}
-	if len(payload.Toolsets) == 0 {
-		return normalizeToolsetDefaults(builtinToolsetDefaults), nil
-	}
-	return normalizeToolsetDefaults(payload.Toolsets), nil
-}
-
-func LoadCacheConfig() (*CacheConfig, error) {
-	payload := &CacheConfig{}
-	if err := decodeOptionalConfigFile(resolveConfigPath(envCacheConfigPath, defaultCacheConfigPath), payload); err != nil {
-		return nil, err
-	}
-	if payload.InboxTTLSeconds == 0 &&
-		payload.WorkbenchTTLSeconds == 0 &&
-		payload.DashboardTTLSeconds == 0 &&
-		payload.TraceTTLSeconds == 0 &&
-		payload.CompareTTLSeconds == 0 &&
-		payload.HistoryTTLSeconds == 0 &&
-		payload.SessionStateTTLSeconds == 0 &&
-		payload.BatchSize == 0 &&
-		payload.MaxDelete == 0 {
-		return nil, nil
-	}
-	return payload, nil
-}
-
-func FindPipelineDefault(alertSource string, service string, namespace string) (*PipelineDefault, error) {
-	list, err := LoadPipelineDefaults()
-	if err != nil {
-		return nil, err
-	}
-	if len(list) == 0 {
-		return nil, nil
-	}
+func FindBuiltinPipelineDefault(alertSource string, service string, namespace string) *PipelineDefault {
+	list := BuiltinPipelineDefaults()
 	alertSource = strings.TrimSpace(alertSource)
 	service = strings.TrimSpace(service)
 	namespace = strings.TrimSpace(namespace)
 	for _, item := range list {
 		if item.AlertSource == alertSource && item.Service == service && item.Namespace == namespace {
 			out := item
-			return &out, nil
+			return &out
 		}
 	}
 	for _, item := range list {
 		if item.AlertSource == alertSource && item.Service == service && item.Namespace == "" {
 			out := item
-			return &out, nil
+			return &out
 		}
 	}
 	for _, item := range list {
 		if item.AlertSource == alertSource && item.Service == "" && item.Namespace == "" {
 			out := item
-			return &out, nil
+			return &out
 		}
 	}
-	return nil, nil
+	return nil
 }
 
-func FindTriggerDefault(triggerType string) (*TriggerDefault, error) {
-	list, err := LoadTriggerDefaults()
-	if err != nil {
-		return nil, err
-	}
-	if len(list) == 0 {
-		return nil, nil
-	}
+func BuiltinTriggerDefaults() []TriggerDefault {
+	return normalizeTriggerDefaults(builtinTriggerDefaults)
+}
+
+func FindBuiltinTriggerDefault(triggerType string) *TriggerDefault {
+	list := BuiltinTriggerDefaults()
 	triggerType = strings.ToLower(strings.TrimSpace(triggerType))
 	for _, item := range list {
 		if item.TriggerType == triggerType {
 			out := item
-			return &out, nil
+			return &out
 		}
 	}
-	return nil, nil
+	return nil
 }
 
-func ListToolsetDefaultsByPipeline(pipelineID string) ([]ToolsetDefault, error) {
-	list, err := LoadToolsetDefaults()
-	if err != nil {
-		return nil, err
-	}
-	if len(list) == 0 {
-		return nil, nil
-	}
+func BuiltinToolsetDefaults() []ToolsetDefault {
+	return normalizeToolsetDefaults(builtinToolsetDefaults)
+}
+
+func ListBuiltinToolsetDefaultsByPipeline(pipelineID string) []ToolsetDefault {
+	list := BuiltinToolsetDefaults()
 	pipelineID = strings.ToLower(strings.TrimSpace(pipelineID))
 	out := make([]ToolsetDefault, 0, len(list))
 	for _, item := range list {
@@ -216,34 +121,9 @@ func ListToolsetDefaultsByPipeline(pipelineID string) ([]ToolsetDefault, error) 
 		out = append(out, item)
 	}
 	if len(out) == 0 {
-		return nil, nil
-	}
-	return out, nil
-}
-
-func resolveConfigPath(envKey string, defaultPath string) string {
-	if envPath := strings.TrimSpace(os.Getenv(envKey)); envPath != "" {
-		return envPath
-	}
-	return defaultPath
-}
-
-func decodeOptionalConfigFile(path string, out any) error {
-	path = strings.TrimSpace(path)
-	if path == "" || out == nil {
 		return nil
 	}
-	raw, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		return nil
-	}
-	return yaml.Unmarshal(raw, out)
+	return out
 }
 
 func normalizePipelineDefaults(in []PipelineDefault) []PipelineDefault {

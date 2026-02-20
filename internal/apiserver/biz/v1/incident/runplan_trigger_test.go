@@ -342,6 +342,20 @@ func (f *fakeAIJobBizForEscalationRunPlan) CompareTraceReadModels(
 	return nil, nil
 }
 
+func (f *fakeAIJobBizForEscalationRunPlan) GetJobSessionContext(
+	context.Context,
+	*aijobbiz.GetJobSessionContextRequest,
+) (*aijobbiz.GetJobSessionContextResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeAIJobBizForEscalationRunPlan) PatchJobSessionContext(
+	context.Context,
+	*aijobbiz.PatchJobSessionContextRequest,
+) (*aijobbiz.PatchJobSessionContextResponse, error) {
+	return nil, nil
+}
+
 func (f *fakeAIJobBizForEscalationRunPlan) GetSessionWorkbench(
 	context.Context,
 	*aijobbiz.GetSessionWorkbenchRequest,

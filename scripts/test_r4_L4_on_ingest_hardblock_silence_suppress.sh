@@ -20,7 +20,6 @@ JOB_ID_SAMPLE=""
 SILENCE_ID_SAMPLE=""
 SERVER_PID=""
 SERVER_LOG=""
-POLICY_FILE=""
 
 truncate_2kb() {
 	printf '%s' "${1:-}" | head -c 2048
@@ -111,7 +110,7 @@ start_server_or_fail() {
 	SERVER_LOG="$(mktemp)"
 	(
 		cd "${REPO_ROOT}" && \
-			bash -lc "${SERVER_CMD_BASE} --http.addr=127.0.0.1:${PORT} --redis.enabled=false --alerting-policy-path='${POLICY_FILE}' --alerting-policy-strict=true --alerting.ingest_policy.dedup_window_seconds=300"
+			bash -lc "${SERVER_CMD_BASE} --http.addr=127.0.0.1:${PORT} --redis.enabled=false --alerting.ingest_policy.dedup_window_seconds=300"
 	) >"${SERVER_LOG}" 2>&1 &
 	SERVER_PID="$!"
 
@@ -148,7 +147,6 @@ stop_server() {
 
 cleanup() {
 	stop_server
-	rm -f "${POLICY_FILE:-}"
 }
 trap cleanup EXIT
 
@@ -178,33 +176,27 @@ extract_incident_id_or_empty() {
 	json_get "${1}" '.incidentID // .data.incidentID // empty'
 }
 
+activate_policy_or_fail() {
+	local body="$1"
+	local policy_id
+
+	call_or_fail "Policy.Create" POST "${BASE_URL}/v1/alerting-policies" "${body}"
+	policy_id="$(json_get "${LAST_BODY}" '.alerting_policy.id // .data.alerting_policy.id // empty')"
+	if [[ -z "${policy_id}" ]]; then
+		fail_step "Policy.Create.ParseID" "ASSERT_POLICY_ID" "${LAST_BODY}"
+	fi
+	call_or_fail "Policy.Activate" POST "${BASE_URL}/v1/alerting-policies/${policy_id}/activate" '{"operator":"script:r4_l4"}'
+}
+
 if ! need_cmd jq; then
 	fail_step "Precheck.MissingJQ" "MISSING_JQ" "jq is required"
 fi
 
-POLICY_FILE="$(mktemp)"
-cat >"${POLICY_FILE}" <<'YAML'
-version: 1
-defaults:
-  on_ingest:
-    enabled: false
-  on_escalation:
-    enabled: false
-  scheduled:
-    enabled: false
-triggers:
-  on_ingest:
-    rules:
-      - name: "on-ingest-run"
-        match:
-          alert_name: "r4-l4-on-ingest"
-        action:
-          run: true
-          pipeline: "basic_rca"
-          window_seconds: 1800
-YAML
-
 start_server_or_fail
+activate_policy_or_fail "$(cat <<'JSON'
+{"name":"r4-l4-on-ingest","description":"On-ingest hardblock regression policy","config":{"version":1,"defaults":{"on_ingest":{"enabled":false},"on_escalation":{"enabled":false},"scheduled":{"enabled":false}},"triggers":{"on_ingest":{"rules":[{"name":"on-ingest-run","match":{"alert_name":"r4-l4-on-ingest"},"action":{"run":true,"pipeline":"basic_rca","window_seconds":1800}}]}}}}
+JSON
+)"
 
 now_epoch="$(date -u +%s)"
 rand="${RANDOM}"

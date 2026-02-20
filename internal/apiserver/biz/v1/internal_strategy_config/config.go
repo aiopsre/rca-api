@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
@@ -61,6 +62,7 @@ type ConfigExpansion interface{}
 type configBiz struct {
 	store      store.IStore
 	sessionBiz sessionAdapter
+	bootstrap  dynamicDefaultBootstrap
 }
 
 type sessionAdapter interface {
@@ -79,6 +81,92 @@ func New(store store.IStore) *configBiz {
 
 func newWithDeps(store store.IStore, sessionBiz sessionAdapter) *configBiz {
 	return &configBiz{store: store, sessionBiz: sessionBiz}
+}
+
+type dynamicDefaultBootstrap struct {
+	mu   sync.Mutex
+	done bool
+}
+
+func (b *configBiz) ensureBuiltinDynamicConfigs(ctx context.Context) error {
+	if b == nil || b.store == nil {
+		return errno.ErrInvalidArgument
+	}
+	if b.bootstrap.done {
+		return nil
+	}
+
+	b.bootstrap.mu.Lock()
+	defer b.bootstrap.mu.Unlock()
+	if b.bootstrap.done {
+		return nil
+	}
+
+	err := b.store.TX(ctx, func(txCtx context.Context) error {
+		if err := b.seedBuiltinPipelineConfigs(txCtx); err != nil {
+			return err
+		}
+		if err := b.seedBuiltinTriggerConfigs(txCtx); err != nil {
+			return err
+		}
+		if err := b.seedBuiltinToolsetConfigs(txCtx); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return errno.ErrInternal
+	}
+
+	b.bootstrap.done = true
+	return nil
+}
+
+func (b *configBiz) seedBuiltinPipelineConfigs(ctx context.Context) error {
+	for _, item := range internalstrategycfg.BuiltinPipelineDefaults() {
+		obj := &model.PipelineConfigM{
+			AlertSource: item.AlertSource,
+			Service:     item.Service,
+			Namespace:   item.Namespace,
+			PipelineID:  item.PipelineID,
+			GraphID:     emptyStringToNil(item.GraphID),
+		}
+		if err := b.store.InternalStrategyConfig().UpsertPipelineConfig(ctx, obj); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *configBiz) seedBuiltinTriggerConfigs(ctx context.Context) error {
+	for _, item := range internalstrategycfg.BuiltinTriggerDefaults() {
+		obj := &model.TriggerConfigM{
+			TriggerType: item.TriggerType,
+			PipelineID:  item.PipelineID,
+			SessionType: item.SessionType,
+			Fallback:    item.Fallback,
+		}
+		if err := b.store.InternalStrategyConfig().UpsertTriggerConfig(ctx, obj); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *configBiz) seedBuiltinToolsetConfigs(ctx context.Context) error {
+	for _, item := range internalstrategycfg.BuiltinToolsetDefaults() {
+		rawAllowedTools, _ := json.Marshal(normalizeListLower(item.AllowedTools))
+		rawAllowedToolsString := string(rawAllowedTools)
+		obj := &model.ToolsetConfigDynamicM{
+			PipelineID:       item.PipelineID,
+			ToolsetName:      item.ToolsetName,
+			AllowedToolsJSON: &rawAllowedToolsString,
+		}
+		if err := b.store.InternalStrategyConfig().UpsertToolsetConfig(ctx, obj); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type GetPipelineConfigRequest struct {
@@ -114,27 +202,15 @@ func (b *configBiz) GetPipeline(ctx context.Context, rq *GetPipelineConfigReques
 	}
 	service := strings.TrimSpace(rq.Service)
 	namespace := strings.TrimSpace(rq.Namespace)
+	if err := b.ensureBuiltinDynamicConfigs(ctx); err != nil {
+		return nil, err
+	}
 	if storeObj, err := b.getPipelineFromStore(ctx, alertSource, service, namespace); err == nil && storeObj != nil {
 		return mapPipelineModel(storeObj, "dynamic_db"), nil
 	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, errno.ErrInternal
 	}
-
-	fallback, err := internalstrategycfg.FindPipelineDefault(alertSource, service, namespace)
-	if err != nil {
-		return nil, errno.ErrInternal
-	}
-	if fallback == nil {
-		return nil, errno.ErrNotFound
-	}
-	return &PipelineConfigView{
-		AlertSource: fallback.AlertSource,
-		Service:     fallback.Service,
-		Namespace:   fallback.Namespace,
-		PipelineID:  fallback.PipelineID,
-		GraphID:     strings.TrimSpace(fallback.GraphID),
-		Source:      "static_fallback",
-	}, nil
+	return nil, errno.ErrNotFound
 }
 
 func (b *configBiz) UpsertPipeline(ctx context.Context, rq *UpsertPipelineConfigRequest) (*PipelineConfigView, error) {
@@ -229,6 +305,9 @@ func (b *configBiz) GetTrigger(ctx context.Context, rq *GetTriggerConfigRequest)
 	if triggerType == "" {
 		return nil, errno.ErrInvalidArgument
 	}
+	if err := b.ensureBuiltinDynamicConfigs(ctx); err != nil {
+		return nil, err
+	}
 	if configStore := b.store.InternalStrategyConfig(); configStore != nil {
 		obj, err := configStore.GetTriggerConfig(ctx, triggerType)
 		if err == nil && obj != nil {
@@ -238,20 +317,7 @@ func (b *configBiz) GetTrigger(ctx context.Context, rq *GetTriggerConfigRequest)
 			return nil, errno.ErrInternal
 		}
 	}
-	fallback, err := internalstrategycfg.FindTriggerDefault(triggerType)
-	if err != nil {
-		return nil, errno.ErrInternal
-	}
-	if fallback == nil {
-		return nil, errno.ErrNotFound
-	}
-	return &TriggerConfigView{
-		TriggerType: fallback.TriggerType,
-		PipelineID:  fallback.PipelineID,
-		SessionType: fallback.SessionType,
-		Fallback:    fallback.Fallback,
-		Source:      "static_fallback",
-	}, nil
+	return nil, errno.ErrNotFound
 }
 
 func (b *configBiz) UpsertTrigger(ctx context.Context, rq *UpsertTriggerConfigRequest) (*TriggerConfigView, error) {
@@ -363,6 +429,9 @@ func (b *configBiz) ResolveToolsetByPipeline(
 	if pipelineID == "" {
 		return nil, "", errno.ErrInvalidArgument
 	}
+	if err := b.ensureBuiltinDynamicConfigs(ctx); err != nil {
+		return nil, "", err
+	}
 	if configStore := b.store.InternalStrategyConfig(); configStore != nil {
 		list, err := configStore.ListToolsetConfigsByPipeline(ctx, pipelineID)
 		if err != nil {
@@ -373,18 +442,7 @@ func (b *configBiz) ResolveToolsetByPipeline(
 			return mapped, "dynamic_db", nil
 		}
 	}
-	fallback, err := internalstrategycfg.ListToolsetDefaultsByPipeline(pipelineID)
-	if err != nil {
-		return nil, "", err
-	}
-	if len(fallback) == 0 {
-		return nil, "", errno.ErrNotFound
-	}
-	out := make([]*ToolsetItem, 0, len(fallback))
-	for _, item := range fallback {
-		out = append(out, &ToolsetItem{ToolsetName: item.ToolsetName, AllowedTools: normalizeListLower(item.AllowedTools)})
-	}
-	return out, "static_fallback", nil
+	return nil, "", errno.ErrNotFound
 }
 
 func mapToolsetModelList(in []*model.ToolsetConfigDynamicM) []*ToolsetItem {
@@ -1045,6 +1103,14 @@ func trimStringPtr(in *string) *string {
 		return nil
 	}
 	value := strings.TrimSpace(*in)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func emptyStringToNil(in string) *string {
+	value := strings.TrimSpace(in)
 	if value == "" {
 		return nil
 	}

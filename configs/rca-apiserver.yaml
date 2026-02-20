@@ -82,11 +82,6 @@ alerting:
     allowed_services: []
     mode: observe
 
-alerting_policy:
-  enabled: true
-  path: "configs/alerting_policy.yaml"
-  strict: false
-
 ai_job_longpoll:
   poll_interval: 1s
   watermark_cache_ttl: 1s

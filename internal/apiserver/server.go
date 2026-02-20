@@ -3,7 +3,6 @@ package apiserver
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -40,7 +39,6 @@ type Config struct {
 	RedisOptions         redisx.RedisOptions
 	AlertingIngestPolicy alertingingest.PolicyConfig
 	AlertingRollout      alertingingest.RolloutConfig
-	AlertingPolicy       alertingpolicy.ExternalPolicyOptions
 	AIJobLongPoll        queue.AdaptiveWaiterOptions
 	NoticeBaseURL        string
 	MCPPolicy            policy.MCPPolicyConfig
@@ -109,111 +107,33 @@ func (cfg *Config) loadAlertingPolicy(ctx context.Context) error {
 		return nil
 	}
 
-	// Create temporary DB and store for loading policy from database
 	db, err := cfg.NewDB()
 	if err != nil {
-		slog.Warn("failed to create DB connection for alerting policy load, using file/default",
-			"err", err,
-		)
-		// Fallback to YAML file load
-		return cfg.loadAlertingPolicyFromYAML()
+		return err
 	}
 
 	st := store.NewStore(db)
-	loadInput := alertingpolicy.ResolveLoadInput(cfg.AlertingPolicy)
-	policyCfg, activeSource, loadErr := alertingpolicy.Load(ctx, st, loadInput.Path, loadInput.Strict)
-	if loadErr != nil && loadInput.Strict {
-		recordAlertingPolicyLoadMetric("error", loadInput.Source)
-		slog.Error("alerting policy load failed",
-			"policy_path", loadInput.Path,
-			"strict", loadInput.Strict,
-			"source", loadInput.Source,
-			"err", loadErr,
-		)
-		return fmt.Errorf("strict alerting policy load failed: %w", loadErr)
-	}
+	loadErr := alertingpolicy.SyncRuntimeConfig(ctx, st)
+	runtimeCfg := alertingpolicy.CurrentRuntimeConfig()
 
 	result := "ok"
 	if loadErr != nil {
 		result = "error"
 	}
-	recordAlertingPolicyLoadMetric(result, loadInput.Source)
+	recordAlertingPolicyLoadMetric(result, runtimeCfg.Source)
 	if loadErr != nil {
-		slog.Warn("alerting policy load fallback to default",
-			"policy_path", loadInput.Path,
-			"strict", loadInput.Strict,
-			"source", loadInput.Source,
+		slog.Warn("alerting policy runtime fallback to default",
+			"source", runtimeCfg.Source,
+			"active_source", runtimeCfg.ActiveSource,
 			"err", loadErr,
 		)
 	} else {
 		slog.Info("alerting policy loaded",
-			"policy_path", loadInput.Path,
-			"strict", loadInput.Strict,
-			"source", loadInput.Source,
-			"active_source", activeSource,
+			"source", runtimeCfg.Source,
+			"active_source", runtimeCfg.ActiveSource,
 			"err", "",
 		)
 	}
-
-	alertingpolicy.SetRuntimeConfig(alertingpolicy.RuntimeConfig{
-		Policy:       policyCfg,
-		PolicyPath:   loadInput.Path,
-		Strict:       loadInput.Strict,
-		Source:       loadInput.Source,
-		ActiveSource: activeSource,
-	})
-	return nil
-}
-
-// loadAlertingPolicyFromYAML loads alerting policy from YAML file only (backward compatible).
-func (cfg *Config) loadAlertingPolicyFromYAML() error {
-	if cfg == nil {
-		alertingpolicy.SetRuntimeConfig(alertingpolicy.DefaultRuntimeConfig())
-		return nil
-	}
-
-	loadInput := alertingpolicy.ResolveLoadInput(cfg.AlertingPolicy)
-	policyCfg, activeSource, loadErr := alertingpolicy.LoadFromYAML(loadInput.Path, loadInput.Strict)
-	if loadErr != nil && loadInput.Strict {
-		recordAlertingPolicyLoadMetric("error", loadInput.Source)
-		slog.Error("alerting policy load failed",
-			"policy_path", loadInput.Path,
-			"strict", loadInput.Strict,
-			"source", loadInput.Source,
-			"err", loadErr,
-		)
-		return fmt.Errorf("strict alerting policy load failed: %w", loadErr)
-	}
-
-	result := "ok"
-	if loadErr != nil {
-		result = "error"
-	}
-	recordAlertingPolicyLoadMetric(result, loadInput.Source)
-	if loadErr != nil {
-		slog.Warn("alerting policy load fallback to default",
-			"policy_path", loadInput.Path,
-			"strict", loadInput.Strict,
-			"source", loadInput.Source,
-			"err", loadErr,
-		)
-	} else {
-		slog.Info("alerting policy loaded",
-			"policy_path", loadInput.Path,
-			"strict", loadInput.Strict,
-			"source", loadInput.Source,
-			"active_source", activeSource,
-			"err", "",
-		)
-	}
-
-	alertingpolicy.SetRuntimeConfig(alertingpolicy.RuntimeConfig{
-		Policy:       policyCfg,
-		PolicyPath:   loadInput.Path,
-		Strict:       loadInput.Strict,
-		Source:       loadInput.Source,
-		ActiveSource: activeSource,
-	})
 	return nil
 }
 

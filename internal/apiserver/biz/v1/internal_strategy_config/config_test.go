@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -19,27 +17,19 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
-func TestConfigBiz_DynamicAndFallback(t *testing.T) {
+func TestConfigBiz_BuiltinDefaultsAndDynamicOverrides(t *testing.T) {
 	ctx := context.Background()
 	biz, s := newConfigBizTestSetup(t)
-	t.Setenv("RCA_DEFAULT_TRIGGER_CONFIG_PATH", writeTestFile(t, "default_trigger.yml", `triggers:
-  - trigger_type: "manual"
-    pipeline_id: "basic_rca"
-    session_type: "incident"
-    fallback: true
-`))
-	t.Setenv("RCA_DEFAULT_TOOLSET_CONFIG_PATH", writeTestFile(t, "default_toolset.yml", `toolsets:
-  - pipeline_id: "basic_rca"
-    toolset_name: "fallback_toolset"
-    allowed_tools:
-      - "logs.search"
-      - "metrics.query_range"
-`))
 
-	fallbackTrigger, err := biz.GetTrigger(ctx, &GetTriggerConfigRequest{TriggerType: "manual"})
+	pipelineCfg, err := biz.GetPipeline(ctx, &GetPipelineConfigRequest{AlertSource: "manual"})
 	require.NoError(t, err)
-	require.Equal(t, "basic_rca", fallbackTrigger.PipelineID)
-	require.Equal(t, "static_fallback", fallbackTrigger.Source)
+	require.Equal(t, "basic_rca", pipelineCfg.PipelineID)
+	require.Equal(t, "dynamic_db", pipelineCfg.Source)
+
+	triggerCfg, err := biz.GetTrigger(ctx, &GetTriggerConfigRequest{TriggerType: "manual"})
+	require.NoError(t, err)
+	require.Equal(t, "basic_rca", triggerCfg.PipelineID)
+	require.Equal(t, "dynamic_db", triggerCfg.Source)
 
 	_, err = biz.UpsertTrigger(ctx, &UpsertTriggerConfigRequest{
 		TriggerType: "manual",
@@ -60,11 +50,11 @@ func TestConfigBiz_DynamicAndFallback(t *testing.T) {
 	require.Equal(t, "incident", sessionType)
 	require.Equal(t, "dynamic_db", source)
 
-	fallbackToolsets, err := biz.GetToolsets(ctx, &GetToolsetConfigRequest{PipelineID: "basic_rca"})
+	builtinToolsets, err := biz.GetToolsets(ctx, &GetToolsetConfigRequest{PipelineID: "basic_rca"})
 	require.NoError(t, err)
-	require.Equal(t, "static_fallback", fallbackToolsets.Source)
-	require.Len(t, fallbackToolsets.Items, 1)
-	require.Equal(t, "fallback_toolset", fallbackToolsets.Items[0].ToolsetName)
+	require.Equal(t, "dynamic_db", builtinToolsets.Source)
+	require.Len(t, builtinToolsets.Items, 1)
+	require.Equal(t, "canonical_default", builtinToolsets.Items[0].ToolsetName)
 
 	_, err = biz.UpsertToolset(ctx, &UpsertToolsetConfigRequest{
 		PipelineID:   "basic_rca",
@@ -76,7 +66,11 @@ func TestConfigBiz_DynamicAndFallback(t *testing.T) {
 	dynamicToolsets, err := biz.GetToolsets(ctx, &GetToolsetConfigRequest{PipelineID: "basic_rca"})
 	require.NoError(t, err)
 	require.Equal(t, "dynamic_db", dynamicToolsets.Source)
-	require.NotEmpty(t, dynamicToolsets.Items)
+	require.Len(t, dynamicToolsets.Items, 2)
+	require.ElementsMatch(t, []string{"canonical_default", "dynamic_toolset"}, []string{
+		dynamicToolsets.Items[0].ToolsetName,
+		dynamicToolsets.Items[1].ToolsetName,
+	})
 
 	session := &model.SessionContextM{
 		SessionID:   "session-config-test-1",
@@ -215,14 +209,6 @@ func newConfigBizTestSetup(t *testing.T) (*configBiz, store.IStore) {
 	))
 	s := store.NewStore(db)
 	return New(s), s
-}
-
-func writeTestFile(t *testing.T, name string, content string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
-	return path
 }
 
 func strPtr(in string) *string {

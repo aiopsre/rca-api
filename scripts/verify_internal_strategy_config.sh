@@ -10,11 +10,6 @@ REPORT_CSV="${REPORT_CSV:-./_output/strategy_config_verify_report.csv}"
 CURL_BIN="${CURL_BIN:-curl}"
 JQ_BIN="${JQ_BIN:-jq}"
 
-DEFAULT_PIPELINE_FILE="${RCA_DEFAULT_PIPELINE_CONFIG_PATH:-configs/default_pipeline.yml}"
-DEFAULT_TRIGGER_FILE="${RCA_DEFAULT_TRIGGER_CONFIG_PATH:-configs/default_trigger.yml}"
-DEFAULT_TOOLSET_FILE="${RCA_DEFAULT_TOOLSET_CONFIG_PATH:-configs/default_toolset.yml}"
-DEFAULT_CACHE_FILE="${RCA_CACHE_CONFIG_PATH:-configs/cache_config.yml}"
-
 require_bin() {
   local bin="$1"
   if ! command -v "${bin}" >/dev/null 2>&1; then
@@ -78,15 +73,6 @@ status_and_body() {
   rm -f "${out_file}"
 }
 
-file_status() {
-  local file="$1"
-  if [[ -f "${file}" ]]; then
-    printf 'present'
-  else
-    printf 'missing'
-  fi
-}
-
 require_bin "${CURL_BIN}"
 require_bin "${JQ_BIN}"
 mkdir -p "$(dirname "${REPORT_JSON}")"
@@ -103,7 +89,7 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-# Read fallback then dynamic trigger mapping.
+# Read bootstrap dynamic defaults then dynamic trigger mapping.
 trigger_before="$(call_json GET "${BASE_URL}/v1/config/trigger/manual" "${TOKEN}")"
 trigger_update_body='{"trigger_type":"manual","pipeline_id":"advanced_rca","session_type":"incident","fallback":false}'
 trigger_update="$(call_json POST "${BASE_URL}/v1/config/trigger/update" "${TOKEN}" "${trigger_update_body}")"
@@ -147,12 +133,6 @@ report_json_payload=$(cat <<JSON
 {
   "generated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "base_url": "${BASE_URL}",
-  "fallback_files": {
-    "default_pipeline": {"path": "${DEFAULT_PIPELINE_FILE}", "status": "$(file_status "${DEFAULT_PIPELINE_FILE}")"},
-    "default_trigger": {"path": "${DEFAULT_TRIGGER_FILE}", "status": "$(file_status "${DEFAULT_TRIGGER_FILE}")"},
-    "default_toolset": {"path": "${DEFAULT_TOOLSET_FILE}", "status": "$(file_status "${DEFAULT_TOOLSET_FILE}")"},
-    "cache_config": {"path": "${DEFAULT_CACHE_FILE}", "status": "$(file_status "${DEFAULT_CACHE_FILE}")"}
-  },
   "checks": {
     "trigger_before": ${trigger_before},
     "trigger_update": ${trigger_update},
@@ -170,9 +150,10 @@ report_json_payload=$(cat <<JSON
     }
   },
   "summary": {
-    "trigger_pipeline_after": $(echo "${trigger_after}" | ${JQ_BIN} -r '.data.pipeline_id // empty' | json_escape),
-    "sla_due_after": $(echo "${sla_after}" | ${JQ_BIN} -r '.data.due_seconds // empty' | json_escape),
-    "toolset_source_after": $(echo "${toolset_after}" | ${JQ_BIN} -r '.data.source // empty' | json_escape),
+    "trigger_source_before": $(echo "${trigger_before}" | ${JQ_BIN} -r '.trigger_type? as $noop | .source // .data.source // empty' | json_escape),
+    "trigger_pipeline_after": $(echo "${trigger_after}" | ${JQ_BIN} -r '.pipeline_id // .data.pipeline_id // empty' | json_escape),
+    "sla_due_after": $(echo "${sla_after}" | ${JQ_BIN} -r '.due_seconds // .data.due_seconds // empty' | json_escape),
+    "toolset_source_after": $(echo "${toolset_after}" | ${JQ_BIN} -r '.source // .data.source // empty' | json_escape),
     "assignment_status": "${assignment_status}"
   }
 }
@@ -183,9 +164,10 @@ printf '%s\n' "${report_json_payload}" | ${JQ_BIN} . > "${REPORT_JSON}"
 
 cat > "${REPORT_CSV}" <<CSV
 check,expected,actual,status
-trigger.pipeline_after,advanced_rca,$(echo "${trigger_after}" | ${JQ_BIN} -r '.data.pipeline_id // empty'),$( [[ "$(echo "${trigger_after}" | ${JQ_BIN} -r '.data.pipeline_id // empty')" == "advanced_rca" ]] && echo pass || echo fail )
-sla.due_seconds_after,1800,$(echo "${sla_after}" | ${JQ_BIN} -r '.data.due_seconds // empty'),$( [[ "$(echo "${sla_after}" | ${JQ_BIN} -r '.data.due_seconds // empty')" == "1800" ]] && echo pass || echo fail )
-toolset.source_after,dynamic_db,$(echo "${toolset_after}" | ${JQ_BIN} -r '.data.source // empty'),$( [[ "$(echo "${toolset_after}" | ${JQ_BIN} -r '.data.source // empty')" == "dynamic_db" ]] && echo pass || echo fail )
+trigger.source_before,dynamic_db,$(echo "${trigger_before}" | ${JQ_BIN} -r '.source // .data.source // empty'),$( [[ "$(echo "${trigger_before}" | ${JQ_BIN} -r '.source // .data.source // empty')" == "dynamic_db" ]] && echo pass || echo fail )
+trigger.pipeline_after,advanced_rca,$(echo "${trigger_after}" | ${JQ_BIN} -r '.pipeline_id // .data.pipeline_id // empty'),$( [[ "$(echo "${trigger_after}" | ${JQ_BIN} -r '.pipeline_id // .data.pipeline_id // empty')" == "advanced_rca" ]] && echo pass || echo fail )
+sla.due_seconds_after,1800,$(echo "${sla_after}" | ${JQ_BIN} -r '.due_seconds // .data.due_seconds // empty'),$( [[ "$(echo "${sla_after}" | ${JQ_BIN} -r '.due_seconds // .data.due_seconds // empty')" == "1800" ]] && echo pass || echo fail )
+toolset.source_after,dynamic_db,$(echo "${toolset_after}" | ${JQ_BIN} -r '.source // .data.source // empty'),$( [[ "$(echo "${toolset_after}" | ${JQ_BIN} -r '.source // .data.source // empty')" == "dynamic_db" ]] && echo pass || echo fail )
 assignment.status,ok_or_skipped,${assignment_status},$( [[ "${assignment_status}" == "ok" || "${assignment_status}" == "skipped" ]] && echo pass || echo fail )
 CSV
 

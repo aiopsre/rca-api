@@ -6,6 +6,7 @@ package alerting_policy
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	alertingruntime "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
@@ -50,6 +52,15 @@ var _ AlertingPolicyBiz = (*alertingPolicyBiz)(nil)
 
 func New(store store.IStore) *alertingPolicyBiz {
 	return &alertingPolicyBiz{store: store}
+}
+
+func (b *alertingPolicyBiz) refreshRuntimeConfig(ctx context.Context) {
+	if b == nil || b.store == nil {
+		return
+	}
+	if err := alertingruntime.SyncRuntimeConfig(ctx, b.store); err != nil {
+		slog.WarnContext(ctx, "refresh alerting policy runtime config failed", "err", err)
+	}
 }
 
 type CreateRequest struct {
@@ -288,6 +299,7 @@ func (b *alertingPolicyBiz) Update(ctx context.Context, id int64, req *UpdateReq
 	if err != nil {
 		return nil, err
 	}
+	b.refreshRuntimeConfig(ctx)
 
 	return &UpdateResponse{AlertingPolicy: updated}, nil
 }
@@ -308,6 +320,7 @@ func (b *alertingPolicyBiz) Delete(ctx context.Context, id int64) error {
 	if err := b.store.AlertingPolicy().Delete(ctx, where.T(ctx).F("id", id)); err != nil {
 		return errno.ErrAlertingPolicyDeleteFailed
 	}
+	b.refreshRuntimeConfig(ctx)
 
 	return nil
 }
@@ -334,6 +347,7 @@ func (b *alertingPolicyBiz) Activate(ctx context.Context, id int64, operator str
 	if err := b.store.AlertingPolicy().Activate(ctx, id, op); err != nil {
 		return errno.ErrAlertingPolicyActivateFailed
 	}
+	b.refreshRuntimeConfig(ctx)
 
 	return nil
 }
@@ -358,6 +372,7 @@ func (b *alertingPolicyBiz) Deactivate(ctx context.Context, id int64) error {
 	if err := b.store.AlertingPolicy().Deactivate(ctx, id); err != nil {
 		return errno.ErrAlertingPolicyDeactivateFailed
 	}
+	b.refreshRuntimeConfig(ctx)
 
 	return nil
 }
@@ -368,7 +383,7 @@ func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int,
 	}
 
 	op := normalizeOperator(ctx, operator)
-	return b.store.TX(ctx, func(txCtx context.Context) error {
+	err := b.store.TX(ctx, func(txCtx context.Context) error {
 		currentObj, err := b.store.AlertingPolicy().Get(txCtx, where.T(txCtx).F("id", id))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
@@ -423,6 +438,11 @@ func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int,
 
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	b.refreshRuntimeConfig(ctx)
+	return nil
 }
 
 func (b *alertingPolicyBiz) GetActive(ctx context.Context) (*GetResponse, error) {

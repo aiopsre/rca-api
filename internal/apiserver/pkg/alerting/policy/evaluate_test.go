@@ -120,8 +120,8 @@ func withRuntimePolicyForTest(t *testing.T, cfg PolicyConfig) {
 	old := CurrentRuntimeConfig()
 	SetRuntimeConfig(RuntimeConfig{
 		Policy:       cfg,
-		Source:       RuleSourceYAML,
-		ActiveSource: PolicyActiveSourceFile,
+		Source:       RuleSourceDynamicDB,
+		ActiveSource: PolicyActiveSourceDynamicDB,
 	})
 	t.Cleanup(func() {
 		SetRuntimeConfig(old)

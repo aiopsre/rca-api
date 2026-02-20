@@ -1,9 +1,0 @@
-inbox_ttl_seconds: 45
-workbench_ttl_seconds: 45
-dashboard_ttl_seconds: 60
-trace_ttl_seconds: 120
-compare_ttl_seconds: 120
-history_ttl_seconds: 45
-session_state_ttl_seconds: 45
-batch_size: 500
-max_delete: 2000

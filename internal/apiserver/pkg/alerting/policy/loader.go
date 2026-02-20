@@ -5,108 +5,105 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
+	"time"
 
-	"gopkg.in/yaml.v3"
+	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
-var (
-	errReadAlertingPolicyFile       = errors.New("read alerting policy file failed")
-	errParseAlertingPolicyFile      = errors.New("parse alerting policy file failed")
-	errUnsupportedAlertingPolicyVer = errors.New("unsupported alerting policy version")
+const (
+	bootstrapPolicyName      = "system-default"
+	bootstrapPolicyLineageID = "bootstrap-alerting-policy-default"
+	bootstrapPolicyCreatedBy = "system:bootstrap"
 )
 
-// Load loads external alerting trigger policy with database-first precedence.
+// Load loads runtime alerting policy with dynamic configuration precedence.
 // Priority:
 // 1. Active AlertingPolicy from database
-// 2. YAML file at path (if provided)
-// 3. Built-in default config
-//
-// Returned source indicates where the config was loaded from:
-// - "dynamic_db": loaded from active database record
-// - "file": loaded from external file
-// - "default": using built-in default
-//
-// When strict=false, file read/parse/version errors return default config with non-nil err.
-// When strict=true, file errors are still returned and should be treated as startup blocking.
-// Database errors are logged but fall back to file/default (non-blocking).
-func Load(ctx context.Context, st store.IStore, path string, strict bool) (PolicyConfig, string, error) {
+// 2. Built-in default config when the database does not yet have an active policy
+func Load(ctx context.Context, st store.IStore) (PolicyConfig, string, error) {
 	defaultCfg := DefaultPolicyConfig()
+	activePolicy, source, err := ensureActivePolicy(ctx, st)
+	if err != nil {
+		defaultCfg.applyDefaults()
+		return defaultCfg, PolicyActiveSourceDefault, err
+	}
+	if activePolicy == nil {
+		defaultCfg.applyDefaults()
+		return defaultCfg, PolicyActiveSourceDefault, nil
+	}
 
-	// Priority 1: Try to load active policy from database
+	cfg, err := LoadFromActivePolicy(activePolicy)
+	if err != nil {
+		defaultCfg.applyDefaults()
+		return defaultCfg, PolicyActiveSourceDefault, err
+	}
+	return cfg, source, nil
+}
+
+// SyncRuntimeConfig reloads process-local runtime config from the active database policy.
+// When no active policy exists, it falls back to the built-in default config.
+func SyncRuntimeConfig(ctx context.Context, st store.IStore) error {
+	policyCfg, activeSource, err := Load(ctx, st)
+	source := RuleSourceDefault
+	if activeSource == PolicyActiveSourceDynamicDB {
+		source = RuleSourceDynamicDB
+	}
+	SetRuntimeConfig(RuntimeConfig{
+		Policy:       policyCfg,
+		Source:       source,
+		ActiveSource: activeSource,
+	})
+	return err
+}
+
+func ensureActivePolicy(ctx context.Context, st store.IStore) (*model.AlertingPolicyM, string, error) {
+	if st == nil || st.AlertingPolicy() == nil {
+		return nil, PolicyActiveSourceDefault, nil
+	}
+
 	activePolicy, err := st.AlertingPolicy().GetActive(ctx)
 	if err == nil && activePolicy != nil && activePolicy.Active {
-		cfg, parseErr := parseAlertingPolicyConfig(activePolicy.ConfigJSON)
-		if parseErr != nil {
-			// Log error but continue to fallback
-			fmt.Printf("WARN: parse active database policy failed, falling back: %v\n", parseErr)
-		} else {
-			cfg.applyDefaults()
-			return cfg, "dynamic_db", nil
-		}
+		return activePolicy, PolicyActiveSourceDynamicDB, nil
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, PolicyActiveSourceDefault, err
 	}
 
-	// Priority 2: Load from YAML file
-	cleanPath := strings.TrimSpace(path)
-	if cleanPath == "" {
-		return defaultCfg, PolicyActiveSourceDefault, nil
-	}
-
-	raw, fileErr := os.ReadFile(cleanPath)
-	if fileErr != nil {
-		return fallback(defaultCfg, strict, fmt.Errorf("%w: path=%q err=%v", errReadAlertingPolicyFile, cleanPath, fileErr))
-	}
-
-	var cfg PolicyConfig
-	if unmarshalErr := yaml.Unmarshal(raw, &cfg); unmarshalErr != nil {
-		return fallback(defaultCfg, strict, fmt.Errorf("%w: path=%q err=%v", errParseAlertingPolicyFile, cleanPath, unmarshalErr))
-	}
-
-	if cfg.Version != PolicyVersion1 {
-		return fallback(defaultCfg, strict, fmt.Errorf("%w: version=%d path=%q", errUnsupportedAlertingPolicyVer, cfg.Version, cleanPath))
-	}
-
-	cfg.applyDefaults()
-	return cfg, PolicyActiveSourceFile, nil
-}
-
-// LoadFromYAML loads alerting policy from YAML file only (backward compatible).
-//
-// Returned source is "file" on successful file load, otherwise "default".
-// When strict=false, any read/parse/version error returns default config with non-nil err.
-// When strict=true, errors are still returned and should be treated as startup blocking.
-func LoadFromYAML(path string, strict bool) (PolicyConfig, string, error) {
-	defaultCfg := DefaultPolicyConfig()
-	cleanPath := strings.TrimSpace(path)
-	if cleanPath == "" {
-		return defaultCfg, PolicyActiveSourceDefault, nil
-	}
-
-	raw, err := os.ReadFile(cleanPath)
+	total, _, err := st.AlertingPolicy().List(ctx, where.T(ctx).O(0).L(1))
 	if err != nil {
-		return fallback(defaultCfg, strict, fmt.Errorf("%w: path=%q err=%v", errReadAlertingPolicyFile, cleanPath, err))
+		return nil, PolicyActiveSourceDefault, err
+	}
+	if total > 0 {
+		return nil, PolicyActiveSourceDefault, nil
 	}
 
-	var cfg PolicyConfig
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
-		return fallback(defaultCfg, strict, fmt.Errorf("%w: path=%q err=%v", errParseAlertingPolicyFile, cleanPath, err))
+	rawConfig, err := json.Marshal(DefaultPolicyConfig())
+	if err != nil {
+		return nil, PolicyActiveSourceDefault, fmt.Errorf("marshal default alerting policy: %w", err)
 	}
 
-	if cfg.Version != PolicyVersion1 {
-		return fallback(defaultCfg, strict, fmt.Errorf("%w: version=%d path=%q", errUnsupportedAlertingPolicyVer, cfg.Version, cleanPath))
+	description := "Auto-seeded built-in alerting policy. Manage later versions via HTTP API."
+	now := time.Now().UTC()
+	obj := &model.AlertingPolicyM{
+		Name:        bootstrapPolicyName,
+		Description: &description,
+		LineageID:   bootstrapPolicyLineageID,
+		Version:     1,
+		ConfigJSON:  string(rawConfig),
+		Active:      true,
+		ActivatedAt: &now,
+		ActivatedBy: strPtr(bootstrapPolicyCreatedBy),
+		CreatedBy:   bootstrapPolicyCreatedBy,
+		UpdatedBy:   strPtr(bootstrapPolicyCreatedBy),
 	}
-
-	cfg.applyDefaults()
-	return cfg, PolicyActiveSourceFile, nil
-}
-
-func fallback(defaultCfg PolicyConfig, _ bool, err error) (PolicyConfig, string, error) {
-	defaultCfg.applyDefaults()
-	return defaultCfg, PolicyActiveSourceDefault, err
+	if err := st.AlertingPolicy().Create(ctx, obj); err != nil {
+		return nil, PolicyActiveSourceDefault, err
+	}
+	return obj, PolicyActiveSourceDynamicDB, nil
 }
 
 // parseAlertingPolicyConfig parses JSON config string from database into PolicyConfig.

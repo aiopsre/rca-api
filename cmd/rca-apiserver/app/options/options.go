@@ -12,7 +12,6 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver"
 	alertingingest "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/ingest"
-	alertingpolicy "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
@@ -51,8 +50,6 @@ type ServerOptions struct {
 	RedisOptions redisx.RedisOptions `json:"redis" mapstructure:"redis"`
 	// Alerting groups alerting-related runtime policy options.
 	Alerting AlertingOptions `json:"alerting" mapstructure:"alerting"`
-	// AlertingPolicy configures optional external trigger policy file loading.
-	AlertingPolicy alertingpolicy.ExternalPolicyOptions `json:"alerting_policy" mapstructure:"alerting_policy"`
 	// AIJobLongPoll configures adaptive long-poll waiter options for /v1/ai/jobs.
 	AIJobLongPoll AIJobLongPollOptions `json:"ai_job_longpoll" mapstructure:"ai_job_longpoll"`
 	// NoticeWorker configures notice-worker polling, limits, and redis limiter internals.
@@ -139,9 +136,8 @@ func NewServerOptions() *ServerOptions {
 			IngestPolicy: alertingingest.DefaultPolicyConfig(),
 			Rollout:      alertingingest.DefaultRolloutConfig(),
 		},
-		AlertingPolicy: alertingpolicy.DefaultExternalPolicyOptions(),
-		AIJobLongPoll:  newAIJobLongPollOptions(),
-		SkillArtifact:  skillartifact.DefaultRuntimeConfig(),
+		AIJobLongPoll: newAIJobLongPollOptions(),
+		SkillArtifact: skillartifact.DefaultRuntimeConfig(),
 		NoticeWorker: NoticeWorkerOptions{
 			PollInterval:       1 * time.Second,
 			BatchSize:          16,
@@ -201,8 +197,6 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringSliceVar(&o.Alerting.Rollout.AllowedNamespaces, "alerting.rollout.allowed_namespaces", o.Alerting.Rollout.AllowedNamespaces, "Allowed namespaces for adapter ingest progression.")
 	fs.StringSliceVar(&o.Alerting.Rollout.AllowedServices, "alerting.rollout.allowed_services", o.Alerting.Rollout.AllowedServices, "Allowed services for adapter ingest progression.")
 	fs.StringVar(&o.Alerting.Rollout.Mode, "alerting.rollout.mode", o.Alerting.Rollout.Mode, "Adapter ingest rollout mode: observe|enforce.")
-	fs.StringVar(&o.AlertingPolicy.Path, "alerting-policy-path", o.AlertingPolicy.Path, "Path to external alerting trigger policy yaml. Empty disables file loading.")
-	fs.BoolVar(&o.AlertingPolicy.Strict, "alerting-policy-strict", o.AlertingPolicy.Strict, "When true, alerting policy load/parse failure blocks startup.")
 	fs.DurationVar(&o.AIJobLongPoll.PollInterval, "ai-job-longpoll-poll-interval", o.AIJobLongPoll.PollInterval, "Adaptive long-poll Level2 polling interval.")
 	fs.DurationVar(&o.AIJobLongPoll.WatermarkCacheTTL, "ai-job-longpoll-watermark-cache-ttl", o.AIJobLongPoll.WatermarkCacheTTL, "Adaptive long-poll Level2 watermark cache ttl.")
 	fs.Int64Var(&o.AIJobLongPoll.MaxPollingWaiters, "ai-job-longpoll-max-polling-waiters", o.AIJobLongPoll.MaxPollingWaiters, "Adaptive long-poll Level3 max waiters allowed for DB polling.")
@@ -266,7 +260,6 @@ func (o *ServerOptions) Validate() error {
 	}
 	o.Alerting.IngestPolicy.ApplyDefaults()
 	o.Alerting.Rollout.ApplyDefaults()
-	o.AlertingPolicy.ApplyDefaults()
 	errs = append(errs, o.validateNoticeWorkerOptions()...)
 	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
 		errs = append(errs, errInvalidNoticeBaseURL)
@@ -324,7 +317,6 @@ func (o *ServerOptions) Config() (*apiserver.Config, error) {
 		RedisOptions:         redisOpts,
 		AlertingIngestPolicy: o.Alerting.IngestPolicy,
 		AlertingRollout:      o.Alerting.Rollout,
-		AlertingPolicy:       o.AlertingPolicy,
 		AIJobLongPoll:        o.resolvedLongPollOpts,
 		NoticeBaseURL:        strings.TrimSpace(o.NoticeBaseURL),
 		MCPPolicy:            o.MCPPolicy,
@@ -337,8 +329,6 @@ func (o *ServerOptions) MarkCLIFlagOverrides(overrides map[string]string) {
 	if o == nil || len(overrides) == 0 {
 		return
 	}
-	_, o.AlertingPolicy.PathSetByCLI = overrides["alerting-policy-path"]
-	_, o.AlertingPolicy.StrictSetByCLI = overrides["alerting-policy-strict"]
 	_, o.aiJobLongPollCLISet.PollInterval = overrides["ai-job-longpoll-poll-interval"]
 	_, o.aiJobLongPollCLISet.WatermarkCacheTTL = overrides["ai-job-longpoll-watermark-cache-ttl"]
 	_, o.aiJobLongPollCLISet.MaxPollingWaiters = overrides["ai-job-longpoll-max-polling-waiters"]

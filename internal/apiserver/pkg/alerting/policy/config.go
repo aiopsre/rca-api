@@ -9,17 +9,15 @@ const (
 	// PolicyVersion1 is the supported external policy schema version.
 	PolicyVersion1 = 1
 
-	// RuleSourceCLI indicates policy path comes from CLI.
-	RuleSourceCLI = "cli"
-	// RuleSourceYAML indicates policy path comes from rca-apiserver.yaml.
-	RuleSourceYAML = "yaml"
-	// RuleSourceDefault indicates no external policy path is provided.
+	// RuleSourceDynamicDB indicates runtime policy is loaded from active database config.
+	RuleSourceDynamicDB = "dynamic_db"
+	// RuleSourceDefault indicates runtime policy uses the built-in default.
 	RuleSourceDefault = "default"
 
+	// PolicyActiveSourceDynamicDB indicates runtime policy is loaded from an active DB row.
+	PolicyActiveSourceDynamicDB = "dynamic_db"
 	// PolicyActiveSourceDefault indicates runtime policy is built-in default.
 	PolicyActiveSourceDefault = "default"
-	// PolicyActiveSourceFile indicates runtime policy is loaded from external file.
-	PolicyActiveSourceFile = "file"
 )
 
 const (
@@ -29,32 +27,11 @@ const (
 
 var runtimeConfig atomic.Value
 
-// ExternalPolicyOptions configures external alerting policy file loading.
-type ExternalPolicyOptions struct {
-	Enabled bool   `json:"enabled" yaml:"enabled" mapstructure:"enabled"`
-	Path    string `json:"path" yaml:"path" mapstructure:"path"`
-	Strict  bool   `json:"strict" yaml:"strict" mapstructure:"strict"`
-
-	// PathSetByCLI marks whether --alerting-policy-path is explicitly set.
-	PathSetByCLI bool `json:"-" mapstructure:"-"`
-	// StrictSetByCLI marks whether --alerting-policy-strict is explicitly set.
-	StrictSetByCLI bool `json:"-" mapstructure:"-"`
-}
-
-// LoadInput contains resolved policy loading inputs after precedence resolution.
-type LoadInput struct {
-	Path   string
-	Strict bool
-	Source string
-}
-
 // RuntimeConfig carries process-level alerting trigger policy config.
 type RuntimeConfig struct {
 	Policy       PolicyConfig `json:"policy" yaml:"policy" mapstructure:"policy"`
-	PolicyPath   string       `json:"policy_path" yaml:"policy_path" mapstructure:"policy_path"`
-	Strict       bool         `json:"strict" yaml:"strict" mapstructure:"strict"`
-	Source       string       `json:"source" yaml:"source" mapstructure:"source"`                      // cli|yaml|default
-	ActiveSource string       `json:"active_source" yaml:"active_source" mapstructure:"active_source"` // file|default
+	Source       string       `json:"source" yaml:"source" mapstructure:"source"`                      // dynamic_db|default
+	ActiveSource string       `json:"active_source" yaml:"active_source" mapstructure:"active_source"` // dynamic_db|default
 }
 
 // PolicyConfig describes external alerting trigger policy schema.
@@ -114,48 +91,6 @@ type TriggerAction struct {
 	OncePerStage             bool   `json:"once_per_stage" yaml:"once_per_stage" mapstructure:"once_per_stage"`
 }
 
-// DefaultExternalPolicyOptions returns fail-open defaults with no external file.
-func DefaultExternalPolicyOptions() ExternalPolicyOptions {
-	return ExternalPolicyOptions{
-		Enabled: false,
-		Path:    "",
-		Strict:  false,
-	}
-}
-
-// ApplyDefaults normalizes external policy options.
-func (o *ExternalPolicyOptions) ApplyDefaults() {
-	if o == nil {
-		return
-	}
-	o.Path = strings.TrimSpace(o.Path)
-}
-
-// ResolveLoadInput resolves policy file load path/source with precedence:
-// CLI --alerting-policy-path > rca-apiserver.yaml alerting_policy.path > default(no file).
-func ResolveLoadInput(opts ExternalPolicyOptions) LoadInput {
-	opts.ApplyDefaults()
-	input := LoadInput{
-		Path:   "",
-		Strict: opts.Strict,
-		Source: RuleSourceDefault,
-	}
-
-	if opts.PathSetByCLI {
-		input.Path = opts.Path
-		if input.Path != "" {
-			input.Source = RuleSourceCLI
-		}
-		return input
-	}
-
-	if opts.Enabled && opts.Path != "" {
-		input.Path = opts.Path
-		input.Source = RuleSourceYAML
-	}
-	return input
-}
-
 // DefaultPolicyConfig returns built-in default alerting trigger policy.
 func DefaultPolicyConfig() PolicyConfig {
 	return PolicyConfig{
@@ -185,7 +120,6 @@ func DefaultRuntimeConfig() RuntimeConfig {
 // SetRuntimeConfig sets process-level external alerting trigger policy runtime config.
 func SetRuntimeConfig(cfg RuntimeConfig) {
 	cfg.Policy.applyDefaults()
-	cfg.PolicyPath = strings.TrimSpace(cfg.PolicyPath)
 	cfg.Source = normalizeRuleSource(cfg.Source)
 	cfg.ActiveSource = normalizeActiveSource(cfg.ActiveSource)
 	runtimeConfig.Store(cfg)
@@ -195,7 +129,6 @@ func SetRuntimeConfig(cfg RuntimeConfig) {
 func CurrentRuntimeConfig() RuntimeConfig {
 	if cfg, ok := runtimeConfig.Load().(RuntimeConfig); ok {
 		cfg.Policy.applyDefaults()
-		cfg.PolicyPath = strings.TrimSpace(cfg.PolicyPath)
 		cfg.Source = normalizeRuleSource(cfg.Source)
 		cfg.ActiveSource = normalizeActiveSource(cfg.ActiveSource)
 		return cfg
@@ -315,10 +248,8 @@ func normalizeStringList(values []string) []string {
 
 func normalizeRuleSource(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
-	case RuleSourceCLI:
-		return RuleSourceCLI
-	case RuleSourceYAML:
-		return RuleSourceYAML
+	case RuleSourceDynamicDB:
+		return RuleSourceDynamicDB
 	default:
 		return RuleSourceDefault
 	}
@@ -326,8 +257,8 @@ func normalizeRuleSource(source string) string {
 
 func normalizeActiveSource(source string) string {
 	switch strings.ToLower(strings.TrimSpace(source)) {
-	case PolicyActiveSourceFile:
-		return PolicyActiveSourceFile
+	case PolicyActiveSourceDynamicDB:
+		return PolicyActiveSourceDynamicDB
 	default:
 		return PolicyActiveSourceDefault
 	}

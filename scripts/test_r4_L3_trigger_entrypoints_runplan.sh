@@ -21,7 +21,6 @@ INCIDENT_ID_SAMPLE=""
 JOB_ID_SAMPLE=""
 SERVER_PID=""
 SERVER_LOG=""
-POLICY_RUN=""
 
 truncate_2kb() {
 	printf '%s' "${1:-}" | head -c 2048
@@ -110,14 +109,12 @@ json_get() {
 start_server_or_fail() {
 	local base_url="$1"
 	local port="$2"
-	local policy_path="$3"
-	local strict="$4"
-	local name="$5"
+	local name="$3"
 
 	SERVER_LOG="$(mktemp)"
 	(
 		cd "${REPO_ROOT}" && \
-			bash -lc "${SERVER_CMD_BASE} --http.addr=127.0.0.1:${port} --redis.enabled=false --alerting-policy-path='${policy_path}' --alerting-policy-strict=${strict}"
+			bash -lc "${SERVER_CMD_BASE} --http.addr=127.0.0.1:${port} --redis.enabled=false"
 	) >"${SERVER_LOG}" 2>&1 &
 	SERVER_PID="$!"
 
@@ -161,6 +158,20 @@ extract_incident_id_or_fail() {
 		fail_step "${step}" "ASSERT_INCIDENT_ID_FAILED" "${json}"
 	fi
 	printf '%s' "${incident_id}"
+}
+
+activate_policy_or_fail() {
+	local base_url="$1"
+	local step="$2"
+	local body="$3"
+	local policy_id
+
+	call_or_fail "${step}.Create" POST "${base_url}/v1/alerting-policies" "${body}"
+	policy_id="$(json_get "${LAST_BODY}" '.alerting_policy.id // .data.alerting_policy.id // empty')"
+	if [[ -z "${policy_id}" ]]; then
+		fail_step "${step}.Create.ParseID" "ASSERT_POLICY_ID" "${LAST_BODY}"
+	fi
+	call_or_fail "${step}.Activate" POST "${base_url}/v1/alerting-policies/${policy_id}/activate" '{"operator":"script:r4_l3"}'
 }
 
 list_job_by_trigger() {
@@ -261,7 +272,6 @@ JSON
 
 cleanup() {
 	stop_server
-	rm -f "${POLICY_RUN:-}"
 }
 trap cleanup EXIT
 
@@ -269,47 +279,13 @@ if ! need_cmd jq; then
 	fail_step "Precheck.MissingJQ" "MISSING_JQ" "jq is required"
 fi
 
-POLICY_RUN="$(mktemp)"
-cat >"${POLICY_RUN}" <<'YAML'
-version: 1
-defaults:
-  on_ingest:
-    enabled: false
-  on_escalation:
-    enabled: false
-  scheduled:
-    enabled: false
-triggers:
-  on_ingest:
-    rules:
-      - name: "ingest-run"
-        match:
-          alert_name: "r4-l3-ingest"
-        action:
-          run: true
-          pipeline: "basic_rca"
-          window_seconds: 1800
-  on_escalation:
-    rules:
-      - name: "escalation-run"
-        match:
-          incident_severity: ["p1"]
-        action:
-          run: true
-          pipeline: "basic_rca"
-          window_seconds: 7200
-  scheduled:
-    rules:
-      - name: "scheduled-run"
-        match: {}
-        action:
-          run: true
-          pipeline: "basic_rca"
-          window_seconds: 3600
-          idempotency_bucket_seconds: 3600
-YAML
+POLICY_RUN_BODY="$(cat <<'JSON'
+{"name":"r4-l3-runplan-enabled","description":"RunPlan enablement policy for regression script","config":{"version":1,"defaults":{"on_ingest":{"enabled":false},"on_escalation":{"enabled":false},"scheduled":{"enabled":false}},"triggers":{"on_ingest":{"rules":[{"name":"ingest-run","match":{"alert_name":"r4-l3-ingest"},"action":{"run":true,"pipeline":"basic_rca","window_seconds":1800}}]},"on_escalation":{"rules":[{"name":"escalation-run","match":{"incident_severity":["p1"]},"action":{"run":true,"pipeline":"basic_rca","window_seconds":7200}}]},"scheduled":{"rules":[{"name":"scheduled-run","match":{},"action":{"run":true,"pipeline":"basic_rca","window_seconds":3600,"idempotency_bucket_seconds":3600}}]}}}}
+JSON
+)"
 
-start_server_or_fail "${BASE_URL_RUN}" "${PORT_RUN}" "${POLICY_RUN}" "true" "runplan-enabled"
+start_server_or_fail "${BASE_URL_RUN}" "${PORT_RUN}" "runplan-enabled"
+activate_policy_or_fail "${BASE_URL_RUN}" "Policy.RunplanEnabled" "${POLICY_RUN_BODY}"
 
 now_epoch="$(date -u +%s)"
 rand="${RANDOM}"
@@ -365,8 +341,7 @@ echo "PASS R4_L3 step=A3.Scheduled"
 
 stop_server
 
-DEFAULT_POLICY="${REPO_ROOT}/configs/alerting_policy.yaml"
-start_server_or_fail "${BASE_URL_DEFAULT}" "${PORT_DEFAULT}" "${DEFAULT_POLICY}" "true" "runplan-default"
+start_server_or_fail "${BASE_URL_DEFAULT}" "${PORT_DEFAULT}" "runplan-default"
 
 # B1: default run=false -> on_ingest no AIJob created.
 ingest_default_body="$(cat <<JSON

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	alertingruntime "github.com/aiopsre/rca-api/internal/apiserver/pkg/alerting/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
@@ -723,6 +724,34 @@ func TestAlertingPolicyBiz_VersionManagement(t *testing.T) {
 		require.Len(t, activeList, 1)
 		require.Equal(t, rolledBack.ID, activeList[0].ID)
 	})
+}
+
+func TestAlertingPolicyBiz_ActivateRefreshesRuntimeConfig(t *testing.T) {
+	biz, s := newTestAlertingPolicyBiz(t)
+	ctx := context.Background()
+
+	old := alertingruntime.CurrentRuntimeConfig()
+	t.Cleanup(func() {
+		alertingruntime.SetRuntimeConfig(old)
+	})
+
+	obj := &model.AlertingPolicyM{
+		Name:       "runtime-policy",
+		LineageID:  "lineage-runtime-policy",
+		Version:    1,
+		ConfigJSON: `{"version":1,"triggers":{"on_ingest":{"rules":[{"name":"runtime-rule","action":{"run":true,"pipeline":"runtime_rca"}}]}}}`,
+		Active:     false,
+		CreatedBy:  "admin",
+	}
+	require.NoError(t, s.AlertingPolicy().Create(ctx, obj))
+
+	require.NoError(t, biz.Activate(ctx, obj.ID, "operator"))
+
+	runtimeCfg := alertingruntime.CurrentRuntimeConfig()
+	require.Equal(t, alertingruntime.RuleSourceDynamicDB, runtimeCfg.Source)
+	require.Equal(t, alertingruntime.PolicyActiveSourceDynamicDB, runtimeCfg.ActiveSource)
+	require.True(t, runtimeCfg.Policy.Triggers.OnIngest.Rules[0].Action.Run)
+	require.Equal(t, "runtime_rca", runtimeCfg.Policy.Triggers.OnIngest.Rules[0].Action.Pipeline)
 }
 
 func ptrString(v string) *string {
