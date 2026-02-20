@@ -16,6 +16,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	genericoptions "github.com/onexstack/onexstack/pkg/options"
 	"github.com/onexstack/onexstack/pkg/server"
 	"github.com/onexstack/onexstack/pkg/store/registry"
@@ -61,9 +62,6 @@ type ServerConfig struct {
 // New creates and returns a new Server instance.
 func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	_ = metrics.Init(serviceName)
-	if err := cfg.loadAlertingPolicy(); err != nil {
-		return nil, err
-	}
 
 	alertingingest.SetRuntimeConfig(alertingingest.RuntimeConfig{
 		Policy:  cfg.AlertingIngestPolicy,
@@ -79,12 +77,19 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 		return nil, err
 	}
 
+	// Load alerting policy with database-first precedence (before creating server)
+	// This requires DB connection, so we create it here temporarily
+	if err := cfg.loadAlertingPolicy(ctx); err != nil {
+		return nil, err
+	}
+
 	// Create the core server instance using dependency injection.
 	// This relies on the wire-generated NewServer function.
 	s, err := NewServer(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
+
 	if s != nil && s.cfg != nil && s.cfg.Handler != nil {
 		s.cfg.Handler.ConfigureMCPPolicy(cfg.MCPPolicy)
 		s.cfg.Handler.ConfigureAdaptiveLongPollOptions(cfg.AIJobLongPoll)
@@ -93,14 +98,25 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 	return s.Prepare(ctx)
 }
 
-func (cfg *Config) loadAlertingPolicy() error {
+func (cfg *Config) loadAlertingPolicy(ctx context.Context) error {
 	if cfg == nil {
 		alertingpolicy.SetRuntimeConfig(alertingpolicy.DefaultRuntimeConfig())
 		return nil
 	}
 
+	// Create temporary DB and store for loading policy from database
+	db, err := cfg.NewDB()
+	if err != nil {
+		slog.Warn("failed to create DB connection for alerting policy load, using file/default",
+			"err", err,
+		)
+		// Fallback to YAML file load
+		return cfg.loadAlertingPolicyFromYAML()
+	}
+
+	st := store.NewStore(db)
 	loadInput := alertingpolicy.ResolveLoadInput(cfg.AlertingPolicy)
-	policyCfg, activeSource, loadErr := alertingpolicy.Load(loadInput.Path, loadInput.Strict)
+	policyCfg, activeSource, loadErr := alertingpolicy.Load(ctx, st, loadInput.Path, loadInput.Strict)
 	if loadErr != nil && loadInput.Strict {
 		recordAlertingPolicyLoadMetric("error", loadInput.Source)
 		slog.Error("alerting policy load failed",
@@ -129,6 +145,59 @@ func (cfg *Config) loadAlertingPolicy() error {
 			"policy_path", loadInput.Path,
 			"strict", loadInput.Strict,
 			"source", loadInput.Source,
+			"active_source", activeSource,
+			"err", "",
+		)
+	}
+
+	alertingpolicy.SetRuntimeConfig(alertingpolicy.RuntimeConfig{
+		Policy:       policyCfg,
+		PolicyPath:   loadInput.Path,
+		Strict:       loadInput.Strict,
+		Source:       loadInput.Source,
+		ActiveSource: activeSource,
+	})
+	return nil
+}
+
+// loadAlertingPolicyFromYAML loads alerting policy from YAML file only (backward compatible).
+func (cfg *Config) loadAlertingPolicyFromYAML() error {
+	if cfg == nil {
+		alertingpolicy.SetRuntimeConfig(alertingpolicy.DefaultRuntimeConfig())
+		return nil
+	}
+
+	loadInput := alertingpolicy.ResolveLoadInput(cfg.AlertingPolicy)
+	policyCfg, activeSource, loadErr := alertingpolicy.LoadFromYAML(loadInput.Path, loadInput.Strict)
+	if loadErr != nil && loadInput.Strict {
+		recordAlertingPolicyLoadMetric("error", loadInput.Source)
+		slog.Error("alerting policy load failed",
+			"policy_path", loadInput.Path,
+			"strict", loadInput.Strict,
+			"source", loadInput.Source,
+			"err", loadErr,
+		)
+		return fmt.Errorf("strict alerting policy load failed: %w", loadErr)
+	}
+
+	result := "ok"
+	if loadErr != nil {
+		result = "error"
+	}
+	recordAlertingPolicyLoadMetric(result, loadInput.Source)
+	if loadErr != nil {
+		slog.Warn("alerting policy load fallback to default",
+			"policy_path", loadInput.Path,
+			"strict", loadInput.Strict,
+			"source", loadInput.Source,
+			"err", loadErr,
+		)
+	} else {
+		slog.Info("alerting policy loaded",
+			"policy_path", loadInput.Path,
+			"strict", loadInput.Strict,
+			"source", loadInput.Source,
+			"active_source", activeSource,
 			"err", "",
 		)
 	}

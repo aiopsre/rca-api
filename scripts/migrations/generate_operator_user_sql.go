@@ -2,10 +2,11 @@ package main
 
 import (
 	"fmt"
+
 	"golang.org/x/crypto/bcrypt"
 )
 
-func main() {
+func main1() {
 	// 1️⃣ 配置明文密码和用户信息
 	userID := "test_operator"
 	username := "Test Operator"

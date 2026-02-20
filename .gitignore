@@ -95,3 +95,4 @@ frontend/tsconfig.tsbuildinfo
 *.sln
 
 vue-vben-admin/
+.trae/

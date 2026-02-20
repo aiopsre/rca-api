@@ -3047,9 +3047,7 @@ func normalizeOperatorActor(raw string) string {
 	if value == "" {
 		return ""
 	}
-	if strings.HasPrefix(value, "user:") {
-		value = strings.TrimPrefix(value, "user:")
-	}
+	value = strings.TrimPrefix(value, "user:")
 	return value
 }
 

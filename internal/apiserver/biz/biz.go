@@ -6,6 +6,7 @@ import (
 
 	aijobv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	alerteventv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alert_event"
+	alertingpolicyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alerting_policy"
 	datasourcev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
@@ -14,6 +15,7 @@ import (
 	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
 	orchestratortemplatev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_template"
 	orchestratortoolsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_toolset"
+	playbookv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/playbook"
 	rbacv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/rbac"
 	sessionv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
@@ -44,6 +46,8 @@ type IBiz interface {
 	SilenceV1() silencev1.SilenceBiz
 	TriggerV1() triggerv1.TriggerBiz
 	NoticeV1() noticev1.NoticeBiz
+	AlertingPolicyV1() alertingpolicyv1.AlertingPolicyBiz
+	PlaybookV1() playbookv1.PlaybookBiz
 	Close() error
 }
 
@@ -79,6 +83,10 @@ type biz struct {
 	triggerBiz                 triggerv1.TriggerBiz
 	noticeOnce                 sync.Once
 	noticeBiz                  noticev1.NoticeBiz
+	alertingPolicyOnce         sync.Once
+	alertingPolicyBiz          alertingpolicyv1.AlertingPolicyBiz
+	playbookOnce               sync.Once
+	playbookBiz                playbookv1.PlaybookBiz
 
 	closeOnce sync.Once
 	closeErr  error
@@ -190,6 +198,20 @@ func (b *biz) NoticeV1() noticev1.NoticeBiz {
 	return b.noticeBiz
 }
 
+func (b *biz) AlertingPolicyV1() alertingpolicyv1.AlertingPolicyBiz {
+	b.alertingPolicyOnce.Do(func() {
+		b.alertingPolicyBiz = alertingpolicyv1.New(b.store)
+	})
+	return b.alertingPolicyBiz
+}
+
+func (b *biz) PlaybookV1() playbookv1.PlaybookBiz {
+	b.playbookOnce.Do(func() {
+		b.playbookBiz = playbookv1.New(b.store)
+	})
+	return b.playbookBiz
+}
+
 func (b *biz) Close() error {
 	if b == nil {
 		return nil
@@ -210,6 +232,8 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.silenceBiz)
 		errs = appendCloseIfSupported(errs, b.triggerBiz)
 		errs = appendCloseIfSupported(errs, b.noticeBiz)
+		errs = appendCloseIfSupported(errs, b.alertingPolicyBiz)
+		errs = appendCloseIfSupported(errs, b.playbookBiz)
 		b.closeErr = errors.Join(errs...)
 	})
 	return b.closeErr
