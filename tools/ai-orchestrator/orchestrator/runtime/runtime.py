@@ -16,7 +16,7 @@ from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
 if TYPE_CHECKING:
-    from ..skills.runtime import SkillRuntime
+    from ..skills.runtime import SkillCatalog
     from ..tooling.invoker import ToolInvoker, ToolInvokerChain
 
 
@@ -145,14 +145,14 @@ class OrchestratorRuntime:
         verification_max_total_bytes: int = 0,
         verification_dedupe_enabled: bool = True,
         tool_invoker: ToolInvoker | ToolInvokerChain | None = None,
-        skill_runtime: SkillRuntime | None = None,
+        skill_catalog: SkillCatalog | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
         self._instance_id = str(instance_id).strip()
         self._log_func = log_func
         self._tool_invoker = tool_invoker
-        self._skill_runtime = skill_runtime
+        self._skill_catalog = skill_catalog
         self._started = False
         if not self._job_id:
             raise RuntimeError("job_id is required")
@@ -223,9 +223,9 @@ class OrchestratorRuntime:
         return []
 
     def skill_ids(self) -> list[str]:
-        if self._skill_runtime is None:
+        if self._skill_catalog is None:
             return []
-        return self._skill_runtime.skill_ids()
+        return self._skill_catalog.skill_ids()
 
     def report_observation(
         self,
@@ -538,65 +538,15 @@ class OrchestratorRuntime:
         input_payload: dict[str, Any] | None,
         graph_state: Any,
     ) -> dict[str, Any]:
-        if self._skill_runtime is None:
-            raise RuntimeError("skill runtime is not configured")
+        if self._skill_catalog is None:
+            raise RuntimeError("skill catalog is not configured")
         normalized_skill_id = str(skill_id).strip()
         if not normalized_skill_id:
             raise RuntimeError("skill_id is required")
-        prepared = self._skill_runtime.get(normalized_skill_id)
-        started_at = time.monotonic()
-        try:
-            result = self._execute_with_retry(
-                f"skill.execute:{normalized_skill_id}",
-                lambda: self._skill_runtime.execute(
-                    skill_id=normalized_skill_id,
-                    input_payload=input_payload or {},
-                    graph_state=graph_state,
-                    session_snapshot=getattr(graph_state, "session_snapshot", {}),
-                    tool_executor=self.call_tool,
-                ),
-            )
-            _merge_state_session_patch(graph_state, result.get("session_patch"))
-            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
-            self._report_observation_best_effort(
-                tool="skill.execute",
-                node_name="runtime.execute_skill",
-                params={
-                    "skill_id": prepared.manifest.skill_id,
-                    "version": prepared.manifest.version,
-                    "source": prepared.source,
-                    "input_keys": sorted((input_payload or {}).keys()),
-                },
-                response={
-                    "status": "ok",
-                    "latency_ms": latency_ms,
-                    "skill_id": prepared.manifest.skill_id,
-                    "version": prepared.manifest.version,
-                    "source": prepared.source,
-                    "result_keys": sorted(result.keys()),
-                },
-            )
-            return result
-        except Exception as exc:  # noqa: BLE001
-            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
-            self._report_observation_best_effort(
-                tool="skill.execute",
-                node_name="runtime.execute_skill",
-                params={
-                    "skill_id": prepared.manifest.skill_id,
-                    "version": prepared.manifest.version,
-                    "source": prepared.source,
-                },
-                response={
-                    "status": "error",
-                    "latency_ms": latency_ms,
-                    "skill_id": prepared.manifest.skill_id,
-                    "version": prepared.manifest.version,
-                    "source": prepared.source,
-                    "error": _trim_text(exc),
-                },
-            )
-            raise
+        raise RuntimeError(
+            "skill execution is disabled in the bundle+binding phase: "
+            f"skill_id={normalized_skill_id} input_keys={sorted((input_payload or {}).keys())}"
+        )
 
     def get_incident(self, incident_id: str) -> dict[str, Any]:
         normalized = str(incident_id).strip()

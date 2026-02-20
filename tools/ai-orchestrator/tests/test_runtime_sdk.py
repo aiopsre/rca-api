@@ -627,8 +627,8 @@ class RuntimeQueryToolsetResolutionTest(unittest.TestCase):
                         "isTruncated": False,
                     },
                     TOOLING_META_KEY: {
-                        "provider_id": "skills.default",
-                        "provider_type": "skills",
+                        "provider_id": "mcp.default",
+                        "provider_type": "mcp_http",
                         "resolved_from_toolset_id": "ts-default",
                     },
                 }

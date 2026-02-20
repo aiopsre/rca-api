@@ -27,7 +27,7 @@ func TestSkillsetBiz_ResolvePresignsArtifactURL(t *testing.T) {
 	s := store.NewStore(db)
 	ctx := context.Background()
 
-	manifest := `{"skill_id":"claude.analysis","version":"1.0.0","runtime":"python","entrypoint":{"module":"skills.analysis","callable":"run"},"instruction_file":"SKILL.md","resource_files":[],"allowed_tools":["query_logs"]}`
+	manifest := `{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Claude Analysis","description":"Analyze incident evidence","compatibility":"Requires query_logs access"}`
 	require.NoError(t, s.InternalStrategyConfig().UpsertSkillRelease(ctx, &model.SkillReleaseM{
 		SkillID:      "claude.analysis",
 		Version:      "1.0.0",
@@ -36,7 +36,7 @@ func TestSkillsetBiz_ResolvePresignsArtifactURL(t *testing.T) {
 		ManifestJSON: &manifest,
 		Status:       "active",
 	}))
-	skillRefsJSON := `[{"skill_id":"claude.analysis","version":"1.0.0"}]`
+	skillRefsJSON := `[{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","allowed_tools":["query_logs"],"priority":120,"enabled":true}]`
 	require.NoError(t, s.InternalStrategyConfig().UpsertSkillsetConfig(ctx, &model.SkillsetConfigDynamicM{
 		PipelineID:    "basic_rca",
 		SkillsetName:  "claude_default",
@@ -56,6 +56,10 @@ func TestSkillsetBiz_ResolvePresignsArtifactURL(t *testing.T) {
 	require.Len(t, resp.GetSkillsets()[0].GetSkills(), 1)
 	require.Equal(t, "claude.analysis", resp.GetSkillsets()[0].GetSkills()[0].GetSkillID())
 	require.Equal(t, "http://192.168.39.3:9000/rca-skills-dev/skills/claude.analysis/1.0.0/bundle.zip?X-Amz-Signature=test", resp.GetSkillsets()[0].GetSkills()[0].GetArtifactURL())
+	require.Equal(t, "diagnosis.enrich", resp.GetSkillsets()[0].GetSkills()[0].GetCapability())
+	require.Equal(t, []string{"query_logs"}, resp.GetSkillsets()[0].GetSkills()[0].GetAllowedTools())
+	require.Equal(t, int32(120), resp.GetSkillsets()[0].GetSkills()[0].GetPriority())
+	require.True(t, resp.GetSkillsets()[0].GetSkills()[0].GetEnabled())
 }
 
 type fakeResolveManager struct {

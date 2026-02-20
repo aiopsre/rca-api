@@ -5,7 +5,6 @@ import logging
 from typing import Any, Protocol
 
 from .providers.mcp_http import MCPHttpProvider
-from .providers.skills import SkillsProvider
 from .toolset_config import ToolsetConfig, ToolsetDefinition, normalize_tool_name
 
 TOOLING_META_KEY = "_tooling_meta"
@@ -202,9 +201,10 @@ def _build_provider_bindings(toolset: ToolsetDefinition) -> list[_ProviderBindin
                 timeout_s=provider_cfg.timeout_s,
             )
         elif provider_type == "skills":
-            provider = SkillsProvider(
-                module=provider_cfg.module,
-                function=provider_cfg.function,
+            raise ValueError(
+                "provider.type=skills is deprecated: "
+                f"toolset={toolset.toolset_id} provider={provider_cfg.name}; "
+                "migrate to skill releases/skillsets or mcp_http"
             )
         else:
             raise ValueError(

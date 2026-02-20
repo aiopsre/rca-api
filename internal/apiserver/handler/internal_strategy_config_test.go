@@ -265,18 +265,16 @@ func buildSkillUploadBody(t *testing.T) ([]byte, string) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	require.NoError(t, writer.WriteField("status", "active"))
+	require.NoError(t, writer.WriteField("skill_id", "claude.analysis"))
+	require.NoError(t, writer.WriteField("version", "1.0.0"))
 	fileWriter, err := writer.CreateFormFile("bundle", "claude.analysis.zip")
 	require.NoError(t, err)
 
 	var zipBuf bytes.Buffer
 	zipWriter := zip.NewWriter(&zipBuf)
-	manifestFile, err := zipWriter.Create("manifest.json")
-	require.NoError(t, err)
-	_, err = manifestFile.Write([]byte(`{"skill_id":"claude.analysis","version":"1.0.0","runtime":"python","entrypoint":{"module":"skills.analysis","callable":"run"},"instruction_file":"SKILL.md","resource_files":[],"allowed_tools":["query_logs"]}`))
-	require.NoError(t, err)
 	skillFile, err := zipWriter.Create("SKILL.md")
 	require.NoError(t, err)
-	_, err = skillFile.Write([]byte("# skill\n"))
+	_, err = skillFile.Write([]byte("---\nname: Claude Analysis\ndescription: Analyze incident evidence\ncompatibility: Requires query_logs access\n---\n\n# skill\n"))
 	require.NoError(t, err)
 	require.NoError(t, zipWriter.Close())
 

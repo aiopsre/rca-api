@@ -500,8 +500,12 @@ type UploadSkillReleaseRequest struct {
 }
 
 type SkillRef struct {
-	SkillID string `json:"skill_id"`
-	Version string `json:"version"`
+	SkillID      string   `json:"skill_id"`
+	Version      string   `json:"version"`
+	Capability   string   `json:"capability"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Priority     *int     `json:"priority,omitempty"`
+	Enabled      *bool    `json:"enabled,omitempty"`
 }
 
 type SkillsetItem struct {
@@ -605,7 +609,7 @@ func (b *configBiz) RegisterSkillRelease(
 	if status == "" {
 		status = "active"
 	}
-	if err := validateSkillManifest(manifestJSON, skillID, version); err != nil {
+	if err := validateSkillSummaryEnvelope(manifestJSON); err != nil {
 		return nil, errno.ErrInvalidArgument
 	}
 	obj := &model.SkillReleaseM{
@@ -630,26 +634,16 @@ func (b *configBiz) UploadSkillRelease(
 	if rq == nil || b == nil || b.store == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	manifestJSON, err := skillartifact.ReadBundleManifestJSON(rq.BundleRaw)
-	if err != nil {
-		return nil, errno.ErrInvalidArgument
-	}
-	manifestSkillID, manifestVersion, err := extractSkillIdentityFromManifest(manifestJSON)
-	if err != nil {
-		return nil, errno.ErrInvalidArgument
-	}
 	skillID := strings.TrimSpace(rq.SkillID)
 	version := strings.TrimSpace(rq.Version)
-	if skillID == "" {
-		skillID = manifestSkillID
-	}
-	if version == "" {
-		version = manifestVersion
-	}
 	if skillID == "" || version == "" {
 		return nil, errno.ErrInvalidArgument
 	}
-	if err := validateSkillManifest(manifestJSON, skillID, version); err != nil {
+	manifestJSON, err := skillartifact.ReadBundleSkillSummaryJSON(rq.BundleRaw)
+	if err != nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	if err := validateSkillSummaryEnvelope(manifestJSON); err != nil {
 		return nil, errno.ErrInvalidArgument
 	}
 	artifactRef, bundleDigest, err := skillartifact.UploadBundle(ctx, skillID, version, rq.BundleRaw)
@@ -1059,15 +1053,32 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 		}
 		skillID := strings.TrimSpace(item.SkillID)
 		version := strings.TrimSpace(item.Version)
-		if skillID == "" || version == "" {
+		capability := strings.TrimSpace(item.Capability)
+		if skillID == "" || version == "" || capability == "" {
 			continue
 		}
-		key := skillID + "\x00" + version
+		priority := 100
+		if item.Priority != nil && *item.Priority > 0 {
+			priority = *item.Priority
+		}
+		enabled := true
+		if item.Enabled != nil {
+			enabled = *item.Enabled
+		}
+		allowedTools := normalizeListLower(item.AllowedTools)
+		key := skillID + "\x00" + version + "\x00" + capability
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, &SkillRef{SkillID: skillID, Version: version})
+		out = append(out, &SkillRef{
+			SkillID:      skillID,
+			Version:      version,
+			Capability:   capability,
+			AllowedTools: allowedTools,
+			Priority:     intPtr(priority),
+			Enabled:      boolPtr(enabled),
+		})
 	}
 	if len(out) == 0 {
 		return nil
@@ -1133,41 +1144,11 @@ func anyToString(value any) string {
 	}
 }
 
-func validateSkillManifest(raw string, expectedSkillID string, expectedVersion string) error {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return err
-	}
-	if value := strings.TrimSpace(anyToString(payload["skill_id"])); value != "" && value != expectedSkillID {
-		return errno.ErrInvalidArgument
-	}
-	if value := strings.TrimSpace(anyToString(payload["version"])); value != "" && value != expectedVersion {
-		return errno.ErrInvalidArgument
-	}
-	if value := strings.TrimSpace(anyToString(payload["runtime"])); value != "" && value != "python" {
-		return errno.ErrInvalidArgument
-	}
-	entrypoint, _ := payload["entrypoint"].(map[string]any)
-	if entrypoint == nil {
-		return errno.ErrInvalidArgument
-	}
-	module := strings.TrimSpace(anyToString(entrypoint["module"]))
-	callable := strings.TrimSpace(anyToString(entrypoint["callable"]))
-	if module == "" || callable == "" {
-		return errno.ErrInvalidArgument
-	}
-	if _, ok := payload["allowed_tools"].([]any); !ok {
+func validateSkillSummaryEnvelope(raw string) error {
+	if _, err := skillartifact.ValidateSkillSummaryEnvelopeJSON(raw); err != nil {
 		return errno.ErrInvalidArgument
 	}
 	return nil
-}
-
-func extractSkillIdentityFromManifest(raw string) (string, string, error) {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", "", err
-	}
-	return strings.TrimSpace(anyToString(payload["skill_id"])), strings.TrimSpace(anyToString(payload["version"])), nil
 }
 
 func maxInt64(value int64, fallback int64) int64 {
@@ -1175,4 +1156,14 @@ func maxInt64(value int64, fallback int64) int64 {
 		return fallback
 	}
 	return value
+}
+
+func intPtr(value int) *int {
+	out := value
+	return &out
+}
+
+func boolPtr(value bool) *bool {
+	out := value
+	return &out
 }

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-import types
 import unittest
 from unittest import mock
 
@@ -32,12 +31,12 @@ class ToolsetChainConfigTest(unittest.TestCase):
                 "toolsets": {
                     "ts_a": {
                         "providers": [
-                            {"type": "skills", "module": "json", "allow_tools": ["query_logs"]},
+                            {"type": "mcp_http", "base_url": "http://provider-a", "allow_tools": ["query_logs"]},
                         ]
                     },
                     "ts_b": {
                         "providers": [
-                            {"type": "skills", "module": "json", "allow_tools": ["query_metrics"]},
+                            {"type": "mcp_http", "base_url": "http://provider-b", "allow_tools": ["query_metrics"]},
                         ]
                     },
                 },
@@ -56,7 +55,7 @@ class ToolsetChainConfigTest(unittest.TestCase):
                     "toolsets": {
                         "ts_a": {
                             "providers": [
-                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-a", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -73,7 +72,7 @@ class ToolsetChainConfigTest(unittest.TestCase):
                     "toolsets": {
                         "ts_a": {
                             "providers": [
-                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-a", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -83,38 +82,28 @@ class ToolsetChainConfigTest(unittest.TestCase):
 
 class ToolInvokerChainRoutingTest(unittest.TestCase):
     def test_chain_routes_to_second_toolset(self) -> None:
-        module_one = "_phasej_skill_mod_one"
-        module_two = "_phasej_skill_mod_two"
         calls: list[str] = []
-        mod_one = types.ModuleType(module_one)
-        mod_two = types.ModuleType(module_two)
 
-        def _call_one(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
-            calls.append(f"one:{tool}")
-            return {"output": {"from": "one", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
-
-        def _call_two(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+        def _mcp_call(self, *, tool: str, input_payload: dict[str, object] | None, idempotency_key: str | None = None) -> dict[str, object]:
+            if self._base_url.endswith("provider-one"):
+                calls.append(f"one:{tool}")
+                return {"output": {"from": "one", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}}
             calls.append(f"two:{tool}")
-            return {"output": {"from": "two", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
+            return {"output": {"from": "two", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}}
 
-        mod_one.call = _call_one  # type: ignore[attr-defined]
-        mod_two.call = _call_two  # type: ignore[attr-defined]
-        sys.modules[module_one] = mod_one
-        sys.modules[module_two] = mod_two
-
-        try:
+        with mock.patch("orchestrator.tooling.invoker.MCPHttpProvider.call", new=_mcp_call):
             config = load_toolset_config(
                 {
                     "pipelines": {"basic_rca": ["ts_1", "ts_2"]},
                     "toolsets": {
                         "ts_1": {
                             "providers": [
-                                {"type": "skills", "module": module_one, "allow_tools": ["query_metrics"]},
+                                {"type": "mcp_http", "base_url": "http://provider-one", "allow_tools": ["query_metrics"]},
                             ]
                         },
                         "ts_2": {
                             "providers": [
-                                {"type": "skills", "module": module_two, "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-two", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -122,47 +111,34 @@ class ToolInvokerChainRoutingTest(unittest.TestCase):
             )
             invoker = build_tool_invoker_chain(config, ["ts_1", "ts_2"])
             result = invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
-        finally:
-            del sys.modules[module_one]
-            del sys.modules[module_two]
 
         self.assertEqual(result["output"]["from"], "two")
         self.assertEqual(calls, ["two:query_logs"])
         self.assertEqual(result[TOOLING_META_KEY]["resolved_from_toolset_id"], "ts_2")
 
     def test_chain_conflict_prefers_first_toolset(self) -> None:
-        module_one = "_phasej_skill_conflict_one"
-        module_two = "_phasej_skill_conflict_two"
         calls: list[str] = []
-        mod_one = types.ModuleType(module_one)
-        mod_two = types.ModuleType(module_two)
 
-        def _call_one(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
-            calls.append(f"one:{tool}")
-            return {"output": {"from": "one", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
-
-        def _call_two(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+        def _mcp_call(self, *, tool: str, input_payload: dict[str, object] | None, idempotency_key: str | None = None) -> dict[str, object]:
+            if self._base_url.endswith("provider-one"):
+                calls.append(f"one:{tool}")
+                return {"output": {"from": "one", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}}
             calls.append(f"two:{tool}")
-            return {"output": {"from": "two", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
+            return {"output": {"from": "two", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}}
 
-        mod_one.call = _call_one  # type: ignore[attr-defined]
-        mod_two.call = _call_two  # type: ignore[attr-defined]
-        sys.modules[module_one] = mod_one
-        sys.modules[module_two] = mod_two
-
-        try:
+        with mock.patch("orchestrator.tooling.invoker.MCPHttpProvider.call", new=_mcp_call):
             config = load_toolset_config(
                 {
                     "pipelines": {"basic_rca": ["ts_1", "ts_2"]},
                     "toolsets": {
                         "ts_1": {
                             "providers": [
-                                {"type": "skills", "module": module_one, "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-one", "allow_tools": ["query_logs"]},
                             ]
                         },
                         "ts_2": {
                             "providers": [
-                                {"type": "skills", "module": module_two, "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-two", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -170,9 +146,6 @@ class ToolInvokerChainRoutingTest(unittest.TestCase):
             )
             invoker = build_tool_invoker_chain(config, ["ts_1", "ts_2"])
             result = invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
-        finally:
-            del sys.modules[module_one]
-            del sys.modules[module_two]
 
         self.assertEqual(result["output"]["from"], "one")
         self.assertEqual(calls, ["one:query_logs"])
@@ -217,15 +190,6 @@ class RunnerChainObservationTest(unittest.TestCase):
         )
 
     def test_runner_toolset_select_observation_contains_toolsets(self) -> None:
-        module_one = "_phasej_runner_mod_one"
-        module_two = "_phasej_runner_mod_two"
-        mod_one = types.ModuleType(module_one)
-        mod_two = types.ModuleType(module_two)
-        mod_one.call = lambda *_args, **_kwargs: {"output": {"from": "one"}}  # type: ignore[attr-defined]
-        mod_two.call = lambda *_args, **_kwargs: {"output": {"from": "two"}}  # type: ignore[attr-defined]
-        sys.modules[module_one] = mod_one
-        sys.modules[module_two] = mod_two
-
         graph_invoked = {"count": 0}
 
         class _FakeClient:
@@ -268,12 +232,12 @@ class RunnerChainObservationTest(unittest.TestCase):
                     "toolsets": {
                         "ts_a": {
                             "providers": [
-                                {"type": "skills", "module": module_one, "allow_tools": ["query_metrics"]},
+                                {"type": "mcp_http", "base_url": "http://provider-one", "allow_tools": ["query_metrics"]},
                             ]
                         },
                         "ts_b": {
                             "providers": [
-                                {"type": "skills", "module": module_two, "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-two", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -281,19 +245,15 @@ class RunnerChainObservationTest(unittest.TestCase):
             )
         )
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
-                runner_module._invoke_graph(
-                    settings,
-                    OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
-                    "job-j-runner",
-                    debug=False,
-                )
-        finally:
-            del sys.modules[module_one]
-            del sys.modules[module_two]
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+            runner_module, "OrchestratorRuntime", _FakeRuntime
+        ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
+            runner_module._invoke_graph(
+                settings,
+                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                "job-j-runner",
+                debug=False,
+            )
 
         runtime = _FakeRuntime.instances[-1]
         self.assertEqual(graph_invoked["count"], 1)
@@ -312,7 +272,7 @@ class RunnerChainObservationTest(unittest.TestCase):
                     "toolsets": {
                         "ts_a": {
                             "providers": [
-                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-a", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -329,7 +289,7 @@ class RunnerChainObservationTest(unittest.TestCase):
                     "toolsets": {
                         "ts_a": {
                             "providers": [
-                                {"type": "skills", "module": "some.module", "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-a", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -407,19 +367,6 @@ class RunnerChainObservationTest(unittest.TestCase):
 
 class RuntimeChainObservationTest(unittest.TestCase):
     def test_runtime_tool_invoke_observation_contains_resolved_from_toolset_id(self) -> None:
-        module_one = "_phasej_runtime_mod_one"
-        module_two = "_phasej_runtime_mod_two"
-        mod_one = types.ModuleType(module_one)
-        mod_two = types.ModuleType(module_two)
-        mod_one.call = lambda *_args, **_kwargs: {"output": {"from": "one"}}  # type: ignore[attr-defined]
-        mod_two.call = (
-            lambda tool, payload, idempotency_key=None: {  # type: ignore[assignment]
-                "output": {"from": "two", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}
-            }
-        )
-        sys.modules[module_one] = mod_one
-        sys.modules[module_two] = mod_two
-
         class _FakeSession:
             def __init__(self) -> None:
                 self.headers: dict[str, str] = {}
@@ -447,19 +394,26 @@ class RuntimeChainObservationTest(unittest.TestCase):
             def add_tool_call(self, **kwargs: object) -> None:
                 self.tool_calls.append(kwargs)
 
-        try:
+        def _mcp_call(self, *, tool: str, input_payload: dict[str, object] | None, idempotency_key: str | None = None) -> dict[str, object]:
+            if self._base_url.endswith("provider-one"):
+                return {"output": {"from": "one"}}
+            return {
+                "output": {"from": "two", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}
+            }
+
+        with mock.patch("orchestrator.tooling.invoker.MCPHttpProvider.call", new=_mcp_call):
             config = load_toolset_config(
                 {
                     "pipelines": {"basic_rca": ["ts_1", "ts_2"]},
                     "toolsets": {
                         "ts_1": {
                             "providers": [
-                                {"type": "skills", "module": module_one, "allow_tools": ["query_metrics"]},
+                                {"type": "mcp_http", "base_url": "http://provider-one", "allow_tools": ["query_metrics"]},
                             ]
                         },
                         "ts_2": {
                             "providers": [
-                                {"type": "skills", "module": module_two, "allow_tools": ["query_logs"]},
+                                {"type": "mcp_http", "base_url": "http://provider-two", "allow_tools": ["query_logs"]},
                             ]
                         },
                     },
@@ -479,9 +433,6 @@ class RuntimeChainObservationTest(unittest.TestCase):
             self.assertTrue(runtime.start())
             result = runtime.call_tool("mcp.query_logs", {"query": "error"}, idempotency_key="idem-j")
             runtime.shutdown()
-        finally:
-            del sys.modules[module_one]
-            del sys.modules[module_two]
 
         self.assertEqual(result["output"]["from"], "two")
         self.assertEqual(len(client.tool_calls), 1)

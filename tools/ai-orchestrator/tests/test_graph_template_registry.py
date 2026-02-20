@@ -66,7 +66,7 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
             toolset_config_path="",
             toolset_config_json=(
                 '{"pipelines":{"basic_rca":"default"},'
-                '"toolsets":{"default":{"providers":[{"type":"skills","module":"json","allow_tools":["query_logs"]}]}}}'
+                '"toolsets":{"default":{"providers":[{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}]}}}'
             ),
         )
 

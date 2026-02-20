@@ -88,7 +88,7 @@ func TestResolveOrchestratorStrategy_PipelineMissingReturnsNotFound(t *testing.T
 		  "toolsets": {
 			"default": {
 			  "providers": [
-				{"type":"skills","module":"pkg.skills.demo","allow_tools":["query_logs"]}
+				{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
 			  ]
 			}
 		  }
@@ -125,7 +125,7 @@ func TestResolveOrchestratorStrategy_TemplateNotRegisteredReturnsNotFound(t *tes
 		  "toolsets": {
 			"default": {
 			  "providers": [
-				{"type":"skills","module":"pkg.skills.demo","allow_tools":["query_logs"]}
+				{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
 			  ]
 			}
 		  }

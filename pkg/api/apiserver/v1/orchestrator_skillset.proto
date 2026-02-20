@@ -13,6 +13,10 @@ message OrchestratorSkillRelease {
   string artifactURL = 4;
   optional string manifestJSON = 5;
   string status = 6;
+  string capability = 7;
+  repeated string allowedTools = 8;
+  int32 priority = 9;
+  bool enabled = 10;
 }
 
 // OrchestratorSkillset is one resolved skillset definition.

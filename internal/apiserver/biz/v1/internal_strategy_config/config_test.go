@@ -4,7 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -126,7 +126,7 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 		Version:      "1.0.0",
 		BundleDigest: "8f990ba0b577b51cf009ea049368c16bbda1b21e1b93be07a824758bb253c39b",
 		ArtifactURL:  "https://artifacts.example.com/skills/claude.analysis-1.0.0.zip",
-		ManifestJSON: `{"skill_id":"claude.analysis","version":"1.0.0","runtime":"python","entrypoint":{"module":"skills.analysis","callable":"run"},"instruction_file":"SKILL.md","resource_files":["templates/guide.md"],"allowed_tools":["query_logs"]}`,
+		ManifestJSON: `{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Claude Analysis","description":"Analyze incident evidence","compatibility":"Requires query_logs access"}`,
 		Status:       "active",
 		CreatedBy:    strPtr("user:config-admin"),
 	})
@@ -138,7 +138,12 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 		PipelineID:   "basic_rca",
 		SkillsetName: "claude_default",
 		Skills: []*SkillRef{
-			{SkillID: "claude.analysis", Version: "1.0.0"},
+			{
+				SkillID:      "claude.analysis",
+				Version:      "1.0.0",
+				Capability:   "diagnosis.enrich",
+				AllowedTools: []string{"query_logs"},
+			},
 		},
 	})
 	require.NoError(t, err)
@@ -155,6 +160,12 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 	require.Equal(t, "claude_default", resolved[0].SkillsetName)
 	require.Len(t, resolved[0].Skills, 1)
 	require.Equal(t, "1.0.0", resolved[0].Skills[0].Version)
+	require.Equal(t, "diagnosis.enrich", resolved[0].Skills[0].Capability)
+	require.Equal(t, []string{"query_logs"}, resolved[0].Skills[0].AllowedTools)
+	require.NotNil(t, resolved[0].Skills[0].Priority)
+	require.Equal(t, 100, *resolved[0].Skills[0].Priority)
+	require.NotNil(t, resolved[0].Skills[0].Enabled)
+	require.True(t, *resolved[0].Skills[0].Enabled)
 }
 
 func TestConfigBiz_UploadSkillReleaseUsesArtifactStorage(t *testing.T) {
@@ -168,15 +179,9 @@ func TestConfigBiz_UploadSkillReleaseUsesArtifactStorage(t *testing.T) {
 	defer restore()
 
 	release, err := biz.UploadSkillRelease(ctx, &UploadSkillReleaseRequest{
-		BundleRaw: buildSkillBundleZip(t, map[string]any{
-			"skill_id":         "claude.analysis",
-			"version":          "1.0.0",
-			"runtime":          "python",
-			"entrypoint":       map[string]any{"module": "skills.analysis", "callable": "run"},
-			"instruction_file": "SKILL.md",
-			"resource_files":   []string{"templates/guide.md"},
-			"allowed_tools":    []string{"query_logs"},
-		}),
+		SkillID:   "claude.analysis",
+		Version:   "1.0.0",
+		BundleRaw: buildSkillBundleZip(t, "Claude Analysis", "Analyze incident evidence", "Requires query_logs access"),
 		Status:    "active",
 		CreatedBy: strPtr("user:config-admin"),
 	})
@@ -237,19 +242,14 @@ func (f *fakeSkillArtifactManager) ResolveDownloadURL(_ context.Context, artifac
 	return artifactRef, nil
 }
 
-func buildSkillBundleZip(t *testing.T, manifest map[string]any) []byte {
+func buildSkillBundleZip(t *testing.T, name string, description string, compatibility string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	writer := zip.NewWriter(&buf)
-	manifestFile, err := writer.Create("manifest.json")
-	require.NoError(t, err)
-	rawManifest, err := json.Marshal(manifest)
-	require.NoError(t, err)
-	_, err = manifestFile.Write(rawManifest)
-	require.NoError(t, err)
 	skillFile, err := writer.Create("SKILL.md")
 	require.NoError(t, err)
-	_, err = skillFile.Write([]byte("# test skill\n"))
+	content := fmt.Sprintf("---\nname: %s\ndescription: %s\ncompatibility: %s\n---\n\n# test skill\n", name, description, compatibility)
+	_, err = skillFile.Write([]byte(content))
 	require.NoError(t, err)
 	require.NoError(t, writer.Close())
 	return buf.Bytes()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pathlib
 import sys
-import types
 import unittest
 from unittest import mock
 
@@ -59,11 +58,6 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         )
 
     def test_runner_reports_toolset_select_before_graph(self) -> None:
-        fake_module_name = "_phasei_fake_skill_mod"
-        fake_module = types.ModuleType(fake_module_name)
-        fake_module.call = lambda *_args, **_kwargs: {"output": {"ok": True}}  # type: ignore[attr-defined]
-        sys.modules[fake_module_name] = fake_module
-
         graph_invoked = {"count": 0}
 
         class _FakeClient:
@@ -103,23 +97,20 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         settings = self._settings(
             toolset_config_json=(
                 '{"pipelines":{"basic_rca":"skills_obs"},'
-                '"toolsets":{"skills_obs":{"providers":[{"type":"skills","module":"_phasei_fake_skill_mod",'
+                '"toolsets":{"skills_obs":{"providers":[{"type":"mcp_http","base_url":"http://127.0.0.1:5555",'
                 '"allow_tools":["query_logs"]}]}}}'
             )
         )
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
-                runner_module._invoke_graph(
-                    settings,
-                    OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
-                    "job-phasei-1",
-                    debug=False,
-                )
-        finally:
-            del sys.modules[fake_module_name]
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+            runner_module, "OrchestratorRuntime", _FakeRuntime
+        ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
+            runner_module._invoke_graph(
+                settings,
+                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                "job-phasei-1",
+                debug=False,
+            )
 
         runtime = _FakeRuntime.instances[-1]
         self.assertEqual(runtime.start_calls, 1)
@@ -136,7 +127,7 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         self.assertEqual(response["toolsets"], ["skills_obs"])
         self.assertEqual(response["source"], "local_override")
         self.assertEqual(len(response["providers"]), 1)
-        self.assertEqual(response["providers"][0]["provider_type"], "skills")
+        self.assertEqual(response["providers"][0]["provider_type"], "mcp_http")
 
 
 class RuntimeToolInvokeObservationTest(unittest.TestCase):
@@ -177,7 +168,7 @@ class RuntimeToolInvokeObservationTest(unittest.TestCase):
             ) -> dict[str, object]:
                 return {
                     "output": {"tool": tool, "query": input_payload or {}, "idempotency_key": idempotency_key},
-                    TOOLING_META_KEY: {"provider_id": "skills.main", "provider_type": "skills"},
+                    TOOLING_META_KEY: {"provider_id": "mcp.main", "provider_type": "mcp_http"},
                 }
 
         client = _FakeClient()
@@ -200,8 +191,8 @@ class RuntimeToolInvokeObservationTest(unittest.TestCase):
         self.assertEqual(tool_call["tool_name"], "tool.invoke")
         self.assertEqual(tool_call["status"], "ok")
         response_json = tool_call["response_json"]
-        self.assertEqual(response_json["provider_id"], "skills.main")
-        self.assertEqual(response_json["provider_type"], "skills")
+        self.assertEqual(response_json["provider_id"], "mcp.main")
+        self.assertEqual(response_json["provider_type"], "mcp_http")
         self.assertGreaterEqual(int(response_json["latency_ms"]), 1)
 
     def test_call_tool_allowlist_rejected_reports_and_raises(self) -> None:

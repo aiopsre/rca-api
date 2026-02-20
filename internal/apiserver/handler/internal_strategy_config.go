@@ -37,8 +37,12 @@ type upsertToolsetConfigRequest struct {
 }
 
 type skillRefRequest struct {
-	SkillID string `json:"skill_id"`
-	Version string `json:"version"`
+	SkillID      string   `json:"skill_id"`
+	Version      string   `json:"version"`
+	Capability   string   `json:"capability"`
+	AllowedTools []string `json:"allowed_tools,omitempty"`
+	Priority     *int     `json:"priority,omitempty"`
+	Enabled      *bool    `json:"enabled,omitempty"`
 }
 
 type upsertSkillsetConfigRequest struct {
@@ -205,8 +209,12 @@ func (h *Handler) UpsertSkillsetConfig(c *gin.Context) {
 	skills := make([]*internalstrategyconfig.SkillRef, 0, len(req.Skills))
 	for _, item := range req.Skills {
 		skills = append(skills, &internalstrategyconfig.SkillRef{
-			SkillID: item.SkillID,
-			Version: item.Version,
+			SkillID:      item.SkillID,
+			Version:      item.Version,
+			Capability:   item.Capability,
+			AllowedTools: item.AllowedTools,
+			Priority:     item.Priority,
+			Enabled:      item.Enabled,
 		})
 	}
 	resp, err := h.biz.InternalStrategyConfigV1().UpsertSkillset(c.Request.Context(), &internalstrategyconfig.UpsertSkillsetConfigRequest{

@@ -28,12 +28,12 @@ func TestResolveStrategy_UsesDedicatedToolsetConfigWhenConfigured(t *testing.T) 
 		  "toolsets": ["legacy_inline_only"]
 		}
 	  },
-	  "toolsets": {
-		"legacy_inline_only": {
-		  "providers": [
-			{"type":"skills","module":"pkg.skills.legacy","allow_tools":["query_logs"]}
-		  ]
-		}
+		"toolsets": {
+		  "legacy_inline_only": {
+			"providers": [
+			  {"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
+			]
+		  }
 	  }
 	}`)
 	t.Setenv("RCA_TOOLSET_CONFIG_JSON", `{
@@ -70,12 +70,12 @@ func TestResolveStrategy_FallbacksToInlineToolsetsWhenDedicatedToolsetConfigMiss
 		  "toolsets": ["inline_default"]
 		}
 	  },
-	  "toolsets": {
-		"inline_default": {
-		  "providers": [
-			{"type":"skills","module":"pkg.skills.demo","allow_tools":["query_logs"]}
-		  ]
-		}
+		"toolsets": {
+		  "inline_default": {
+			"providers": [
+			  {"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
+			]
+		  }
 	  }
 	}`)
 
@@ -102,12 +102,12 @@ func TestResolveStrategy_AllowsEmptyStrategyToolsetsWhenDedicatedToolsetConfigCo
 	}`)
 	t.Setenv("RCA_TOOLSET_CONFIG_JSON", `{
 	  "pipelines": {"basic_rca": ["canonical_default"]},
-	  "toolsets": {
-		"canonical_default": {
-		  "providers": [
-			{"type":"skills","module":"pkg.skills.demo","allow_tools":["query_logs"]}
-		  ]
-		}
+		"toolsets": {
+		  "canonical_default": {
+			"providers": [
+			  {"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
+			]
+		  }
 	  }
 	}`)
 

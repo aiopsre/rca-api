@@ -15,7 +15,6 @@ const (
 	envToolsetConfigJSON    = "RCA_TOOLSET_CONFIG_JSON"
 	envToolsetConfigPath    = "RCA_TOOLSET_CONFIG_PATH"
 	providerTypeMCPHTTP     = "mcp_http"
-	providerTypeSkills      = "skills"
 	defaultProviderFunction = "call"
 )
 
@@ -187,7 +186,7 @@ func normalizeProvider(provider providerV, toolsetID string, index int) (*v1.Orc
 	if providerType == "" {
 		return nil, invalidConfigf("toolset=%s provider[%d] type is empty", toolsetID, index)
 	}
-	if providerType != providerTypeMCPHTTP && providerType != providerTypeSkills {
+	if providerType != providerTypeMCPHTTP {
 		return nil, invalidConfigf("toolset=%s provider[%d] unsupported type=%s", toolsetID, index, providerType)
 	}
 
@@ -221,9 +220,6 @@ func normalizeProvider(provider providerV, toolsetID string, index int) (*v1.Orc
 
 	if providerType == providerTypeMCPHTTP && baseURL == "" {
 		return nil, invalidConfigf("toolset=%s provider[%d] base_url is required", toolsetID, index)
-	}
-	if providerType == providerTypeSkills && module == "" {
-		return nil, invalidConfigf("toolset=%s provider[%d] module is required", toolsetID, index)
 	}
 
 	out := &v1.OrchestratorToolsetProvider{

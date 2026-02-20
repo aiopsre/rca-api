@@ -32,6 +32,10 @@ type OrchestratorSkillRelease struct {
 	ArtifactURL   string                 `protobuf:"bytes,4,opt,name=artifactURL,proto3" json:"artifactURL,omitempty"`
 	ManifestJSON  *string                `protobuf:"bytes,5,opt,name=manifestJSON,proto3,oneof" json:"manifestJSON,omitempty"`
 	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
+	Capability    string                 `protobuf:"bytes,7,opt,name=capability,proto3" json:"capability,omitempty"`
+	AllowedTools  []string               `protobuf:"bytes,8,rep,name=allowedTools,proto3" json:"allowedTools,omitempty"`
+	Priority      int32                  `protobuf:"varint,9,opt,name=priority,proto3" json:"priority,omitempty"`
+	Enabled       bool                   `protobuf:"varint,10,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -106,6 +110,34 @@ func (x *OrchestratorSkillRelease) GetStatus() string {
 		return x.Status
 	}
 	return ""
+}
+
+func (x *OrchestratorSkillRelease) GetCapability() string {
+	if x != nil {
+		return x.Capability
+	}
+	return ""
+}
+
+func (x *OrchestratorSkillRelease) GetAllowedTools() []string {
+	if x != nil {
+		return x.AllowedTools
+	}
+	return nil
+}
+
+func (x *OrchestratorSkillRelease) GetPriority() int32 {
+	if x != nil {
+		return x.Priority
+	}
+	return 0
+}
+
+func (x *OrchestratorSkillRelease) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
 }
 
 // OrchestratorSkillset is one resolved skillset definition.
@@ -264,14 +296,21 @@ var File_apiserver_v1_orchestrator_skillset_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_orchestrator_skillset_proto_rawDesc = "" +
 	"\n" +
-	"(apiserver/v1/orchestrator_skillset.proto\x12\fapiserver.v1\"\xe6\x01\n" +
+	"(apiserver/v1/orchestrator_skillset.proto\x12\fapiserver.v1\"\xe0\x02\n" +
 	"\x18OrchestratorSkillRelease\x12\x18\n" +
 	"\askillID\x18\x01 \x01(\tR\askillID\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
 	"\fbundleDigest\x18\x03 \x01(\tR\fbundleDigest\x12 \n" +
 	"\vartifactURL\x18\x04 \x01(\tR\vartifactURL\x12'\n" +
 	"\fmanifestJSON\x18\x05 \x01(\tH\x00R\fmanifestJSON\x88\x01\x01\x12\x16\n" +
-	"\x06status\x18\x06 \x01(\tR\x06statusB\x0f\n" +
+	"\x06status\x18\x06 \x01(\tR\x06status\x12\x1e\n" +
+	"\n" +
+	"capability\x18\a \x01(\tR\n" +
+	"capability\x12\"\n" +
+	"\fallowedTools\x18\b \x03(\tR\fallowedTools\x12\x1a\n" +
+	"\bpriority\x18\t \x01(\x05R\bpriority\x12\x18\n" +
+	"\aenabled\x18\n" +
+	" \x01(\bR\aenabledB\x0f\n" +
 	"\r_manifestJSON\"v\n" +
 	"\x14OrchestratorSkillset\x12\x1e\n" +
 	"\n" +

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pathlib
 import sys
-import types
 import unittest
 from unittest import mock
 
@@ -74,15 +73,6 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
         )
 
     def test_strategy_template_id_drives_builder_selection(self) -> None:
-        module_name = "_phasel1_builder_mod"
-        fake_module = types.ModuleType(module_name)
-
-        def _skill_call(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
-            return {"ok": True, "tool": tool, "payload": payload, "idempotency_key": idempotency_key}
-
-        fake_module.call = _skill_call  # type: ignore[attr-defined]
-        sys.modules[module_name] = fake_module
-
         class _FakeClient:
             @staticmethod
             def get_job(job_id: str) -> dict[str, str]:
@@ -100,8 +90,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
                             "toolsetID": "default",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_name,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://127.0.0.1:5555",
                                     "allowTools": ["query_logs"],
                                 }
                             ],
@@ -156,18 +146,15 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
 
             return _builder
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", side_effect=_fake_get_template_builder):
-                runner_module._invoke_graph(
-                    self._settings(),
-                    self._graph_cfg(),
-                    "job-l1-template",
-                    debug=False,
-                )
-        finally:
-            sys.modules.pop(module_name, None)
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+            runner_module, "OrchestratorRuntime", _FakeRuntime
+        ), mock.patch.object(runner_module, "get_template_builder", side_effect=_fake_get_template_builder):
+            runner_module._invoke_graph(
+                self._settings(),
+                self._graph_cfg(),
+                "job-l1-template",
+                debug=False,
+            )
 
         self.assertEqual(selected_template_ids, ["basic_rca"])
         runtime = _FakeRuntime.instances[0]
@@ -176,25 +163,14 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
         self.assertEqual(runtime.finalize_calls, [])
 
     def test_strategy_toolsets_chain_routes_to_second_toolset(self) -> None:
-        module_one = "_phasel1_chain_mod_one"
-        module_two = "_phasel1_chain_mod_two"
         called_tools: list[str] = []
 
-        fake_mod_one = types.ModuleType(module_one)
-        fake_mod_two = types.ModuleType(module_two)
-
-        def _call_one(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
-            called_tools.append(f"one:{tool}")
-            return {"source": "one", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}
-
-        def _call_two(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+        def _mcp_call(self, *, tool: str, input_payload: dict[str, object] | None, idempotency_key: str | None = None) -> dict[str, object]:
+            if self._base_url.endswith("provider-one"):
+                called_tools.append(f"one:{tool}")
+                return {"source": "one", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}
             called_tools.append(f"two:{tool}")
-            return {"source": "two", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}
-
-        fake_mod_one.call = _call_one  # type: ignore[attr-defined]
-        fake_mod_two.call = _call_two  # type: ignore[attr-defined]
-        sys.modules[module_one] = fake_mod_one
-        sys.modules[module_two] = fake_mod_two
+            return {"source": "two", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}
 
         class _FakeClient:
             @staticmethod
@@ -213,8 +189,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
                             "toolsetID": "logs",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_one,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://provider-one",
                                     "allowTools": ["query_logs"],
                                 }
                             ],
@@ -223,8 +199,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
                             "toolsetID": "metrics",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_two,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://provider-two",
                                     "allowTools": ["query_metrics"],
                                 }
                             ],
@@ -295,19 +271,17 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
         def _fake_builder(runtime: _FakeRuntime, _cfg: OrchestratorConfig) -> _FakeCompiledGraph:
             return _FakeCompiledGraph(runtime)
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
-                runner_module._invoke_graph(
-                    self._settings(),
-                    self._graph_cfg(),
-                    "job-l1-chain",
-                    debug=False,
-                )
-        finally:
-            sys.modules.pop(module_one, None)
-            sys.modules.pop(module_two, None)
+        with mock.patch("orchestrator.tooling.invoker.MCPHttpProvider.call", new=_mcp_call), mock.patch.object(
+            runner_module, "_new_client", return_value=_FakeClient()
+        ), mock.patch.object(runner_module, "OrchestratorRuntime", _FakeRuntime), mock.patch.object(
+            runner_module, "get_template_builder", return_value=_fake_builder
+        ):
+            runner_module._invoke_graph(
+                self._settings(),
+                self._graph_cfg(),
+                "job-l1-chain",
+                debug=False,
+            )
 
         runtime = _FakeRuntime.instances[0]
         self.assertEqual(runtime.start_calls, 1)
@@ -334,8 +308,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
                             "toolsetID": "default",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": "pkg.skills.demo",
+                                    "type": "mcp_http",
+                                    "baseURL": "http://127.0.0.1:5555",
                                     "allowTools": ["query_logs"],
                                 }
                             ],
@@ -393,15 +367,6 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
         self.assertIn("template_selection_failed:", str(runtime.finalize_calls[0]["error_message"]))
 
     def test_toolset_select_observation_contains_template_id(self) -> None:
-        module_name = "_phasel1_obs_mod"
-        fake_module = types.ModuleType(module_name)
-
-        def _skill_call(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
-            return {"tool": tool, "payload": payload, "idempotency_key": idempotency_key}
-
-        fake_module.call = _skill_call  # type: ignore[attr-defined]
-        sys.modules[module_name] = fake_module
-
         class _FakeClient:
             @staticmethod
             def get_job(job_id: str) -> dict[str, str]:
@@ -417,8 +382,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
                             "toolsetID": "default",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_name,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://127.0.0.1:5555",
                                     "allowTools": ["query_logs"],
                                 }
                             ],
@@ -486,18 +451,15 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
         def _fake_builder(_runtime: _FakeRuntime, _cfg: OrchestratorConfig) -> _FakeCompiledGraph:
             return _FakeCompiledGraph()
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
-                runner_module._invoke_graph(
-                    self._settings(),
-                    self._graph_cfg(),
-                    "job-l1-obs",
-                    debug=False,
-                )
-        finally:
-            sys.modules.pop(module_name, None)
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+            runner_module, "OrchestratorRuntime", _FakeRuntime
+        ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
+            runner_module._invoke_graph(
+                self._settings(),
+                self._graph_cfg(),
+                "job-l1-obs",
+                debug=False,
+            )
 
         runtime = _FakeRuntime.instances[0]
         self.assertGreaterEqual(len(runtime.observations), 1)

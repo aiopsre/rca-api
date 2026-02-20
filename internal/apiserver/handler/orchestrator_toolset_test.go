@@ -63,7 +63,7 @@ func TestResolveOrchestratorToolset_ListMappingSuccess(t *testing.T) {
 		  "toolsets": {
 			"logs_only": {
 			  "providers": [
-				{"type":"skills","module":"pkg.skills.logs","allow_tools":["query_logs"]}
+				{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
 			  ]
 			},
 			"metrics_only": {
@@ -111,7 +111,7 @@ func TestResolveOrchestratorToolset_MissingMappingReturnsNotFound(t *testing.T) 
 		  "toolsets": {
 			"default": {
 			  "providers": [
-				{"type":"skills","module":"pkg.skills.demo","allow_tools":["query_logs"]}
+				{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}
 			  ]
 			}
 		  }
@@ -154,7 +154,7 @@ func TestResolveOrchestratorToolset_PathConfig(t *testing.T) {
 	t.Setenv("RCA_TOOLSET_CONFIG_JSON", "")
 	configFile := fmt.Sprintf("%s/phaseh-toolset-config.json", t.TempDir())
 	require.NoError(t, osWriteFile(configFile, []byte(
-		`{"pipelines":{"basic_rca":"default"},"toolsets":{"default":{"providers":[{"type":"skills","module":"pkg.skills.demo","allow_tools":["query_logs"]}]}}}`,
+		`{"pipelines":{"basic_rca":"default"},"toolsets":{"default":{"providers":[{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}]}}}`,
 	)))
 	t.Setenv("RCA_TOOLSET_CONFIG_PATH", configFile)
 

@@ -69,6 +69,9 @@ func (b *skillsetBiz) Resolve(
 			if ref == nil {
 				continue
 			}
+			if ref.Enabled != nil && !*ref.Enabled {
+				continue
+			}
 			release, getErr := b.store.InternalStrategyConfig().GetSkillRelease(ctx, ref.SkillID, ref.Version)
 			if getErr != nil {
 				if errors.Is(getErr, gorm.ErrRecordNotFound) {
@@ -76,9 +79,16 @@ func (b *skillsetBiz) Resolve(
 				}
 				return nil, errno.ErrInternal
 			}
+			if !strings.EqualFold(strings.TrimSpace(release.Status), "active") {
+				continue
+			}
 			downloadURL, resolveErr := skillartifact.ResolveDownloadURL(ctx, strings.TrimSpace(release.ArtifactURL))
 			if resolveErr != nil {
 				return nil, errno.ErrInternal
+			}
+			priority := int32(100)
+			if ref.Priority != nil && *ref.Priority > 0 {
+				priority = int32(*ref.Priority)
 			}
 			resolvedSkills = append(resolvedSkills, &v1.OrchestratorSkillRelease{
 				SkillID:      strings.TrimSpace(release.SkillID),
@@ -86,8 +96,15 @@ func (b *skillsetBiz) Resolve(
 				BundleDigest: strings.TrimSpace(release.BundleDigest),
 				ArtifactURL:  downloadURL,
 				ManifestJSON: cloneOptionalTrimmedString(release.ManifestJSON),
+				Capability:   strings.TrimSpace(ref.Capability),
+				AllowedTools: append([]string(nil), ref.AllowedTools...),
+				Priority:     priority,
+				Enabled:      ref.Enabled == nil || *ref.Enabled,
 				Status:       strings.TrimSpace(release.Status),
 			})
+		}
+		if len(resolvedSkills) == 0 {
+			continue
 		}
 		out = append(out, &v1.OrchestratorSkillset{
 			SkillsetID: strings.TrimSpace(item.SkillsetName),

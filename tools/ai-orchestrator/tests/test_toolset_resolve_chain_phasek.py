@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pathlib
 import sys
-import types
 import unittest
 from unittest import mock
 
@@ -55,24 +54,14 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
         )
 
     def test_server_toolsets_chain_routes_to_second_toolset(self) -> None:
-        module_one = "_phasek_skill_mod_one"
-        module_two = "_phasek_skill_mod_two"
         called_tools: list[str] = []
-        mod_one = types.ModuleType(module_one)
-        mod_two = types.ModuleType(module_two)
 
-        def _call_one(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
-            called_tools.append(f"one:{tool}")
-            return {"output": {"from": "one", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
-
-        def _call_two(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+        def _mcp_call(self, *, tool: str, input_payload: dict[str, object] | None, idempotency_key: str | None = None) -> dict[str, object]:
+            if self._base_url.endswith("provider-one"):
+                called_tools.append(f"one:{tool}")
+                return {"output": {"from": "one", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}}
             called_tools.append(f"two:{tool}")
-            return {"output": {"from": "two", "tool": tool, "payload": payload, "idempotency_key": idempotency_key}}
-
-        mod_one.call = _call_one  # type: ignore[attr-defined]
-        mod_two.call = _call_two  # type: ignore[attr-defined]
-        sys.modules[module_one] = mod_one
-        sys.modules[module_two] = mod_two
+            return {"output": {"from": "two", "tool": tool, "payload": input_payload or {}, "idempotency_key": idempotency_key}}
 
         class _FakeClient:
             @staticmethod
@@ -84,8 +73,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
                             "toolsetID": "ts_one",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_one,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://provider-one",
                                     "allowTools": ["query_metrics"],
                                 }
                             ],
@@ -94,8 +83,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
                             "toolsetID": "ts_two",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_two,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://provider-two",
                                     "allowTools": ["query_logs"],
                                 }
                             ],
@@ -103,12 +92,9 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
                     ],
                 }
 
-        try:
+        with mock.patch("orchestrator.tooling.invoker.MCPHttpProvider.call", new=_mcp_call):
             invoker, toolsets, source = runner_module._select_tool_invoker_via_server(_FakeClient(), "basic_rca")
             result = invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
-        finally:
-            del sys.modules[module_one]
-            del sys.modules[module_two]
 
         self.assertEqual(source, "server_resolve")
         self.assertEqual(toolsets, ["ts_one", "ts_two"])
@@ -116,15 +102,6 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
         self.assertEqual(called_tools, ["two:query_logs"])
 
     def test_runner_toolset_select_observation_keeps_toolsets_list_for_server_source(self) -> None:
-        module_one = "_phasek_obs_mod_one"
-        module_two = "_phasek_obs_mod_two"
-        mod_one = types.ModuleType(module_one)
-        mod_two = types.ModuleType(module_two)
-        mod_one.call = lambda *_args, **_kwargs: {"output": {"from": "one"}}  # type: ignore[attr-defined]
-        mod_two.call = lambda *_args, **_kwargs: {"output": {"from": "two"}}  # type: ignore[attr-defined]
-        sys.modules[module_one] = mod_one
-        sys.modules[module_two] = mod_two
-
         class _FakeClient:
             @staticmethod
             def get_job(job_id: str) -> dict[str, str]:
@@ -139,8 +116,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
                             "toolsetID": "ts_one",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_one,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://provider-one",
                                     "allowTools": ["query_metrics"],
                                 }
                             ],
@@ -149,8 +126,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
                             "toolsetID": "ts_two",
                             "providers": [
                                 {
-                                    "type": "skills",
-                                    "module": module_two,
+                                    "type": "mcp_http",
+                                    "baseURL": "http://provider-two",
                                     "allowTools": ["query_logs"],
                                 }
                             ],
@@ -186,19 +163,15 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
         def _fake_builder(_runtime: _FakeRuntime, _cfg: OrchestratorConfig) -> _FakeGraph:
             return _FakeGraph()
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
-                runner_module._invoke_graph(
-                    self._settings(),
-                    OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
-                    "job-k",
-                    debug=False,
-                )
-        finally:
-            del sys.modules[module_one]
-            del sys.modules[module_two]
+        with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
+            runner_module, "OrchestratorRuntime", _FakeRuntime
+        ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
+            runner_module._invoke_graph(
+                self._settings(),
+                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                "job-k",
+                debug=False,
+            )
 
         runtime = _FakeRuntime.instances[-1]
         self.assertEqual(runtime.start_calls, 1)

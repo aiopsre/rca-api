@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pathlib
 import sys
-import types
 import unittest
 from unittest import mock
 
@@ -56,16 +55,11 @@ class ToolsetRegistryRunnerTest(unittest.TestCase):
         )
 
     def test_pipeline_selects_toolset_and_builds_invoker(self) -> None:
-        fake_module_name = "_phaseg_fake_skill_mod"
         called_tools: list[str] = []
-        fake_module = types.ModuleType(fake_module_name)
 
-        def _skill_call(tool: str, payload: dict[str, object], idempotency_key: str | None = None) -> dict[str, object]:
+        def _mcp_call(self, *, tool: str, input_payload: dict[str, object] | None, idempotency_key: str | None = None) -> dict[str, object]:
             called_tools.append(tool)
-            return {"output": {"echo_tool": tool, "idempotency_key": idempotency_key, "payload": payload}}
-
-        fake_module.call = _skill_call  # type: ignore[attr-defined]
-        sys.modules[fake_module_name] = fake_module
+            return {"output": {"echo_tool": tool, "idempotency_key": idempotency_key, "payload": input_payload or {}}}
 
         class _FakeClient:
             @staticmethod
@@ -100,29 +94,28 @@ class ToolsetRegistryRunnerTest(unittest.TestCase):
         settings = self._settings(
             toolset_config_json=(
                 '{"pipelines":{"basic_rca":"skills_main"},'
-                '"toolsets":{"skills_main":{"providers":[{"type":"skills","module":"_phaseg_fake_skill_mod",'
+                '"toolsets":{"skills_main":{"providers":[{"type":"mcp_http","base_url":"http://127.0.0.1:5555",'
                 '"allow_tools":["query_logs"]}]}}}'
             )
         )
 
-        try:
-            with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
-                runner_module, "OrchestratorRuntime", _FakeRuntime
-            ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
-                runner_module._invoke_graph(
-                    settings,
-                    OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
-                    "job-1",
-                    debug=False,
-                )
-        finally:
-            del sys.modules[fake_module_name]
+        with mock.patch("orchestrator.tooling.invoker.MCPHttpProvider.call", new=_mcp_call), mock.patch.object(
+            runner_module, "_new_client", return_value=_FakeClient()
+        ), mock.patch.object(runner_module, "OrchestratorRuntime", _FakeRuntime), mock.patch.object(
+            runner_module, "get_template_builder", return_value=_fake_builder
+        ):
+            runner_module._invoke_graph(
+                settings,
+                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                "job-1",
+                debug=False,
+            )
+            runtime = _FakeRuntime.instances[-1]
+            self.assertEqual(runtime.start_calls, 1)
+            self.assertEqual(runtime.shutdown_calls, 1)
+            self.assertIsNotNone(runtime.tool_invoker)
+            result = runtime.tool_invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
 
-        runtime = _FakeRuntime.instances[-1]
-        self.assertEqual(runtime.start_calls, 1)
-        self.assertEqual(runtime.shutdown_calls, 1)
-        self.assertIsNotNone(runtime.tool_invoker)
-        result = runtime.tool_invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
         self.assertEqual(result["output"]["echo_tool"], "query_logs")
         self.assertEqual(called_tools, ["query_logs"])
 
@@ -193,7 +186,7 @@ class ToolsetRegistryRunnerTest(unittest.TestCase):
         settings = self._settings(
             toolset_config_json=(
                 '{"pipelines":{"basic_rca":"missing_toolset"},'
-                '"toolsets":{"default":{"providers":[{"type":"skills","module":"json","allow_tools":["query_logs"]}]}}}'
+                '"toolsets":{"default":{"providers":[{"type":"mcp_http","base_url":"http://127.0.0.1:5555","allow_tools":["query_logs"]}]}}}'
             )
         )
         with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(

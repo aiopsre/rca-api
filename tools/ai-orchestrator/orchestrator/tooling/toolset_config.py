@@ -228,8 +228,10 @@ def _parse_provider(payload: Any, *, toolset_id: str, provider_index: int) -> Pr
         if not base_url:
             raise ValueError(f"provider.base_url is required for mcp_http: toolset={toolset_id} name={name}")
     elif provider_type == "skills":
-        if not module:
-            raise ValueError(f"provider.module is required for skills: toolset={toolset_id} name={name}")
+        raise ValueError(
+            f"provider.type=skills is deprecated: toolset={toolset_id} name={name}; "
+            "migrate to skill releases/skillsets or mcp_http"
+        )
     else:
         raise ValueError(f"unsupported provider.type={provider_type}: toolset={toolset_id} name={name}")
 

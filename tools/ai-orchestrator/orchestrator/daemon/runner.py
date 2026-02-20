@@ -13,7 +13,7 @@ from ..langgraph.registry import (
     normalize_pipeline,
 )
 from ..runtime.runtime import OrchestratorRuntime
-from ..skills import SkillRuntime, apply_session_patch_to_state, load_session_snapshot_into_state
+from ..skills import SkillCatalog, apply_session_patch_to_state, load_session_snapshot_into_state
 from ..state import GraphState
 from ..tooling import (
     ToolInvoker,
@@ -135,6 +135,7 @@ def _select_tool_invoker_via_server(
     client: RCAApiClient,
     pipeline: str,
 ) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
+    client_base_url = str(getattr(client, "base_url", "") or "").strip()
     resolved = client.resolve_toolset(pipeline)
     if not isinstance(resolved, dict):
         raise RuntimeError("resolve_toolset returned invalid payload")
@@ -146,6 +147,7 @@ def _select_tool_invoker_via_server(
             normalized_pipeline=normalized_pipeline,
             toolsets_payload=toolsets_payload,
             payload_name="resolve_toolset",
+            default_base_url=client_base_url,
         )
         return invoker, toolset_ids, "server_resolve"
 
@@ -162,13 +164,16 @@ def _select_tool_invoker_via_server(
     providers = toolset_payload.get("providers")
     if not isinstance(providers, list) or not providers:
         raise RuntimeError(f"resolve_toolset payload has empty providers: toolset={toolset_id}")
+    normalized_providers = [
+        _normalize_server_provider_payload(provider, default_base_url=client_base_url) for provider in providers
+    ]
 
     config = load_toolset_config(
         {
             "pipelines": {normalized_pipeline: toolset_id},
             "toolsets": {
                 toolset_id: {
-                    "providers": providers,
+                    "providers": normalized_providers,
                 }
             },
         }
@@ -196,6 +201,7 @@ def _build_tool_invoker_chain_from_toolsets_payload(
     normalized_pipeline: str,
     toolsets_payload: list[Any],
     payload_name: str,
+    default_base_url: str = "",
 ) -> tuple[ToolInvokerChain, list[str]]:
     toolset_ids: list[str] = []
     toolsets: dict[str, dict[str, Any]] = {}
@@ -210,8 +216,11 @@ def _build_tool_invoker_chain_from_toolsets_payload(
         providers = toolset_item.get("providers")
         if not isinstance(providers, list) or not providers:
             raise RuntimeError(f"{payload_name} payload has empty providers: toolset={toolset_id}")
+        normalized_providers = [
+            _normalize_server_provider_payload(provider, default_base_url=default_base_url) for provider in providers
+        ]
         toolset_ids.append(toolset_id)
-        toolsets[toolset_id] = {"providers": providers}
+        toolsets[toolset_id] = {"providers": normalized_providers}
 
     config = load_toolset_config(
         {
@@ -246,12 +255,26 @@ def _build_tool_invoker_from_strategy(
     toolsets_payload = strategy_payload.get("toolsets")
     if not isinstance(toolsets_payload, list) or not toolsets_payload:
         raise RuntimeError("resolve_strategy payload missing non-empty toolsets")
+    client_base_url = str(getattr(client, "base_url", "") or "").strip()
     invoker, toolset_ids = _build_tool_invoker_chain_from_toolsets_payload(
         normalized_pipeline=normalized_pipeline,
         toolsets_payload=toolsets_payload,
         payload_name="resolve_strategy",
+        default_base_url=client_base_url,
     )
     return invoker, toolset_ids, "strategy_resolve"
+
+
+def _normalize_server_provider_payload(provider_payload: Any, *, default_base_url: str) -> dict[str, Any]:
+    if not isinstance(provider_payload, dict):
+        raise RuntimeError("toolset provider entry must be an object")
+    normalized = dict(provider_payload)
+    provider_type = str(normalized.get("type") or "").strip().lower()
+    if provider_type == "mcp_http":
+        base_url = str(normalized.get("base_url") or normalized.get("baseURL") or "").strip()
+        if not base_url:
+            normalized["baseURL"] = str(default_base_url or "").strip().rstrip("/")
+    return normalized
 
 
 def _report_toolset_selection_observation(
@@ -336,16 +359,16 @@ def _parse_skills_local_paths(raw: str) -> list[str]:
     return [item.strip() for item in str(raw or "").split(",") if item.strip()]
 
 
-def _build_skill_runtime(
+def _build_skill_catalog(
     *,
     settings: Settings,
     client: RCAApiClient,
     pipeline: str,
     strategy_payload: dict[str, Any] | None,
-) -> tuple[SkillRuntime | None, list[str], str]:
+) -> tuple[SkillCatalog | None, list[str], str]:
     local_override_paths = _parse_skills_local_paths(settings.skills_local_paths)
     strategy_skillsets = _extract_skillset_ids(strategy_payload or {})
-    if not strategy_skillsets and not local_override_paths:
+    if not strategy_skillsets:
         return None, [], ""
 
     resolved_payload: dict[str, Any] = {"skillsets": []}
@@ -359,12 +382,12 @@ def _build_skill_runtime(
     if not isinstance(raw_skillsets, list):
         raise RuntimeError("resolve_skillsets payload missing skillsets list")
 
-    skill_runtime = SkillRuntime.from_resolved_skillsets(
+    skill_catalog = SkillCatalog.from_resolved_skillsets(
         skillsets_payload=raw_skillsets,
         cache_dir=settings.skills_cache_dir,
         local_override_paths=local_override_paths,
     )
-    if not skill_runtime.has_skills():
+    if not skill_catalog.has_skills():
         return None, strategy_skillsets, "empty"
     if local_override_paths and strategy_skillsets:
         source = "strategy_resolve+local_override"
@@ -372,8 +395,8 @@ def _build_skill_runtime(
         source = "local_override"
     else:
         source = "strategy_resolve"
-    selected_skillsets = skill_runtime.skillset_ids() or strategy_skillsets
-    return skill_runtime, selected_skillsets, source
+    selected_skillsets = skill_catalog.skillset_ids() or strategy_skillsets
+    return skill_catalog, selected_skillsets, source
 
 
 def _report_skillset_selection_observation(
@@ -381,11 +404,11 @@ def _report_skillset_selection_observation(
     runtime: OrchestratorRuntime,
     job_id: str,
     pipeline: str,
-    skill_runtime: SkillRuntime | None,
+    skill_catalog: SkillCatalog | None,
     skillsets: list[str],
     skillset_source: str,
 ) -> None:
-    if skill_runtime is None:
+    if skill_catalog is None:
         return
     report_observation = getattr(runtime, "report_observation", None)
     if not callable(report_observation):
@@ -399,7 +422,7 @@ def _report_skillset_selection_observation(
                 "status": "ok",
                 "skillsets": [str(item).strip() for item in skillsets if str(item).strip()],
                 "source": str(skillset_source).strip(),
-                "skills": skill_runtime.describe(),
+                "skills": skill_catalog.describe(),
             },
             evidence_ids=[],
         )
@@ -489,7 +512,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     selected_template_id = ""
     template_builder = None
     tool_invoker = None
-    skill_runtime = None
+    skill_catalog = None
     selected_toolsets: list[str] = []
     selected_toolset_source = ""
     selected_skillsets: list[str] = []
@@ -512,7 +535,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 pipeline=selected_pipeline,
                 strategy_payload=strategy_payload,
             )
-            skill_runtime, selected_skillsets, selected_skillset_source = _build_skill_runtime(
+            skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
                 settings=settings,
                 client=client,
                 pipeline=selected_pipeline,
@@ -524,7 +547,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
                 settings, client, selected_pipeline
             )
-            skill_runtime, selected_skillsets, selected_skillset_source = _build_skill_runtime(
+            skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
                 settings=settings,
                 client=client,
                 pipeline=selected_pipeline,
@@ -563,7 +586,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         verification_max_total_bytes=settings.verification_max_total_bytes,
         verification_dedupe_enabled=settings.verification_dedupe_enabled,
         tool_invoker=tool_invoker,
-        skill_runtime=skill_runtime,
+        skill_catalog=skill_catalog,
     )
     if not runtime.start():
         if debug:
@@ -611,7 +634,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         runtime=runtime,
         job_id=job_id,
         pipeline=selected_pipeline,
-        skill_runtime=skill_runtime,
+        skill_catalog=skill_catalog,
         skillsets=selected_skillsets,
         skillset_source=selected_skillset_source,
     )

@@ -35,8 +35,8 @@ def download_bundle(artifact_url: str, *, timeout_s: float) -> bytes:
 def prepare_bundle(cache_dir: str, *, artifact_url: str, bundle_digest: str, timeout_s: float) -> Path:
     digest = normalize_digest(bundle_digest)
     target_dir = Path(cache_dir).expanduser() / digest
-    manifest_path = target_dir / "manifest.json"
-    if manifest_path.exists():
+    instruction_path = target_dir / "SKILL.md"
+    if instruction_path.exists():
         return target_dir
 
     raw = download_bundle(artifact_url, timeout_s=timeout_s)
@@ -46,8 +46,8 @@ def prepare_bundle(cache_dir: str, *, artifact_url: str, bundle_digest: str, tim
     target_dir.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         _extract_bundle_safely(archive, target_dir)
-    if not manifest_path.exists():
-        raise RuntimeError("skill bundle missing manifest.json")
+    if not instruction_path.exists():
+        raise RuntimeError("skill bundle missing SKILL.md")
     return target_dir
 
 

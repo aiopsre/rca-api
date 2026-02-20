@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +26,8 @@ const (
 	defaultObjectKeyPattern = "skills/{skill_id}/{version}/bundle.zip"
 	defaultPresignTTL       = 15 * time.Minute
 	defaultManifestMaxBytes = 1 << 20
+	defaultInstructionFile  = "SKILL.md"
+	bundleFormatClaudeSkill = "claude_skill_v1"
 )
 
 var (
@@ -53,6 +56,14 @@ type manager interface {
 	Enabled() bool
 	UploadBundle(ctx context.Context, skillID string, version string, raw []byte) (string, string, error)
 	ResolveDownloadURL(ctx context.Context, artifactRef string) (string, error)
+}
+
+type SkillSummaryEnvelope struct {
+	BundleFormat    string `json:"bundle_format"`
+	InstructionFile string `json:"instruction_file"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	Compatibility   string `json:"compatibility,omitempty"`
 }
 
 type disabledManager struct{}
@@ -145,35 +156,123 @@ func ResolveDownloadURL(ctx context.Context, artifactRef string) (string, error)
 	return currentManager().ResolveDownloadURL(ctx, artifactRef)
 }
 
-func ReadBundleManifestJSON(raw []byte) (string, error) {
+func ReadBundleSkillSummaryJSON(raw []byte) (string, error) {
+	summary, err := ReadBundleSkillSummary(raw)
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(summary)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(payload)), nil
+}
+
+func ReadBundleSkillSummary(raw []byte) (*SkillSummaryEnvelope, error) {
 	if len(raw) == 0 {
-		return "", ErrInvalidArtifactRef
+		return nil, ErrInvalidArtifactRef
 	}
 	readerAt := bytes.NewReader(raw)
 	archive, err := zip.NewReader(readerAt, int64(len(raw)))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	for _, file := range archive.File {
-		if path.Clean(file.Name) != "manifest.json" {
+		if path.Clean(file.Name) != defaultInstructionFile {
 			continue
 		}
 		handle, openErr := file.Open()
 		if openErr != nil {
-			return "", openErr
+			return nil, openErr
 		}
 		defer handle.Close()
 		limited := io.LimitReader(handle, defaultManifestMaxBytes+1)
 		payload, readErr := io.ReadAll(limited)
 		if readErr != nil {
-			return "", readErr
+			return nil, readErr
 		}
 		if int64(len(payload)) > defaultManifestMaxBytes {
-			return "", fmt.Errorf("skill manifest exceeds max bytes: %d", defaultManifestMaxBytes)
+			return nil, fmt.Errorf("skill file exceeds max bytes: %d", defaultManifestMaxBytes)
 		}
-		return strings.TrimSpace(string(payload)), nil
+		return parseSkillSummaryMarkdown(string(payload))
 	}
-	return "", fmt.Errorf("skill bundle missing manifest.json")
+	return nil, fmt.Errorf("skill bundle missing %s", defaultInstructionFile)
+}
+
+func ValidateSkillSummaryEnvelopeJSON(raw string) (*SkillSummaryEnvelope, error) {
+	var payload SkillSummaryEnvelope
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, err
+	}
+	payload.BundleFormat = strings.TrimSpace(payload.BundleFormat)
+	payload.InstructionFile = strings.TrimSpace(payload.InstructionFile)
+	payload.Name = strings.TrimSpace(payload.Name)
+	payload.Description = strings.TrimSpace(payload.Description)
+	payload.Compatibility = strings.TrimSpace(payload.Compatibility)
+	if payload.BundleFormat != bundleFormatClaudeSkill {
+		return nil, fmt.Errorf("invalid bundle_format: %s", payload.BundleFormat)
+	}
+	if payload.InstructionFile != defaultInstructionFile {
+		return nil, fmt.Errorf("invalid instruction_file: %s", payload.InstructionFile)
+	}
+	if payload.Name == "" || payload.Description == "" {
+		return nil, fmt.Errorf("skill summary requires name and description")
+	}
+	return &payload, nil
+}
+
+func parseSkillSummaryMarkdown(raw string) (*SkillSummaryEnvelope, error) {
+	content := strings.ReplaceAll(raw, "\r\n", "\n")
+	if !strings.HasPrefix(content, "---\n") {
+		return nil, fmt.Errorf("SKILL.md missing frontmatter")
+	}
+	rest := strings.TrimPrefix(content, "---\n")
+	end := strings.Index(rest, "\n---\n")
+	if end < 0 {
+		return nil, fmt.Errorf("SKILL.md missing closing frontmatter delimiter")
+	}
+	frontmatter := rest[:end]
+	fields := map[string]string{}
+	for _, line := range strings.Split(frontmatter, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			return nil, fmt.Errorf("SKILL.md frontmatter only supports flat scalar fields")
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil, fmt.Errorf("invalid SKILL.md frontmatter line: %s", trimmed)
+		}
+		normalizedKey := strings.TrimSpace(key)
+		normalizedValue := strings.TrimSpace(value)
+		if normalizedKey == "" {
+			return nil, fmt.Errorf("invalid SKILL.md frontmatter key")
+		}
+		if strings.Contains(normalizedValue, "\n") {
+			return nil, fmt.Errorf("SKILL.md frontmatter multiline values are unsupported")
+		}
+		if len(normalizedValue) >= 2 {
+			if (strings.HasPrefix(normalizedValue, "\"") && strings.HasSuffix(normalizedValue, "\"")) ||
+				(strings.HasPrefix(normalizedValue, "'") && strings.HasSuffix(normalizedValue, "'")) {
+				normalizedValue = normalizedValue[1 : len(normalizedValue)-1]
+			}
+		}
+		fields[normalizedKey] = normalizedValue
+	}
+
+	summary := &SkillSummaryEnvelope{
+		BundleFormat:    bundleFormatClaudeSkill,
+		InstructionFile: defaultInstructionFile,
+		Name:            strings.TrimSpace(fields["name"]),
+		Description:     strings.TrimSpace(fields["description"]),
+		Compatibility:   strings.TrimSpace(fields["compatibility"]),
+	}
+	if summary.Name == "" || summary.Description == "" {
+		return nil, fmt.Errorf("SKILL.md frontmatter requires name and description")
+	}
+	return summary, nil
 }
 
 func currentManager() manager {

@@ -89,16 +89,12 @@ func mapDynamicToolsets(items []*internalstrategyconfig.ToolsetItem) []*v1.Orche
 			continue
 		}
 		name := strings.TrimSpace(item.ToolsetName)
-		module := "dynamic_toolset_config"
-		function := "call"
 		out = append(out, &v1.OrchestratorToolset{
 			ToolsetID: name,
 			Providers: []*v1.OrchestratorToolsetProvider{{
-				Type:       "skills",
+				Type:       "mcp_http",
 				Name:       &name,
 				AllowTools: append([]string(nil), item.AllowedTools...),
-				Module:     &module,
-				Function:   &function,
 			}},
 		})
 	}
