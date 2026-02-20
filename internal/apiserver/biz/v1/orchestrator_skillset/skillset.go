@@ -9,6 +9,7 @@ import (
 
 	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/orchestratorcfg"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
@@ -75,11 +76,15 @@ func (b *skillsetBiz) Resolve(
 				}
 				return nil, errno.ErrInternal
 			}
+			downloadURL, resolveErr := skillartifact.ResolveDownloadURL(ctx, strings.TrimSpace(release.ArtifactURL))
+			if resolveErr != nil {
+				return nil, errno.ErrInternal
+			}
 			resolvedSkills = append(resolvedSkills, &v1.OrchestratorSkillRelease{
 				SkillID:      strings.TrimSpace(release.SkillID),
 				Version:      strings.TrimSpace(release.Version),
 				BundleDigest: strings.TrimSpace(release.BundleDigest),
-				ArtifactURL:  strings.TrimSpace(release.ArtifactURL),
+				ArtifactURL:  downloadURL,
 				ManifestJSON: cloneOptionalTrimmedString(release.ManifestJSON),
 				Status:       strings.TrimSpace(release.Status),
 			})

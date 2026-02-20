@@ -1,7 +1,10 @@
 package internal_strategy_config
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 )
 
@@ -159,6 +163,38 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 	require.Equal(t, "1.0.0", resolved[0].Skills[0].Version)
 }
 
+func TestConfigBiz_UploadSkillReleaseUsesArtifactStorage(t *testing.T) {
+	ctx := context.Background()
+	biz, _ := newConfigBizTestSetup(t)
+	fake := &fakeSkillArtifactManager{
+		uploadArtifactRef: "s3://rca-skills-dev/skills/claude.analysis/1.0.0/bundle.zip",
+		uploadDigest:      "8f990ba0b577b51cf009ea049368c16bbda1b21e1b93be07a824758bb253c39b",
+	}
+	restore := skillartifact.SetRuntimeManagerForTest(fake)
+	defer restore()
+
+	release, err := biz.UploadSkillRelease(ctx, &UploadSkillReleaseRequest{
+		BundleRaw: buildSkillBundleZip(t, map[string]any{
+			"skill_id":         "claude.analysis",
+			"version":          "1.0.0",
+			"runtime":          "python",
+			"entrypoint":       map[string]any{"module": "skills.analysis", "callable": "run"},
+			"instruction_file": "SKILL.md",
+			"resource_files":   []string{"templates/guide.md"},
+			"allowed_tools":    []string{"query_logs"},
+		}),
+		Status:    "active",
+		CreatedBy: strPtr("user:config-admin"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claude.analysis", release.SkillID)
+	require.Equal(t, "1.0.0", release.Version)
+	require.Equal(t, fake.uploadArtifactRef, release.ArtifactURL)
+	require.Equal(t, fake.uploadDigest, release.BundleDigest)
+	require.Equal(t, "claude.analysis", fake.lastUploadSkillID)
+	require.Equal(t, "1.0.0", fake.lastUploadVersion)
+}
+
 func newConfigBizTestSetup(t *testing.T) (*configBiz, store.IStore) {
 	t.Helper()
 	store.ResetForTest()
@@ -192,4 +228,43 @@ func writeTestFile(t *testing.T, name string, content string) string {
 func strPtr(in string) *string {
 	out := in
 	return &out
+}
+
+type fakeSkillArtifactManager struct {
+	uploadArtifactRef string
+	uploadDigest      string
+	lastUploadSkillID string
+	lastUploadVersion string
+}
+
+func (f *fakeSkillArtifactManager) Enabled() bool {
+	return true
+}
+
+func (f *fakeSkillArtifactManager) UploadBundle(_ context.Context, skillID string, version string, _ []byte) (string, string, error) {
+	f.lastUploadSkillID = skillID
+	f.lastUploadVersion = version
+	return f.uploadArtifactRef, f.uploadDigest, nil
+}
+
+func (f *fakeSkillArtifactManager) ResolveDownloadURL(_ context.Context, artifactRef string) (string, error) {
+	return artifactRef, nil
+}
+
+func buildSkillBundleZip(t *testing.T, manifest map[string]any) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := zip.NewWriter(&buf)
+	manifestFile, err := writer.Create("manifest.json")
+	require.NoError(t, err)
+	rawManifest, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	_, err = manifestFile.Write(rawManifest)
+	require.NoError(t, err)
+	skillFile, err := writer.Create("SKILL.md")
+	require.NoError(t, err)
+	_, err = skillFile.Write([]byte("# test skill\n"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return buf.Bytes()
 }

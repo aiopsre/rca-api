@@ -15,6 +15,7 @@ import (
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/internalstrategycfg"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
@@ -38,6 +39,7 @@ type ConfigBiz interface {
 	UpsertSkillset(ctx context.Context, rq *UpsertSkillsetConfigRequest) (*SkillsetConfigView, error)
 	GetSkillRelease(ctx context.Context, rq *GetSkillReleaseRequest) (*SkillReleaseView, error)
 	RegisterSkillRelease(ctx context.Context, rq *RegisterSkillReleaseRequest) (*SkillReleaseView, error)
+	UploadSkillRelease(ctx context.Context, rq *UploadSkillReleaseRequest) (*SkillReleaseView, error)
 
 	GetSLA(ctx context.Context, rq *GetSLAConfigRequest) (*SLAConfigView, error)
 	UpsertSLA(ctx context.Context, rq *UpsertSLAConfigRequest) (*SLAConfigView, error)
@@ -431,6 +433,14 @@ type RegisterSkillReleaseRequest struct {
 	CreatedBy    *string
 }
 
+type UploadSkillReleaseRequest struct {
+	SkillID   string
+	Version   string
+	BundleRaw []byte
+	Status    string
+	CreatedBy *string
+}
+
 type SkillRef struct {
 	SkillID string `json:"skill_id"`
 	Version string `json:"version"`
@@ -553,6 +563,53 @@ func (b *configBiz) RegisterSkillRelease(
 		return nil, errno.ErrInternal
 	}
 	return b.GetSkillRelease(ctx, &GetSkillReleaseRequest{SkillID: skillID, Version: version})
+}
+
+func (b *configBiz) UploadSkillRelease(
+	ctx context.Context,
+	rq *UploadSkillReleaseRequest,
+) (*SkillReleaseView, error) {
+	if rq == nil || b == nil || b.store == nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	manifestJSON, err := skillartifact.ReadBundleManifestJSON(rq.BundleRaw)
+	if err != nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	manifestSkillID, manifestVersion, err := extractSkillIdentityFromManifest(manifestJSON)
+	if err != nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	skillID := strings.TrimSpace(rq.SkillID)
+	version := strings.TrimSpace(rq.Version)
+	if skillID == "" {
+		skillID = manifestSkillID
+	}
+	if version == "" {
+		version = manifestVersion
+	}
+	if skillID == "" || version == "" {
+		return nil, errno.ErrInvalidArgument
+	}
+	if err := validateSkillManifest(manifestJSON, skillID, version); err != nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	artifactRef, bundleDigest, err := skillartifact.UploadBundle(ctx, skillID, version, rq.BundleRaw)
+	if err != nil {
+		if errors.Is(err, skillartifact.ErrStorageDisabled) || errors.Is(err, skillartifact.ErrUploadModeDisabled) {
+			return nil, errno.ErrOperationFailed
+		}
+		return nil, errno.ErrInternal
+	}
+	return b.RegisterSkillRelease(ctx, &RegisterSkillReleaseRequest{
+		SkillID:      skillID,
+		Version:      version,
+		BundleDigest: bundleDigest,
+		ArtifactURL:  artifactRef,
+		ManifestJSON: manifestJSON,
+		Status:       rq.Status,
+		CreatedBy:    rq.CreatedBy,
+	})
 }
 
 func (b *configBiz) ResolveSkillsetByPipeline(
@@ -1037,6 +1094,14 @@ func validateSkillManifest(raw string, expectedSkillID string, expectedVersion s
 		return errno.ErrInvalidArgument
 	}
 	return nil
+}
+
+func extractSkillIdentityFromManifest(raw string) (string, string, error) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(anyToString(payload["skill_id"])), strings.TrimSpace(anyToString(payload["version"])), nil
 }
 
 func maxInt64(value int64, fallback int64) int64 {

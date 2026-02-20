@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"io"
 	"strings"
 	"time"
 
@@ -55,6 +56,8 @@ type registerSkillReleaseRequest struct {
 	Status       string  `json:"status,omitempty"`
 	CreatedBy    *string `json:"created_by,omitempty"`
 }
+
+const maxSkillBundleBytes = 20 << 20
 
 type upsertSLAConfigRequest struct {
 	SessionType          string  `json:"session_type"`
@@ -254,6 +257,42 @@ func (h *Handler) RegisterSkillReleaseConfig(c *gin.Context) {
 	core.WriteResponse(c, resp, err)
 }
 
+func (h *Handler) UploadSkillReleaseConfig(c *gin.Context) {
+	if err := authz.RequireAnyScope(c, authz.ScopeConfigAdmin); err != nil {
+		core.WriteResponse(c, nil, err)
+		return
+	}
+	fileHeader, err := c.FormFile("bundle")
+	if err != nil {
+		core.WriteResponse(c, nil, errno.ErrInvalidArgument)
+		return
+	}
+	file, err := fileHeader.Open()
+	if err != nil {
+		core.WriteResponse(c, nil, errno.ErrInvalidArgument)
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxSkillBundleBytes+1))
+	if err != nil {
+		core.WriteResponse(c, nil, errno.ErrInvalidArgument)
+		return
+	}
+	if len(raw) == 0 || len(raw) > maxSkillBundleBytes {
+		core.WriteResponse(c, nil, errno.ErrInvalidArgument)
+		return
+	}
+	createdBy := trimOptionalFormValue(c.PostForm("created_by"))
+	resp, bizErr := h.biz.InternalStrategyConfigV1().UploadSkillRelease(c.Request.Context(), &internalstrategyconfig.UploadSkillReleaseRequest{
+		SkillID:   strings.TrimSpace(c.PostForm("skill_id")),
+		Version:   strings.TrimSpace(c.PostForm("version")),
+		BundleRaw: raw,
+		Status:    strings.TrimSpace(c.PostForm("status")),
+		CreatedBy: createdBy,
+	})
+	core.WriteResponse(c, resp, bizErr)
+}
+
 func (h *Handler) GetSLAConfig(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAIRead, authz.ScopeConfigAdmin); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -365,6 +404,7 @@ func init() {
 		configGroup.POST("/skillset/update", configRBACMW, handler.UpsertSkillsetConfig)
 		configGroup.GET("/skill-release/:skill_id/:version", configRBACMW, handler.GetSkillReleaseConfig)
 		configGroup.POST("/skill-release/register", configRBACMW, handler.RegisterSkillReleaseConfig)
+		configGroup.POST("/skill-release/upload", configRBACMW, handler.UploadSkillReleaseConfig)
 		configGroup.GET("/sla/:session_type", configRBACMW, handler.GetSLAConfig)
 		configGroup.POST("/sla/update", configRBACMW, handler.UpsertSLAConfig)
 
@@ -372,4 +412,12 @@ func init() {
 		sessionGroup.GET("/:sessionID/assignment", sessionAssignRBACMW, handler.GetSessionAssignmentConfig)
 		sessionGroup.POST("/:sessionID/assign", sessionAssignRBACMW, handler.AssignSessionConfig)
 	})
+}
+
+func trimOptionalFormValue(raw string) *string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	return &value
 }

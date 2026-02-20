@@ -107,6 +107,21 @@ notice_worker:
     conc_ttl: 60s
     window_ttl: 2s
 
+skill_artifact:
+  endpoint: "http://192.168.39.3:9000"
+  bucket: "rca-skills-dev"
+  access_key: "DinhU1xMXtZer97oAHqV"
+  secret_key: "CXkeqbA6z4jSc9PwD1smh5Q0VEOBnaJluGZWtLYH"
+  region: "us-east-1"
+  path_style: true
+  tls: false
+  skip_tls_verify: true
+  private_bucket: true
+  object_key_pattern: "skills/{skill_id}/{version}/bundle.zip"
+  upload_mode: "api_upload"
+  download_mode: "presigned_url"
+  presign_ttl: 15m
+
 # MCP 治理策略（C5）：按 tool 维度覆盖 enabled/riskLevel/limits
 # mcp:
 #   isolation:

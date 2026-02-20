@@ -16,6 +16,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	genericoptions "github.com/onexstack/onexstack/pkg/options"
 	"github.com/onexstack/onexstack/pkg/server"
@@ -43,6 +44,7 @@ type Config struct {
 	AIJobLongPoll        queue.AdaptiveWaiterOptions
 	NoticeBaseURL        string
 	MCPPolicy            policy.MCPPolicyConfig
+	SkillArtifact        skillartifact.RuntimeConfig
 }
 
 // Server represents the web server and its background workers.
@@ -69,6 +71,9 @@ func (cfg *Config) New(ctx context.Context) (*Server, error) {
 		Redis:   cfg.RedisOptions,
 	})
 	noticepkg.SetConfiguredNoticeBaseURL(cfg.NoticeBaseURL)
+	if err := skillartifact.SetRuntimeConfig(cfg.SkillArtifact); err != nil {
+		return nil, err
+	}
 	noticepkg.SetNoticeDeliverySignalPublisher(nil)
 	if err := cfg.configureNoticeDeliverySignalPublisher(ctx); err != nil {
 		return nil, err

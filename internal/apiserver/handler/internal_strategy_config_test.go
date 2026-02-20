@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 )
 
 func TestInternalStrategyConfigAPI_DynamicUpdateAndPermission(t *testing.T) {
@@ -128,6 +131,42 @@ func TestInternalStrategyConfigAPI_SessionAssign(t *testing.T) {
 	require.Equal(t, "dynamic_db", extractString(getData, "source", "Source"))
 }
 
+func TestInternalStrategyConfigAPI_SkillReleaseUpload(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(
+		&model.SkillReleaseM{},
+		&model.SkillsetConfigDynamicM{},
+	))
+
+	restore := skillartifact.SetRuntimeManagerForTest(&handlerSkillArtifactManager{
+		artifactRef: "s3://rca-skills-dev/skills/claude.analysis/1.0.0/bundle.zip",
+		digest:      "8f990ba0b577b51cf009ea049368c16bbda1b21e1b93be07a824758bb253c39b",
+	})
+	defer restore()
+
+	adminToken := loginOperatorForTest(t, client, baseURL, map[string]any{
+		"operator_id": "operator:admin",
+		"scopes":      []string{"config.admin", "ai.read", "ai.run"},
+	})
+
+	body, contentType := buildSkillUploadBody(t)
+	status, payload, err := doMultipartRequestWithToken(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/config/skill-release/upload",
+		body,
+		contentType,
+		adminToken,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	data := extractDataContainer(payload)
+	require.Equal(t, "claude.analysis", extractString(data, "skill_id", "skillID"))
+	require.Equal(t, "1.0.0", extractString(data, "version", "Version"))
+	require.Equal(t, "s3://rca-skills-dev/skills/claude.analysis/1.0.0/bundle.zip", extractString(data, "artifact_url", "artifactURL"))
+}
+
 func loginOperatorForTest(t *testing.T, client *http.Client, baseURL string, payload map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(payload)
@@ -173,4 +212,76 @@ func doJSONRequestWithToken(
 		return 0, nil, err
 	}
 	return resp.StatusCode, body, nil
+}
+
+func doMultipartRequestWithToken(
+	client *http.Client,
+	method string,
+	url string,
+	payload []byte,
+	contentType string,
+	token string,
+) (int, []byte, error) {
+	req, err := http.NewRequest(method, url, bytes.NewReader(payload))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Accept", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, body, nil
+}
+
+type handlerSkillArtifactManager struct {
+	artifactRef string
+	digest      string
+}
+
+func (f *handlerSkillArtifactManager) Enabled() bool {
+	return true
+}
+
+func (f *handlerSkillArtifactManager) UploadBundle(context.Context, string, string, []byte) (string, string, error) {
+	return f.artifactRef, f.digest, nil
+}
+
+func (f *handlerSkillArtifactManager) ResolveDownloadURL(_ context.Context, artifactRef string) (string, error) {
+	return artifactRef, nil
+}
+
+func buildSkillUploadBody(t *testing.T) ([]byte, string) {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("status", "active"))
+	fileWriter, err := writer.CreateFormFile("bundle", "claude.analysis.zip")
+	require.NoError(t, err)
+
+	var zipBuf bytes.Buffer
+	zipWriter := zip.NewWriter(&zipBuf)
+	manifestFile, err := zipWriter.Create("manifest.json")
+	require.NoError(t, err)
+	_, err = manifestFile.Write([]byte(`{"skill_id":"claude.analysis","version":"1.0.0","runtime":"python","entrypoint":{"module":"skills.analysis","callable":"run"},"instruction_file":"SKILL.md","resource_files":[],"allowed_tools":["query_logs"]}`))
+	require.NoError(t, err)
+	skillFile, err := zipWriter.Create("SKILL.md")
+	require.NoError(t, err)
+	_, err = skillFile.Write([]byte("# skill\n"))
+	require.NoError(t, err)
+	require.NoError(t, zipWriter.Close())
+
+	_, err = fileWriter.Write(zipBuf.Bytes())
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return body.Bytes(), writer.FormDataContentType()
 }

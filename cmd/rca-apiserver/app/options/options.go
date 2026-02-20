@@ -16,6 +16,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/queue"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 )
 
 var (
@@ -60,6 +61,8 @@ type ServerOptions struct {
 	NoticeBaseURL string `json:"noticeBaseURL" mapstructure:"noticeBaseURL"`
 	// MCPPolicy configures per-tool MCP governance limits and enable switches.
 	MCPPolicy policy.MCPPolicyConfig `json:"mcp" mapstructure:"mcp"`
+	// SkillArtifact configures skill bundle upload and download artifact storage.
+	SkillArtifact skillartifact.RuntimeConfig `json:"skill_artifact" mapstructure:"skill_artifact"`
 
 	aiJobLongPollYAMLSet queue.AdaptiveWaiterOptionSet `json:"-" mapstructure:"-"`
 	aiJobLongPollCLISet  queue.AdaptiveWaiterOptionSet `json:"-" mapstructure:"-"`
@@ -138,6 +141,7 @@ func NewServerOptions() *ServerOptions {
 		},
 		AlertingPolicy: alertingpolicy.DefaultExternalPolicyOptions(),
 		AIJobLongPoll:  newAIJobLongPollOptions(),
+		SkillArtifact:  skillartifact.DefaultRuntimeConfig(),
 		NoticeWorker: NoticeWorkerOptions{
 			PollInterval:       1 * time.Second,
 			BatchSize:          16,
@@ -216,6 +220,19 @@ func (o *ServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.NoticeWorker.Redis.ConcTTL, "notice-worker-redis-conc-ttl", o.NoticeWorker.Redis.ConcTTL, "Redis TTL for per-channel concurrency key.")
 	fs.DurationVar(&o.NoticeWorker.Redis.WindowTTL, "notice-worker-redis-window-ttl", o.NoticeWorker.Redis.WindowTTL, "Redis TTL for per-second QPS window keys.")
 	fs.StringVar(&o.NoticeBaseURL, "notice-base-url", o.NoticeBaseURL, "Default base URL for notice links when channel.baseURL is empty.")
+	fs.StringVar(&o.SkillArtifact.Endpoint, "skill-artifact.endpoint", o.SkillArtifact.Endpoint, "S3-compatible endpoint for skill bundle storage.")
+	fs.StringVar(&o.SkillArtifact.Bucket, "skill-artifact.bucket", o.SkillArtifact.Bucket, "Bucket name for skill bundle storage.")
+	fs.StringVar(&o.SkillArtifact.AccessKey, "skill-artifact.access_key", o.SkillArtifact.AccessKey, "Access key for skill bundle storage.")
+	fs.StringVar(&o.SkillArtifact.SecretKey, "skill-artifact.secret_key", o.SkillArtifact.SecretKey, "Secret key for skill bundle storage.")
+	fs.StringVar(&o.SkillArtifact.Region, "skill-artifact.region", o.SkillArtifact.Region, "Region for skill bundle storage.")
+	fs.BoolVar(&o.SkillArtifact.PathStyle, "skill-artifact.path_style", o.SkillArtifact.PathStyle, "Use path-style bucket lookup for skill bundle storage.")
+	fs.BoolVar(&o.SkillArtifact.TLS, "skill-artifact.tls", o.SkillArtifact.TLS, "Use TLS when the skill artifact endpoint omits an explicit scheme.")
+	fs.BoolVar(&o.SkillArtifact.SkipTLSVerify, "skill-artifact.skip_tls_verify", o.SkillArtifact.SkipTLSVerify, "Skip TLS certificate verification for skill artifact storage.")
+	fs.BoolVar(&o.SkillArtifact.PrivateBucket, "skill-artifact.private_bucket", o.SkillArtifact.PrivateBucket, "Treat the skill artifact bucket as private and prefer presigned download URLs.")
+	fs.StringVar(&o.SkillArtifact.ObjectKeyPattern, "skill-artifact.object_key_pattern", o.SkillArtifact.ObjectKeyPattern, "Object key pattern for uploaded skill bundles.")
+	fs.StringVar(&o.SkillArtifact.UploadMode, "skill-artifact.upload_mode", o.SkillArtifact.UploadMode, "Skill artifact upload mode: manual_register|api_upload.")
+	fs.StringVar(&o.SkillArtifact.DownloadMode, "skill-artifact.download_mode", o.SkillArtifact.DownloadMode, "Skill artifact download mode: direct_url|presigned_url.")
+	fs.DurationVar(&o.SkillArtifact.PresignTTL, "skill-artifact.presign_ttl", o.SkillArtifact.PresignTTL, "Presigned URL ttl for private skill bundle downloads.")
 }
 
 // Complete completes all the required options.
@@ -253,6 +270,9 @@ func (o *ServerOptions) Validate() error {
 	errs = append(errs, o.validateNoticeWorkerOptions()...)
 	if !isValidNoticeBaseURL(o.NoticeBaseURL) {
 		errs = append(errs, errInvalidNoticeBaseURL)
+	}
+	if err := validateSkillArtifactOptions(o.SkillArtifact); err != nil {
+		errs = append(errs, err)
 	}
 
 	// Aggregate all errors and return them.
@@ -308,6 +328,7 @@ func (o *ServerOptions) Config() (*apiserver.Config, error) {
 		AIJobLongPoll:        o.resolvedLongPollOpts,
 		NoticeBaseURL:        strings.TrimSpace(o.NoticeBaseURL),
 		MCPPolicy:            o.MCPPolicy,
+		SkillArtifact:        o.SkillArtifact,
 	}, nil
 }
 
@@ -358,6 +379,85 @@ func isValidNoticeBaseURL(raw string) bool {
 		return true
 	}
 	parsed, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	return (scheme == "http" || scheme == "https") && strings.TrimSpace(parsed.Host) != ""
+}
+
+func validateSkillArtifactOptions(cfg skillartifact.RuntimeConfig) error {
+	normalized := skillartifact.DefaultRuntimeConfig()
+	if strings.TrimSpace(cfg.Endpoint) != "" {
+		normalized.Endpoint = strings.TrimSpace(cfg.Endpoint)
+	}
+	if strings.TrimSpace(cfg.Bucket) != "" {
+		normalized.Bucket = strings.TrimSpace(cfg.Bucket)
+	}
+	if strings.TrimSpace(cfg.AccessKey) != "" {
+		normalized.AccessKey = strings.TrimSpace(cfg.AccessKey)
+	}
+	if strings.TrimSpace(cfg.SecretKey) != "" {
+		normalized.SecretKey = strings.TrimSpace(cfg.SecretKey)
+	}
+	if strings.TrimSpace(cfg.Region) != "" {
+		normalized.Region = strings.TrimSpace(cfg.Region)
+	}
+	if strings.TrimSpace(cfg.ObjectKeyPattern) != "" {
+		normalized.ObjectKeyPattern = strings.TrimSpace(cfg.ObjectKeyPattern)
+	}
+	if strings.TrimSpace(cfg.UploadMode) != "" {
+		normalized.UploadMode = strings.ToLower(strings.TrimSpace(cfg.UploadMode))
+	}
+	if strings.TrimSpace(cfg.DownloadMode) != "" {
+		normalized.DownloadMode = strings.ToLower(strings.TrimSpace(cfg.DownloadMode))
+	}
+	if cfg.PresignTTL > 0 {
+		normalized.PresignTTL = cfg.PresignTTL
+	}
+	normalized.PathStyle = cfg.PathStyle
+	normalized.TLS = cfg.TLS
+	normalized.SkipTLSVerify = cfg.SkipTLSVerify
+	normalized.PrivateBucket = cfg.PrivateBucket
+
+	hasAny := normalized.Endpoint != "" || normalized.Bucket != "" || normalized.AccessKey != "" || normalized.SecretKey != ""
+	if !hasAny {
+		return nil
+	}
+	if normalized.Endpoint == "" || normalized.Bucket == "" || normalized.AccessKey == "" || normalized.SecretKey == "" {
+		return errors.New("skill_artifact requires endpoint, bucket, access_key, secret_key")
+	}
+	if !isValidHTTPBaseURLLike(normalized.Endpoint) {
+		return errors.New("skill_artifact.endpoint must be valid http(s) url or host:port")
+	}
+	switch normalized.UploadMode {
+	case "manual_register", "api_upload":
+	default:
+		return errors.New("skill_artifact.upload_mode must be manual_register or api_upload")
+	}
+	switch normalized.DownloadMode {
+	case "direct_url", "presigned_url":
+	default:
+		return errors.New("skill_artifact.download_mode must be direct_url or presigned_url")
+	}
+	if strings.TrimSpace(normalized.ObjectKeyPattern) == "" {
+		return errors.New("skill_artifact.object_key_pattern must not be empty")
+	}
+	if normalized.PresignTTL <= 0 {
+		return errors.New("skill_artifact.presign_ttl must be > 0")
+	}
+	return nil
+}
+
+func isValidHTTPBaseURLLike(raw string) bool {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return false
+	}
+	if !strings.Contains(value, "://") {
+		value = "http://" + value
+	}
+	parsed, err := url.ParseRequestURI(value)
 	if err != nil {
 		return false
 	}
