@@ -10,10 +10,12 @@ import zipfile
 
 TESTS_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = TESTS_DIR.parent
+REPO_ROOT = PROJECT_DIR.parent.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.runtime import OrchestratorRuntime
+from orchestrator.skills.agent import DiagnosisEnrichOutput, SkillSelectionResult
 from orchestrator.skills.runtime import SkillCatalog, parse_skill_frontmatter
 from orchestrator.state import GraphState
 
@@ -122,6 +124,10 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual(described[0]["priority"], 100)
             self.assertEqual(described[0]["name"], "Claude Analysis")
             self.assertEqual(described[0]["description"], "Analyze incident evidence")
+            candidates = catalog.candidates_for_capability("diagnosis.enrich")
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0].skill_id, "claude.analysis")
+            self.assertIn("# test skill", catalog.load_skill_document(candidates[0].binding_key))
 
     def test_resolved_skill_bundle_summary_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -220,6 +226,59 @@ class SkillCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "flat scalar fields"):
             parse_skill_frontmatter("---\nname: Demo\n nested: nope\ndescription: Sample\n---\n")
 
+    def test_candidates_for_capability_sort_by_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_one = base / "s1"
+            skill_two = base / "s2"
+            skill_one.mkdir(parents=True)
+            skill_two.mkdir(parents=True)
+            _write_skill_dir(skill_one, name="Skill One", description="First")
+            _write_skill_dir(skill_two, name="Skill Two", description="Second")
+            bundle_one = base / "one.zip"
+            bundle_two = base / "two.zip"
+            digest_one = _zip_dir(skill_one, bundle_one)
+            digest_two = _zip_dir(skill_two, bundle_two)
+            payload = [
+                {
+                    "skillsetID": "skillset.default",
+                    "skills": [
+                        {
+                            "skillID": "skill.one",
+                            "version": "1.0.0",
+                            "artifactURL": bundle_one.resolve().as_uri(),
+                            "bundleDigest": digest_one,
+                            "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Skill One","description":"First","compatibility":""}',
+                            "capability": "diagnosis.enrich",
+                            "priority": 80,
+                            "enabled": True,
+                        },
+                        {
+                            "skillID": "skill.two",
+                            "version": "1.0.0",
+                            "artifactURL": bundle_two.resolve().as_uri(),
+                            "bundleDigest": digest_two,
+                            "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Skill Two","description":"Second","compatibility":""}',
+                            "capability": "diagnosis.enrich",
+                            "priority": 120,
+                            "enabled": True,
+                        },
+                    ],
+                }
+            ]
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=payload,
+                cache_dir=str(base / "cache"),
+            )
+            candidates = catalog.candidates_for_capability("diagnosis.enrich")
+            self.assertEqual([item.skill_id for item in candidates], ["skill.two", "skill.one"])
+
+    def test_checked_in_prompt_only_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "diagnosis-enrich" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "RCA Diagnosis Enricher")
+        self.assertIn("Enrich the native RCA diagnosis", frontmatter["description"])
+
     def test_orchestrator_runtime_execute_skill_is_disabled_for_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = Path(tmp_dir)
@@ -262,6 +321,211 @@ class SkillCatalogTest(unittest.TestCase):
             state = GraphState(job_id="job-1", incident_id="inc-1")
             with self.assertRaisesRegex(RuntimeError, "skill execution is disabled"):
                 runtime.execute_skill("claude.analysis", input_payload={"query": "error"}, graph_state=state)
+
+    def test_prompt_first_runtime_consumes_diagnosis_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Claude Analysis", description="Analyze incident evidence")
+            bundle_path = base / "claude.analysis.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.analysis",
+                    version="1.0.0",
+                    name="Claude Analysis",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(selected_binding_key="claude.analysis\x001.0.0\x00diagnosis.enrich", reason="best match")
+
+                def run_diagnosis_enrich(self, **_: object) -> DiagnosisEnrichOutput:
+                    return DiagnosisEnrichOutput(
+                        diagnosis_patch={
+                            "summary": "Improved summary",
+                            "root_cause": {
+                                "summary": "Improved root cause summary",
+                                "statement": "Improved statement",
+                                "confidence": 0.95,
+                            },
+                            "unknowns": ["missing traces"],
+                            "next_steps": ["collect traces"],
+                            "incident_id": "forbidden",
+                        },
+                        session_patch={
+                            "latest_summary": {"summary": "Improved summary"},
+                            "context_state_patch": {"skills": {"diagnosis_enrich": {"applied": True}}},
+                        },
+                        observations=[{"kind": "note", "message": "applied"}],
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_FakeAgent(),
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=GraphState(job_id="job-1", incident_id="inc-1"),
+                input_payload={
+                    "incident_id": "inc-1",
+                    "incident_context": {"service": "svc-a"},
+                    "input_hints": {},
+                    "quality_gate_decision": "success",
+                    "quality_gate_reasons": [],
+                    "missing_evidence": [],
+                    "evidence_ids": ["ev-1"],
+                    "evidence_meta": [{"evidence_id": "ev-1"}],
+                    "diagnosis_json": {
+                        "summary": "Native summary",
+                        "root_cause": {
+                            "summary": "Native root summary",
+                            "statement": "Native statement",
+                            "confidence": 0.65,
+                            "evidence_ids": ["ev-1"],
+                        },
+                    },
+                },
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.analysis")
+            self.assertEqual(result["diagnosis_patch"]["summary"], "Improved summary")
+            self.assertEqual(result["diagnosis_patch"]["root_cause"]["summary"], "Improved root cause summary")
+            self.assertNotIn("incident_id", result["diagnosis_patch"])
+            self.assertNotIn("confidence", result["diagnosis_patch"]["root_cause"])
+            self.assertEqual(result["session_patch"]["actor"], "skill:claude.analysis")
+            self.assertEqual(result["session_patch"]["source"], "skill.prompt")
+
+    def test_prompt_first_runtime_returns_none_when_selector_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Claude Analysis", description="Analyze incident evidence")
+            bundle_path = base / "claude.analysis.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.analysis",
+                    version="1.0.0",
+                    name="Claude Analysis",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(selected_binding_key="", reason="skip")
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_FakeAgent(),
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=GraphState(job_id="job-1", incident_id="inc-1"),
+                input_payload={"incident_id": "inc-1", "diagnosis_json": {}, "evidence_ids": []},
+            )
+            self.assertIsNone(result)
+
+    def test_prompt_first_runtime_falls_back_when_agent_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Claude Analysis", description="Analyze incident evidence")
+            bundle_path = base / "claude.analysis.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.analysis",
+                    version="1.0.0",
+                    name="Claude Analysis",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _BrokenAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    raise RuntimeError("selector boom")
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_BrokenAgent(),
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=GraphState(job_id="job-1", incident_id="inc-1"),
+                input_payload={"incident_id": "inc-1", "diagnosis_json": {}, "evidence_ids": []},
+            )
+            self.assertIsNone(result)
 
 
 if __name__ == "__main__":

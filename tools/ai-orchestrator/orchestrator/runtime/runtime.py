@@ -16,7 +16,8 @@ from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
 if TYPE_CHECKING:
-    from ..skills.runtime import SkillCatalog
+    from ..skills.agent import PromptSkillAgent
+    from ..skills.runtime import SkillCandidate, SkillCatalog
     from ..tooling.invoker import ToolInvoker, ToolInvokerChain
 
 
@@ -146,6 +147,8 @@ class OrchestratorRuntime:
         verification_dedupe_enabled: bool = True,
         tool_invoker: ToolInvoker | ToolInvokerChain | None = None,
         skill_catalog: SkillCatalog | None = None,
+        skills_execution_mode: str = "catalog",
+        skill_agent: PromptSkillAgent | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
@@ -153,6 +156,8 @@ class OrchestratorRuntime:
         self._log_func = log_func
         self._tool_invoker = tool_invoker
         self._skill_catalog = skill_catalog
+        self._skills_execution_mode = str(skills_execution_mode or "catalog").strip().lower() or "catalog"
+        self._skill_agent = skill_agent
         self._started = False
         if not self._job_id:
             raise RuntimeError("job_id is required")
@@ -226,6 +231,14 @@ class OrchestratorRuntime:
         if self._skill_catalog is None:
             return []
         return self._skill_catalog.skill_ids()
+
+    def skill_candidates(self, capability: str) -> list["SkillCandidate"]:
+        if self._skill_catalog is None:
+            return []
+        return self._skill_catalog.candidates_for_capability(capability)
+
+    def merge_session_patch(self, graph_state: Any, patch: dict[str, Any] | None) -> None:
+        _merge_state_session_patch(graph_state, patch)
 
     def report_observation(
         self,
@@ -548,6 +561,186 @@ class OrchestratorRuntime:
             f"skill_id={normalized_skill_id} input_keys={sorted((input_payload or {}).keys())}"
         )
 
+    def consume_diagnosis_enrich_skill(
+        self,
+        *,
+        graph_state: Any,
+        input_payload: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if self._skill_catalog is None or self._skills_execution_mode != "prompt_first":
+            return None
+
+        capability = "diagnosis.enrich"
+        stage = "summarize_diagnosis"
+        candidates = self.skill_candidates(capability)
+        if not candidates:
+            return None
+
+        candidate_skill_ids = [candidate.skill_id for candidate in candidates]
+        stage_summary = _build_diagnosis_stage_summary(input_payload)
+        if self._skill_agent is None or not bool(getattr(self._skill_agent, "configured", False)):
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name="skills.diagnosis_enrich",
+                params={"capability": capability, "stage": stage},
+                response={
+                    "status": "fallback",
+                    "reason": "agent_not_configured",
+                    "candidate_count": len(candidates),
+                    "candidate_skill_ids": candidate_skill_ids,
+                },
+                evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+            )
+            return None
+
+        selection_started = time.monotonic()
+        try:
+            selection = self._skill_agent.select_skill(
+                capability=capability,
+                stage=stage,
+                stage_summary=stage_summary,
+                candidates=[candidate.to_summary_dict() for candidate in candidates],
+            )
+            selection_latency_ms = max(1, int((time.monotonic() - selection_started) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.select",
+                node_name="skills.diagnosis_enrich",
+                params={
+                    "capability": capability,
+                    "stage": stage,
+                },
+                response={
+                    "status": "ok",
+                    "latency_ms": selection_latency_ms,
+                    "candidate_count": len(candidates),
+                    "candidate_skill_ids": candidate_skill_ids,
+                    "selected_binding_key": str(selection.selected_binding_key or ""),
+                    "reason": str(selection.reason or ""),
+                },
+                evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+            )
+        except Exception as exc:  # noqa: BLE001
+            selection_latency_ms = max(1, int((time.monotonic() - selection_started) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name="skills.diagnosis_enrich",
+                params={
+                    "capability": capability,
+                    "stage": stage,
+                },
+                response={
+                    "status": "fallback",
+                    "reason": "selection_failed",
+                    "latency_ms": selection_latency_ms,
+                    "candidate_count": len(candidates),
+                    "candidate_skill_ids": candidate_skill_ids,
+                    "error": _trim_text(exc),
+                },
+                evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+            )
+            return None
+
+        selected_binding_key = str(selection.selected_binding_key or "").strip()
+        if not selected_binding_key:
+            return None
+        selected_candidate = next((item for item in candidates if item.binding_key == selected_binding_key), None)
+        if selected_candidate is None:
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name="skills.diagnosis_enrich",
+                params={"capability": capability, "stage": stage},
+                response={
+                    "status": "fallback",
+                    "reason": "selected_binding_not_found",
+                    "candidate_count": len(candidates),
+                    "candidate_skill_ids": candidate_skill_ids,
+                    "selected_binding_key": selected_binding_key,
+                },
+                evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+            )
+            return None
+
+        consume_started = time.monotonic()
+        try:
+            skill = self._skill_catalog.get_skill(selected_binding_key)
+            skill_document = self._skill_catalog.load_skill_document(selected_binding_key)
+            output = self._skill_agent.run_diagnosis_enrich(
+                skill_id=skill.summary.skill_id,
+                skill_version=skill.summary.version,
+                skill_document=skill_document,
+                input_payload=input_payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            consume_latency_ms = max(1, int((time.monotonic() - consume_started) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name="skills.diagnosis_enrich",
+                params={"capability": capability, "stage": stage, "selected_binding_key": selected_binding_key},
+                response={
+                    "status": "fallback",
+                    "reason": "consume_failed",
+                    "latency_ms": consume_latency_ms,
+                    "skill_id": selected_candidate.skill_id,
+                    "selected_binding_key": selected_binding_key,
+                    "error": _trim_text(exc),
+                },
+                evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+            )
+            return None
+
+        diagnosis_patch, dropped_fields = _sanitize_diagnosis_patch(output.diagnosis_patch)
+        session_patch = _sanitize_session_patch(output.session_patch)
+        if session_patch and not str(session_patch.get("actor") or "").strip():
+            session_patch["actor"] = f"skill:{selected_candidate.skill_id}"
+        if session_patch and not str(session_patch.get("source") or "").strip():
+            session_patch["source"] = "skill.prompt"
+        observations = [item for item in output.observations if isinstance(item, dict)]
+        consume_latency_ms = max(1, int((time.monotonic() - consume_started) * 1000))
+        self._report_observation_best_effort(
+            tool="skill.consume",
+            node_name="skills.diagnosis_enrich",
+            params={
+                "capability": capability,
+                "stage": stage,
+                "selected_binding_key": selected_binding_key,
+            },
+            response={
+                "status": "ok",
+                "latency_ms": consume_latency_ms,
+                "skill_id": selected_candidate.skill_id,
+                "selected_binding_key": selected_binding_key,
+                "candidate_count": len(candidates),
+                "candidate_skill_ids": candidate_skill_ids,
+                "diagnosis_patch_keys": sorted(diagnosis_patch.keys()),
+                "session_patch_keys": sorted(session_patch.keys()),
+                "observation_count": len(observations),
+                "dropped_fields": dropped_fields,
+            },
+            evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+        )
+        if dropped_fields:
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name="skills.diagnosis_enrich",
+                params={"capability": capability, "stage": stage, "selected_binding_key": selected_binding_key},
+                response={
+                    "status": "fallback",
+                    "reason": "diagnosis_patch_fields_dropped",
+                    "skill_id": selected_candidate.skill_id,
+                    "selected_binding_key": selected_binding_key,
+                    "fields": dropped_fields,
+                },
+                evidence_ids=input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+            )
+        return {
+            "selected_binding_key": selected_binding_key,
+            "skill_id": selected_candidate.skill_id,
+            "version": selected_candidate.version,
+            "diagnosis_patch": diagnosis_patch,
+            "session_patch": session_patch,
+            "observations": observations,
+        }
+
     def get_incident(self, incident_id: str) -> dict[str, Any]:
         normalized = str(incident_id).strip()
         if not normalized:
@@ -752,3 +945,107 @@ def _merge_state_session_patch(graph_state: Any, patch: Any) -> None:
             existing[key] = current_remove
             continue
         existing[key] = value
+
+
+def _build_diagnosis_stage_summary(input_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "incident_id": str(input_payload.get("incident_id") or "").strip(),
+        "quality_gate_decision": str(input_payload.get("quality_gate_decision") or "").strip(),
+        "quality_gate_reasons": input_payload.get("quality_gate_reasons")
+        if isinstance(input_payload.get("quality_gate_reasons"), list)
+        else [],
+        "missing_evidence": input_payload.get("missing_evidence") if isinstance(input_payload.get("missing_evidence"), list) else [],
+        "evidence_ids": input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else [],
+        "has_incident_context": isinstance(input_payload.get("incident_context"), dict) and bool(input_payload.get("incident_context")),
+        "has_input_hints": isinstance(input_payload.get("input_hints"), dict) and bool(input_payload.get("input_hints")),
+        "diagnosis_summary": str(
+            ((input_payload.get("diagnosis_json") or {}) if isinstance(input_payload.get("diagnosis_json"), dict) else {}).get("summary")
+            or ""
+        ).strip(),
+    }
+
+
+def _sanitize_diagnosis_patch(patch: Any) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(patch, dict):
+        return {}, []
+    sanitized: dict[str, Any] = {}
+    dropped: list[str] = []
+
+    summary = patch.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        sanitized["summary"] = summary.strip()
+    elif "summary" in patch and summary is not None:
+        dropped.append("summary")
+
+    root_cause = patch.get("root_cause")
+    if isinstance(root_cause, dict):
+        allowed_root_cause: dict[str, Any] = {}
+        summary_value = root_cause.get("summary")
+        statement_value = root_cause.get("statement")
+        if isinstance(summary_value, str) and summary_value.strip():
+            allowed_root_cause["summary"] = summary_value.strip()
+        elif "summary" in root_cause and summary_value is not None:
+            dropped.append("root_cause.summary")
+        if isinstance(statement_value, str) and statement_value.strip():
+            allowed_root_cause["statement"] = statement_value.strip()
+        elif "statement" in root_cause and statement_value is not None:
+            dropped.append("root_cause.statement")
+        if allowed_root_cause:
+            sanitized["root_cause"] = allowed_root_cause
+        forbidden_root_keys = set(root_cause.keys()) - {"summary", "statement"}
+        for key in sorted(forbidden_root_keys):
+            dropped.append(f"root_cause.{key}")
+    elif "root_cause" in patch and root_cause is not None:
+        dropped.append("root_cause")
+
+    recommendations = patch.get("recommendations")
+    if isinstance(recommendations, list):
+        normalized_recommendations = [item for item in recommendations if isinstance(item, dict)]
+        if normalized_recommendations:
+            sanitized["recommendations"] = normalized_recommendations
+        elif recommendations:
+            dropped.append("recommendations")
+    elif "recommendations" in patch and recommendations is not None:
+        dropped.append("recommendations")
+
+    for key in ("unknowns", "next_steps"):
+        value = patch.get(key)
+        if isinstance(value, list):
+            normalized_list = [str(item).strip() for item in value if str(item).strip()]
+            if normalized_list:
+                sanitized[key] = normalized_list
+            elif value:
+                dropped.append(key)
+        elif key in patch and value is not None:
+            dropped.append(key)
+
+    forbidden_top_level = set(patch.keys()) - {"summary", "root_cause", "recommendations", "unknowns", "next_steps"}
+    dropped.extend(sorted(forbidden_top_level))
+    return sanitized, sorted(set(dropped))
+
+
+def _sanitize_session_patch(patch: Any) -> dict[str, Any]:
+    if not isinstance(patch, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    latest_summary = patch.get("latest_summary")
+    if isinstance(latest_summary, dict):
+        sanitized["latest_summary"] = latest_summary
+    pinned_append = patch.get("pinned_evidence_append")
+    if isinstance(pinned_append, list):
+        normalized_append = [item for item in pinned_append if isinstance(item, dict)]
+        if normalized_append:
+            sanitized["pinned_evidence_append"] = normalized_append
+    pinned_remove = patch.get("pinned_evidence_remove")
+    if isinstance(pinned_remove, list):
+        normalized_remove = [str(item).strip() for item in pinned_remove if str(item).strip()]
+        if normalized_remove:
+            sanitized["pinned_evidence_remove"] = normalized_remove
+    context_state_patch = patch.get("context_state_patch")
+    if isinstance(context_state_patch, dict):
+        sanitized["context_state_patch"] = context_state_patch
+    for key in ("actor", "note", "source"):
+        value = patch.get(key)
+        if isinstance(value, str) and value.strip():
+            sanitized[key] = value.strip()
+    return sanitized

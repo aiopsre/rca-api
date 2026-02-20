@@ -14,6 +14,7 @@ from ..langgraph.registry import (
 )
 from ..runtime.runtime import OrchestratorRuntime
 from ..skills import SkillCatalog, apply_session_patch_to_state, load_session_snapshot_into_state
+from ..skills.agent import PromptSkillAgent
 from ..state import GraphState
 from ..tooling import (
     ToolInvoker,
@@ -399,6 +400,19 @@ def _build_skill_catalog(
     return skill_catalog, selected_skillsets, source
 
 
+def _build_prompt_skill_agent(settings: Settings) -> PromptSkillAgent | None:
+    if settings.skills_execution_mode != "prompt_first":
+        return None
+    if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
+        return None
+    return PromptSkillAgent(
+        model=settings.agent_model,
+        base_url=settings.agent_base_url,
+        api_key=settings.agent_api_key,
+        timeout_seconds=settings.agent_timeout_seconds,
+    )
+
+
 def _report_skillset_selection_observation(
     *,
     runtime: OrchestratorRuntime,
@@ -587,6 +601,8 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         verification_dedupe_enabled=settings.verification_dedupe_enabled,
         tool_invoker=tool_invoker,
         skill_catalog=skill_catalog,
+        skills_execution_mode=settings.skills_execution_mode,
+        skill_agent=_build_prompt_skill_agent(settings),
     )
     if not runtime.start():
         if debug:
@@ -719,8 +735,11 @@ def main() -> None:
         f"post_finalize_wait_timeout_seconds={settings.post_finalize_wait_timeout_seconds} "
         f"post_finalize_wait_interval_ms={settings.post_finalize_wait_interval_ms} "
         f"post_finalize_wait_max_interval_ms={settings.post_finalize_wait_max_interval_ms} "
+        f"skills_execution_mode={settings.skills_execution_mode} "
         f"skills_cache_dir={settings.skills_cache_dir} "
         f"skills_local_paths_set={int(bool(settings.skills_local_paths))}"
+        f" agent_model_set={int(bool(settings.agent_model))} "
+        f"agent_base_url_set={int(bool(settings.agent_base_url))}"
     )
 
     poll_client = _new_client(settings)

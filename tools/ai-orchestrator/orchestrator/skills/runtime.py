@@ -164,6 +164,32 @@ class CatalogSkill:
         return _binding_key(self.summary.skill_id, self.summary.version, self.binding.capability)
 
 
+@dataclass(frozen=True)
+class SkillCandidate:
+    binding_key: str
+    skill_id: str
+    version: str
+    name: str
+    description: str
+    compatibility: str
+    capability: str
+    priority: int
+    source: str
+
+    def to_summary_dict(self) -> dict[str, Any]:
+        return {
+            "binding_key": self.binding_key,
+            "skill_id": self.skill_id,
+            "version": self.version,
+            "name": self.name,
+            "description": self.description,
+            "compatibility": self.compatibility,
+            "capability": self.capability,
+            "priority": self.priority,
+            "source": self.source,
+        }
+
+
 class SkillCatalog:
     def __init__(
         self,
@@ -225,6 +251,45 @@ class SkillCatalog:
                 }
             )
         return out
+
+    def candidates_for_capability(self, capability: str) -> list[SkillCandidate]:
+        normalized_capability = _trim(capability)
+        if not normalized_capability:
+            return []
+        out: list[SkillCandidate] = []
+        for binding_key, item in self._skills.items():
+            if item.binding.capability != normalized_capability or not item.binding.enabled:
+                continue
+            out.append(
+                SkillCandidate(
+                    binding_key=binding_key,
+                    skill_id=item.summary.skill_id,
+                    version=item.summary.version,
+                    name=item.summary.name,
+                    description=item.summary.description,
+                    compatibility=item.summary.compatibility,
+                    capability=item.binding.capability,
+                    priority=item.binding.priority,
+                    source=item.source,
+                )
+            )
+        out.sort(key=lambda item: (-item.priority, item.skill_id, item.version, item.binding_key))
+        return out
+
+    def load_skill_document(self, binding_key: str) -> str:
+        item = self._skills.get(_trim(binding_key))
+        if item is None:
+            raise RuntimeError(f"unknown skill binding: {binding_key}")
+        skill_path = item.root_dir / item.summary.instruction_file
+        if not skill_path.exists():
+            raise RuntimeError(f"skill bundle missing {item.summary.instruction_file}")
+        return skill_path.read_text(encoding="utf-8")
+
+    def get_skill(self, binding_key: str) -> CatalogSkill:
+        item = self._skills.get(_trim(binding_key))
+        if item is None:
+            raise RuntimeError(f"unknown skill binding: {binding_key}")
+        return item
 
     def _load_remote_skillsets(self, skillsets_payload: list[dict[str, Any]]) -> None:
         for skillset_item in skillsets_payload:

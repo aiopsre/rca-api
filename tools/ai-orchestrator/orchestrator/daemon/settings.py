@@ -38,8 +38,13 @@ class Settings:
     post_finalize_wait_max_interval_ms: int
     toolset_config_path: str
     toolset_config_json: str
+    skills_execution_mode: str = "catalog"
     skills_cache_dir: str = "/tmp/rca-ai-orchestrator/skills-cache"
     skills_local_paths: str = ""
+    agent_model: str = ""
+    agent_base_url: str = ""
+    agent_api_key: str = ""
+    agent_timeout_seconds: float = 20.0
 
 
 def _env_int(name: str, default: int) -> int:
@@ -59,6 +64,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "y", "on"}
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def load_settings() -> Settings:
     long_poll_wait_seconds = _env_int("LONG_POLL_WAIT_SECONDS", 20)
     long_poll_wait_seconds = max(0, min(30, long_poll_wait_seconds))
@@ -74,6 +89,9 @@ def load_settings() -> Settings:
         post_finalize_wait_interval_ms,
         _env_int("POST_FINALIZE_WAIT_MAX_INTERVAL_MS", 2000),
     )
+    skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "catalog").strip().lower() or "catalog"
+    if skills_execution_mode not in {"catalog", "prompt_first"}:
+        skills_execution_mode = "catalog"
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
@@ -112,6 +130,11 @@ def load_settings() -> Settings:
         post_finalize_wait_max_interval_ms=post_finalize_wait_max_interval_ms,
         toolset_config_path=os.getenv("TOOLSET_CONFIG_PATH", "").strip(),
         toolset_config_json=os.getenv("TOOLSET_CONFIG_JSON", "").strip(),
+        skills_execution_mode=skills_execution_mode,
         skills_cache_dir=os.getenv("SKILLS_CACHE_DIR", "/tmp/rca-ai-orchestrator/skills-cache").strip(),
         skills_local_paths=os.getenv("SKILLS_LOCAL_PATHS", "").strip(),
+        agent_model=os.getenv("AGENT_MODEL", "").strip(),
+        agent_base_url=os.getenv("AGENT_BASE_URL", "").strip(),
+        agent_api_key=os.getenv("AGENT_API_KEY", "").strip(),
+        agent_timeout_seconds=max(1.0, _env_float("AGENT_TIMEOUT_SECONDS", 20.0)),
     )

@@ -201,6 +201,22 @@ class _FakeRuntime:
             )
         ]
 
+    def consume_diagnosis_enrich_skill(
+        self,
+        *,
+        graph_state: object,
+        input_payload: dict[str, object],
+    ) -> dict[str, object] | None:
+        return None
+
+    def merge_session_patch(self, graph_state: GraphState, patch: dict[str, object] | None) -> None:
+        if not isinstance(patch, dict):
+            return
+        current = graph_state.session_patch if isinstance(graph_state.session_patch, dict) else {}
+        current = dict(current)
+        current.update(patch)
+        graph_state.session_patch = current
+
 
 class GraphPhaseETest(unittest.TestCase):
     def _invoke(self, cfg: OrchestratorConfig) -> tuple[GraphState, _FakeRuntime]:
@@ -262,6 +278,51 @@ class GraphPhaseETest(unittest.TestCase):
         executed = response["evidence_plan"].get("executed")
         self.assertIsInstance(executed, list)
         self.assertGreaterEqual(len(executed), 1)
+
+    def test_phasee_prompt_first_diagnosis_enrich_updates_state_and_finalize(self) -> None:
+        class _PromptSkillRuntime(_FakeRuntime):
+            def consume_diagnosis_enrich_skill(
+                self,
+                *,
+                graph_state: object,
+                input_payload: dict[str, object],
+            ) -> dict[str, object] | None:
+                return {
+                    "selected_binding_key": "skill.binding",
+                    "skill_id": "claude.diagnosis.enricher",
+                    "version": "1.0.0",
+                    "diagnosis_patch": {
+                        "summary": "Enriched summary",
+                        "root_cause": {"statement": "Enriched statement"},
+                        "next_steps": ["Review enriched follow-up"],
+                    },
+                    "session_patch": {
+                        "latest_summary": {"summary": "Enriched summary"},
+                        "context_state_patch": {"skills": {"diagnosis_enrich": {"applied": True}}},
+                    },
+                    "observations": [{"kind": "note", "message": "applied"}],
+                }
+
+        runtime = _PromptSkillRuntime()
+        graph = build_graph(
+            None,
+            OrchestratorConfig(
+                run_query=False,
+                run_verification=False,
+                post_finalize_observe=False,
+            ),
+            runtime,
+        )
+        out = graph.invoke(GraphState(job_id="job-1", instance_id="orc-1", started=True))
+        if isinstance(out, dict):
+            out = GraphState.model_validate(out)
+
+        self.assertTrue(out.finalized)
+        self.assertIsInstance(out.diagnosis_json, dict)
+        self.assertEqual(out.diagnosis_json["summary"], "Enriched summary")
+        self.assertEqual(out.diagnosis_json["root_cause"]["statement"], "Enriched statement")
+        self.assertEqual(out.session_patch["latest_summary"]["summary"], "Enriched summary")
+        self.assertEqual(runtime.finalize_calls[-1]["diagnosis_json"]["summary"], "Enriched summary")
 
     def test_phasee_lease_lost_skips_query_nodes_and_no_toolcall_write(self) -> None:
         class _LeaseLostAtQueryRuntime(_FakeRuntime):

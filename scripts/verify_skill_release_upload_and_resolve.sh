@@ -12,6 +12,7 @@ ORCHESTRATOR_INSTANCE_ID="${ORCHESTRATOR_INSTANCE_ID:-dev-verify}"
 SKILLSET_NAME="${SKILLSET_NAME:-claude_default}"
 SKILL_ID="${SKILL_ID:-claude.analysis}"
 SKILL_VERSION="${SKILL_VERSION:-1.0.0}"
+SKILL_CAPABILITY="${SKILL_CAPABILITY:-diagnosis.enrich}"
 ALLOWED_TOOL="${ALLOWED_TOOL:-query_logs}"
 SCOPES_HEADER="${SCOPES_HEADER:-config.admin,ai.read,ai.run}"
 CURL_BIN="${CURL_BIN:-curl}"
@@ -126,42 +127,16 @@ if [[ -z "${TOKEN}" ]]; then
 fi
 
 BUNDLE_ROOT="${WORKDIR}/bundle"
-mkdir -p "${BUNDLE_ROOT}/templates"
-
-cat > "${BUNDLE_ROOT}/manifest.json" <<JSON
-{
-  "skill_id": "${SKILL_ID}",
-  "version": "${SKILL_VERSION}",
-  "runtime": "python",
-  "entrypoint": {
-    "module": "skill_main",
-    "callable": "run"
-  },
-  "instruction_file": "SKILL.md",
-  "resource_files": ["templates/guide.md"],
-  "allowed_tools": ["${ALLOWED_TOOL}"]
-}
-JSON
+mkdir -p "${BUNDLE_ROOT}"
 
 cat > "${BUNDLE_ROOT}/SKILL.md" <<'MD'
-# Claude Analysis Skill
+---
+name: Claude Analysis Skill
+description: Development verification bundle for SKILL.md upload and resolve checks.
+compatibility: Prompt-only verification skill. Do not call tools.
+---
 
-This is a development verification bundle for upload and resolve flow checks.
-MD
-
-cat > "${BUNDLE_ROOT}/skill_main.py" <<'PY'
-def run(input_payload, ctx):
-    return {
-        "status": "ok",
-        "echo": input_payload,
-        "session_patch": {
-            "latest_summary": {"title": "skill upload verification"}
-        },
-    }
-PY
-
-cat > "${BUNDLE_ROOT}/templates/guide.md" <<'MD'
-Use this guide for verification only.
+This bundle exists only to verify upload, binding, and resolve flow for standard Claude-style Skills.
 MD
 
 BUNDLE_PATH="${WORKDIR}/${SKILL_ID}-${SKILL_VERSION}.zip"
@@ -180,7 +155,11 @@ SKILLSET_UPDATE_BODY="$(cat <<JSON
   "skills": [
     {
       "skill_id": "${SKILL_ID}",
-      "version": "${SKILL_VERSION}"
+      "version": "${SKILL_VERSION}",
+      "capability": "${SKILL_CAPABILITY}",
+      "allowed_tools": ["${ALLOWED_TOOL}"],
+      "priority": 120,
+      "enabled": true
     }
   ]
 }
@@ -223,6 +202,9 @@ SKILLSET_RESOLVE_RESPONSE="$(call_json GET "${BASE_URL}/v1/orchestrator/skillset
 assert_json_success "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}"
 assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skillsetID == "'"${SKILLSET_NAME}"'"'
 assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skills[0].skillID == "'"${SKILL_ID}"'"'
+assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skills[0].capability == "'"${SKILL_CAPABILITY}"'"'
+assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skills[0].priority == 120'
+assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skills[0].enabled == true'
 assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skills[0].artifactURL | startswith("'"${SKILL_ARTIFACT_ENDPOINT}"'/")'
 assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '(.data.skillsets // .skillsets)[0].skills[0].artifactURL | contains("X-Amz-Signature=")'
 

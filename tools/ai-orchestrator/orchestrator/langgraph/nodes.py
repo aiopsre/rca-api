@@ -722,6 +722,64 @@ def quality_gate_node(state: GraphState, runtime: OrchestratorRuntime) -> GraphS
     return state
 
 
+def _build_native_diagnosis(state: GraphState) -> dict[str, Any]:
+    quality_gate = ensure_quality_gate(state)
+    decision = str(quality_gate.get("decision") or "")
+    if decision == QUALITY_GATE_CONFLICT:
+        return build_conflict_evidence_diagnosis(state)
+    if decision == QUALITY_GATE_MISSING:
+        return build_missing_evidence_diagnosis(state)
+    return build_success_diagnosis(state)
+
+
+def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict[str, Any]) -> dict[str, Any]:
+    if not diagnosis_patch:
+        return diagnosis_json
+    merged = dict(diagnosis_json)
+    summary = diagnosis_patch.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        merged["summary"] = summary.strip()
+
+    root_cause_patch = diagnosis_patch.get("root_cause")
+    if isinstance(root_cause_patch, dict):
+        current_root_cause = merged.get("root_cause")
+        if not isinstance(current_root_cause, dict):
+            current_root_cause = {}
+        current_root_cause = dict(current_root_cause)
+        root_summary = root_cause_patch.get("summary")
+        if isinstance(root_summary, str) and root_summary.strip():
+            current_root_cause["summary"] = root_summary.strip()
+        root_statement = root_cause_patch.get("statement")
+        if isinstance(root_statement, str) and root_statement.strip():
+            current_root_cause["statement"] = root_statement.strip()
+        merged["root_cause"] = current_root_cause
+
+    recommendations = diagnosis_patch.get("recommendations")
+    if isinstance(recommendations, list):
+        merged["recommendations"] = [item for item in recommendations if isinstance(item, dict)]
+    unknowns = diagnosis_patch.get("unknowns")
+    if isinstance(unknowns, list):
+        merged["unknowns"] = [str(item).strip() for item in unknowns if str(item).strip()]
+    next_steps = diagnosis_patch.get("next_steps")
+    if isinstance(next_steps, list):
+        merged["next_steps"] = [str(item).strip() for item in next_steps if str(item).strip()]
+    return merged
+
+
+def _build_diagnosis_enrich_input(state: GraphState, diagnosis_json: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "incident_id": state.incident_id,
+        "incident_context": state.incident_context if isinstance(state.incident_context, dict) else {},
+        "input_hints": state.input_hints if isinstance(state.input_hints, dict) else {},
+        "quality_gate_decision": state.quality_gate_decision,
+        "quality_gate_reasons": state.quality_gate_reasons if isinstance(state.quality_gate_reasons, list) else [],
+        "missing_evidence": state.missing_evidence if isinstance(state.missing_evidence, list) else [],
+        "evidence_ids": state.evidence_ids if isinstance(state.evidence_ids, list) else [],
+        "evidence_meta": state.evidence_meta if isinstance(state.evidence_meta, list) else [],
+        "diagnosis_json": diagnosis_json,
+    }
+
+
 def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> GraphState:
     if not state.incident_id:
         raise RuntimeError("incident_id is required before summarize_diagnosis")
@@ -782,6 +840,29 @@ def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> Grap
         }
     if state.evidence_plan:
         synthesize_response["evidence_plan"] = state.evidence_plan
+
+    diagnosis_json = _build_native_diagnosis(state)
+    diagnosis_enrich_input = _build_diagnosis_enrich_input(state, diagnosis_json)
+    consume_skill = getattr(runtime, "consume_diagnosis_enrich_skill", None)
+    if callable(consume_skill):
+        enriched = consume_skill(graph_state=state, input_payload=diagnosis_enrich_input)
+        if isinstance(enriched, dict):
+            diagnosis_patch = enriched.get("diagnosis_patch")
+            if isinstance(diagnosis_patch, dict):
+                diagnosis_json = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
+            session_patch = enriched.get("session_patch")
+            if isinstance(session_patch, dict):
+                merge_session_patch = getattr(runtime, "merge_session_patch", None)
+                if callable(merge_session_patch):
+                    merge_session_patch(state, session_patch)
+            synthesize_response["skill"] = {
+                "status": "applied",
+                "skill_id": str(enriched.get("skill_id") or "").strip(),
+                "binding_key": str(enriched.get("selected_binding_key") or "").strip(),
+            }
+
+    state.diagnosis_json = diagnosis_json
+    synthesize_response["diagnosis_json"] = diagnosis_json
 
     started_ms = int(time.time() * 1000)
     report_node_action(
@@ -861,15 +942,7 @@ def finalize_job(
             state.finalized = True
             return state
 
-        quality_gate = ensure_quality_gate(state)
-        decision = str(quality_gate.get("decision") or "")
-        if decision == QUALITY_GATE_CONFLICT:
-            diagnosis_json = build_conflict_evidence_diagnosis(state)
-        elif decision == QUALITY_GATE_MISSING:
-            diagnosis_json = build_missing_evidence_diagnosis(state)
-        else:
-            diagnosis_json = build_success_diagnosis(state)
-
+        diagnosis_json = state.diagnosis_json if isinstance(state.diagnosis_json, dict) else _build_native_diagnosis(state)
         state.diagnosis_json = diagnosis_json
         started_ms = int(time.time() * 1000)
         runtime.finalize(
