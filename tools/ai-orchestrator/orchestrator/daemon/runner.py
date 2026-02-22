@@ -13,6 +13,7 @@ from ..langgraph.registry import (
     normalize_pipeline,
 )
 from ..runtime.runtime import OrchestratorRuntime
+from ..sdk.errors import RCAApiError
 from ..skills import SkillCatalog, apply_session_patch_to_state, load_session_snapshot_into_state
 from ..skills.agent import PromptSkillAgent
 from ..state import GraphState
@@ -448,22 +449,59 @@ def _apply_session_patch_if_needed(runtime: OrchestratorRuntime, state: GraphSta
     patch = state.session_patch if isinstance(state.session_patch, dict) else {}
     if not patch:
         return state
-    response = runtime.patch_job_session_context(
-        session_revision=str(state.session_snapshot.get("session_revision") or "").strip() or None,
-        latest_summary=patch.get("latest_summary") if isinstance(patch.get("latest_summary"), dict) else None,
-        pinned_evidence_append=patch.get("pinned_evidence_append")
+    request_kwargs = {
+        "latest_summary": patch.get("latest_summary") if isinstance(patch.get("latest_summary"), dict) else None,
+        "pinned_evidence_append": patch.get("pinned_evidence_append")
         if isinstance(patch.get("pinned_evidence_append"), list)
         else None,
-        pinned_evidence_remove=patch.get("pinned_evidence_remove")
+        "pinned_evidence_remove": patch.get("pinned_evidence_remove")
         if isinstance(patch.get("pinned_evidence_remove"), list)
         else None,
-        context_state_patch=patch.get("context_state_patch") if isinstance(patch.get("context_state_patch"), dict) else None,
-        actor=str(patch.get("actor") or "").strip() or None,
-        note=str(patch.get("note") or "").strip() or None,
-        source=str(patch.get("source") or "").strip() or None,
+        "context_state_patch": patch.get("context_state_patch") if isinstance(patch.get("context_state_patch"), dict) else None,
+        "actor": str(patch.get("actor") or "").strip() or None,
+        "note": str(patch.get("note") or "").strip() or None,
+        "source": str(patch.get("source") or "").strip() or None,
+    }
+    response = _patch_session_context_with_single_retry(
+        runtime=runtime,
+        state=state,
+        request_kwargs=request_kwargs,
     )
     apply_session_patch_to_state(state, response)
     return state
+
+
+def _patch_session_context_with_single_retry(
+    *,
+    runtime: OrchestratorRuntime,
+    state: GraphState,
+    request_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    session_revision = str(state.session_snapshot.get("session_revision") or "").strip() or None
+    try:
+        return runtime.patch_job_session_context(
+            session_revision=session_revision,
+            **request_kwargs,
+        )
+    except RCAApiError as exc:
+        if not _is_session_revision_conflict(exc):
+            raise
+        refreshed_snapshot = runtime.get_job_session_context()
+        apply_session_patch_to_state(state, refreshed_snapshot)
+        refreshed_revision = str(state.session_snapshot.get("session_revision") or "").strip() or None
+        return runtime.patch_job_session_context(
+            session_revision=refreshed_revision,
+            **request_kwargs,
+        )
+
+
+def _is_session_revision_conflict(exc: RCAApiError) -> bool:
+    if not isinstance(exc, RCAApiError):
+        return False
+    if int(exc.http_status or 0) != 409:
+        return False
+    envelope_code = str(exc.envelope_code or "").strip().lower()
+    return "sessioncontextrevisionconflict" in envelope_code
 
 
 def _extract_toolset_id(toolset_payload: dict[str, Any]) -> str:

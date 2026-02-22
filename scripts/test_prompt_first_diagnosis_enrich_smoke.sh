@@ -247,6 +247,11 @@ fi
 
 preflight_no_conflicting_diagnosis_skill "${TOKEN}"
 
+TEMPLATE_REGISTER_BODY='{"instanceID":"'"${INSTANCE_ID}"'","templates":[{"templateID":"basic_rca","version":""}]}'
+TEMPLATE_REGISTER_RESPONSE="$(call_token_json POST "${BASE_URL}/v1/orchestrator/templates/register" "${TOKEN}" "${TEMPLATE_REGISTER_BODY}")"
+assert_json_success "RegisterTemplate" "${TEMPLATE_REGISTER_RESPONSE}"
+assert_json_expr "RegisterTemplate" "${TEMPLATE_REGISTER_RESPONSE}" '(.data.count // .count // 0) >= 1'
+
 BUNDLE_PATH="${WORKDIR}/${SKILL_ID}-${SKILL_VERSION}.zip"
 (cd "${BUNDLE_DIR}" && "${ZIP_BIN}" -qr "${BUNDLE_PATH}" .)
 
