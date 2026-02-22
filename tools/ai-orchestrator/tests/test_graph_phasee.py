@@ -201,6 +201,15 @@ class _FakeRuntime:
             )
         ]
 
+    def consume_prompt_skill(
+        self,
+        *,
+        capability: str,
+        graph_state: object,
+    ) -> dict[str, object] | None:
+        del capability, graph_state
+        return None
+
     def consume_diagnosis_enrich_skill(
         self,
         *,
@@ -281,25 +290,42 @@ class GraphPhaseETest(unittest.TestCase):
 
     def test_phasee_prompt_first_diagnosis_enrich_updates_state_and_finalize(self) -> None:
         class _PromptSkillRuntime(_FakeRuntime):
-            def consume_diagnosis_enrich_skill(
+            def consume_prompt_skill(
                 self,
                 *,
-                graph_state: object,
-                input_payload: dict[str, object],
+                capability: str,
+                graph_state: GraphState,
             ) -> dict[str, object] | None:
+                if capability != "diagnosis.enrich":
+                    return None
+                graph_state.diagnosis_json = {
+                    **(graph_state.diagnosis_json or {}),
+                    "summary": "Enriched summary",
+                    "root_cause": {
+                        **(((graph_state.diagnosis_json or {}).get("root_cause") or {}) if isinstance(graph_state.diagnosis_json, dict) else {}),
+                        "statement": "Enriched statement",
+                    },
+                    "next_steps": ["Review enriched follow-up"],
+                }
+                self.merge_session_patch(
+                    graph_state,
+                    {
+                        "latest_summary": {"summary": "Enriched summary"},
+                        "context_state_patch": {"skills": {"diagnosis_enrich": {"applied": True}}},
+                    },
+                )
                 return {
                     "selected_binding_key": "skill.binding",
                     "skill_id": "claude.diagnosis.enricher",
                     "version": "1.0.0",
-                    "diagnosis_patch": {
-                        "summary": "Enriched summary",
-                        "root_cause": {"statement": "Enriched statement"},
-                        "next_steps": ["Review enriched follow-up"],
+                    "payload": {
+                        "diagnosis_patch": {
+                            "summary": "Enriched summary",
+                            "root_cause": {"statement": "Enriched statement"},
+                            "next_steps": ["Review enriched follow-up"],
+                        },
                     },
-                    "session_patch": {
-                        "latest_summary": {"summary": "Enriched summary"},
-                        "context_state_patch": {"skills": {"diagnosis_enrich": {"applied": True}}},
-                    },
+                    "session_patch": {"latest_summary": {"summary": "Enriched summary"}},
                     "observations": [{"kind": "note", "message": "applied"}],
                 }
 
@@ -323,6 +349,57 @@ class GraphPhaseETest(unittest.TestCase):
         self.assertEqual(out.diagnosis_json["root_cause"]["statement"], "Enriched statement")
         self.assertEqual(out.session_patch["latest_summary"]["summary"], "Enriched summary")
         self.assertEqual(runtime.finalize_calls[-1]["diagnosis_json"]["summary"], "Enriched summary")
+
+    def test_phasee_prompt_first_evidence_plan_updates_state_before_queries(self) -> None:
+        class _PromptEvidenceRuntime(_FakeRuntime):
+            def consume_prompt_skill(
+                self,
+                *,
+                capability: str,
+                graph_state: GraphState,
+            ) -> dict[str, object] | None:
+                if capability != "evidence.plan":
+                    return None
+                graph_state.evidence_plan["budget"]["max_calls"] = 2
+                graph_state.evidence_candidates = [{"type": "logs", "name": "error_budget"}]
+                graph_state.evidence_plan["candidates"] = graph_state.evidence_candidates
+                graph_state.logs_branch_meta = {"mode": "query", "query_type": "logs"}
+                return {
+                    "selected_binding_key": "skill.binding",
+                    "skill_id": "claude.evidence.plan",
+                    "version": "1.0.0",
+                    "payload": {
+                        "evidence_plan_patch": {"budget": {"max_calls": 2}},
+                        "evidence_candidates": [{"type": "logs", "name": "error_budget"}],
+                        "logs_branch_meta": {"mode": "query", "query_type": "logs"},
+                    },
+                    "session_patch": {},
+                    "observations": [{"kind": "note", "message": "applied"}],
+                }
+
+        runtime = _PromptEvidenceRuntime()
+        graph = build_graph(
+            None,
+            OrchestratorConfig(
+                run_query=False,
+                run_verification=False,
+                post_finalize_observe=False,
+            ),
+            runtime,
+        )
+        out = graph.invoke(GraphState(job_id="job-1", instance_id="orc-1", started=True))
+        if isinstance(out, dict):
+            out = GraphState.model_validate(out)
+
+        self.assertTrue(out.finalized)
+        self.assertEqual(out.evidence_plan["budget"]["max_calls"], 2)
+        self.assertEqual(out.evidence_plan["candidates"], [{"type": "logs", "name": "error_budget"}])
+        plan_call = next(item for item in runtime.tool_calls if item["tool_name"] == "evidence.plan")
+        response = plan_call["response_json"]
+        self.assertIsInstance(response, dict)
+        self.assertEqual(response["skill"]["skill_id"], "claude.evidence.plan")
+        self.assertIn("evidence_plan", response)
+        self.assertEqual(response["evidence_plan"]["budget"]["max_calls"], 2)
 
     def test_phasee_lease_lost_skips_query_nodes_and_no_toolcall_write(self) -> None:
         class _LeaseLostAtQueryRuntime(_FakeRuntime):

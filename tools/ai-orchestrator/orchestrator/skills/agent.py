@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import json
 from typing import Any
+
+from .capabilities import PromptSkillConsumeResult
 
 
 def _trim(value: Any) -> str:
@@ -53,17 +54,23 @@ def _extract_json_payload(raw_text: str) -> dict[str, Any]:
     return payload
 
 
-@dataclass(frozen=True)
 class SkillSelectionResult:
-    selected_binding_key: str = ""
-    reason: str = ""
+    def __init__(self, *, selected_binding_key: str = "", reason: str = "") -> None:
+        self.selected_binding_key = selected_binding_key
+        self.reason = reason
 
 
-@dataclass(frozen=True)
 class DiagnosisEnrichOutput:
-    diagnosis_patch: dict[str, Any] = field(default_factory=dict)
-    session_patch: dict[str, Any] = field(default_factory=dict)
-    observations: list[dict[str, Any]] = field(default_factory=list)
+    def __init__(
+        self,
+        *,
+        diagnosis_patch: dict[str, Any] | None = None,
+        session_patch: dict[str, Any] | None = None,
+        observations: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.diagnosis_patch = diagnosis_patch if isinstance(diagnosis_patch, dict) else {}
+        self.session_patch = session_patch if isinstance(session_patch, dict) else {}
+        self.observations = [item for item in (observations or []) if isinstance(item, dict)]
 
 
 class PromptSkillAgent:
@@ -117,6 +124,43 @@ class PromptSkillAgent:
             reason=_trim(response.get("reason")),
         )
 
+    def consume_skill(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        skill_document: str,
+        input_payload: dict[str, Any],
+        output_contract: dict[str, Any],
+    ) -> PromptSkillConsumeResult:
+        if not self.configured:
+            raise RuntimeError("prompt skill agent is not configured")
+        system_prompt = (
+            "You are applying a prompt-first RCA skill.\n"
+            "Read the skill document and return strict JSON only.\n"
+            "Do not call tools.\n"
+            "Return only payload, session_patch, and observations.\n"
+            "Respect the provided output_contract exactly."
+        )
+        user_payload = {
+            "capability": capability,
+            "skill_id": skill_id,
+            "skill_version": skill_version,
+            "skill_document": skill_document,
+            "input": input_payload,
+            "output_contract": output_contract,
+        }
+        response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
+        payload = response.get("payload")
+        session_patch = response.get("session_patch")
+        observations = response.get("observations")
+        return PromptSkillConsumeResult(
+            payload=payload if isinstance(payload, dict) else {},
+            session_patch=session_patch if isinstance(session_patch, dict) else {},
+            observations=[item for item in observations if isinstance(item, dict)] if isinstance(observations, list) else [],
+        )
+
     def run_diagnosis_enrich(
         self,
         *,
@@ -125,30 +169,24 @@ class PromptSkillAgent:
         skill_document: str,
         input_payload: dict[str, Any],
     ) -> DiagnosisEnrichOutput:
-        if not self.configured:
-            raise RuntimeError("prompt skill agent is not configured")
-        system_prompt = (
-            "You are applying a prompt-first RCA diagnosis skill.\n"
-            "Read the skill document and return strict JSON only.\n"
-            "Do not call tools. Only produce diagnosis_patch, session_patch, and observations.\n"
-            "Do not modify schema_version, generated_at, incident_id, timeline, hypotheses, "
-            "root_cause.confidence, or root_cause.evidence_ids."
-        )
-        user_payload = {
-            "skill_id": skill_id,
-            "skill_version": skill_version,
-            "skill_document": skill_document,
-            "input": input_payload,
-            "output_contract": {
-                "diagnosis_patch": {
-                    "summary": "optional string",
-                    "root_cause": {
+        result = self.consume_skill(
+            capability="diagnosis.enrich",
+            skill_id=skill_id,
+            skill_version=skill_version,
+            skill_document=skill_document,
+            input_payload=input_payload,
+            output_contract={
+                "payload": {
+                    "diagnosis_patch": {
                         "summary": "optional string",
-                        "statement": "optional string",
+                        "root_cause": {
+                            "summary": "optional string",
+                            "statement": "optional string",
+                        },
+                        "recommendations": "optional list",
+                        "unknowns": "optional list",
+                        "next_steps": "optional list",
                     },
-                    "recommendations": "optional list",
-                    "unknowns": "optional list",
-                    "next_steps": "optional list",
                 },
                 "session_patch": {
                     "latest_summary": "optional object",
@@ -159,15 +197,12 @@ class PromptSkillAgent:
                 },
                 "observations": "optional list",
             },
-        }
-        response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
-        diagnosis_patch = response.get("diagnosis_patch")
-        session_patch = response.get("session_patch")
-        observations = response.get("observations")
+        )
+        diagnosis_patch = result.payload.get("diagnosis_patch") if isinstance(result.payload, dict) else {}
         return DiagnosisEnrichOutput(
             diagnosis_patch=diagnosis_patch if isinstance(diagnosis_patch, dict) else {},
-            session_patch=session_patch if isinstance(session_patch, dict) else {},
-            observations=[item for item in observations if isinstance(item, dict)] if isinstance(observations, list) else [],
+            session_patch=result.session_patch,
+            observations=result.observations,
         )
 
     def _invoke_json(self, *, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:

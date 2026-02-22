@@ -15,7 +15,8 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.runtime import OrchestratorRuntime
-from orchestrator.skills.agent import DiagnosisEnrichOutput, SkillSelectionResult
+from orchestrator.skills.agent import SkillSelectionResult
+from orchestrator.skills.capabilities import PromptSkillConsumeResult, get_capability_definition
 from orchestrator.skills.runtime import SkillCatalog, parse_skill_frontmatter
 from orchestrator.state import GraphState
 
@@ -279,6 +280,20 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertEqual(frontmatter["name"], "RCA Diagnosis Enricher")
         self.assertIn("Enrich the native RCA diagnosis", frontmatter["description"])
 
+    def test_checked_in_prompt_only_evidence_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "evidence-plan" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "RCA Evidence Planner")
+        self.assertIn("Refine the native RCA evidence plan", frontmatter["description"])
+
+    def test_capability_registry_exposes_diagnosis_and_evidence_plan(self) -> None:
+        diagnosis = get_capability_definition("diagnosis.enrich")
+        evidence = get_capability_definition("evidence.plan")
+        self.assertIsNotNone(diagnosis)
+        self.assertIsNotNone(evidence)
+        self.assertEqual(diagnosis.stage, "summarize_diagnosis")
+        self.assertEqual(evidence.stage, "plan_evidence")
+
     def test_orchestrator_runtime_execute_skill_is_disabled_for_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = Path(tmp_dir)
@@ -359,18 +374,20 @@ class SkillCatalogTest(unittest.TestCase):
                 def select_skill(self, **_: object) -> SkillSelectionResult:
                     return SkillSelectionResult(selected_binding_key="claude.analysis\x001.0.0\x00diagnosis.enrich", reason="best match")
 
-                def run_diagnosis_enrich(self, **_: object) -> DiagnosisEnrichOutput:
-                    return DiagnosisEnrichOutput(
-                        diagnosis_patch={
-                            "summary": "Improved summary",
-                            "root_cause": {
-                                "summary": "Improved root cause summary",
-                                "statement": "Improved statement",
-                                "confidence": 0.95,
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "diagnosis_patch": {
+                                "summary": "Improved summary",
+                                "root_cause": {
+                                    "summary": "Improved root cause summary",
+                                    "statement": "Improved statement",
+                                    "confidence": 0.95,
+                                },
+                                "unknowns": ["missing traces"],
+                                "next_steps": ["collect traces"],
+                                "incident_id": "forbidden",
                             },
-                            "unknowns": ["missing traces"],
-                            "next_steps": ["collect traces"],
-                            "incident_id": "forbidden",
                         },
                         session_patch={
                             "latest_summary": {"summary": "Improved summary"},
@@ -414,10 +431,11 @@ class SkillCatalogTest(unittest.TestCase):
 
             self.assertIsInstance(result, dict)
             self.assertEqual(result["skill_id"], "claude.analysis")
-            self.assertEqual(result["diagnosis_patch"]["summary"], "Improved summary")
-            self.assertEqual(result["diagnosis_patch"]["root_cause"]["summary"], "Improved root cause summary")
-            self.assertNotIn("incident_id", result["diagnosis_patch"])
-            self.assertNotIn("confidence", result["diagnosis_patch"]["root_cause"])
+            diagnosis_patch = result["payload"]["diagnosis_patch"]
+            self.assertEqual(diagnosis_patch["summary"], "Improved summary")
+            self.assertEqual(diagnosis_patch["root_cause"]["summary"], "Improved root cause summary")
+            self.assertNotIn("incident_id", diagnosis_patch)
+            self.assertNotIn("confidence", diagnosis_patch["root_cause"])
             self.assertEqual(result["session_patch"]["actor"], "skill:claude.analysis")
             self.assertEqual(result["session_patch"]["source"], "skill.prompt")
 
@@ -526,6 +544,93 @@ class SkillCatalogTest(unittest.TestCase):
                 input_payload={"incident_id": "inc-1", "diagnosis_json": {}, "evidence_ids": []},
             )
             self.assertIsNone(result)
+
+    def test_prompt_first_runtime_consumes_evidence_plan_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Evidence Planner", description="Adjust evidence planning")
+            bundle_path = base / "evidence.plan.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.evidence.plan",
+                    version="1.0.0",
+                    name="Evidence Planner",
+                    description="Adjust evidence planning",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.plan\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {"budget": {"max_calls": 2}},
+                            "evidence_candidates": [{"type": "logs", "name": "error_budget"}],
+                            "metrics_branch_meta": {"mode": "mock", "query_type": "metrics"},
+                            "logs_branch_meta": {"mode": "query", "query_type": "logs"},
+                            "session_patch": {"forbidden": True},
+                            "diagnosis_json": {"forbidden": True},
+                        },
+                        observations=[{"kind": "note", "message": "planning updated"}],
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_FakeAgent(),
+            )
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}, "candidates": [{"type": "metrics"}]},
+                evidence_candidates=[{"type": "metrics"}],
+                metrics_branch_meta={"mode": "query"},
+                logs_branch_meta={"mode": "mock"},
+                evidence_mode="query",
+                incident_context={"service": "svc-a"},
+                input_hints={},
+            )
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.evidence.plan")
+            self.assertEqual(state.evidence_plan["budget"]["max_calls"], 2)
+            self.assertEqual(state.evidence_candidates, [{"type": "logs", "name": "error_budget"}])
+            self.assertEqual(state.evidence_plan["candidates"], [{"type": "logs", "name": "error_budget"}])
+            self.assertEqual(state.metrics_branch_meta["mode"], "mock")
+            self.assertEqual(state.logs_branch_meta["mode"], "query")
+            self.assertEqual(result["payload"]["evidence_candidates"], [{"type": "logs", "name": "error_budget"}])
+            self.assertEqual(result["session_patch"], {})
 
 
 if __name__ == "__main__":

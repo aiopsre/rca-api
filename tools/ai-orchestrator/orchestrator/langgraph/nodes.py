@@ -269,7 +269,30 @@ def plan_evidence(
             "conflict_hint": False,
         }
 
+    prompt_skill = getattr(runtime, "consume_prompt_skill", None)
+    prompt_skill_result: dict[str, Any] | None = None
+    if callable(prompt_skill):
+        consumed = prompt_skill(capability="evidence.plan", graph_state=state)
+        if isinstance(consumed, dict):
+            prompt_skill_result = consumed
+
     started_ms = int(time.time() * 1000)
+    response_json = {
+        "status": "ok",
+        "mode": state.evidence_mode,
+        "datasource_id": state.datasource_id,
+        "metrics_branch_mode": state.metrics_branch_meta.get("mode"),
+        "logs_branch_mode": state.logs_branch_meta.get("mode"),
+        "candidates": state.evidence_candidates,
+    }
+    if state.evidence_plan:
+        response_json["evidence_plan"] = state.evidence_plan
+    if isinstance(prompt_skill_result, dict):
+        response_json["skill"] = {
+            "status": "applied",
+            "skill_id": str(prompt_skill_result.get("skill_id") or "").strip(),
+            "binding_key": str(prompt_skill_result.get("selected_binding_key") or "").strip(),
+        }
     report_node_action(
         state,
         runtime,
@@ -280,14 +303,7 @@ def plan_evidence(
             "mode": state.evidence_mode,
             "run_query": cfg.run_query,
         },
-        response_json={
-            "status": "ok",
-            "mode": state.evidence_mode,
-            "datasource_id": state.datasource_id,
-            "metrics_branch_mode": state.metrics_branch_meta.get("mode"),
-            "logs_branch_mode": state.logs_branch_meta.get("mode"),
-            "candidates": state.evidence_candidates,
-        },
+        response_json=response_json,
         started_ms=started_ms,
         status="ok",
     )
@@ -765,21 +781,6 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
         merged["next_steps"] = [str(item).strip() for item in next_steps if str(item).strip()]
     return merged
 
-
-def _build_diagnosis_enrich_input(state: GraphState, diagnosis_json: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "incident_id": state.incident_id,
-        "incident_context": state.incident_context if isinstance(state.incident_context, dict) else {},
-        "input_hints": state.input_hints if isinstance(state.input_hints, dict) else {},
-        "quality_gate_decision": state.quality_gate_decision,
-        "quality_gate_reasons": state.quality_gate_reasons if isinstance(state.quality_gate_reasons, list) else [],
-        "missing_evidence": state.missing_evidence if isinstance(state.missing_evidence, list) else [],
-        "evidence_ids": state.evidence_ids if isinstance(state.evidence_ids, list) else [],
-        "evidence_meta": state.evidence_meta if isinstance(state.evidence_meta, list) else [],
-        "diagnosis_json": diagnosis_json,
-    }
-
-
 def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> GraphState:
     if not state.incident_id:
         raise RuntimeError("incident_id is required before summarize_diagnosis")
@@ -842,19 +843,12 @@ def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> Grap
         synthesize_response["evidence_plan"] = state.evidence_plan
 
     diagnosis_json = _build_native_diagnosis(state)
-    diagnosis_enrich_input = _build_diagnosis_enrich_input(state, diagnosis_json)
-    consume_skill = getattr(runtime, "consume_diagnosis_enrich_skill", None)
+    state.diagnosis_json = diagnosis_json
+    consume_skill = getattr(runtime, "consume_prompt_skill", None)
     if callable(consume_skill):
-        enriched = consume_skill(graph_state=state, input_payload=diagnosis_enrich_input)
+        enriched = consume_skill(capability="diagnosis.enrich", graph_state=state)
         if isinstance(enriched, dict):
-            diagnosis_patch = enriched.get("diagnosis_patch")
-            if isinstance(diagnosis_patch, dict):
-                diagnosis_json = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
-            session_patch = enriched.get("session_patch")
-            if isinstance(session_patch, dict):
-                merge_session_patch = getattr(runtime, "merge_session_patch", None)
-                if callable(merge_session_patch):
-                    merge_session_patch(state, session_patch)
+            diagnosis_json = state.diagnosis_json if isinstance(state.diagnosis_json, dict) else diagnosis_json
             synthesize_response["skill"] = {
                 "status": "applied",
                 "skill_id": str(enriched.get("skill_id") or "").strip(),
