@@ -73,6 +73,19 @@ class DiagnosisEnrichOutput:
         self.observations = [item for item in (observations or []) if isinstance(item, dict)]
 
 
+class ToolCallPlan:
+    def __init__(
+        self,
+        *,
+        tool: str = "",
+        input_payload: dict[str, Any] | None = None,
+        reason: str = "",
+    ) -> None:
+        self.tool = _trim(tool)
+        self.input_payload = input_payload if isinstance(input_payload, dict) else {}
+        self.reason = _trim(reason)
+
+
 class PromptSkillAgent:
     def __init__(
         self,
@@ -149,6 +162,93 @@ class PromptSkillAgent:
             "skill_version": skill_version,
             "skill_document": skill_document,
             "input": input_payload,
+            "output_contract": output_contract,
+        }
+        response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
+        payload = response.get("payload")
+        session_patch = response.get("session_patch")
+        observations = response.get("observations")
+        return PromptSkillConsumeResult(
+            payload=payload if isinstance(payload, dict) else {},
+            session_patch=session_patch if isinstance(session_patch, dict) else {},
+            observations=[item for item in observations if isinstance(item, dict)] if isinstance(observations, list) else [],
+        )
+
+    def plan_tool_call(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        skill_document: str,
+        input_payload: dict[str, Any],
+        available_tools: list[str],
+    ) -> ToolCallPlan:
+        if not self.configured:
+            raise RuntimeError("prompt skill agent is not configured")
+        system_prompt = (
+            "You are planning at most one tool call for a prompt-first RCA skill.\n"
+            "Return strict JSON only.\n"
+            "If no tool call is needed, return an empty tool field.\n"
+            "Only choose from available_tools.\n"
+            "For this workflow, never emit raw Elasticsearch DSL; only emit the allowed query string input."
+        )
+        user_payload = {
+            "capability": capability,
+            "skill_id": skill_id,
+            "skill_version": skill_version,
+            "skill_document": skill_document,
+            "input": input_payload,
+            "available_tools": [item for item in available_tools if _trim(item)],
+            "output_contract": {
+                "tool": "string or empty",
+                "input": {
+                    "datasource_id": "required string when tool is set",
+                    "query": "required string when tool is set",
+                    "start_ts": "required integer when tool is set",
+                    "end_ts": "required integer when tool is set",
+                    "limit": "required integer when tool is set",
+                },
+                "reason": "short explanation",
+            },
+        }
+        response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
+        return ToolCallPlan(
+            tool=_trim(response.get("tool")),
+            input_payload=response.get("input") if isinstance(response.get("input"), dict) else {},
+            reason=_trim(response.get("reason")),
+        )
+
+    def consume_after_tool(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        skill_document: str,
+        input_payload: dict[str, Any],
+        tool_request: dict[str, Any],
+        tool_result: dict[str, Any],
+        output_contract: dict[str, Any],
+    ) -> PromptSkillConsumeResult:
+        if not self.configured:
+            raise RuntimeError("prompt skill agent is not configured")
+        system_prompt = (
+            "You are finishing a prompt-first RCA skill after one controlled tool call.\n"
+            "Read the skill document, the original stage input, and the tool result.\n"
+            "Return strict JSON only.\n"
+            "Do not plan or call more tools.\n"
+            "Return only payload, session_patch, and observations.\n"
+            "Respect the provided output_contract exactly."
+        )
+        user_payload = {
+            "capability": capability,
+            "skill_id": skill_id,
+            "skill_version": skill_version,
+            "skill_document": skill_document,
+            "input": input_payload,
+            "tool_request": tool_request if isinstance(tool_request, dict) else {},
+            "tool_result": tool_result if isinstance(tool_result, dict) else {},
             "output_contract": output_contract,
         }
         response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)

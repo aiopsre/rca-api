@@ -134,7 +134,7 @@ def plan_evidence(
             pass
         state.incident_context = incident_context
 
-        datasource_id = runtime.ensure_datasource(cfg.ds_base_url)
+        datasource_id = runtime.ensure_datasource(cfg.ds_base_url, cfg.ds_type)
         state.datasource_id = datasource_id
 
         planning_context: dict[str, Any] = {
@@ -453,6 +453,52 @@ def query_logs_node(state: GraphState, runtime: OrchestratorRuntime) -> dict[str
         }
 
     request_payload = meta.get("request_payload") if isinstance(meta.get("request_payload"), dict) else {}
+    if (
+        mode == "query"
+        and bool(meta.get("tool_result_reusable"))
+        and str(meta.get("tool_result_source") or "") == "skill_prompt_first"
+        and str(state.logs_query_status or "") == "ok"
+        and isinstance(state.logs_query_output, dict)
+        and state.logs_query_output
+    ):
+        try:
+            runtime.report_observation(
+                tool="skill.tool_reuse",
+                node_name="query_logs",
+                params={
+                    "request_payload": request_payload,
+                    "source": "skill_prompt_first",
+                },
+                response={
+                    "status": "ok",
+                    "source": "skill_prompt_first",
+                    "query": str(request_payload.get("query") or ""),
+                },
+                evidence_ids=[],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        report_node_action(
+            state,
+            runtime,
+            node_name="query_logs",
+            tool_name="evidence.logs.reuse",
+            request_json=request_payload,
+            response_json={
+                **query_toolcall_response(state.logs_query_output),
+                "source": "skill_prompt_first",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return {
+            "logs_query_status": "ok",
+            "logs_query_output": state.logs_query_output if isinstance(state.logs_query_output, dict) else {},
+            "logs_query_error": None,
+            "logs_query_latency_ms": int(state.logs_query_latency_ms or 0),
+            "logs_query_result_size_bytes": int(state.logs_query_result_size_bytes or 0),
+        }
     try:
         result = runtime.query_logs(
             datasource_id=str(request_payload.get("datasource_id") or ""),

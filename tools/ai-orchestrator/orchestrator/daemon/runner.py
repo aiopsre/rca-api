@@ -640,6 +640,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         tool_invoker=tool_invoker,
         skill_catalog=skill_catalog,
         skills_execution_mode=settings.skills_execution_mode,
+        skills_tool_calling_mode=settings.skills_tool_calling_mode,
         skill_agent=_build_prompt_skill_agent(settings),
     )
     if not runtime.start():
@@ -759,6 +760,7 @@ def main() -> None:
         f"run_query={int(settings.run_query)} "
         f"force_no_evidence={int(settings.force_no_evidence)} "
         f"force_conflict={int(settings.force_conflict)} "
+        f"ds_type={settings.ds_type} "
         f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
         f"a3_max_calls={settings.a3_max_calls} "
         f"a3_max_total_bytes={settings.a3_max_total_bytes} "
@@ -774,6 +776,7 @@ def main() -> None:
         f"post_finalize_wait_interval_ms={settings.post_finalize_wait_interval_ms} "
         f"post_finalize_wait_max_interval_ms={settings.post_finalize_wait_max_interval_ms} "
         f"skills_execution_mode={settings.skills_execution_mode} "
+        f"skills_tool_calling_mode={settings.skills_tool_calling_mode} "
         f"skills_cache_dir={settings.skills_cache_dir} "
         f"skills_local_paths_set={int(bool(settings.skills_local_paths))}"
         f" agent_model_set={int(bool(settings.agent_model))} "
@@ -787,6 +790,7 @@ def main() -> None:
         force_no_evidence=settings.force_no_evidence,
         force_conflict=settings.force_conflict,
         ds_base_url=settings.ds_base_url,
+        ds_type=settings.ds_type,
         auto_create_datasource=settings.auto_create_datasource,
         a3_max_calls=settings.a3_max_calls,
         a3_max_total_bytes=settings.a3_max_total_bytes,

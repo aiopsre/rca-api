@@ -542,9 +542,12 @@ class RCAApiClient:
         )
 
     # datasource / evidence (P0 minimal)
-    def ensure_datasource(self, ds_base_url: str) -> str:
+    def ensure_datasource(self, ds_base_url: str, ds_type: str = "prometheus") -> str:
         if not ds_base_url.strip():
             raise RuntimeError("DS_BASE_URL is required when RUN_QUERY=1")
+        normalized_type = str(ds_type or "prometheus").strip().lower() or "prometheus"
+        if normalized_type not in {"prometheus", "loki", "elasticsearch"}:
+            normalized_type = "prometheus"
 
         list_payload = self._request("GET", "/v1/datasources", params={"offset": 0, "limit": 200})
         list_data = list_payload.get("data", list_payload)
@@ -559,14 +562,14 @@ class RCAApiClient:
             if not isinstance(item, dict):
                 continue
             base_url = str(item.get("baseURL") or item.get("base_url") or "").rstrip("/")
-            ds_type = str(item.get("type") or "").lower()
+            listed_type = str(item.get("type") or "").lower()
             ds_id = str(item.get("datasourceID") or item.get("datasource_id") or "").strip()
-            if ds_type == "prometheus" and ds_id and base_url == normalized_base:
+            if listed_type == normalized_type and ds_id and base_url == normalized_base:
                 return ds_id
 
         create_body = {
-            "type": "prometheus",
-            "name": f"orchestrator-prom-{int(time.time())}",
+            "type": normalized_type,
+            "name": f"orchestrator-{normalized_type}-{int(time.time())}",
             "baseURL": ds_base_url,
             "authType": "none",
             "timeoutMs": 5000,

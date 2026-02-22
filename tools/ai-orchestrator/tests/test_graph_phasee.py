@@ -62,7 +62,8 @@ class _FakeRuntime:
             "severity": "critical",
         }
 
-    def ensure_datasource(self, ds_base_url: str) -> str:
+    def ensure_datasource(self, ds_base_url: str, ds_type: str = "prometheus") -> str:
+        del ds_type
         return "ds-1"
 
     def query_metrics(self, *, datasource_id: str, promql: str, start_ts: int, end_ts: int, step_s: int) -> dict[str, object]:

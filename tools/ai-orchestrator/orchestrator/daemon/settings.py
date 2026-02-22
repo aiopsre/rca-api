@@ -38,7 +38,9 @@ class Settings:
     post_finalize_wait_max_interval_ms: int
     toolset_config_path: str
     toolset_config_json: str
+    ds_type: str = "prometheus"
     skills_execution_mode: str = "catalog"
+    skills_tool_calling_mode: str = "disabled"
     skills_cache_dir: str = "/tmp/rca-ai-orchestrator/skills-cache"
     skills_local_paths: str = ""
     agent_model: str = ""
@@ -92,6 +94,12 @@ def load_settings() -> Settings:
     skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "catalog").strip().lower() or "catalog"
     if skills_execution_mode not in {"catalog", "prompt_first"}:
         skills_execution_mode = "catalog"
+    skills_tool_calling_mode = os.getenv("SKILLS_TOOL_CALLING_MODE", "disabled").strip().lower() or "disabled"
+    if skills_tool_calling_mode not in {"disabled", "evidence_plan_single_hop"}:
+        skills_tool_calling_mode = "disabled"
+    ds_type = os.getenv("DS_TYPE", "prometheus").strip().lower() or "prometheus"
+    if ds_type not in {"prometheus", "loki", "elasticsearch"}:
+        ds_type = "prometheus"
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
@@ -105,6 +113,7 @@ def load_settings() -> Settings:
         force_no_evidence=_env_bool("FORCE_NO_EVIDENCE", False),
         force_conflict=_env_bool("FORCE_CONFLICT", False),
         ds_base_url=os.getenv("DS_BASE_URL", "").strip(),
+        ds_type=ds_type,
         auto_create_datasource=_env_bool("AUTO_CREATE_DATASOURCE", True),
         debug=_env_bool("DEBUG", False),
         pull_limit=max(1, min(50, _env_int("PULL_LIMIT", 10))),
@@ -131,6 +140,7 @@ def load_settings() -> Settings:
         toolset_config_path=os.getenv("TOOLSET_CONFIG_PATH", "").strip(),
         toolset_config_json=os.getenv("TOOLSET_CONFIG_JSON", "").strip(),
         skills_execution_mode=skills_execution_mode,
+        skills_tool_calling_mode=skills_tool_calling_mode,
         skills_cache_dir=os.getenv("SKILLS_CACHE_DIR", "/tmp/rca-ai-orchestrator/skills-cache").strip(),
         skills_local_paths=os.getenv("SKILLS_LOCAL_PATHS", "").strip(),
         agent_model=os.getenv("AGENT_MODEL", "").strip(),

@@ -54,4 +54,5 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - checked-in prompt-only Skill 样板位于：
   - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
   - `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
-  - `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`
+- `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`
+  - Elasticsearch / ECS 风格的 `evidence.plan` 样板，支持单次 `mcp.query_logs` tool-calling + `query_logs` 结果复用

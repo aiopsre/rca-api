@@ -173,6 +173,7 @@ class SkillCandidate:
     description: str
     compatibility: str
     capability: str
+    allowed_tools: tuple[str, ...]
     priority: int
     source: str
 
@@ -185,6 +186,7 @@ class SkillCandidate:
             "description": self.description,
             "compatibility": self.compatibility,
             "capability": self.capability,
+            "allowed_tools": list(self.allowed_tools),
             "priority": self.priority,
             "source": self.source,
         }
@@ -269,6 +271,7 @@ class SkillCatalog:
                     description=item.summary.description,
                     compatibility=item.summary.compatibility,
                     capability=item.binding.capability,
+                    allowed_tools=item.binding.allowed_tools,
                     priority=item.binding.priority,
                     source=item.source,
                 )

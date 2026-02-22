@@ -15,6 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.runtime import OrchestratorRuntime
+from orchestrator.langgraph.nodes import query_logs_node
 from orchestrator.skills.agent import SkillSelectionResult
 from orchestrator.skills.capabilities import PromptSkillConsumeResult, get_capability_definition
 from orchestrator.skills.runtime import SkillCatalog, parse_skill_frontmatter
@@ -697,6 +698,366 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual(state.logs_branch_meta["request_payload"]["query"], state.logs_branch_meta["query_request"]["queryText"])
             self.assertEqual(result["payload"]["evidence_candidates"], [{"type": "logs", "name": "error_budget"}])
             self.assertEqual(result["session_patch"], {})
+
+    def test_prompt_first_evidence_plan_single_hop_tool_call_warms_logs_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Elasticsearch Planner", description="Adjust evidence planning with one query")
+            bundle_path = base / "evidence.plan.tool.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="elasticsearch.evidence.plan",
+                    version="1.0.0",
+                    name="Elasticsearch Planner",
+                    description="Adjust evidence planning with one query",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=["query_logs"],
+                    priority=150,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="elasticsearch.evidence.plan\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def plan_tool_call(self, **_: object):
+                    class _Plan:
+                        tool = "mcp.query_logs"
+                        input_payload = {
+                            "datasource_id": "ds-logs",
+                            "query": 'service.name:"svc-a" AND (kubernetes.namespace_name:"default" OR service.namespace:"default") AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))',
+                            "start_ts": 100,
+                            "end_ts": 200,
+                            "limit": 200,
+                        }
+                        reason = "warm logs query first"
+
+                    return _Plan()
+
+                def consume_after_tool(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {
+                                "metadata": {
+                                    "prompt_skill": "elasticsearch.evidence.plan",
+                                    "query_style": "ecs_query_string",
+                                }
+                            },
+                            "logs_branch_meta": {
+                                "mode": "query",
+                                "query_type": "logs",
+                                "request_payload": {
+                                    "query": 'service.name:"svc-a" AND (kubernetes.namespace_name:"default" OR service.namespace:"default") AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))'
+                                },
+                                "query_request": {
+                                    "queryText": 'service.name:"svc-a" AND (kubernetes.namespace_name:"default" OR service.namespace:"default") AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))'
+                                },
+                            },
+                        },
+                        observations=[{"kind": "note", "message": "applied after tool"}],
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_single_hop",
+                skill_agent=_FakeAgent(),
+            )
+
+            toolcalls: list[dict[str, object]] = []
+            runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
+            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 88,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}, "candidates": [{"type": "logs"}]},
+                evidence_candidates=[{"type": "logs"}],
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": 'message:(*error* OR *exception*)',
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-logs",
+                        "queryText": 'message:(*error* OR *exception*)',
+                        "queryJSON": "{}",
+                    },
+                },
+                evidence_mode="query",
+                incident_context={"service": "svc-a", "namespace": "default"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "elasticsearch.evidence.plan")
+            self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "elasticsearch.evidence.plan")
+            self.assertEqual(state.logs_query_status, "ok")
+            self.assertEqual(state.logs_query_error, None)
+            self.assertEqual(state.logs_query_request["datasource_id"], "ds-logs")
+            self.assertTrue(state.logs_branch_meta["tool_result_reusable"])
+            self.assertEqual(state.logs_branch_meta["tool_result_source"], "skill_prompt_first")
+            self.assertIn('service.name:"svc-a"', state.logs_branch_meta["request_payload"]["query"])
+            self.assertEqual(state.logs_branch_meta["request_payload"]["datasource_id"], "ds-logs")
+            self.assertEqual(state.logs_branch_meta["request_payload"]["limit"], 200)
+            self.assertEqual(len(toolcalls), 1)
+            self.assertEqual(toolcalls[0]["node_name"], "skill.evidence.plan")
+            self.assertEqual(toolcalls[0]["tool_name"], "mcp.query_logs")
+
+    def test_prompt_first_evidence_plan_invalid_tool_plan_falls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Elasticsearch Planner", description="Adjust evidence planning with one query")
+            bundle_path = base / "evidence.plan.tool.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="elasticsearch.evidence.plan",
+                    version="1.0.0",
+                    name="Elasticsearch Planner",
+                    description="Adjust evidence planning with one query",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=["query_logs"],
+                    priority=150,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _BrokenToolAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="elasticsearch.evidence.plan\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def plan_tool_call(self, **_: object):
+                    class _Plan:
+                        tool = "mcp.query_metrics"
+                        input_payload = {"expr": "sum(up)"}
+                        reason = "wrong tool"
+
+                    return _Plan()
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_single_hop",
+                skill_agent=_BrokenToolAgent(),
+            )
+            runtime.report_tool_call = lambda **kwargs: 1  # type: ignore[method-assign]
+            runtime.query_logs = lambda **kwargs: self.fail("query_logs must not run for invalid tool plan")  # type: ignore[method-assign]
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": 'message:(*error* OR *exception*)',
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-logs",
+                        "queryText": 'message:(*error* OR *exception*)',
+                        "queryJSON": "{}",
+                    },
+                },
+                evidence_mode="query",
+            )
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsNone(result)
+            self.assertIsNone(state.logs_query_status)
+
+    def test_prompt_first_evidence_plan_without_allowed_tool_uses_prompt_only_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Evidence Planner", description="Adjust evidence planning")
+            bundle_path = base / "evidence.plan.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.evidence.plan",
+                    version="1.0.0",
+                    name="Evidence Planner",
+                    description="Adjust evidence planning",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=[],
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _PromptOnlyAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.plan\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {
+                                "metadata": {
+                                    "prompt_skill": "claude.evidence.plan",
+                                }
+                            }
+                        }
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_single_hop",
+                skill_agent=_PromptOnlyAgent(),
+            )
+            runtime.query_logs = lambda **kwargs: self.fail("query_logs must not run when binding allow_tools is empty")  # type: ignore[method-assign]
+
+            state = GraphState(job_id="job-1", incident_id="inc-1", evidence_plan={"candidates": []}, evidence_mode="query")
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsInstance(result, dict)
+            self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "claude.evidence.plan")
+            self.assertIsNone(state.logs_query_status)
+
+    def test_query_logs_node_reuses_prewarmed_skill_result(self) -> None:
+        class _ReuseRuntime:
+            def __init__(self) -> None:
+                self.reported: list[dict[str, object]] = []
+                self.observations: list[dict[str, object]] = []
+
+            def report_tool_call(self, **kwargs):
+                self.reported.append(kwargs)
+                return len(self.reported)
+
+            def report_observation(self, **kwargs):
+                self.observations.append(kwargs)
+                return len(self.observations)
+
+            def query_logs(self, **kwargs):
+                raise AssertionError("query_logs should not execute when prewarmed result is reusable")
+
+        runtime = _ReuseRuntime()
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            logs_branch_meta={
+                "mode": "query",
+                "query_type": "logs",
+                "tool_result_reusable": True,
+                "tool_result_source": "skill_prompt_first",
+                "request_payload": {
+                    "datasource_id": "ds-logs",
+                    "query": 'service.name:"svc-a"',
+                    "start_ts": 100,
+                    "end_ts": 200,
+                    "limit": 200,
+                },
+                "query_request": {
+                    "datasourceID": "ds-logs",
+                    "queryText": 'service.name:"svc-a"',
+                    "queryJSON": "{}",
+                },
+            },
+            logs_query_status="ok",
+            logs_query_output={
+                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 88,
+                "isTruncated": False,
+            },
+            logs_query_latency_ms=12,
+            logs_query_result_size_bytes=88,
+        )
+        out = query_logs_node(state, runtime)  # type: ignore[arg-type]
+        self.assertEqual(out["logs_query_status"], "ok")
+        self.assertEqual(out["logs_query_latency_ms"], 12)
+        self.assertEqual(len(runtime.reported), 1)
+        self.assertEqual(runtime.reported[0]["tool_name"], "evidence.logs.reuse")
+        self.assertEqual(len(runtime.observations), 1)
+        self.assertEqual(runtime.observations[0]["tool"], "skill.tool_reuse")
 
 
 if __name__ == "__main__":

@@ -287,6 +287,60 @@ class Handler(BaseHTTPRequestHandler):
                 "selected_binding_key": selected_binding_key,
                 "reason": "prefer Elasticsearch-specific evidence planning knowledge",
             }
+        elif isinstance(payload.get("available_tools"), list):
+            input_payload = payload.get("input") if isinstance(payload.get("input"), dict) else {}
+            incident_context = input_payload.get("incident_context") if isinstance(input_payload.get("incident_context"), dict) else {}
+            logs_branch_meta = input_payload.get("logs_branch_meta") if isinstance(input_payload.get("logs_branch_meta"), dict) else {}
+            request_payload = logs_branch_meta.get("request_payload") if isinstance(logs_branch_meta.get("request_payload"), dict) else {}
+            service = str(incident_context.get("service") or "").strip()
+            namespace = str(incident_context.get("namespace") or "").strip()
+            query_text = _ecs_query(service, namespace)
+            response_obj = {
+                "tool": "mcp.query_logs",
+                "input": {
+                    "datasource_id": str(request_payload.get("datasource_id") or ""),
+                    "query": query_text,
+                    "start_ts": int(request_payload.get("start_ts") or 0),
+                    "end_ts": int(request_payload.get("end_ts") or 0),
+                    "limit": int(request_payload.get("limit") or 200),
+                },
+                "reason": "use one ECS-shaped log query to warm the logs branch before native query reuse",
+            }
+        elif isinstance(payload.get("tool_request"), dict) and isinstance(payload.get("tool_result"), dict):
+            tool_request = payload.get("tool_request") if isinstance(payload.get("tool_request"), dict) else {}
+            query_text = str(tool_request.get("query") or "").strip()
+            response_obj = {
+                "payload": {
+                    "evidence_plan_patch": {
+                        "metadata": {
+                            "prompt_skill": TARGET_SKILL_ID,
+                            "query_style": "ecs_query_string",
+                            "planning_note": "narrow logs query using ECS-style service/namespace/error filters",
+                        }
+                    },
+                    "metrics_branch_meta": {
+                        "mode": "skip",
+                        "query_type": "metrics",
+                        "reason": "elasticsearch-specific prompt skill is validating logs only in this smoke",
+                    },
+                    "logs_branch_meta": {
+                        "mode": "query",
+                        "query_type": "logs",
+                        "request_payload": {
+                            "query": query_text,
+                        },
+                        "query_request": {
+                            "queryText": query_text,
+                        },
+                    },
+                },
+                "observations": [
+                    {
+                        "kind": "note",
+                        "message": "elasticsearch ecs query plan applied after tool result",
+                    }
+                ],
+            }
         else:
             input_payload = payload.get("input") if isinstance(payload.get("input"), dict) else {}
             incident_context = input_payload.get("incident_context") if isinstance(input_payload.get("incident_context"), dict) else {}
@@ -451,10 +505,12 @@ start_orchestrator() {
       LEASE_HEARTBEAT_INTERVAL_SECONDS=3 \
       RUN_QUERY=1 \
       DS_BASE_URL="${DS_BASE_URL}" \
+      DS_TYPE=elasticsearch \
       AUTO_CREATE_DATASOURCE=1 \
       RUN_VERIFICATION=0 \
       POST_FINALIZE_OBSERVE=0 \
       SKILLS_EXECUTION_MODE=prompt_first \
+      SKILLS_TOOL_CALLING_MODE=evidence_plan_single_hop \
       AGENT_MODEL="${AGENT_MODEL}" \
       AGENT_BASE_URL="${AGENT_BASE_URL}" \
       AGENT_API_KEY="${AGENT_API_KEY}" \
@@ -537,7 +593,7 @@ SKILLSET_UPDATE_BODY="$(cat <<JSON
       "skill_id": "${SKILL_ID}",
       "version": "${SKILL_VERSION}",
       "capability": "${SKILL_CAPABILITY}",
-      "allowed_tools": [],
+      "allowed_tools": ["query_logs"],
       "priority": 150,
       "enabled": true
     }
@@ -615,6 +671,11 @@ assert_json_expr "SkillConsumeObservation" "${TOOLCALLS_RESPONSE}" '
     (.toolName // .tool_name // "") == "skill.consume"
   )
 '
+assert_json_expr "SkillToolPlanObservation" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "skill.tool_plan"
+  )
+'
 assert_json_expr "ElasticsearchEvidencePlanApplied" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
     (.toolName // .tool_name // "") == "evidence.plan"
@@ -630,6 +691,7 @@ assert_json_expr "ElasticsearchEvidencePlanApplied" "${TOOLCALLS_RESPONSE}" '
 assert_json_expr "QueryLogsIncludesECSService" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
     (.toolName // .tool_name // "") == "mcp.query_logs"
+    and (.nodeName // .node_name // "") == "skill.evidence.plan"
     and (
       ((.requestJSON // .request_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
       | (.query // "")
@@ -640,6 +702,7 @@ assert_json_expr "QueryLogsIncludesECSService" "${TOOLCALLS_RESPONSE}" '
 assert_json_expr "QueryLogsIncludesECSNamespace" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
     (.toolName // .tool_name // "") == "mcp.query_logs"
+    and (.nodeName // .node_name // "") == "skill.evidence.plan"
     and (
       ((.requestJSON // .request_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
       | (.query // "")
@@ -650,10 +713,20 @@ assert_json_expr "QueryLogsIncludesECSNamespace" "${TOOLCALLS_RESPONSE}" '
 assert_json_expr "QueryLogsIncludesECSErrorFilter" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
     (.toolName // .tool_name // "") == "mcp.query_logs"
+    and (.nodeName // .node_name // "") == "skill.evidence.plan"
     and (
       ((.requestJSON // .request_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
       | (.query // "")
       | test("log\\.level:\\(error OR fatal\\)")
+    )
+  )
+'
+assert_json_expr "QueryLogsReuseObserved" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "evidence.logs.reuse"
+    and (
+      ((.responseJSON // .response_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
+      | (.source // "") == "skill_prompt_first"
     )
   )
 '

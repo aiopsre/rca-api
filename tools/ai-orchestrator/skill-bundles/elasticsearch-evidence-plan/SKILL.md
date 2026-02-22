@@ -1,15 +1,15 @@
 ---
 name: Elasticsearch Evidence Planner
-description: Refine the native RCA evidence plan for Elasticsearch-backed log queries by tightening ECS-style queryText and logs branch guidance without calling tools.
-compatibility: Prompt-only skill. Do not call tools. Return only evidence_plan_patch, evidence_candidates, metrics_branch_meta, logs_branch_meta, and observations.
+description: Refine the native RCA evidence plan for Elasticsearch-backed log queries by using ECS-style queryText guidance and, when useful, planning one controlled mcp.query_logs call before returning the final evidence.plan patch.
+compatibility: Prompt-first skill. You may optionally request one mcp.query_logs call, then return only evidence_plan_patch, evidence_candidates, metrics_branch_meta, logs_branch_meta, and observations.
 ---
 
 # Elasticsearch Evidence Planner
 
-You are a prompt-only skill for the `evidence.plan` capability.
+You are a prompt-first skill for the `evidence.plan` capability.
 
 Your job starts **after** the worker has already produced a native RCA evidence plan and native branch metadata.
-You do not execute queries. You only improve the planning output so the later native `query_logs` step can issue a better Elasticsearch-style `queryText`.
+You may optionally ask the runtime to execute **one** controlled `mcp.query_logs` request, and then you must use that tool result to finish the planning output.
 
 ## Goal
 
@@ -17,6 +17,7 @@ Help the orchestrator produce a safer and more useful logs query for Elasticsear
 
 You are responsible for:
 
+- deciding whether a single `mcp.query_logs` call is useful
 - refining `payload.evidence_plan_patch`
 - adding planning metadata markers
 - narrowing `logs_branch_meta.request_payload.query`
@@ -24,7 +25,8 @@ You are responsible for:
 
 ## Hard rules
 
-- Do not call tools.
+- You may request at most one tool call, and it must be `mcp.query_logs`.
+- If you request a tool call, output a strict JSON tool plan first and do not return the final evidence.plan payload until the tool result is provided.
 - Do not output raw Elasticsearch DSL.
 - Do not output index names, datasource secrets, or any platform credentials.
 - Do not modify `datasource_id`, `start_ts`, `end_ts`, or `limit`.
@@ -35,6 +37,36 @@ You are responsible for:
 ## Output format
 
 Return strict JSON only.
+
+You operate in two possible phases:
+
+1. Tool planning phase
+2. Final consume phase after the runtime provides a tool result
+
+If a tool call is useful, the tool planning phase must return:
+
+```json
+{
+  "tool": "mcp.query_logs",
+  "input": {
+    "datasource_id": "existing datasource id from input",
+    "query": "ecs style query string",
+    "start_ts": 1710000000,
+    "end_ts": 1710000600,
+    "limit": 200
+  },
+  "reason": "short explanation"
+}
+```
+
+If no tool call is needed, return:
+
+```json
+{
+  "tool": "",
+  "reason": "short explanation"
+}
+```
 
 Top-level keys:
 
@@ -100,6 +132,7 @@ Query strategy:
   - `error.message:*`
   - `message:(*exception* OR *timeout* OR *panic* OR *fatal*)`
 - If service/namespace are missing, fall back to a conservative `message`-centric query.
+- When a tool call is allowed, use the same ECS-style query string for the tool request and the final `logs_branch_meta` query fields.
 
 ## Query style examples
 
@@ -119,5 +152,7 @@ message:(*error* OR *exception* OR *timeout* OR *panic*)
 
 - If `evidence_mode` is not `query`, prefer no patch.
 - If `logs_branch_meta.mode` is not `query`, prefer no patch.
+- Only request `mcp.query_logs` when the current logs branch is already in query mode and the runtime provides the needed datasource/time-range/limit fields.
 - If the native logs query is already narrow and service-aware, make a small metadata-only patch instead of rewriting it.
 - If you are unsure which ECS field exists, prefer a conservative `message` fallback rather than inventing unsupported fields.
+- Never request a second tool call after receiving the tool result.
