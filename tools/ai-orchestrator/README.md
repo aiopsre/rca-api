@@ -51,3 +51,7 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - 任一节点异常会写入 `last_error`，并继续执行 `finalize_job` 走 failed 路径。
 - 仅做只读取证与 diagnosis 写回，不包含高风险自动处置动作。
 - 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`，且只支持 prompt-only Skill，不支持 agent tool-calling。
+- checked-in prompt-only Skill 样板位于：
+  - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
+  - `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
+  - `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`

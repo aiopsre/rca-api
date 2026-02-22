@@ -36,6 +36,51 @@ def _merge_mapping(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+def _sanitize_logs_branch_meta(value: Any) -> tuple[dict[str, Any] | None, list[str]]:
+    if not isinstance(value, dict):
+        return None, []
+
+    dropped: list[str] = []
+    normalized: dict[str, Any] = {}
+
+    mode = _trim(value.get("mode"))
+    if mode == "query":
+        normalized["mode"] = "query"
+    else:
+        return None, ["logs_branch_meta.mode"]
+
+    query_type = _trim(value.get("query_type"))
+    if query_type == "logs":
+        normalized["query_type"] = "logs"
+    else:
+        return None, ["logs_branch_meta.query_type"]
+
+    request_payload = value.get("request_payload")
+    if not isinstance(request_payload, dict):
+        return None, ["logs_branch_meta.request_payload"]
+    query = _trim(request_payload.get("query"))
+    if not query:
+        return None, ["logs_branch_meta.request_payload.query"]
+    normalized["request_payload"] = {"query": query}
+    for key in sorted(set(request_payload.keys()) - {"query"}):
+        dropped.append(f"logs_branch_meta.request_payload.{key}")
+
+    query_request = value.get("query_request")
+    if not isinstance(query_request, dict):
+        return None, ["logs_branch_meta.query_request"]
+    query_text = _trim(query_request.get("queryText") or query_request.get("query_text"))
+    if not query_text:
+        return None, ["logs_branch_meta.query_request.queryText"]
+    normalized["query_request"] = {"queryText": query_text}
+    for key in sorted(set(query_request.keys()) - {"queryText", "query_text"}):
+        dropped.append(f"logs_branch_meta.query_request.{key}")
+
+    for key in sorted(set(value.keys()) - {"mode", "query_type", "request_payload", "query_request"}):
+        dropped.append(f"logs_branch_meta.{key}")
+
+    return normalized, dropped
+
+
 def _sanitize_session_patch(patch: Any) -> dict[str, Any]:
     if not isinstance(patch, dict):
         return {}
@@ -273,6 +318,14 @@ def _sanitize_evidence_plan_result(result: PromptSkillConsumeResult) -> tuple[Pr
 
     for key in ("metrics_branch_meta", "logs_branch_meta"):
         value = raw_payload.get(key)
+        if key == "logs_branch_meta":
+            normalized_logs_branch_meta, dropped_logs_branch_meta = _sanitize_logs_branch_meta(value)
+            dropped.extend(dropped_logs_branch_meta)
+            if isinstance(normalized_logs_branch_meta, dict):
+                payload[key] = normalized_logs_branch_meta
+            elif key in raw_payload and value is not None:
+                dropped.append(key)
+            continue
         if isinstance(value, dict):
             payload[key] = value
         elif key in raw_payload and value is not None:
@@ -314,7 +367,31 @@ def _apply_evidence_plan_result(
         setattr(state, "metrics_branch_meta", metrics_branch_meta)
     logs_branch_meta = payload.get("logs_branch_meta")
     if isinstance(logs_branch_meta, dict):
-        setattr(state, "logs_branch_meta", logs_branch_meta)
+        current_logs_branch_meta = getattr(state, "logs_branch_meta", None)
+        if not isinstance(current_logs_branch_meta, dict):
+            current_logs_branch_meta = {}
+        merged_logs_branch_meta = dict(current_logs_branch_meta)
+        merged_logs_branch_meta["mode"] = str(logs_branch_meta.get("mode") or merged_logs_branch_meta.get("mode") or "query")
+        merged_logs_branch_meta["query_type"] = "logs"
+        request_payload = merged_logs_branch_meta.get("request_payload")
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+        incoming_request_payload = logs_branch_meta.get("request_payload")
+        if isinstance(incoming_request_payload, dict):
+            query = _trim(incoming_request_payload.get("query"))
+            if query:
+                request_payload["query"] = query
+        merged_logs_branch_meta["request_payload"] = request_payload
+        query_request = merged_logs_branch_meta.get("query_request")
+        if not isinstance(query_request, dict):
+            query_request = {}
+        incoming_query_request = logs_branch_meta.get("query_request")
+        if isinstance(incoming_query_request, dict):
+            query_text = _trim(incoming_query_request.get("queryText") or incoming_query_request.get("query_text"))
+            if query_text:
+                query_request["queryText"] = query_text
+        merged_logs_branch_meta["query_request"] = query_request
+        setattr(state, "logs_branch_meta", merged_logs_branch_meta)
     current_candidates = getattr(state, "evidence_candidates", None)
     current_plan = getattr(state, "evidence_plan", None)
     if isinstance(current_plan, dict) and isinstance(current_candidates, list):

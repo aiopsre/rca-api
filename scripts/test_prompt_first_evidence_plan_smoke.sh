@@ -155,6 +155,7 @@ preflight_no_conflicting_evidence_skill() {
     [
       (.data.items // .items // [])[]? as $item
       | ($item.skills // [])[]?
+      | select((.enabled? == false) | not)
       | select((.capability // "") == "evidence.plan")
       | select(
           ($item.skillset_name // "") != $skillset

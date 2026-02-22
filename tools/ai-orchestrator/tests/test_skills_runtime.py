@@ -286,6 +286,12 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertEqual(frontmatter["name"], "RCA Evidence Planner")
         self.assertIn("Refine the native RCA evidence plan", frontmatter["description"])
 
+    def test_checked_in_elasticsearch_evidence_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "elasticsearch-evidence-plan" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "Elasticsearch Evidence Planner")
+        self.assertIn("Elasticsearch-backed log queries", frontmatter["description"])
+
     def test_capability_registry_exposes_diagnosis_and_evidence_plan(self) -> None:
         diagnosis = get_capability_definition("diagnosis.enrich")
         evidence = get_capability_definition("evidence.plan")
@@ -293,6 +299,23 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertIsNotNone(evidence)
         self.assertEqual(diagnosis.stage, "summarize_diagnosis")
         self.assertEqual(evidence.stage, "plan_evidence")
+
+    def test_evidence_plan_sanitize_rejects_incomplete_logs_branch_meta(self) -> None:
+        evidence = get_capability_definition("evidence.plan")
+        self.assertIsNotNone(evidence)
+        sanitized, dropped = evidence.sanitize_output(
+            PromptSkillConsumeResult(
+                payload={
+                    "logs_branch_meta": {
+                        "mode": "query",
+                        "query_type": "logs",
+                        "request_payload": {"query": 'service.name:"checkout"'},
+                    }
+                }
+            )
+        )
+        self.assertEqual(sanitized.payload, {})
+        self.assertIn("logs_branch_meta.query_request", dropped)
 
     def test_orchestrator_runtime_execute_skill_is_disabled_for_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -589,10 +612,28 @@ class SkillCatalogTest(unittest.TestCase):
                 def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
                     return PromptSkillConsumeResult(
                         payload={
-                            "evidence_plan_patch": {"budget": {"max_calls": 2}},
+                            "evidence_plan_patch": {
+                                "budget": {"max_calls": 2},
+                                "metadata": {
+                                    "prompt_skill": "elasticsearch.evidence.plan",
+                                    "query_style": "ecs_query_string",
+                                },
+                            },
                             "evidence_candidates": [{"type": "logs", "name": "error_budget"}],
                             "metrics_branch_meta": {"mode": "mock", "query_type": "metrics"},
-                            "logs_branch_meta": {"mode": "query", "query_type": "logs"},
+                            "logs_branch_meta": {
+                                "mode": "query",
+                                "query_type": "logs",
+                                "request_payload": {
+                                    "query": 'service.name:"svc-a" AND (kubernetes.namespace_name:"default" OR service.namespace:"default") AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))',
+                                    "datasource_id": "forbidden-ds",
+                                    "limit": 10,
+                                },
+                                "query_request": {
+                                    "queryText": 'service.name:"svc-a" AND (kubernetes.namespace_name:"default" OR service.namespace:"default") AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))',
+                                    "datasourceID": "forbidden-ds",
+                                },
+                            },
                             "session_patch": {"forbidden": True},
                             "diagnosis_json": {"forbidden": True},
                         },
@@ -615,9 +656,24 @@ class SkillCatalogTest(unittest.TestCase):
                 evidence_plan={"budget": {"max_calls": 1}, "candidates": [{"type": "metrics"}]},
                 evidence_candidates=[{"type": "metrics"}],
                 metrics_branch_meta={"mode": "query"},
-                logs_branch_meta={"mode": "mock"},
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": 'message:(*error* OR *exception*)',
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-logs",
+                        "queryText": 'message:(*error* OR *exception*)',
+                        "queryJSON": "{}",
+                    },
+                },
                 evidence_mode="query",
-                incident_context={"service": "svc-a"},
+                incident_context={"service": "svc-a", "namespace": "default"},
                 input_hints={},
             )
             result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
@@ -627,8 +683,18 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual(state.evidence_plan["budget"]["max_calls"], 2)
             self.assertEqual(state.evidence_candidates, [{"type": "logs", "name": "error_budget"}])
             self.assertEqual(state.evidence_plan["candidates"], [{"type": "logs", "name": "error_budget"}])
+            self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "elasticsearch.evidence.plan")
+            self.assertEqual(state.evidence_plan["metadata"]["query_style"], "ecs_query_string")
             self.assertEqual(state.metrics_branch_meta["mode"], "mock")
             self.assertEqual(state.logs_branch_meta["mode"], "query")
+            self.assertEqual(state.logs_branch_meta["request_payload"]["datasource_id"], "ds-logs")
+            self.assertEqual(state.logs_branch_meta["request_payload"]["start_ts"], 100)
+            self.assertEqual(state.logs_branch_meta["request_payload"]["end_ts"], 200)
+            self.assertEqual(state.logs_branch_meta["request_payload"]["limit"], 200)
+            self.assertEqual(state.logs_branch_meta["query_request"]["datasourceID"], "ds-logs")
+            self.assertEqual(state.logs_branch_meta["query_request"]["queryJSON"], "{}")
+            self.assertIn('service.name:"svc-a"', state.logs_branch_meta["request_payload"]["query"])
+            self.assertEqual(state.logs_branch_meta["request_payload"]["query"], state.logs_branch_meta["query_request"]["queryText"])
             self.assertEqual(result["payload"]["evidence_candidates"], [{"type": "logs", "name": "error_budget"}])
             self.assertEqual(result["session_patch"], {})
 

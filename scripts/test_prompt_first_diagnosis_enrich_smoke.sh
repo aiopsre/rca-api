@@ -158,6 +158,7 @@ preflight_no_conflicting_diagnosis_skill() {
     [
       (.data.items // .items // [])[]? as $item
       | ($item.skills // [])[]?
+      | select((.enabled? == false) | not)
       | select((.capability // "") == "diagnosis.enrich")
       | select(
           ($item.skillset_name // "") != $skillset
