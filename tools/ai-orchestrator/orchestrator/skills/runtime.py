@@ -123,6 +123,7 @@ class SkillSummary:
 @dataclass(frozen=True)
 class SkillBinding:
     capability: str
+    role: str
     allowed_tools: tuple[str, ...]
     priority: int = 100
     enabled: bool = True
@@ -142,8 +143,12 @@ class SkillBinding:
         enabled = payload.get("enabled")
         if enabled is None:
             enabled = True
+        role = _trim(payload.get("role")).lower() or "executor"
+        if role not in {"knowledge", "executor"}:
+            role = "executor"
         return cls(
             capability=capability,
+            role=role,
             allowed_tools=tuple(_string_list(payload.get("allowed_tools") or payload.get("allowedTools"))),
             priority=priority,
             enabled=bool(enabled),
@@ -161,7 +166,7 @@ class CatalogSkill:
 
     @property
     def binding_key(self) -> str:
-        return _binding_key(self.summary.skill_id, self.summary.version, self.binding.capability)
+        return _binding_key(self.summary.skill_id, self.summary.version, self.binding.capability, self.binding.role)
 
 
 @dataclass(frozen=True)
@@ -173,6 +178,7 @@ class SkillCandidate:
     description: str
     compatibility: str
     capability: str
+    role: str
     allowed_tools: tuple[str, ...]
     priority: int
     source: str
@@ -186,6 +192,7 @@ class SkillCandidate:
             "description": self.description,
             "compatibility": self.compatibility,
             "capability": self.capability,
+            "role": self.role,
             "allowed_tools": list(self.allowed_tools),
             "priority": self.priority,
             "source": self.source,
@@ -246,6 +253,7 @@ class SkillCatalog:
                     "description": item.summary.description,
                     "compatibility": item.summary.compatibility,
                     "capability": item.binding.capability,
+                    "role": item.binding.role,
                     "allowed_tools": list(item.binding.allowed_tools),
                     "priority": item.binding.priority,
                     "enabled": item.binding.enabled,
@@ -271,6 +279,7 @@ class SkillCatalog:
                     description=item.summary.description,
                     compatibility=item.summary.compatibility,
                     capability=item.binding.capability,
+                    role=item.binding.role,
                     allowed_tools=item.binding.allowed_tools,
                     priority=item.binding.priority,
                     source=item.source,
@@ -279,8 +288,14 @@ class SkillCatalog:
         out.sort(key=lambda item: (-item.priority, item.skill_id, item.version, item.binding_key))
         return out
 
+    def knowledge_candidates_for_capability(self, capability: str) -> list[SkillCandidate]:
+        return [item for item in self.candidates_for_capability(capability) if item.role == "knowledge"]
+
+    def executor_candidates_for_capability(self, capability: str) -> list[SkillCandidate]:
+        return [item for item in self.candidates_for_capability(capability) if item.role != "knowledge"]
+
     def load_skill_document(self, binding_key: str) -> str:
-        item = self._skills.get(_trim(binding_key))
+        item = self._lookup_skill(binding_key)
         if item is None:
             raise RuntimeError(f"unknown skill binding: {binding_key}")
         skill_path = item.root_dir / item.summary.instruction_file
@@ -289,7 +304,7 @@ class SkillCatalog:
         return skill_path.read_text(encoding="utf-8")
 
     def get_skill(self, binding_key: str) -> CatalogSkill:
-        item = self._skills.get(_trim(binding_key))
+        item = self._lookup_skill(binding_key)
         if item is None:
             raise RuntimeError(f"unknown skill binding: {binding_key}")
         return item
@@ -318,7 +333,7 @@ class SkillCatalog:
                 binding = SkillBinding.from_payload(skill_payload)
                 if not binding.enabled:
                     continue
-                binding_key = _binding_key(summary.skill_id, summary.version, binding.capability)
+                binding_key = _binding_key(summary.skill_id, summary.version, binding.capability, binding.role)
                 if binding_key in self._skills:
                     raise RuntimeError(f"duplicate resolved skill binding: {binding_key}")
                 artifact_url = _trim(skill_payload.get("artifactURL") or skill_payload.get("artifact_url"))
@@ -375,6 +390,18 @@ class SkillCatalog:
                 f"name={expected_summary.name!r} description={expected_summary.description!r}"
             )
 
+    def _lookup_skill(self, binding_key: str) -> CatalogSkill | None:
+        normalized = _trim(binding_key)
+        item = self._skills.get(normalized)
+        if item is not None:
+            return item
+        legacy_parts = normalized.split("\x00")
+        if len(legacy_parts) == 3:
+            return self._skills.get(
+                _binding_key(legacy_parts[0], legacy_parts[1], legacy_parts[2], "executor")
+            )
+        return None
 
-def _binding_key(skill_id: str, version: str, capability: str) -> str:
-    return f"{_trim(skill_id)}\x00{_trim(version)}\x00{_trim(capability)}"
+
+def _binding_key(skill_id: str, version: str, capability: str, role: str) -> str:
+    return f"{_trim(skill_id)}\x00{_trim(version)}\x00{_trim(capability)}\x00{_trim(role).lower() or 'executor'}"

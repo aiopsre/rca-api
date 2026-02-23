@@ -60,6 +60,24 @@ class SkillSelectionResult:
         self.reason = reason
 
 
+class KnowledgeSelectionResult:
+    def __init__(self, *, selected_binding_keys: list[str] | None = None, reason: str = "") -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in selected_binding_keys or []:
+            binding_key = _trim(item)
+            if not binding_key or binding_key in seen:
+                continue
+            seen.add(binding_key)
+            normalized.append(binding_key)
+        self.selected_binding_keys = normalized
+        self.reason = reason
+
+
+class ExecutorSelectionResult(SkillSelectionResult):
+    pass
+
+
 class DiagnosisEnrichOutput:
     def __init__(
         self,
@@ -112,7 +130,7 @@ class PromptSkillAgent:
         stage: str,
         stage_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
-    ) -> SkillSelectionResult:
+    ) -> ExecutorSelectionResult:
         if not self.configured:
             raise RuntimeError("prompt skill agent is not configured")
         system_prompt = (
@@ -132,8 +150,43 @@ class PromptSkillAgent:
             },
         }
         response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
-        return SkillSelectionResult(
+        return ExecutorSelectionResult(
             selected_binding_key=_trim(response.get("selected_binding_key")),
+            reason=_trim(response.get("reason")),
+        )
+
+    def select_knowledge_skills(
+        self,
+        *,
+        capability: str,
+        stage: str,
+        stage_summary: dict[str, Any],
+        candidates: list[dict[str, Any]],
+    ) -> KnowledgeSelectionResult:
+        if not self.configured:
+            raise RuntimeError("prompt skill agent is not configured")
+        system_prompt = (
+            "You are selecting zero or more optional RCA knowledge skills for the current stage.\n"
+            "Knowledge skills only provide extra context and do not execute on their own.\n"
+            "Return strict JSON with keys selected_binding_keys and reason.\n"
+            "If none are useful, return an empty selected_binding_keys list."
+        )
+        user_payload = {
+            "capability": capability,
+            "stage": stage,
+            "stage_summary": stage_summary,
+            "candidates": candidates,
+            "output_contract": {
+                "selected_binding_keys": "array of binding keys",
+                "reason": "short explanation",
+            },
+        }
+        response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
+        selected_binding_keys = response.get("selected_binding_keys")
+        if not isinstance(selected_binding_keys, list):
+            selected_binding_keys = []
+        return KnowledgeSelectionResult(
+            selected_binding_keys=[_trim(item) for item in selected_binding_keys],
             reason=_trim(response.get("reason")),
         )
 
@@ -145,6 +198,7 @@ class PromptSkillAgent:
         skill_version: str,
         skill_document: str,
         input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]] | None = None,
         output_contract: dict[str, Any],
     ) -> PromptSkillConsumeResult:
         if not self.configured:
@@ -162,6 +216,7 @@ class PromptSkillAgent:
             "skill_version": skill_version,
             "skill_document": skill_document,
             "input": input_payload,
+            "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
             "output_contract": output_contract,
         }
         response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
@@ -182,6 +237,7 @@ class PromptSkillAgent:
         skill_version: str,
         skill_document: str,
         input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]] | None = None,
         available_tools: list[str],
     ) -> ToolCallPlan:
         if not self.configured:
@@ -199,6 +255,7 @@ class PromptSkillAgent:
             "skill_version": skill_version,
             "skill_document": skill_document,
             "input": input_payload,
+            "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
             "available_tools": [item for item in available_tools if _trim(item)],
             "output_contract": {
                 "tool": "string or empty",
@@ -227,6 +284,7 @@ class PromptSkillAgent:
         skill_version: str,
         skill_document: str,
         input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]] | None = None,
         tool_request: dict[str, Any],
         tool_result: dict[str, Any],
         output_contract: dict[str, Any],
@@ -247,6 +305,7 @@ class PromptSkillAgent:
             "skill_version": skill_version,
             "skill_document": skill_document,
             "input": input_payload,
+            "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
             "tool_request": tool_request if isinstance(tool_request, dict) else {},
             "tool_result": tool_result if isinstance(tool_result, dict) else {},
             "output_contract": output_contract,

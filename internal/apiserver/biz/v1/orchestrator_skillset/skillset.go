@@ -97,6 +97,7 @@ func (b *skillsetBiz) Resolve(
 				ArtifactURL:  downloadURL,
 				ManifestJSON: cloneOptionalTrimmedString(release.ManifestJSON),
 				Capability:   strings.TrimSpace(ref.Capability),
+				Role:         strings.TrimSpace(ref.Role),
 				AllowedTools: append([]string(nil), ref.AllowedTools...),
 				Priority:     priority,
 				Enabled:      ref.Enabled == nil || *ref.Enabled,

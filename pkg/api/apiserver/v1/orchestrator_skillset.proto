@@ -17,6 +17,7 @@ message OrchestratorSkillRelease {
   repeated string allowedTools = 8;
   int32 priority = 9;
   bool enabled = 10;
+  string role = 11;
 }
 
 // OrchestratorSkillset is one resolved skillset definition.

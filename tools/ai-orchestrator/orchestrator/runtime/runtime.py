@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import time
 import uuid
@@ -27,6 +28,19 @@ if TYPE_CHECKING:
 
 
 _OBSERVED_MAX_LEN = 512
+
+
+@dataclass(frozen=True)
+class KnowledgeContextBundle:
+    selected_binding_keys: tuple[str, ...]
+    skills: tuple[dict[str, Any], ...]
+
+    @property
+    def skill_ids(self) -> list[str]:
+        return [str(item.get("skill_id") or "").strip() for item in self.skills if str(item.get("skill_id") or "").strip()]
+
+    def to_agent_payload(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.skills]
 
 
 def _trim_text(value: Any, *, max_len: int = 160) -> str:
@@ -291,6 +305,20 @@ class OrchestratorRuntime:
     def skill_candidates(self, capability: str) -> list["SkillCandidate"]:
         if self._skill_catalog is None:
             return []
+        return self._skill_catalog.candidates_for_capability(capability)
+
+    def knowledge_skill_candidates(self, capability: str) -> list["SkillCandidate"]:
+        if self._skill_catalog is None:
+            return []
+        if hasattr(self._skill_catalog, "knowledge_candidates_for_capability"):
+            return self._skill_catalog.knowledge_candidates_for_capability(capability)
+        return []
+
+    def executor_skill_candidates(self, capability: str) -> list["SkillCandidate"]:
+        if self._skill_catalog is None:
+            return []
+        if hasattr(self._skill_catalog, "executor_candidates_for_capability"):
+            return self._skill_catalog.executor_candidates_for_capability(capability)
         return self._skill_catalog.candidates_for_capability(capability)
 
     def _effective_prompt_skill_tools(self, candidate: "SkillCandidate") -> list[str]:
@@ -646,7 +674,17 @@ class OrchestratorRuntime:
         definition = get_capability_definition(capability)
         if definition is None:
             return None
-        return self._consume_prompt_skill(
+        if definition.capability == "evidence.plan":
+            return self._consume_prompt_skill_with_roles(
+                capability=definition.capability,
+                stage=definition.stage,
+                graph_state=graph_state,
+                input_payload=definition.build_input(graph_state),
+                output_contract=definition.output_contract,
+                sanitize_output=definition.sanitize_output,
+                apply_result=definition.apply_result,
+            )
+        return self._consume_single_prompt_skill(
             capability=definition.capability,
             stage=definition.stage,
             graph_state=graph_state,
@@ -665,7 +703,7 @@ class OrchestratorRuntime:
         definition = get_capability_definition("diagnosis.enrich")
         if definition is None:
             return None
-        return self._consume_prompt_skill(
+        return self._consume_single_prompt_skill(
             capability=definition.capability,
             stage=definition.stage,
             graph_state=graph_state,
@@ -675,7 +713,7 @@ class OrchestratorRuntime:
             apply_result=definition.apply_result,
         )
 
-    def _consume_prompt_skill(
+    def _consume_single_prompt_skill(
         self,
         *,
         capability: str,
@@ -689,7 +727,7 @@ class OrchestratorRuntime:
         if self._skill_catalog is None or self._skills_execution_mode != "prompt_first":
             return None
 
-        candidates = self.skill_candidates(capability)
+        candidates = self.executor_skill_candidates(capability)
         if not candidates:
             return None
 
@@ -756,7 +794,7 @@ class OrchestratorRuntime:
         selected_binding_key = str(selection.selected_binding_key or "").strip()
         if not selected_binding_key:
             return None
-        selected_candidate = next((item for item in candidates if item.binding_key == selected_binding_key), None)
+        selected_candidate = self._resolve_candidate_by_binding_key(candidates, selected_binding_key)
         if selected_candidate is None:
             self._report_observation_best_effort(
                 tool="skill.fallback",
@@ -775,7 +813,6 @@ class OrchestratorRuntime:
 
         consume_started = time.monotonic()
         try:
-            skill = self._skill_catalog.get_skill(selected_binding_key)
             skill_document = self._skill_catalog.load_skill_document(selected_binding_key)
             raw_output, post_apply_context = self._execute_prompt_skill(
                 capability=capability,
@@ -785,6 +822,7 @@ class OrchestratorRuntime:
                 evidence_ids=evidence_ids,
                 selected_candidate=selected_candidate,
                 input_payload=input_payload,
+                knowledge_context=[],
                 output_contract=output_contract,
                 skill_document=skill_document,
             )
@@ -856,7 +894,7 @@ class OrchestratorRuntime:
                 evidence_ids=evidence_ids,
             )
         return {
-            "selected_binding_key": selected_binding_key,
+            "selected_binding_key": selected_candidate.binding_key,
             "skill_id": selected_candidate.skill_id,
             "version": selected_candidate.version,
             "capability": capability,
@@ -864,6 +902,338 @@ class OrchestratorRuntime:
             "session_patch": normalized_output.session_patch,
             "observations": normalized_output.observations,
         }
+
+    def _consume_prompt_skill_with_roles(
+        self,
+        *,
+        capability: str,
+        stage: str,
+        graph_state: Any,
+        input_payload: dict[str, Any],
+        output_contract: dict[str, Any],
+        sanitize_output: Callable[[PromptSkillConsumeResult], tuple[PromptSkillConsumeResult, list[str]]],
+        apply_result: Callable[[Any, PromptSkillConsumeResult, Callable[[Any, dict[str, Any] | None], None]], None],
+    ) -> dict[str, Any] | None:
+        if self._skill_catalog is None or self._skills_execution_mode != "prompt_first":
+            return None
+
+        knowledge_candidates = self.knowledge_skill_candidates(capability)
+        executor_candidates = self.executor_skill_candidates(capability)
+        if not executor_candidates:
+            return None
+
+        evidence_ids = input_payload.get("evidence_ids") if isinstance(input_payload.get("evidence_ids"), list) else []
+        node_name = _skill_node_name(capability)
+        stage_summary = _build_stage_summary(capability, input_payload)
+        if self._skill_agent is None or not bool(getattr(self._skill_agent, "configured", False)):
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage},
+                response={
+                    "status": "fallback",
+                    "reason": "agent_not_configured",
+                    "knowledge_candidate_count": len(knowledge_candidates),
+                    "knowledge_candidate_skill_ids": [item.skill_id for item in knowledge_candidates],
+                    "executor_candidate_count": len(executor_candidates),
+                    "executor_candidate_skill_ids": [item.skill_id for item in executor_candidates],
+                },
+                evidence_ids=evidence_ids,
+            )
+            return None
+
+        knowledge_bundle = KnowledgeContextBundle(selected_binding_keys=(), skills=())
+        if knowledge_candidates:
+            selection_started = time.monotonic()
+            try:
+                if not hasattr(self._skill_agent, "select_knowledge_skills"):
+                    raise RuntimeError("agent_missing_select_knowledge_skills")
+                knowledge_selection = self._skill_agent.select_knowledge_skills(
+                    capability=capability,
+                    stage=stage,
+                    stage_summary=stage_summary,
+                    candidates=[candidate.to_summary_dict() for candidate in knowledge_candidates],
+                )
+                selection_latency_ms = max(1, int((time.monotonic() - selection_started) * 1000))
+                knowledge_bundle = self._load_knowledge_context_bundle(
+                    candidates=knowledge_candidates,
+                    selected_binding_keys=list(getattr(knowledge_selection, "selected_binding_keys", []) or []),
+                )
+                self._report_observation_best_effort(
+                    tool="skill.select",
+                    node_name=node_name,
+                    params={"capability": capability, "stage": stage, "selection_role": "knowledge"},
+                    response={
+                        "status": "ok",
+                        "selection_role": "knowledge",
+                        "latency_ms": selection_latency_ms,
+                        "candidate_count": len(knowledge_candidates),
+                        "candidate_skill_ids": [item.skill_id for item in knowledge_candidates],
+                        "selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
+                        "selected_skill_ids": knowledge_bundle.skill_ids,
+                        "reason": str(getattr(knowledge_selection, "reason", "") or ""),
+                    },
+                    evidence_ids=evidence_ids,
+                )
+            except Exception as exc:  # noqa: BLE001
+                selection_latency_ms = max(1, int((time.monotonic() - selection_started) * 1000))
+                self._report_observation_best_effort(
+                    tool="skill.fallback",
+                    node_name=node_name,
+                    params={"capability": capability, "stage": stage, "selection_role": "knowledge"},
+                    response={
+                        "status": "fallback",
+                        "selection_role": "knowledge",
+                        "reason": "knowledge_selection_failed",
+                        "latency_ms": selection_latency_ms,
+                        "candidate_count": len(knowledge_candidates),
+                        "candidate_skill_ids": [item.skill_id for item in knowledge_candidates],
+                        "error": _trim_text(exc),
+                    },
+                    evidence_ids=evidence_ids,
+                )
+                return None
+
+        executor_started = time.monotonic()
+        try:
+            executor_selection = self._skill_agent.select_skill(
+                capability=capability,
+                stage=stage,
+                stage_summary=self._executor_stage_summary(
+                    stage_summary=stage_summary,
+                    knowledge_bundle=knowledge_bundle,
+                ),
+                candidates=[candidate.to_summary_dict() for candidate in executor_candidates],
+            )
+            executor_latency_ms = max(1, int((time.monotonic() - executor_started) * 1000))
+            selected_executor_key = str(getattr(executor_selection, "selected_binding_key", "") or "").strip()
+            self._report_observation_best_effort(
+                tool="skill.select",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage, "selection_role": "executor"},
+                response={
+                    "status": "ok",
+                    "selection_role": "executor",
+                    "latency_ms": executor_latency_ms,
+                    "candidate_count": len(executor_candidates),
+                    "candidate_skill_ids": [item.skill_id for item in executor_candidates],
+                    "selected_binding_key": selected_executor_key,
+                    "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
+                    "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
+                    "reason": str(getattr(executor_selection, "reason", "") or ""),
+                },
+                evidence_ids=evidence_ids,
+            )
+        except Exception as exc:  # noqa: BLE001
+            executor_latency_ms = max(1, int((time.monotonic() - executor_started) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage, "selection_role": "executor"},
+                response={
+                    "status": "fallback",
+                    "selection_role": "executor",
+                    "reason": "executor_selection_failed",
+                    "latency_ms": executor_latency_ms,
+                    "candidate_count": len(executor_candidates),
+                    "candidate_skill_ids": [item.skill_id for item in executor_candidates],
+                    "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
+                    "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
+                    "error": _trim_text(exc),
+                },
+                evidence_ids=evidence_ids,
+            )
+            return None
+
+        if not selected_executor_key:
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage},
+                response={
+                    "status": "fallback",
+                    "reason": "executor_not_selected",
+                    "candidate_count": len(executor_candidates),
+                    "candidate_skill_ids": [item.skill_id for item in executor_candidates],
+                    "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
+                    "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
+                },
+                evidence_ids=evidence_ids,
+            )
+            return None
+
+        selected_candidate = self._resolve_candidate_by_binding_key(executor_candidates, selected_executor_key)
+        if selected_candidate is None:
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage},
+                response={
+                    "status": "fallback",
+                    "reason": "selected_executor_not_found",
+                    "selected_binding_key": selected_executor_key,
+                    "candidate_skill_ids": [item.skill_id for item in executor_candidates],
+                },
+                evidence_ids=evidence_ids,
+            )
+            return None
+
+        consume_started = time.monotonic()
+        try:
+            skill_document = self._skill_catalog.load_skill_document(selected_candidate.binding_key)
+            raw_output, post_apply_context = self._execute_prompt_skill(
+                capability=capability,
+                stage=stage,
+                graph_state=graph_state,
+                node_name=node_name,
+                evidence_ids=evidence_ids,
+                selected_candidate=selected_candidate,
+                input_payload=input_payload,
+                knowledge_context=knowledge_bundle.to_agent_payload(),
+                output_contract=output_contract,
+                skill_document=skill_document,
+            )
+        except Exception as exc:  # noqa: BLE001
+            consume_latency_ms = max(1, int((time.monotonic() - consume_started) * 1000))
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage, "selected_binding_key": selected_candidate.binding_key},
+                response={
+                    "status": "fallback",
+                    "reason": "consume_failed",
+                    "latency_ms": consume_latency_ms,
+                    "skill_id": selected_candidate.skill_id,
+                    "selected_binding_key": selected_candidate.binding_key,
+                    "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
+                    "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
+                    "error": _trim_text(exc),
+                },
+                evidence_ids=evidence_ids,
+            )
+            return None
+
+        normalized_output, dropped_fields = sanitize_output(raw_output)
+        if normalized_output.session_patch and not str(normalized_output.session_patch.get("actor") or "").strip():
+            normalized_output.session_patch["actor"] = f"skill:{selected_candidate.skill_id}"
+        if normalized_output.session_patch and not str(normalized_output.session_patch.get("source") or "").strip():
+            normalized_output.session_patch["source"] = "skill.prompt"
+        apply_result(graph_state, normalized_output, self.merge_session_patch)
+        if isinstance(post_apply_context, dict):
+            self._apply_prompt_skill_post_merge(
+                graph_state=graph_state,
+                result=normalized_output,
+                post_apply_context=post_apply_context,
+            )
+        consume_latency_ms = max(1, int((time.monotonic() - consume_started) * 1000))
+        self._report_observation_best_effort(
+            tool="skill.consume",
+            node_name=node_name,
+            params={
+                "capability": capability,
+                "stage": stage,
+                "selected_binding_key": selected_candidate.binding_key,
+            },
+            response={
+                "status": "ok",
+                "latency_ms": consume_latency_ms,
+                "skill_id": selected_candidate.skill_id,
+                "selected_binding_key": selected_candidate.binding_key,
+                "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
+                "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
+                "payload_keys": sorted(normalized_output.payload.keys()),
+                "session_patch_keys": sorted(normalized_output.session_patch.keys()),
+                "observation_count": len(normalized_output.observations),
+                "dropped_fields": dropped_fields,
+            },
+            evidence_ids=evidence_ids,
+        )
+        if dropped_fields:
+            self._report_observation_best_effort(
+                tool="skill.fallback",
+                node_name=node_name,
+                params={"capability": capability, "stage": stage, "selected_binding_key": selected_candidate.binding_key},
+                response={
+                    "status": "fallback",
+                    "reason": "payload_fields_dropped",
+                    "skill_id": selected_candidate.skill_id,
+                    "selected_binding_key": selected_candidate.binding_key,
+                    "fields": dropped_fields,
+                },
+                evidence_ids=evidence_ids,
+            )
+        return {
+            "selected_binding_key": selected_candidate.binding_key,
+            "skill_id": selected_candidate.skill_id,
+            "version": selected_candidate.version,
+            "capability": capability,
+            "knowledge_skill_ids": knowledge_bundle.skill_ids,
+            "knowledge_binding_keys": list(knowledge_bundle.selected_binding_keys),
+            "payload": normalized_output.payload,
+            "session_patch": normalized_output.session_patch,
+            "observations": normalized_output.observations,
+        }
+
+    def _load_knowledge_context_bundle(
+        self,
+        *,
+        candidates: list["SkillCandidate"],
+        selected_binding_keys: list[str],
+    ) -> KnowledgeContextBundle:
+        selected: list[dict[str, Any]] = []
+        normalized_keys: list[str] = []
+        for raw_key in selected_binding_keys:
+            candidate = self._resolve_candidate_by_binding_key(candidates, raw_key)
+            if candidate is None:
+                continue
+            skill_document = self._skill_catalog.load_skill_document(candidate.binding_key)
+            normalized_keys.append(candidate.binding_key)
+            selected.append(
+                {
+                    "binding_key": candidate.binding_key,
+                    "skill_id": candidate.skill_id,
+                    "version": candidate.version,
+                    "name": candidate.name,
+                    "description": candidate.description,
+                    "compatibility": candidate.compatibility,
+                    "role": candidate.role,
+                    "document": skill_document,
+                }
+            )
+        return KnowledgeContextBundle(
+            selected_binding_keys=tuple(normalized_keys),
+            skills=tuple(selected),
+        )
+
+    def _resolve_candidate_by_binding_key(
+        self,
+        candidates: list["SkillCandidate"],
+        binding_key: str,
+    ) -> "SkillCandidate" | None:
+        normalized = str(binding_key or "").strip()
+        if not normalized:
+            return None
+        legacy_parts = normalized.split("\x00")
+        legacy_executor_key = None
+        if len(legacy_parts) == 3:
+            legacy_executor_key = f"{legacy_parts[0]}\x00{legacy_parts[1]}\x00{legacy_parts[2]}\x00executor"
+        for item in candidates:
+            if item.binding_key == normalized:
+                return item
+            if legacy_executor_key and item.binding_key == legacy_executor_key:
+                return item
+        return None
+
+    def _executor_stage_summary(
+        self,
+        *,
+        stage_summary: dict[str, Any],
+        knowledge_bundle: KnowledgeContextBundle,
+    ) -> dict[str, Any]:
+        summarized = dict(stage_summary)
+        summarized["knowledge_candidate_count"] = len(knowledge_bundle.selected_binding_keys)
+        summarized["knowledge_skill_ids"] = knowledge_bundle.skill_ids
+        return summarized
 
     def _execute_prompt_skill(
         self,
@@ -875,6 +1245,7 @@ class OrchestratorRuntime:
         evidence_ids: list[str],
         selected_candidate: "SkillCandidate",
         input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
         output_contract: dict[str, Any],
         skill_document: str,
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
@@ -889,6 +1260,7 @@ class OrchestratorRuntime:
                 evidence_ids=evidence_ids,
                 selected_candidate=selected_candidate,
                 input_payload=input_payload,
+                knowledge_context=knowledge_context,
                 output_contract=output_contract,
                 skill_document=skill_document,
             )
@@ -899,6 +1271,7 @@ class OrchestratorRuntime:
                 skill_version=selected_candidate.version,
                 skill_document=skill_document,
                 input_payload=input_payload,
+                knowledge_context=knowledge_context,
                 output_contract=output_contract,
             ),
             None,
@@ -913,6 +1286,7 @@ class OrchestratorRuntime:
         evidence_ids: list[str],
         selected_candidate: "SkillCandidate",
         input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
         output_contract: dict[str, Any],
         skill_document: str,
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
@@ -942,6 +1316,7 @@ class OrchestratorRuntime:
                     skill_version=selected_candidate.version,
                     skill_document=skill_document,
                     input_payload=input_payload,
+                    knowledge_context=knowledge_context,
                     output_contract=output_contract,
                 ),
                 None,
@@ -954,6 +1329,7 @@ class OrchestratorRuntime:
             skill_version=selected_candidate.version,
             skill_document=skill_document,
             input_payload=input_payload,
+            knowledge_context=knowledge_context,
             available_tools=["mcp.query_logs"],
         )
         tool_plan_latency_ms = max(1, int((time.monotonic() - tool_plan_started) * 1000))
@@ -984,6 +1360,7 @@ class OrchestratorRuntime:
                     skill_version=selected_candidate.version,
                     skill_document=skill_document,
                     input_payload=input_payload,
+                    knowledge_context=knowledge_context,
                     output_contract=output_contract,
                 ),
                 None,
@@ -1002,6 +1379,7 @@ class OrchestratorRuntime:
             skill_version=selected_candidate.version,
             skill_document=skill_document,
             input_payload=input_payload,
+            knowledge_context=knowledge_context,
             tool_request=tool_request,
             tool_result=tool_result,
             output_contract=output_contract,

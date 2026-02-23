@@ -50,9 +50,15 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - P0 保持串行执行（`CONCURRENCY=1` 推荐）。
 - 任一节点异常会写入 `last_error`，并继续执行 `finalize_job` 走 failed 路径。
 - 仅做只读取证与 diagnosis 写回，不包含高风险自动处置动作。
-- 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`，且只支持 prompt-only Skill，不支持 agent tool-calling。
+- 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`。
+- `diagnosis.enrich` 仍是单 executor prompt-only。
+- `evidence.plan` 已支持“多个 knowledge skills + 单 executor skill”的运行模型。
 - checked-in prompt-only Skill 样板位于：
   - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
   - `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
+  - `evidence.plan` 的 executor 样板
 - `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`
-  - Elasticsearch / ECS 风格的 `evidence.plan` 样板，支持单次 `mcp.query_logs` tool-calling + `query_logs` 结果复用
+  - Elasticsearch / ECS 风格的 `evidence.plan` knowledge 样板
+- `tools/ai-orchestrator/skill-bundles/prometheus-evidence-plan/SKILL.md`
+  - Prometheus / metrics planning 的 `evidence.plan` knowledge 样板
+- 受控单跳 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 运行时支持单次 `mcp.query_logs` + `query_logs` 结果复用，但默认保持关闭

@@ -58,6 +58,7 @@ def _resolved_skillsets_payload(
     bundle_path: Path,
     bundle_digest: str,
     capability: str = "diagnosis.enrich",
+    role: str = "executor",
     allowed_tools: list[str] | None = None,
     priority: int = 100,
     enabled: bool = True,
@@ -78,6 +79,7 @@ def _resolved_skillsets_payload(
                     "bundleDigest": bundle_digest,
                     "manifestJSON": envelope,
                     "capability": capability,
+                    "role": role,
                     "allowedTools": allowed_tools or [],
                     "priority": priority,
                     "enabled": enabled,
@@ -275,6 +277,59 @@ class SkillCatalogTest(unittest.TestCase):
             candidates = catalog.candidates_for_capability("diagnosis.enrich")
             self.assertEqual([item.skill_id for item in candidates], ["skill.two", "skill.one"])
 
+    def test_candidates_for_capability_split_by_role(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            knowledge_dir = base / "knowledge"
+            executor_dir = base / "executor"
+            knowledge_dir.mkdir(parents=True)
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(knowledge_dir, name="Elastic Knowledge", description="Elastic guidance")
+            _write_skill_dir(executor_dir, name="Prompt Planner", description="Executor planner")
+            knowledge_bundle = base / "knowledge.zip"
+            executor_bundle = base / "executor.zip"
+            knowledge_digest = _zip_dir(knowledge_dir, knowledge_bundle)
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            payload = [
+                {
+                    "skillsetID": "skillset.default",
+                    "skills": [
+                        {
+                            "skillID": "elasticsearch.evidence.plan",
+                            "version": "1.0.0",
+                            "artifactURL": knowledge_bundle.resolve().as_uri(),
+                            "bundleDigest": knowledge_digest,
+                            "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Elastic Knowledge","description":"Elastic guidance","compatibility":""}',
+                            "capability": "evidence.plan",
+                            "role": "knowledge",
+                            "priority": 150,
+                            "enabled": True,
+                        },
+                        {
+                            "skillID": "claude.evidence.prompt_planner",
+                            "version": "1.0.0",
+                            "artifactURL": executor_bundle.resolve().as_uri(),
+                            "bundleDigest": executor_digest,
+                            "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prompt Planner","description":"Executor planner","compatibility":""}',
+                            "capability": "evidence.plan",
+                            "role": "executor",
+                            "priority": 100,
+                            "enabled": True,
+                        },
+                    ],
+                }
+            ]
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=payload,
+                cache_dir=str(base / "cache"),
+            )
+            knowledge = catalog.knowledge_candidates_for_capability("evidence.plan")
+            executors = catalog.executor_candidates_for_capability("evidence.plan")
+            self.assertEqual([item.skill_id for item in knowledge], ["elasticsearch.evidence.plan"])
+            self.assertEqual([item.skill_id for item in executors], ["claude.evidence.prompt_planner"])
+            self.assertEqual(knowledge[0].role, "knowledge")
+            self.assertEqual(executors[0].role, "executor")
+
     def test_checked_in_prompt_only_bundle_has_valid_frontmatter(self) -> None:
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "diagnosis-enrich" / "SKILL.md"
         frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
@@ -285,13 +340,19 @@ class SkillCatalogTest(unittest.TestCase):
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "evidence-plan" / "SKILL.md"
         frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
         self.assertEqual(frontmatter["name"], "RCA Evidence Planner")
-        self.assertIn("Refine the native RCA evidence plan", frontmatter["description"])
+        self.assertIn("single executor for evidence.plan", frontmatter["description"])
 
     def test_checked_in_elasticsearch_evidence_bundle_has_valid_frontmatter(self) -> None:
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "elasticsearch-evidence-plan" / "SKILL.md"
         frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
         self.assertEqual(frontmatter["name"], "Elasticsearch Evidence Planner")
-        self.assertIn("Elasticsearch-backed log queries", frontmatter["description"])
+        self.assertIn("Elasticsearch-backed logs knowledge", frontmatter["description"])
+
+    def test_checked_in_prometheus_evidence_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "prometheus-evidence-plan" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "Prometheus Evidence Planner Knowledge")
+        self.assertIn("Prometheus-backed metrics", frontmatter["description"])
 
     def test_capability_registry_exposes_diagnosis_and_evidence_plan(self) -> None:
         diagnosis = get_capability_definition("diagnosis.enrich")
@@ -698,6 +759,159 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual(state.logs_branch_meta["request_payload"]["query"], state.logs_branch_meta["query_request"]["queryText"])
             self.assertEqual(result["payload"]["evidence_candidates"], [{"type": "logs", "name": "error_budget"}])
             self.assertEqual(result["session_patch"], {})
+
+    def test_prompt_first_runtime_consumes_multiple_knowledge_skills_and_single_executor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            elastic_dir = base / "elastic"
+            metrics_dir = base / "metrics"
+            executor_dir = base / "executor"
+            elastic_dir.mkdir(parents=True)
+            metrics_dir.mkdir(parents=True)
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(elastic_dir, name="Elastic Knowledge", description="Elastic logs guidance")
+            _write_skill_dir(metrics_dir, name="Prometheus Knowledge", description="Prometheus metrics guidance")
+            _write_skill_dir(executor_dir, name="Prompt Planner", description="Planner executor")
+            elastic_bundle = base / "elastic.zip"
+            metrics_bundle = base / "metrics.zip"
+            executor_bundle = base / "executor.zip"
+            elastic_digest = _zip_dir(elastic_dir, elastic_bundle)
+            metrics_digest = _zip_dir(metrics_dir, metrics_bundle)
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "elasticsearch.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": elastic_bundle.resolve().as_uri(),
+                                "bundleDigest": elastic_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Elastic Knowledge","description":"Elastic logs guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "priority": 150,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "prometheus.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": metrics_bundle.resolve().as_uri(),
+                                "bundleDigest": metrics_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prometheus Knowledge","description":"Prometheus metrics guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "priority": 140,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "claude.evidence.prompt_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prompt Planner","description":"Planner executor","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "priority": 100,
+                                "enabled": True,
+                            },
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_knowledge_skills(self, **_: object):
+                    class _Selection:
+                        selected_binding_keys = [
+                            "elasticsearch.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                            "prometheus.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                        ]
+                        reason = "need logs and metrics context"
+
+                    return _Selection()
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.prompt_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="single planner",
+                    )
+
+                def consume_skill(self, **kwargs: object) -> PromptSkillConsumeResult:
+                    knowledge_context = kwargs.get("knowledge_context")
+                    assert isinstance(knowledge_context, list)
+                    assert len(knowledge_context) == 2
+                    skill_ids = [str(item.get("skill_id")) for item in knowledge_context if isinstance(item, dict)]
+                    assert skill_ids == ["elasticsearch.evidence.plan", "prometheus.evidence.plan"]
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {
+                                "metadata": {
+                                    "prompt_skill": "claude.evidence.prompt_planner",
+                                    "knowledge_skills": skill_ids,
+                                }
+                            }
+                        }
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_FakeAgent(),
+            )
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}},
+                evidence_candidates=[],
+                metrics_branch_meta={"mode": "query"},
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": "message:error",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {"datasourceID": "ds-logs", "queryText": "message:error"},
+                },
+                evidence_mode="query",
+                incident_context={"service": "svc-a", "namespace": "default"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.evidence.prompt_planner")
+            self.assertEqual(
+                result["knowledge_skill_ids"],
+                ["elasticsearch.evidence.plan", "prometheus.evidence.plan"],
+            )
+            self.assertEqual(
+                state.evidence_plan["metadata"]["knowledge_skills"],
+                ["elasticsearch.evidence.plan", "prometheus.evidence.plan"],
+            )
 
     def test_prompt_first_evidence_plan_single_hop_tool_call_warms_logs_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

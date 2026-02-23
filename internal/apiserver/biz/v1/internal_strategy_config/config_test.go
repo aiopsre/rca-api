@@ -142,6 +142,7 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 				SkillID:      "claude.analysis",
 				Version:      "1.0.0",
 				Capability:   "diagnosis.enrich",
+				Role:         "knowledge",
 				AllowedTools: []string{"query_logs"},
 			},
 		},
@@ -152,6 +153,7 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 	require.Equal(t, "claude_default", view.Items[0].SkillsetName)
 	require.Len(t, view.Items[0].Skills, 1)
 	require.Equal(t, "claude.analysis", view.Items[0].Skills[0].SkillID)
+	require.Equal(t, "knowledge", view.Items[0].Skills[0].Role)
 
 	resolved, source, err := biz.ResolveSkillsetByPipeline(ctx, "basic_rca")
 	require.NoError(t, err)
@@ -161,11 +163,36 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 	require.Len(t, resolved[0].Skills, 1)
 	require.Equal(t, "1.0.0", resolved[0].Skills[0].Version)
 	require.Equal(t, "diagnosis.enrich", resolved[0].Skills[0].Capability)
+	require.Equal(t, "knowledge", resolved[0].Skills[0].Role)
 	require.Equal(t, []string{"query_logs"}, resolved[0].Skills[0].AllowedTools)
 	require.NotNil(t, resolved[0].Skills[0].Priority)
 	require.Equal(t, 100, *resolved[0].Skills[0].Priority)
 	require.NotNil(t, resolved[0].Skills[0].Enabled)
 	require.True(t, *resolved[0].Skills[0].Enabled)
+}
+
+func TestConfigBiz_SkillsetDefaultsMissingRoleToExecutor(t *testing.T) {
+	ctx := context.Background()
+	biz, _ := newConfigBizTestSetup(t)
+
+	_, err := biz.UpsertSkillset(ctx, &UpsertSkillsetConfigRequest{
+		PipelineID:   "basic_rca",
+		SkillsetName: "default_role",
+		Skills: []*SkillRef{
+			{
+				SkillID:    "claude.analysis",
+				Version:    "1.0.0",
+				Capability: "diagnosis.enrich",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	resolved, _, err := biz.ResolveSkillsetByPipeline(ctx, "basic_rca")
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	require.Len(t, resolved[0].Skills, 1)
+	require.Equal(t, "executor", resolved[0].Skills[0].Role)
 }
 
 func TestConfigBiz_UploadSkillReleaseUsesArtifactStorage(t *testing.T) {

@@ -167,6 +167,66 @@ func TestInternalStrategyConfigAPI_SkillReleaseUpload(t *testing.T) {
 	require.Equal(t, "s3://rca-skills-dev/skills/claude.analysis/1.0.0/bundle.zip", extractString(data, "artifact_url", "artifactURL"))
 }
 
+func TestInternalStrategyConfigAPI_SkillsetRoleRoundTrip(t *testing.T) {
+	baseURL, cleanup, s, client := newTestServer(t)
+	defer cleanup()
+	require.NoError(t, s.DB(context.Background()).AutoMigrate(
+		&model.SkillReleaseM{},
+		&model.SkillsetConfigDynamicM{},
+	))
+
+	adminToken := loginOperatorForTest(t, client, baseURL, map[string]any{
+		"operator_id": "operator:admin",
+		"scopes":      []string{"config.admin", "ai.read", "ai.run"},
+	})
+
+	registerStatus, _, err := doJSONRequestWithToken(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/config/skill-release/register",
+		[]byte(`{"skill_id":"claude.analysis","version":"1.0.0","bundle_digest":"abc123","artifact_url":"https://artifacts.example.com/claude.analysis.zip","manifest_json":"{\"bundle_format\":\"claude_skill_v1\",\"instruction_file\":\"SKILL.md\",\"name\":\"Claude Analysis\",\"description\":\"Analyze incident evidence\"}","status":"active"}`),
+		adminToken,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, registerStatus)
+
+	upsertStatus, upsertBody, err := doJSONRequestWithToken(
+		client,
+		http.MethodPost,
+		baseURL+"/v1/config/skillset/update",
+		[]byte(`{"pipeline_id":"basic_rca","skillset_name":"skillset_with_roles","skills":[{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","role":"knowledge","allowed_tools":["query_logs"]},{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich"}]}`),
+		adminToken,
+	)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, upsertStatus)
+	upsertData := extractDataContainer(upsertBody)
+	items, ok := upsertData["items"].([]any)
+	require.True(t, ok)
+	require.Len(t, items, 1)
+	item, ok := items[0].(map[string]any)
+	require.True(t, ok)
+	skills, ok := item["skills"].([]any)
+	require.True(t, ok)
+	require.Len(t, skills, 2)
+	require.Equal(t, "knowledge", extractString(skills[0].(map[string]any), "role", "Role"))
+	require.Equal(t, "executor", extractString(skills[1].(map[string]any), "role", "Role"))
+
+	getStatus, getBody, err := doJSONRequestWithToken(client, http.MethodGet, baseURL+"/v1/config/skillset/basic_rca", nil, adminToken)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, getStatus)
+	getData := extractDataContainer(getBody)
+	getItems, ok := getData["items"].([]any)
+	require.True(t, ok)
+	require.Len(t, getItems, 1)
+	getSkillset, ok := getItems[0].(map[string]any)
+	require.True(t, ok)
+	getSkills, ok := getSkillset["skills"].([]any)
+	require.True(t, ok)
+	require.Len(t, getSkills, 2)
+	require.Equal(t, "knowledge", extractString(getSkills[0].(map[string]any), "role", "Role"))
+	require.Equal(t, "executor", extractString(getSkills[1].(map[string]any), "role", "Role"))
+}
+
 func loginOperatorForTest(t *testing.T, client *http.Client, baseURL string, payload map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(payload)

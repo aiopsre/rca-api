@@ -503,6 +503,7 @@ type SkillRef struct {
 	SkillID      string   `json:"skill_id"`
 	Version      string   `json:"version"`
 	Capability   string   `json:"capability"`
+	Role         string   `json:"role,omitempty"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	Priority     *int     `json:"priority,omitempty"`
 	Enabled      *bool    `json:"enabled,omitempty"`
@@ -1054,6 +1055,7 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 		skillID := strings.TrimSpace(item.SkillID)
 		version := strings.TrimSpace(item.Version)
 		capability := strings.TrimSpace(item.Capability)
+		role := normalizeSkillRole(item.Role)
 		if skillID == "" || version == "" || capability == "" {
 			continue
 		}
@@ -1066,7 +1068,7 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 			enabled = *item.Enabled
 		}
 		allowedTools := normalizeListLower(item.AllowedTools)
-		key := skillID + "\x00" + version + "\x00" + capability
+		key := skillID + "\x00" + version + "\x00" + capability + "\x00" + role
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1075,6 +1077,7 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 			SkillID:      skillID,
 			Version:      version,
 			Capability:   capability,
+			Role:         role,
 			AllowedTools: allowedTools,
 			Priority:     intPtr(priority),
 			Enabled:      boolPtr(enabled),
@@ -1084,6 +1087,17 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 		return nil
 	}
 	return out
+}
+
+func normalizeSkillRole(in string) string {
+	switch strings.ToLower(strings.TrimSpace(in)) {
+	case "", "executor":
+		return "executor"
+	case "knowledge":
+		return "knowledge"
+	default:
+		return "executor"
+	}
 }
 
 func normalizeListLower(in []string) []string {

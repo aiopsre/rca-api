@@ -8,8 +8,12 @@ OPERATOR_ID="${OPERATOR_ID:-bootstrap_super_admin}"
 OPERATOR_PASSWORD="${OPERATOR_PASSWORD:-Admin123_}"
 PIPELINE_ID="${PIPELINE_ID:-basic_rca}"
 SKILLSET_NAME="${SKILLSET_NAME:-prompt_first_evidence_plan}"
-SKILL_ID="${SKILL_ID:-claude.evidence.prompt_planner}"
-SKILL_VERSION="${SKILL_VERSION:-1.0.0}"
+EXECUTOR_SKILL_ID="${EXECUTOR_SKILL_ID:-claude.evidence.prompt_planner}"
+EXECUTOR_SKILL_VERSION="${EXECUTOR_SKILL_VERSION:-1.0.0}"
+ELASTIC_SKILL_ID="${ELASTIC_SKILL_ID:-elasticsearch.evidence.plan}"
+ELASTIC_SKILL_VERSION="${ELASTIC_SKILL_VERSION:-1.0.0}"
+PROM_SKILL_ID="${PROM_SKILL_ID:-prometheus.evidence.plan}"
+PROM_SKILL_VERSION="${PROM_SKILL_VERSION:-1.0.0}"
 SKILL_CAPABILITY="${SKILL_CAPABILITY:-evidence.plan}"
 INSTANCE_ID="${INSTANCE_ID:-prompt-first-evidence-smoke-$$}"
 JOB_WAIT_TIMEOUT_SEC="${JOB_WAIT_TIMEOUT_SEC:-180}"
@@ -24,7 +28,9 @@ JQ_BIN="${JQ_BIN:-jq}"
 ZIP_BIN="${ZIP_BIN:-zip}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 ORCH_DIR="${ORCH_DIR:-/opt/workspace/study/rca-api/tools/ai-orchestrator}"
-BUNDLE_DIR="${BUNDLE_DIR:-/opt/workspace/study/rca-api/tools/ai-orchestrator/skill-bundles/evidence-plan}"
+EXECUTOR_BUNDLE_DIR="${EXECUTOR_BUNDLE_DIR:-/opt/workspace/study/rca-api/tools/ai-orchestrator/skill-bundles/evidence-plan}"
+ELASTIC_BUNDLE_DIR="${ELASTIC_BUNDLE_DIR:-/opt/workspace/study/rca-api/tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan}"
+PROM_BUNDLE_DIR="${PROM_BUNDLE_DIR:-/opt/workspace/study/rca-api/tools/ai-orchestrator/skill-bundles/prometheus-evidence-plan}"
 WORKDIR="${WORKDIR:-$(mktemp -d)}"
 KEEP_WORKDIR="${KEEP_WORKDIR:-0}"
 DEBUG="${DEBUG:-0}"
@@ -118,13 +124,15 @@ call_token_multipart() {
   local url="$1"
   local token="$2"
   local bundle_path="$3"
+  local skill_id="$4"
+  local version="$5"
   "${CURL_BIN}" -sS -X POST "${url}" \
     -H "Authorization: Bearer ${token}" \
     -H "X-Scopes: ${CONFIG_SCOPES}" \
     -H 'Accept: application/json' \
     -F "bundle=@${bundle_path};type=application/zip" \
-    -F "skill_id=${SKILL_ID}" \
-    -F "version=${SKILL_VERSION}" \
+    -F "skill_id=${skill_id}" \
+    -F "version=${version}" \
     -F "status=active"
 }
 
@@ -151,7 +159,14 @@ preflight_no_conflicting_evidence_skill() {
   existing_json="$(call_token_json GET "${BASE_URL}/v1/config/skillset/${PIPELINE_ID}" "${token}")"
   assert_json_success "GetSkillsetConfig" "${existing_json}"
   local conflict_count
-  conflict_count="$(printf '%s' "${existing_json}" | "${JQ_BIN}" -r --arg skillset "${SKILLSET_NAME}" --arg skill_id "${SKILL_ID}" --arg version "${SKILL_VERSION}" '
+  conflict_count="$(printf '%s' "${existing_json}" | "${JQ_BIN}" -r \
+    --arg skillset "${SKILLSET_NAME}" \
+    --arg exec_skill_id "${EXECUTOR_SKILL_ID}" \
+    --arg exec_version "${EXECUTOR_SKILL_VERSION}" \
+    --arg elastic_skill_id "${ELASTIC_SKILL_ID}" \
+    --arg elastic_version "${ELASTIC_SKILL_VERSION}" \
+    --arg prom_skill_id "${PROM_SKILL_ID}" \
+    --arg prom_version "${PROM_SKILL_VERSION}" '
     [
       (.data.items // .items // [])[]? as $item
       | ($item.skills // [])[]?
@@ -159,8 +174,14 @@ preflight_no_conflicting_evidence_skill() {
       | select((.capability // "") == "evidence.plan")
       | select(
           ($item.skillset_name // "") != $skillset
-          or (.skill_id // "") != $skill_id
-          or (.version // "") != $version
+          or (
+            [(.skill_id // ""), (.version // "")]
+            != [$exec_skill_id, $exec_version]
+            and [(.skill_id // ""), (.version // "")]
+            != [$elastic_skill_id, $elastic_version]
+            and [(.skill_id // ""), (.version // "")]
+            != [$prom_skill_id, $prom_version]
+          )
         )
     ] | length
   ')"
@@ -230,9 +251,11 @@ require_bin "${PYTHON_BIN}"
 if [[ -z "${AGENT_MODEL}" || -z "${AGENT_BASE_URL}" || -z "${AGENT_API_KEY}" ]]; then
   fail_step "PromptFirstConfig" "AGENT_MODEL, AGENT_BASE_URL, and AGENT_API_KEY are required"
 fi
-if [[ ! -d "${BUNDLE_DIR}" ]]; then
-  fail_step "SkillBundlePath" "bundle dir not found: ${BUNDLE_DIR}"
-fi
+for bundle_dir in "${EXECUTOR_BUNDLE_DIR}" "${ELASTIC_BUNDLE_DIR}" "${PROM_BUNDLE_DIR}"; do
+  if [[ ! -d "${bundle_dir}" ]]; then
+    fail_step "SkillBundlePath" "bundle dir not found: ${bundle_dir}"
+  fi
+done
 if [[ "$("${CURL_BIN}" -sS -o /dev/null -w '%{http_code}' "${BASE_URL}/healthz")" != "200" ]]; then
   fail_step "Healthz" "health check failed: ${BASE_URL}/healthz"
 fi
@@ -250,13 +273,23 @@ TEMPLATE_REGISTER_RESPONSE="$(call_token_json POST "${BASE_URL}/v1/orchestrator/
 assert_json_success "RegisterTemplate" "${TEMPLATE_REGISTER_RESPONSE}"
 assert_json_expr "RegisterTemplate" "${TEMPLATE_REGISTER_RESPONSE}" '(.data.count // .count // 0) >= 1'
 
-BUNDLE_PATH="${WORKDIR}/${SKILL_ID}-${SKILL_VERSION}.zip"
-(cd "${BUNDLE_DIR}" && "${ZIP_BIN}" -qr "${BUNDLE_PATH}" .)
+upload_skill() {
+  local step="$1"
+  local skill_id="$2"
+  local version="$3"
+  local bundle_dir="$4"
+  local bundle_path="${WORKDIR}/${skill_id}-${version}.zip"
+  (cd "${bundle_dir}" && "${ZIP_BIN}" -qr "${bundle_path}" .)
+  local upload_response
+  upload_response="$(call_token_multipart "${BASE_URL}/v1/config/skill-release/upload" "${TOKEN}" "${bundle_path}" "${skill_id}" "${version}")"
+  assert_json_success "${step}" "${upload_response}"
+  assert_json_expr "${step}" "${upload_response}" '(.data.skill_id // .skill_id) == "'"${skill_id}"'"'
+  assert_json_expr "${step}" "${upload_response}" '(.data.version // .version) == "'"${version}"'"'
+}
 
-UPLOAD_RESPONSE="$(call_token_multipart "${BASE_URL}/v1/config/skill-release/upload" "${TOKEN}" "${BUNDLE_PATH}")"
-assert_json_success "UploadSkillRelease" "${UPLOAD_RESPONSE}"
-assert_json_expr "UploadSkillRelease" "${UPLOAD_RESPONSE}" '(.data.skill_id // .skill_id) == "'"${SKILL_ID}"'"'
-assert_json_expr "UploadSkillRelease" "${UPLOAD_RESPONSE}" '(.data.version // .version) == "'"${SKILL_VERSION}"'"'
+upload_skill "UploadExecutorSkillRelease" "${EXECUTOR_SKILL_ID}" "${EXECUTOR_SKILL_VERSION}" "${EXECUTOR_BUNDLE_DIR}"
+upload_skill "UploadElasticKnowledgeSkillRelease" "${ELASTIC_SKILL_ID}" "${ELASTIC_SKILL_VERSION}" "${ELASTIC_BUNDLE_DIR}"
+upload_skill "UploadPromKnowledgeSkillRelease" "${PROM_SKILL_ID}" "${PROM_SKILL_VERSION}" "${PROM_BUNDLE_DIR}"
 
 SKILLSET_UPDATE_BODY="$(cat <<JSON
 {
@@ -264,9 +297,28 @@ SKILLSET_UPDATE_BODY="$(cat <<JSON
   "skillset_name": "${SKILLSET_NAME}",
   "skills": [
     {
-      "skill_id": "${SKILL_ID}",
-      "version": "${SKILL_VERSION}",
+      "skill_id": "${ELASTIC_SKILL_ID}",
+      "version": "${ELASTIC_SKILL_VERSION}",
       "capability": "${SKILL_CAPABILITY}",
+      "role": "knowledge",
+      "allowed_tools": [],
+      "priority": 150,
+      "enabled": true
+    },
+    {
+      "skill_id": "${PROM_SKILL_ID}",
+      "version": "${PROM_SKILL_VERSION}",
+      "capability": "${SKILL_CAPABILITY}",
+      "role": "knowledge",
+      "allowed_tools": [],
+      "priority": 140,
+      "enabled": true
+    },
+    {
+      "skill_id": "${EXECUTOR_SKILL_ID}",
+      "version": "${EXECUTOR_SKILL_VERSION}",
+      "capability": "${SKILL_CAPABILITY}",
+      "role": "executor",
       "allowed_tools": [],
       "priority": 100,
       "enabled": true
@@ -293,10 +345,15 @@ assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '
   any((.data.skillsets // .skillsets // [])[]?; (.skillsetID // .skillset_id // "") == "'"${SKILLSET_NAME}"'")
 '
 assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '
-  any((.data.skillsets // .skillsets // [])[]?.skills[]?;
-    (.skillID // .skill_id // "") == "'"${SKILL_ID}"'"
-    and (.capability // "") == "'"${SKILL_CAPABILITY}"'"
-  )
+  [
+    (.data.skillsets // .skillsets // [])[]?
+    | select((.skillsetID // .skillset_id // "") == "'"${SKILLSET_NAME}"'")
+    | (.skills // [])[]
+    | {skill_id:(.skillID // .skill_id // ""), capability:(.capability // ""), role:(.role // "executor")}
+  ]
+  | any(.[]; .skill_id == "'"${ELASTIC_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "knowledge")
+  and any(.[]; .skill_id == "'"${PROM_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "knowledge")
+  and any(.[]; .skill_id == "'"${EXECUTOR_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "executor")
 '
 
 start_orchestrator
@@ -338,6 +395,11 @@ assert_json_success "ListAIToolCalls" "${TOOLCALLS_RESPONSE}"
 assert_json_expr "SkillSelectObservation" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
     (.toolName // .tool_name // "") == "skill.select"
+    and (
+      ((.responseJSON // .response_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
+      | ((.selection_role // "") == "knowledge" and ((.selected_skill_ids // []) | length) >= 2)
+        or ((.selection_role // "") == "executor" and (.selected_binding_key // "") != "")
+    )
   )
 '
 assert_json_expr "SkillConsumeObservation" "${TOOLCALLS_RESPONSE}" '
@@ -351,7 +413,7 @@ assert_json_expr "PlanEvidenceSkillApplied" "${TOOLCALLS_RESPONSE}" '
     and (
       ((.responseJSON // .response_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
       | (.skill.status // "") == "applied"
-      and (.evidence_plan.metadata.prompt_skill // "") == "evidence.plan"
+      and (.evidence_plan.metadata.prompt_skill // "") == "'"${EXECUTOR_SKILL_ID}"'"
     )
   )
 '
@@ -367,8 +429,9 @@ PY
   "base_url": $(json_escape "${BASE_URL}"),
   "pipeline_id": $(json_escape "${PIPELINE_ID}"),
   "skillset_name": $(json_escape "${SKILLSET_NAME}"),
-  "skill_id": $(json_escape "${SKILL_ID}"),
-  "skill_version": $(json_escape "${SKILL_VERSION}"),
+  "knowledge_skill_ids": [$(json_escape "${ELASTIC_SKILL_ID}"), $(json_escape "${PROM_SKILL_ID}")],
+  "executor_skill_id": $(json_escape "${EXECUTOR_SKILL_ID}"),
+  "executor_skill_version": $(json_escape "${EXECUTOR_SKILL_VERSION}"),
   "instance_id": $(json_escape "${INSTANCE_ID}"),
   "incident_id": $(json_escape "${INCIDENT_ID}"),
   "job_id": $(json_escape "${JOB_ID}"),
