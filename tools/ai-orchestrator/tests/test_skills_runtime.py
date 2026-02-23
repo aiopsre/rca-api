@@ -15,7 +15,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.runtime import OrchestratorRuntime
-from orchestrator.langgraph.nodes import query_logs_node
+from orchestrator.langgraph.nodes import query_logs_node, query_metrics_node
 from orchestrator.skills.agent import SkillSelectionResult
 from orchestrator.skills.capabilities import PromptSkillConsumeResult, get_capability_definition
 from orchestrator.skills.runtime import SkillCatalog, parse_skill_frontmatter
@@ -682,7 +682,19 @@ class SkillCatalogTest(unittest.TestCase):
                                 },
                             },
                             "evidence_candidates": [{"type": "logs", "name": "error_budget"}],
-                            "metrics_branch_meta": {"mode": "mock", "query_type": "metrics"},
+                            "metrics_branch_meta": {
+                                "mode": "query",
+                                "query_type": "metrics",
+                                "request_payload": {
+                                    "promql": 'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+                                    "step_seconds": 60,
+                                    "datasource_id": "forbidden-ds",
+                                },
+                                "query_request": {
+                                    "queryText": 'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+                                    "datasourceID": "forbidden-ds",
+                                },
+                            },
                             "logs_branch_meta": {
                                 "mode": "query",
                                 "query_type": "logs",
@@ -717,7 +729,22 @@ class SkillCatalogTest(unittest.TestCase):
                 incident_id="inc-1",
                 evidence_plan={"budget": {"max_calls": 1}, "candidates": [{"type": "metrics"}]},
                 evidence_candidates=[{"type": "metrics"}],
-                metrics_branch_meta={"mode": "query"},
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "ds-metrics",
+                        "promql": "sum(up)",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-metrics",
+                        "queryText": "sum(up)",
+                        "queryJSON": "{}",
+                    },
+                },
                 logs_branch_meta={
                     "mode": "query",
                     "query_type": "logs",
@@ -747,7 +774,15 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual(state.evidence_plan["candidates"], [{"type": "logs", "name": "error_budget"}])
             self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "elasticsearch.evidence.plan")
             self.assertEqual(state.evidence_plan["metadata"]["query_style"], "ecs_query_string")
-            self.assertEqual(state.metrics_branch_meta["mode"], "mock")
+            self.assertEqual(state.metrics_branch_meta["mode"], "query")
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["datasource_id"], "ds-metrics")
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["start_ts"], 100)
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["end_ts"], 200)
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["step_seconds"], 60)
+            self.assertEqual(
+                state.metrics_branch_meta["request_payload"]["promql"],
+                'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+            )
             self.assertEqual(state.logs_branch_meta["mode"], "query")
             self.assertEqual(state.logs_branch_meta["request_payload"]["datasource_id"], "ds-logs")
             self.assertEqual(state.logs_branch_meta["request_payload"]["start_ts"], 100)
@@ -1056,6 +1091,451 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual(toolcalls[0]["node_name"], "skill.evidence.plan")
             self.assertEqual(toolcalls[0]["tool_name"], "mcp.query_logs")
 
+    def test_prompt_first_evidence_plan_dual_tool_warms_logs_and_metrics_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            elastic_dir = base / "elastic"
+            prom_dir = base / "prom"
+            executor_dir = base / "executor"
+            elastic_dir.mkdir(parents=True)
+            prom_dir.mkdir(parents=True)
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(elastic_dir, name="Elastic Knowledge", description="Elastic guidance")
+            _write_skill_dir(prom_dir, name="Prometheus Knowledge", description="Prometheus guidance")
+            _write_skill_dir(executor_dir, name="Evidence Planner", description="Executor planner")
+            elastic_bundle = base / "elastic.zip"
+            prom_bundle = base / "prom.zip"
+            executor_bundle = base / "executor.zip"
+            elastic_digest = _zip_dir(elastic_dir, elastic_bundle)
+            prom_digest = _zip_dir(prom_dir, prom_bundle)
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "elasticsearch.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": elastic_bundle.resolve().as_uri(),
+                                "bundleDigest": elastic_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Elastic Knowledge","description":"Elastic guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "allowedTools": [],
+                                "priority": 150,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "prometheus.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": prom_bundle.resolve().as_uri(),
+                                "bundleDigest": prom_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prometheus Knowledge","description":"Prometheus guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "allowedTools": [],
+                                "priority": 140,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "claude.evidence.prompt_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Evidence Planner","description":"Executor planner","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "allowedTools": ["query_logs", "query_metrics"],
+                                "priority": 100,
+                                "enabled": True,
+                            },
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _DualToolAgent:
+                configured = True
+
+                def select_knowledge_skills(self, **_: object):
+                    class _Selection:
+                        selected_binding_keys = [
+                            "elasticsearch.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                            "prometheus.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                        ]
+                        reason = "use both domain guides"
+
+                    return _Selection()
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.prompt_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="single executor",
+                    )
+
+                def plan_tool_calls(self, **kwargs: object):
+                    knowledge_context = kwargs.get("knowledge_context")
+                    assert isinstance(knowledge_context, list)
+                    assert len(knowledge_context) == 2
+
+                    class _Sequence:
+                        reason = "check metrics first then correlate logs"
+                        tool_calls = [
+                            {
+                                "tool": "mcp.query_metrics",
+                                "input": {
+                                    "datasource_id": "ds-metrics",
+                                    "promql": 'sum(rate(http_requests_total{service="svc-a",status=~"5.."}[5m]))',
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "step_seconds": 60,
+                                },
+                                "reason": "confirm 5xx spike",
+                            },
+                            {
+                                "tool": "mcp.query_logs",
+                                "input": {
+                                    "datasource_id": "ds-logs",
+                                    "query": 'service.name:"svc-a" AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))',
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "limit": 200,
+                                },
+                                "reason": "correlate error logs",
+                            },
+                        ]
+
+                    return _Sequence()
+
+                def consume_after_tools(self, **kwargs: object) -> PromptSkillConsumeResult:
+                    tool_results = kwargs.get("tool_results")
+                    assert isinstance(tool_results, list)
+                    assert [item.get("tool") for item in tool_results if isinstance(item, dict)] == [
+                        "mcp.query_metrics",
+                        "mcp.query_logs",
+                    ]
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {
+                                "metadata": {
+                                    "prompt_skill": "claude.evidence.prompt_planner",
+                                    "knowledge_skills": ["elasticsearch.evidence.plan", "prometheus.evidence.plan"],
+                                }
+                            },
+                            "metrics_branch_meta": {
+                                "mode": "query",
+                                "query_type": "metrics",
+                                "request_payload": {
+                                    "promql": 'sum(rate(http_requests_total{service="svc-a",status=~"5.."}[5m]))',
+                                    "step_seconds": 60,
+                                },
+                                "query_request": {
+                                    "queryText": 'sum(rate(http_requests_total{service="svc-a",status=~"5.."}[5m]))',
+                                },
+                            },
+                            "logs_branch_meta": {
+                                "mode": "query",
+                                "query_type": "logs",
+                                "request_payload": {
+                                    "query": 'service.name:"svc-a" AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))'
+                                },
+                                "query_request": {
+                                    "queryText": 'service.name:"svc-a" AND (log.level:(error OR fatal) OR error.type:* OR error.message:* OR message:(*exception* OR *timeout* OR *panic*))'
+                                },
+                            },
+                        }
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_dual_tool",
+                skill_agent=_DualToolAgent(),
+            )
+
+            toolcalls: list[dict[str, object]] = []
+            runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
+            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 96,
+                "isTruncated": False,
+            }
+            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 88,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 2}, "candidates": [{"type": "metrics"}, {"type": "logs"}]},
+                evidence_candidates=[{"type": "metrics"}, {"type": "logs"}],
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "ds-metrics",
+                        "promql": "sum(up)",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-metrics",
+                        "queryText": "sum(up)",
+                        "queryJSON": "{}",
+                    },
+                },
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": 'message:(*error* OR *exception*)',
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-logs",
+                        "queryText": 'message:(*error* OR *exception*)',
+                        "queryJSON": "{}",
+                    },
+                },
+                evidence_mode="query",
+                incident_context={"service": "svc-a", "namespace": "default"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.evidence.prompt_planner")
+            self.assertEqual(
+                result["knowledge_skill_ids"],
+                ["elasticsearch.evidence.plan", "prometheus.evidence.plan"],
+            )
+            self.assertEqual(state.metrics_query_status, "ok")
+            self.assertEqual(state.logs_query_status, "ok")
+            self.assertTrue(state.metrics_branch_meta["tool_result_reusable"])
+            self.assertTrue(state.logs_branch_meta["tool_result_reusable"])
+            self.assertEqual(state.metrics_branch_meta["tool_result_source"], "skill_prompt_first")
+            self.assertEqual(state.logs_branch_meta["tool_result_source"], "skill_prompt_first")
+            self.assertEqual(state.metrics_query_request["promql"], 'sum(rate(http_requests_total{service="svc-a",status=~"5.."}[5m]))')
+            self.assertIn('service.name:"svc-a"', state.logs_query_request["query"])
+            self.assertEqual([item["tool_name"] for item in toolcalls], ["mcp.query_metrics", "mcp.query_logs"])
+            self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "claude.evidence.prompt_planner")
+
+    def test_prompt_first_evidence_plan_metrics_branch_meta_preserves_guardrails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "executor"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Evidence Planner", description="Executor planner")
+            bundle_path = base / "executor.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.evidence.prompt_planner",
+                    version="1.0.0",
+                    name="Evidence Planner",
+                    description="Executor planner",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=[],
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _PromptOnlyAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.prompt_planner\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "metrics_branch_meta": {
+                                "mode": "query",
+                                "query_type": "metrics",
+                                "request_payload": {
+                                    "promql": 'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+                                    "step_seconds": 60,
+                                    "datasource_id": "override-me",
+                                    "start_ts": 1,
+                                    "end_ts": 2,
+                                },
+                                "query_request": {
+                                    "queryText": 'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+                                    "queryJSON": "{}",
+                                },
+                            }
+                        }
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="disabled",
+                skill_agent=_PromptOnlyAgent(),
+            )
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "ds-metrics",
+                        "promql": "sum(up)",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {
+                        "datasourceID": "ds-metrics",
+                        "queryText": "sum(up)",
+                        "queryJSON": "{}",
+                    },
+                },
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsInstance(result, dict)
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["datasource_id"], "ds-metrics")
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["start_ts"], 100)
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["end_ts"], 200)
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["step_seconds"], 60)
+            self.assertEqual(
+                state.metrics_branch_meta["request_payload"]["promql"],
+                'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+            )
+
+    def test_prompt_first_evidence_plan_dual_tool_rejects_duplicate_tool_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "executor"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Evidence Planner", description="Executor planner")
+            bundle_path = base / "executor.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.evidence.prompt_planner",
+                    version="1.0.0",
+                    name="Evidence Planner",
+                    description="Executor planner",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=["query_logs", "query_metrics"],
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _BrokenToolAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.prompt_planner\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def plan_tool_calls(self, **_: object):
+                    class _Sequence:
+                        tool_calls = [
+                            {
+                                "tool": "mcp.query_metrics",
+                                "input": {
+                                    "datasource_id": "ds-metrics",
+                                    "promql": "sum(up)",
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "step_seconds": 30,
+                                },
+                            },
+                            {
+                                "tool": "mcp.query_metrics",
+                                "input": {
+                                    "datasource_id": "ds-metrics",
+                                    "promql": "sum(rate(up[5m]))",
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "step_seconds": 30,
+                                },
+                            },
+                        ]
+
+                    return _Sequence()
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_dual_tool",
+                skill_agent=_BrokenToolAgent(),
+            )
+            runtime.query_metrics = lambda **kwargs: self.fail("query_metrics must not run for duplicate tool sequence")  # type: ignore[method-assign]
+            state = GraphState(job_id="job-1", incident_id="inc-1", evidence_mode="query")
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsNone(result)
+            self.assertIsNone(state.metrics_query_status)
+
     def test_prompt_first_evidence_plan_invalid_tool_plan_falls_back(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             base = Path(tmp_dir)
@@ -1270,6 +1750,63 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertEqual(out["logs_query_latency_ms"], 12)
         self.assertEqual(len(runtime.reported), 1)
         self.assertEqual(runtime.reported[0]["tool_name"], "evidence.logs.reuse")
+        self.assertEqual(len(runtime.observations), 1)
+        self.assertEqual(runtime.observations[0]["tool"], "skill.tool_reuse")
+
+    def test_query_metrics_node_reuses_prewarmed_skill_result(self) -> None:
+        class _ReuseRuntime:
+            def __init__(self) -> None:
+                self.reported: list[dict[str, object]] = []
+                self.observations: list[dict[str, object]] = []
+
+            def report_tool_call(self, **kwargs):
+                self.reported.append(kwargs)
+                return len(self.reported)
+
+            def report_observation(self, **kwargs):
+                self.observations.append(kwargs)
+                return len(self.observations)
+
+            def query_metrics(self, **kwargs):
+                raise AssertionError("query_metrics should not execute when prewarmed result is reusable")
+
+        runtime = _ReuseRuntime()
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            metrics_branch_meta={
+                "mode": "query",
+                "query_type": "metrics",
+                "tool_result_reusable": True,
+                "tool_result_source": "skill_prompt_first",
+                "request_payload": {
+                    "datasource_id": "ds-metrics",
+                    "promql": 'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+                    "start_ts": 100,
+                    "end_ts": 200,
+                    "step_seconds": 60,
+                },
+                "query_request": {
+                    "datasourceID": "ds-metrics",
+                    "queryText": 'sum(rate(http_requests_total{service="svc-a"}[5m]))',
+                    "queryJSON": "{}",
+                },
+            },
+            metrics_query_status="ok",
+            metrics_query_output={
+                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 96,
+                "isTruncated": False,
+            },
+            metrics_query_latency_ms=23,
+            metrics_query_result_size_bytes=96,
+        )
+        out = query_metrics_node(state, runtime)  # type: ignore[arg-type]
+        self.assertEqual(out["metrics_query_status"], "ok")
+        self.assertEqual(out["metrics_query_latency_ms"], 23)
+        self.assertEqual(len(runtime.reported), 1)
+        self.assertEqual(runtime.reported[0]["tool_name"], "evidence.metrics.reuse")
         self.assertEqual(len(runtime.observations), 1)
         self.assertEqual(runtime.observations[0]["tool"], "skill.tool_reuse")
 

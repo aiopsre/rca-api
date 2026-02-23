@@ -43,6 +43,14 @@ class KnowledgeContextBundle:
         return [dict(item) for item in self.skills]
 
 
+@dataclass(frozen=True)
+class SkillToolCallResult:
+    tool_name: str
+    tool_request: dict[str, Any]
+    tool_result: dict[str, Any]
+    latency_ms: int
+
+
 def _trim_text(value: Any, *, max_len: int = 160) -> str:
     text = str(value).strip()
     if len(text) <= max_len:
@@ -1251,9 +1259,9 @@ class OrchestratorRuntime:
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
         if (
             capability == "evidence.plan"
-            and self._skills_tool_calling_mode == "evidence_plan_single_hop"
+            and self._skills_tool_calling_mode in {"evidence_plan_single_hop", "evidence_plan_dual_tool"}
         ):
-            return self._consume_evidence_plan_with_optional_tool(
+            return self._consume_evidence_plan_with_optional_tools(
                 stage=stage,
                 graph_state=graph_state,
                 node_name=node_name,
@@ -1277,7 +1285,7 @@ class OrchestratorRuntime:
             None,
         )
 
-    def _consume_evidence_plan_with_optional_tool(
+    def _consume_evidence_plan_with_optional_tools(
         self,
         *,
         stage: str,
@@ -1290,8 +1298,8 @@ class OrchestratorRuntime:
         output_contract: dict[str, Any],
         skill_document: str,
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
-        effective_tools = self._effective_prompt_skill_tools(selected_candidate)
-        if "query_logs" not in effective_tools:
+        available_tools = self._available_evidence_plan_prompt_tools(selected_candidate)
+        if not available_tools:
             self._report_observation_best_effort(
                 tool="skill.fallback",
                 node_name=node_name,
@@ -1305,7 +1313,7 @@ class OrchestratorRuntime:
                     "reason": "tool_calling_not_allowed",
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_candidate.binding_key,
-                    "allowed_tools": effective_tools,
+                    "allowed_tools": self._effective_prompt_skill_tools(selected_candidate),
                 },
                 evidence_ids=evidence_ids,
             )
@@ -1323,14 +1331,12 @@ class OrchestratorRuntime:
             )
 
         tool_plan_started = time.monotonic()
-        tool_plan = self._skill_agent.plan_tool_call(
-            capability="evidence.plan",
-            skill_id=selected_candidate.skill_id,
-            skill_version=selected_candidate.version,
+        tool_requests = self._plan_evidence_prompt_tool_sequence(
+            selected_candidate=selected_candidate,
             skill_document=skill_document,
             input_payload=input_payload,
             knowledge_context=knowledge_context,
-            available_tools=["mcp.query_logs"],
+            available_tools=available_tools,
         )
         tool_plan_latency_ms = max(1, int((time.monotonic() - tool_plan_started) * 1000))
         self._report_observation_best_effort(
@@ -1346,13 +1352,19 @@ class OrchestratorRuntime:
                 "latency_ms": tool_plan_latency_ms,
                 "skill_id": selected_candidate.skill_id,
                 "selected_binding_key": selected_candidate.binding_key,
-                "allowed_tools": effective_tools,
-                "tool": str(tool_plan.tool or ""),
-                "reason": str(tool_plan.reason or ""),
+                "allowed_tools": [tool.removeprefix("mcp.") for tool in available_tools],
+                "tool_call_count": len(tool_requests),
+                "tool_calls": [
+                    {
+                        "tool": str(item.get("tool") or ""),
+                        "reason": str(item.get("reason") or ""),
+                    }
+                    for item in tool_requests
+                ],
             },
             evidence_ids=evidence_ids,
         )
-        if not tool_plan.tool:
+        if not tool_requests:
             return (
                 self._skill_agent.consume_skill(
                     capability="evidence.plan",
@@ -1366,33 +1378,151 @@ class OrchestratorRuntime:
                 None,
             )
 
-        tool_request = self._validate_prompt_skill_tool_plan(tool_plan)
-        tool_result, tool_latency_ms = self._run_prompt_skill_tool(
-            graph_state=graph_state,
-            selected_candidate=selected_candidate,
-            evidence_ids=evidence_ids,
-            tool_request=tool_request,
-        )
-        raw_output = self._skill_agent.consume_after_tool(
+        tool_results: list[SkillToolCallResult] = []
+        for tool_request in tool_requests:
+            tool_results.append(
+                self._run_prompt_skill_tool(
+                    graph_state=graph_state,
+                    selected_candidate=selected_candidate,
+                    evidence_ids=evidence_ids,
+                    tool_request=tool_request,
+                )
+            )
+        raw_output = self._consume_prompt_skill_after_tools(
             capability="evidence.plan",
-            skill_id=selected_candidate.skill_id,
-            skill_version=selected_candidate.version,
+            selected_candidate=selected_candidate,
             skill_document=skill_document,
             input_payload=input_payload,
             knowledge_context=knowledge_context,
-            tool_request=tool_request,
-            tool_result=tool_result,
+            tool_results=tool_results,
             output_contract=output_contract,
         )
         return (
             raw_output,
             {
                 "kind": "evidence_plan_tool_warm",
-                "tool_request": tool_request,
-                "tool_result": tool_result,
-                "latency_ms": tool_latency_ms,
+                "tool_results": [
+                    {
+                        "tool_name": item.tool_name,
+                        "tool_request": item.tool_request,
+                        "tool_result": item.tool_result,
+                        "latency_ms": item.latency_ms,
+                    }
+                    for item in tool_results
+                ],
             },
         )
+
+    def _available_evidence_plan_prompt_tools(self, selected_candidate: "SkillCandidate") -> list[str]:
+        effective_tools = self._effective_prompt_skill_tools(selected_candidate)
+        if self._skills_tool_calling_mode == "evidence_plan_single_hop":
+            return ["mcp.query_logs"] if "query_logs" in effective_tools else []
+        if self._skills_tool_calling_mode == "evidence_plan_dual_tool":
+            available: list[str] = []
+            if "query_logs" in effective_tools:
+                available.append("mcp.query_logs")
+            if "query_metrics" in effective_tools:
+                available.append("mcp.query_metrics")
+            return available
+        return []
+
+    def _plan_evidence_prompt_tool_sequence(
+        self,
+        *,
+        selected_candidate: "SkillCandidate",
+        skill_document: str,
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        available_tools: list[str],
+    ) -> list[dict[str, Any]]:
+        max_tool_calls = 1 if self._skills_tool_calling_mode == "evidence_plan_single_hop" else 2
+        if max_tool_calls == 1 and hasattr(self._skill_agent, "plan_tool_call"):
+            tool_plan = self._skill_agent.plan_tool_call(
+                capability="evidence.plan",
+                skill_id=selected_candidate.skill_id,
+                skill_version=selected_candidate.version,
+                skill_document=skill_document,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                available_tools=available_tools,
+            )
+            if not str(getattr(tool_plan, "tool", "") or "").strip():
+                return []
+            return [self._validate_prompt_skill_tool_plan(tool_plan, allowed_tools=available_tools)]
+
+        if not hasattr(self._skill_agent, "plan_tool_calls"):
+            raise RuntimeError("agent_missing_plan_tool_calls")
+        tool_sequence = self._skill_agent.plan_tool_calls(
+            capability="evidence.plan",
+            skill_id=selected_candidate.skill_id,
+            skill_version=selected_candidate.version,
+            skill_document=skill_document,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            available_tools=available_tools,
+            max_tool_calls=max_tool_calls,
+        )
+        raw_plans = getattr(tool_sequence, "tool_calls", [])
+        if not isinstance(raw_plans, list):
+            raw_plans = []
+        if len(raw_plans) > max_tool_calls:
+            raise RuntimeError("prompt skill tool sequence exceeds max_tool_calls")
+        validated: list[dict[str, Any]] = []
+        seen_tools: set[str] = set()
+        for raw_plan in raw_plans:
+            tool_request = self._validate_prompt_skill_tool_plan(raw_plan, allowed_tools=available_tools)
+            tool_name = str(tool_request.get("tool") or "")
+            if tool_name in seen_tools:
+                raise RuntimeError(f"prompt skill tool sequence repeats tool: {tool_name}")
+            seen_tools.add(tool_name)
+            validated.append(tool_request)
+        return validated
+
+    def _consume_prompt_skill_after_tools(
+        self,
+        *,
+        capability: str,
+        selected_candidate: "SkillCandidate",
+        skill_document: str,
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        tool_results: list[SkillToolCallResult],
+        output_contract: dict[str, Any],
+    ) -> PromptSkillConsumeResult:
+        serialized_tool_results = [
+            {
+                "tool": item.tool_name,
+                "tool_request": item.tool_request,
+                "tool_result": item.tool_result,
+                "latency_ms": item.latency_ms,
+            }
+            for item in tool_results
+        ]
+        if hasattr(self._skill_agent, "consume_after_tools"):
+            return self._skill_agent.consume_after_tools(
+                capability=capability,
+                skill_id=selected_candidate.skill_id,
+                skill_version=selected_candidate.version,
+                skill_document=skill_document,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                tool_results=serialized_tool_results,
+                output_contract=output_contract,
+            )
+        if len(serialized_tool_results) == 1 and hasattr(self._skill_agent, "consume_after_tool"):
+            item = serialized_tool_results[0]
+            return self._skill_agent.consume_after_tool(
+                capability=capability,
+                skill_id=selected_candidate.skill_id,
+                skill_version=selected_candidate.version,
+                skill_document=skill_document,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                tool_request=item["tool_request"],
+                tool_result=item["tool_result"],
+                output_contract=output_contract,
+            )
+        raise RuntimeError("agent_missing_consume_after_tools")
 
     def _apply_prompt_skill_post_merge(
         self,
@@ -1403,52 +1533,93 @@ class OrchestratorRuntime:
     ) -> None:
         if str(post_apply_context.get("kind") or "") != "evidence_plan_tool_warm":
             return
-        payload = result.payload if isinstance(result.payload, dict) else {}
-        if not isinstance(payload.get("logs_branch_meta"), dict):
+        tool_results = post_apply_context.get("tool_results")
+        if not isinstance(tool_results, list):
             return
-        tool_request = post_apply_context.get("tool_request")
-        tool_result = post_apply_context.get("tool_result")
-        latency_ms = post_apply_context.get("latency_ms")
-        if not isinstance(tool_request, dict) or not isinstance(tool_result, dict):
-            return
-        self._warm_logs_query_state(
-            graph_state=graph_state,
-            tool_request=tool_request,
-            tool_result=tool_result,
-            latency_ms=int(latency_ms or 0),
-        )
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool_name") or "")
+            tool_request = item.get("tool_request")
+            tool_result = item.get("tool_result")
+            latency_ms = item.get("latency_ms")
+            if not isinstance(tool_request, dict) or not isinstance(tool_result, dict):
+                continue
+            if tool_name == "mcp.query_logs":
+                self._warm_logs_query_state(
+                    graph_state=graph_state,
+                    tool_request=tool_request,
+                    tool_result=tool_result,
+                    latency_ms=int(latency_ms or 0),
+                )
+            elif tool_name == "mcp.query_metrics":
+                self._warm_metrics_query_state(
+                    graph_state=graph_state,
+                    tool_request=tool_request,
+                    tool_result=tool_result,
+                    latency_ms=int(latency_ms or 0),
+                )
 
-    def _validate_prompt_skill_tool_plan(self, tool_plan: Any) -> dict[str, Any]:
-        tool_name = str(getattr(tool_plan, "tool", "") or "").strip()
-        if tool_name != "mcp.query_logs":
+    def _validate_prompt_skill_tool_plan(self, tool_plan: Any, *, allowed_tools: list[str]) -> dict[str, Any]:
+        if isinstance(tool_plan, dict):
+            tool_name = str(tool_plan.get("tool") or "").strip()
+            input_payload = tool_plan.get("input")
+            reason = str(tool_plan.get("reason") or "").strip()
+        else:
+            tool_name = str(getattr(tool_plan, "tool", "") or "").strip()
+            input_payload = getattr(tool_plan, "input_payload", None)
+            reason = str(getattr(tool_plan, "reason", "") or "").strip()
+        if tool_name not in {"mcp.query_logs", "mcp.query_metrics"}:
             raise RuntimeError(f"unsupported prompt skill tool: {tool_name or '<empty>'}")
-        input_payload = getattr(tool_plan, "input_payload", None)
+        if tool_name not in allowed_tools:
+            raise RuntimeError(f"prompt skill tool is not allowed: {tool_name}")
         if not isinstance(input_payload, dict):
             raise RuntimeError("prompt skill tool plan requires object input")
         datasource_id = str(input_payload.get("datasource_id") or "").strip()
-        query = str(input_payload.get("query") or "").strip()
         if not datasource_id:
             raise RuntimeError("prompt skill tool plan missing datasource_id")
-        if not query:
-            raise RuntimeError("prompt skill tool plan missing query")
-        if query.lstrip().startswith("{"):
-            raise RuntimeError("prompt skill tool plan must use queryText, not raw DSL")
         try:
             start_ts = _coerce_int(input_payload.get("start_ts"))
             end_ts = _coerce_int(input_payload.get("end_ts"))
-            limit = _coerce_int(input_payload.get("limit"))
         except (TypeError, ValueError) as exc:
             raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
         if start_ts <= 0 or end_ts <= 0 or end_ts < start_ts:
             raise RuntimeError("prompt skill tool plan has invalid time range")
-        if limit <= 0:
-            raise RuntimeError("prompt skill tool plan has invalid limit")
-        return {
+        validated_input: dict[str, Any] = {
             "datasource_id": datasource_id,
-            "query": query,
             "start_ts": start_ts,
             "end_ts": end_ts,
-            "limit": limit,
+        }
+        if tool_name == "mcp.query_logs":
+            query = str(input_payload.get("query") or "").strip()
+            if not query:
+                raise RuntimeError("prompt skill tool plan missing query")
+            if query.lstrip().startswith("{"):
+                raise RuntimeError("prompt skill tool plan must use queryText, not raw DSL")
+            try:
+                limit = _coerce_int(input_payload.get("limit"))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
+            if limit <= 0:
+                raise RuntimeError("prompt skill tool plan has invalid limit")
+            validated_input["query"] = query
+            validated_input["limit"] = limit
+        else:
+            promql = str(input_payload.get("promql") or "").strip()
+            if not promql:
+                raise RuntimeError("prompt skill tool plan missing promql")
+            try:
+                step_seconds = _coerce_int(input_payload.get("step_seconds"))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
+            if step_seconds <= 0:
+                raise RuntimeError("prompt skill tool plan has invalid step_seconds")
+            validated_input["promql"] = promql
+            validated_input["step_seconds"] = step_seconds
+        return {
+            "tool": tool_name,
+            "input_payload": validated_input,
+            "reason": reason,
         }
 
     def _run_prompt_skill_tool(
@@ -1458,22 +1629,37 @@ class OrchestratorRuntime:
         selected_candidate: "SkillCandidate",
         evidence_ids: list[str],
         tool_request: dict[str, Any],
-    ) -> tuple[dict[str, Any], int]:
+    ) -> SkillToolCallResult:
+        tool_name = str(tool_request.get("tool") or "")
+        input_payload = tool_request.get("input_payload")
+        if not isinstance(input_payload, dict):
+            raise RuntimeError("prompt skill tool request missing input payload")
         started_at = time.monotonic()
         try:
-            result = self.query_logs(
-                datasource_id=str(tool_request.get("datasource_id") or ""),
-                query=str(tool_request.get("query") or ""),
-                start_ts=int(tool_request.get("start_ts") or 0),
-                end_ts=int(tool_request.get("end_ts") or 0),
-                limit=int(tool_request.get("limit") or 0),
-            )
+            if tool_name == "mcp.query_logs":
+                result = self.query_logs(
+                    datasource_id=str(input_payload.get("datasource_id") or ""),
+                    query=str(input_payload.get("query") or ""),
+                    start_ts=int(input_payload.get("start_ts") or 0),
+                    end_ts=int(input_payload.get("end_ts") or 0),
+                    limit=int(input_payload.get("limit") or 0),
+                )
+            elif tool_name == "mcp.query_metrics":
+                result = self.query_metrics(
+                    datasource_id=str(input_payload.get("datasource_id") or ""),
+                    promql=str(input_payload.get("promql") or ""),
+                    start_ts=int(input_payload.get("start_ts") or 0),
+                    end_ts=int(input_payload.get("end_ts") or 0),
+                    step_s=int(input_payload.get("step_seconds") or 0),
+                )
+            else:
+                raise RuntimeError(f"unsupported prompt skill tool execution: {tool_name or '<empty>'}")
         except Exception as exc:
             latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
             self.report_tool_call(
                 node_name="skill.evidence.plan",
-                tool_name="mcp.query_logs",
-                request_json=tool_request,
+                tool_name=tool_name or "mcp.unknown",
+                request_json=input_payload,
                 response_json={"status": "error"},
                 latency_ms=latency_ms,
                 status="error",
@@ -1486,8 +1672,8 @@ class OrchestratorRuntime:
         latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
         self.report_tool_call(
             node_name="skill.evidence.plan",
-            tool_name="mcp.query_logs",
-            request_json=tool_request,
+            tool_name=tool_name,
+            request_json=input_payload,
             response_json=_query_toolcall_response(result),
             latency_ms=latency_ms,
             status="ok",
@@ -1495,7 +1681,12 @@ class OrchestratorRuntime:
         )
         if hasattr(graph_state, "tool_calls_written"):
             graph_state.tool_calls_written += 1
-        return result, latency_ms
+        return SkillToolCallResult(
+            tool_name=tool_name,
+            tool_request=dict(input_payload),
+            tool_result=result,
+            latency_ms=latency_ms,
+        )
 
     def _warm_logs_query_state(
         self,
@@ -1528,6 +1719,40 @@ class OrchestratorRuntime:
         query_request["queryText"] = str(tool_request.get("query") or "")
         merged_logs_branch_meta["query_request"] = query_request
         setattr(graph_state, "logs_branch_meta", merged_logs_branch_meta)
+
+    def _warm_metrics_query_state(
+        self,
+        *,
+        graph_state: Any,
+        tool_request: dict[str, Any],
+        tool_result: dict[str, Any],
+        latency_ms: int,
+    ) -> None:
+        setattr(graph_state, "metrics_query_request", dict(tool_request))
+        setattr(graph_state, "metrics_query_status", "ok")
+        setattr(graph_state, "metrics_query_output", dict(tool_result))
+        setattr(graph_state, "metrics_query_error", None)
+        setattr(graph_state, "metrics_query_latency_ms", max(int(latency_ms), 0))
+        setattr(graph_state, "metrics_query_result_size_bytes", _query_result_size_bytes(tool_result))
+        current_metrics_branch_meta = getattr(graph_state, "metrics_branch_meta", None)
+        if not isinstance(current_metrics_branch_meta, dict):
+            current_metrics_branch_meta = {}
+        merged_metrics_branch_meta = dict(current_metrics_branch_meta)
+        merged_metrics_branch_meta["tool_result_source"] = "skill_prompt_first"
+        merged_metrics_branch_meta["tool_result_reusable"] = True
+        request_payload = merged_metrics_branch_meta.get("request_payload")
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+        request_payload["promql"] = str(tool_request.get("promql") or "")
+        if int(tool_request.get("step_seconds") or 0) > 0:
+            request_payload["step_seconds"] = int(tool_request.get("step_seconds") or 0)
+        merged_metrics_branch_meta["request_payload"] = request_payload
+        query_request = merged_metrics_branch_meta.get("query_request")
+        if not isinstance(query_request, dict):
+            query_request = {}
+        query_request["queryText"] = str(tool_request.get("promql") or "")
+        merged_metrics_branch_meta["query_request"] = query_request
+        setattr(graph_state, "metrics_branch_meta", merged_metrics_branch_meta)
 
     def get_incident(self, incident_id: str) -> dict[str, Any]:
         normalized = str(incident_id).strip()

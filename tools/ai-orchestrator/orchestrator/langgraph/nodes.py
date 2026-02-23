@@ -357,6 +357,53 @@ def query_metrics_node(state: GraphState, runtime: OrchestratorRuntime) -> dict[
         }
 
     request_payload = meta.get("request_payload") if isinstance(meta.get("request_payload"), dict) else {}
+    if (
+        mode == "query"
+        and bool(meta.get("tool_result_reusable"))
+        and str(meta.get("tool_result_source") or "") == "skill_prompt_first"
+        and str(state.metrics_query_status or "") == "ok"
+        and isinstance(state.metrics_query_output, dict)
+        and state.metrics_query_output
+    ):
+        try:
+            runtime.report_observation(
+                tool="skill.tool_reuse",
+                node_name="query_metrics",
+                params={
+                    "request_payload": request_payload,
+                    "source": "skill_prompt_first",
+                },
+                response={
+                    "status": "ok",
+                    "source": "skill_prompt_first",
+                    "promql": str(request_payload.get("promql") or ""),
+                },
+                evidence_ids=[],
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        report_node_action(
+            state,
+            runtime,
+            node_name="query_metrics",
+            tool_name="evidence.metrics.reuse",
+            request_json=request_payload,
+            response_json={
+                **query_toolcall_response(state.metrics_query_output),
+                "source": "skill_prompt_first",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return {
+            "metrics_query_status": "ok",
+            "metrics_query_output": state.metrics_query_output if isinstance(state.metrics_query_output, dict) else {},
+            "metrics_query_error": None,
+            "metrics_query_latency_ms": int(state.metrics_query_latency_ms or 0),
+            "metrics_query_result_size_bytes": int(state.metrics_query_result_size_bytes or 0),
+        }
+
     try:
         result = runtime.query_metrics(
             datasource_id=str(request_payload.get("datasource_id") or ""),

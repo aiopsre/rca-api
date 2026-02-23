@@ -104,6 +104,30 @@ class ToolCallPlan:
         self.reason = _trim(reason)
 
 
+class ToolCallSequence:
+    def __init__(
+        self,
+        *,
+        tool_calls: list[ToolCallPlan] | list[dict[str, Any]] | None = None,
+        reason: str = "",
+    ) -> None:
+        normalized: list[ToolCallPlan] = []
+        for item in tool_calls or []:
+            if isinstance(item, ToolCallPlan):
+                normalized.append(item)
+                continue
+            if isinstance(item, dict):
+                normalized.append(
+                    ToolCallPlan(
+                        tool=_trim(item.get("tool")),
+                        input_payload=item.get("input") if isinstance(item.get("input"), dict) else {},
+                        reason=_trim(item.get("reason")),
+                    )
+                )
+        self.tool_calls = normalized
+        self.reason = _trim(reason)
+
+
 class PromptSkillAgent:
     def __init__(
         self,
@@ -240,13 +264,41 @@ class PromptSkillAgent:
         knowledge_context: list[dict[str, Any]] | None = None,
         available_tools: list[str],
     ) -> ToolCallPlan:
+        sequence = self.plan_tool_calls(
+            capability=capability,
+            skill_id=skill_id,
+            skill_version=skill_version,
+            skill_document=skill_document,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            available_tools=available_tools,
+            max_tool_calls=1,
+        )
+        if sequence.tool_calls:
+            return sequence.tool_calls[0]
+        return ToolCallPlan(reason=sequence.reason)
+
+    def plan_tool_calls(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        skill_document: str,
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]] | None = None,
+        available_tools: list[str],
+        max_tool_calls: int = 2,
+    ) -> ToolCallSequence:
         if not self.configured:
             raise RuntimeError("prompt skill agent is not configured")
         system_prompt = (
-            "You are planning at most one tool call for a prompt-first RCA skill.\n"
+            "You are planning a bounded sequence of tool calls for a prompt-first RCA skill.\n"
             "Return strict JSON only.\n"
-            "If no tool call is needed, return an empty tool field.\n"
+            "If no tool call is needed, return an empty tool_calls list.\n"
             "Only choose from available_tools.\n"
+            "Never return more than max_tool_calls items.\n"
+            "Do not repeat the same tool in tool_calls.\n"
             "For this workflow, never emit raw Elasticsearch DSL; only emit the allowed query string input."
         )
         user_payload = {
@@ -257,22 +309,32 @@ class PromptSkillAgent:
             "input": input_payload,
             "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
             "available_tools": [item for item in available_tools if _trim(item)],
+            "max_tool_calls": max(int(max_tool_calls), 1),
             "output_contract": {
-                "tool": "string or empty",
-                "input": {
-                    "datasource_id": "required string when tool is set",
-                    "query": "required string when tool is set",
-                    "start_ts": "required integer when tool is set",
-                    "end_ts": "required integer when tool is set",
-                    "limit": "required integer when tool is set",
-                },
+                "tool_calls": [
+                    {
+                        "tool": "string or empty",
+                        "input": {
+                            "datasource_id": "required string when tool is set",
+                            "query": "required string for mcp.query_logs",
+                            "promql": "required string for mcp.query_metrics",
+                            "start_ts": "required integer when tool is set",
+                            "end_ts": "required integer when tool is set",
+                            "limit": "required integer for mcp.query_logs",
+                            "step_seconds": "required integer for mcp.query_metrics",
+                        },
+                        "reason": "short explanation",
+                    }
+                ],
                 "reason": "short explanation",
             },
         }
         response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
-        return ToolCallPlan(
-            tool=_trim(response.get("tool")),
-            input_payload=response.get("input") if isinstance(response.get("input"), dict) else {},
+        tool_calls = response.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            tool_calls = []
+        return ToolCallSequence(
+            tool_calls=[item for item in tool_calls if isinstance(item, dict)],
             reason=_trim(response.get("reason")),
         )
 
@@ -289,11 +351,39 @@ class PromptSkillAgent:
         tool_result: dict[str, Any],
         output_contract: dict[str, Any],
     ) -> PromptSkillConsumeResult:
+        return self.consume_after_tools(
+            capability=capability,
+            skill_id=skill_id,
+            skill_version=skill_version,
+            skill_document=skill_document,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            tool_results=[
+                {
+                    "tool_request": tool_request if isinstance(tool_request, dict) else {},
+                    "tool_result": tool_result if isinstance(tool_result, dict) else {},
+                }
+            ],
+            output_contract=output_contract,
+        )
+
+    def consume_after_tools(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        skill_document: str,
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]] | None = None,
+        tool_results: list[dict[str, Any]] | None = None,
+        output_contract: dict[str, Any],
+    ) -> PromptSkillConsumeResult:
         if not self.configured:
             raise RuntimeError("prompt skill agent is not configured")
         system_prompt = (
-            "You are finishing a prompt-first RCA skill after one controlled tool call.\n"
-            "Read the skill document, the original stage input, and the tool result.\n"
+            "You are finishing a prompt-first RCA skill after zero or more controlled tool calls.\n"
+            "Read the skill document, the original stage input, and the tool results.\n"
             "Return strict JSON only.\n"
             "Do not plan or call more tools.\n"
             "Return only payload, session_patch, and observations.\n"
@@ -306,8 +396,7 @@ class PromptSkillAgent:
             "skill_document": skill_document,
             "input": input_payload,
             "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
-            "tool_request": tool_request if isinstance(tool_request, dict) else {},
-            "tool_result": tool_result if isinstance(tool_result, dict) else {},
+            "tool_results": [item for item in (tool_results or []) if isinstance(item, dict)],
             "output_contract": output_contract,
         }
         response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)

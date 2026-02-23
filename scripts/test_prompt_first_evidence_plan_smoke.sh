@@ -22,6 +22,8 @@ AGENT_MODEL="${AGENT_MODEL:-}"
 AGENT_BASE_URL="${AGENT_BASE_URL:-}"
 AGENT_API_KEY="${AGENT_API_KEY:-}"
 AGENT_TIMEOUT_SECONDS="${AGENT_TIMEOUT_SECONDS:-20}"
+DS_BASE_URL="${DS_BASE_URL:-}"
+DS_TYPE="${DS_TYPE:-prometheus}"
 ORCH_CMD="${ORCH_CMD:-python3 -m orchestrator.main}"
 CURL_BIN="${CURL_BIN:-curl}"
 JQ_BIN="${JQ_BIN:-jq}"
@@ -202,10 +204,13 @@ start_orchestrator() {
       POLL_INTERVAL_MS=200 \
       LONG_POLL_WAIT_SECONDS=2 \
       LEASE_HEARTBEAT_INTERVAL_SECONDS=3 \
-      RUN_QUERY=0 \
+      RUN_QUERY=1 \
+      DS_BASE_URL="${DS_BASE_URL}" \
+      DS_TYPE="${DS_TYPE}" \
       RUN_VERIFICATION=0 \
       POST_FINALIZE_OBSERVE=0 \
       SKILLS_EXECUTION_MODE=prompt_first \
+      SKILLS_TOOL_CALLING_MODE=evidence_plan_dual_tool \
       AGENT_MODEL="${AGENT_MODEL}" \
       AGENT_BASE_URL="${AGENT_BASE_URL}" \
       AGENT_API_KEY="${AGENT_API_KEY}" \
@@ -250,6 +255,9 @@ require_bin "${PYTHON_BIN}"
 
 if [[ -z "${AGENT_MODEL}" || -z "${AGENT_BASE_URL}" || -z "${AGENT_API_KEY}" ]]; then
   fail_step "PromptFirstConfig" "AGENT_MODEL, AGENT_BASE_URL, and AGENT_API_KEY are required"
+fi
+if [[ -z "${DS_BASE_URL}" ]]; then
+  fail_step "DatasourceConfig" "DS_BASE_URL is required for dual-tool evidence.plan smoke"
 fi
 for bundle_dir in "${EXECUTOR_BUNDLE_DIR}" "${ELASTIC_BUNDLE_DIR}" "${PROM_BUNDLE_DIR}"; do
   if [[ ! -d "${bundle_dir}" ]]; then
@@ -319,7 +327,7 @@ SKILLSET_UPDATE_BODY="$(cat <<JSON
       "version": "${EXECUTOR_SKILL_VERSION}",
       "capability": "${SKILL_CAPABILITY}",
       "role": "executor",
-      "allowed_tools": [],
+      "allowed_tools": ["query_logs","query_metrics"],
       "priority": 100,
       "enabled": true
     }
@@ -405,6 +413,28 @@ assert_json_expr "SkillSelectObservation" "${TOOLCALLS_RESPONSE}" '
 assert_json_expr "SkillConsumeObservation" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
     (.toolName // .tool_name // "") == "skill.consume"
+  )
+'
+assert_json_expr "PromptPlannerQueryMetricsToolCall" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "mcp.query_metrics"
+    and (.nodeName // .node_name // "") == "skill.evidence.plan"
+  )
+'
+assert_json_expr "PromptPlannerQueryLogsToolCall" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "mcp.query_logs"
+    and (.nodeName // .node_name // "") == "skill.evidence.plan"
+  )
+'
+assert_json_expr "MetricsReuseToolCall" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "evidence.metrics.reuse"
+  )
+'
+assert_json_expr "LogsReuseToolCall" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "evidence.logs.reuse"
   )
 '
 assert_json_expr "PlanEvidenceSkillApplied" "${TOOLCALLS_RESPONSE}" '

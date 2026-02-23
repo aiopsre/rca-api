@@ -44,6 +44,7 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - `AGENT_BASE_URL`：`prompt_first` 模式下的 OpenAI-compatible base URL
 - `AGENT_API_KEY`：`prompt_first` 模式下的 API key
 - `AGENT_TIMEOUT_SECONDS`：`prompt_first` 模式下模型请求超时
+- `SKILLS_TOOL_CALLING_MODE`：默认 `disabled`；`evidence_plan_single_hop` 启用单次 `query_logs`，`evidence_plan_dual_tool` 启用受控的 `query_metrics + query_logs`
 
 ## Notes
 
@@ -61,4 +62,4 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
   - Elasticsearch / ECS 风格的 `evidence.plan` knowledge 样板
 - `tools/ai-orchestrator/skill-bundles/prometheus-evidence-plan/SKILL.md`
   - Prometheus / metrics planning 的 `evidence.plan` knowledge 样板
-- 受控单跳 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 运行时支持单次 `mcp.query_logs` + `query_logs` 结果复用，但默认保持关闭
+- 受控 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 运行时支持最多一次 `mcp.query_metrics` + 最多一次 `mcp.query_logs`，并让 `query_metrics` / `query_logs` 节点复用预热结果，但默认保持关闭

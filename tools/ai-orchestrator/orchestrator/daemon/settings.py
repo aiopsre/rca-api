@@ -95,7 +95,7 @@ def load_settings() -> Settings:
     if skills_execution_mode not in {"catalog", "prompt_first"}:
         skills_execution_mode = "catalog"
     skills_tool_calling_mode = os.getenv("SKILLS_TOOL_CALLING_MODE", "disabled").strip().lower() or "disabled"
-    if skills_tool_calling_mode not in {"disabled", "evidence_plan_single_hop"}:
+    if skills_tool_calling_mode not in {"disabled", "evidence_plan_single_hop", "evidence_plan_dual_tool"}:
         skills_tool_calling_mode = "disabled"
     ds_type = os.getenv("DS_TYPE", "prometheus").strip().lower() or "prometheus"
     if ds_type not in {"prometheus", "loki", "elasticsearch"}:

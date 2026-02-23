@@ -81,6 +81,60 @@ def _sanitize_logs_branch_meta(value: Any) -> tuple[dict[str, Any] | None, list[
     return normalized, dropped
 
 
+def _sanitize_metrics_branch_meta(value: Any) -> tuple[dict[str, Any] | None, list[str]]:
+    if not isinstance(value, dict):
+        return None, []
+
+    dropped: list[str] = []
+    normalized: dict[str, Any] = {}
+
+    mode = _trim(value.get("mode"))
+    if mode == "query":
+        normalized["mode"] = "query"
+    else:
+        return None, ["metrics_branch_meta.mode"]
+
+    query_type = _trim(value.get("query_type"))
+    if query_type == "metrics":
+        normalized["query_type"] = "metrics"
+    else:
+        return None, ["metrics_branch_meta.query_type"]
+
+    request_payload = value.get("request_payload")
+    if not isinstance(request_payload, dict):
+        return None, ["metrics_branch_meta.request_payload"]
+    promql = _trim(request_payload.get("promql"))
+    if not promql:
+        return None, ["metrics_branch_meta.request_payload.promql"]
+    normalized_request_payload: dict[str, Any] = {"promql": promql}
+    if "step_seconds" in request_payload:
+        try:
+            step_seconds = int(request_payload.get("step_seconds"))
+        except (TypeError, ValueError):
+            return None, ["metrics_branch_meta.request_payload.step_seconds"]
+        if step_seconds <= 0:
+            return None, ["metrics_branch_meta.request_payload.step_seconds"]
+        normalized_request_payload["step_seconds"] = step_seconds
+    normalized["request_payload"] = normalized_request_payload
+    for key in sorted(set(request_payload.keys()) - {"promql", "step_seconds"}):
+        dropped.append(f"metrics_branch_meta.request_payload.{key}")
+
+    query_request = value.get("query_request")
+    if not isinstance(query_request, dict):
+        return None, ["metrics_branch_meta.query_request"]
+    query_text = _trim(query_request.get("queryText") or query_request.get("query_text"))
+    if not query_text:
+        return None, ["metrics_branch_meta.query_request.queryText"]
+    normalized["query_request"] = {"queryText": query_text}
+    for key in sorted(set(query_request.keys()) - {"queryText", "query_text"}):
+        dropped.append(f"metrics_branch_meta.query_request.{key}")
+
+    for key in sorted(set(value.keys()) - {"mode", "query_type", "request_payload", "query_request"}):
+        dropped.append(f"metrics_branch_meta.{key}")
+
+    return normalized, dropped
+
+
 def _sanitize_session_patch(patch: Any) -> dict[str, Any]:
     if not isinstance(patch, dict):
         return {}
@@ -318,6 +372,14 @@ def _sanitize_evidence_plan_result(result: PromptSkillConsumeResult) -> tuple[Pr
 
     for key in ("metrics_branch_meta", "logs_branch_meta"):
         value = raw_payload.get(key)
+        if key == "metrics_branch_meta":
+            normalized_metrics_branch_meta, dropped_metrics_branch_meta = _sanitize_metrics_branch_meta(value)
+            dropped.extend(dropped_metrics_branch_meta)
+            if isinstance(normalized_metrics_branch_meta, dict):
+                payload[key] = normalized_metrics_branch_meta
+            elif key in raw_payload and value is not None:
+                dropped.append(key)
+            continue
         if key == "logs_branch_meta":
             normalized_logs_branch_meta, dropped_logs_branch_meta = _sanitize_logs_branch_meta(value)
             dropped.extend(dropped_logs_branch_meta)
@@ -364,7 +426,38 @@ def _apply_evidence_plan_result(
         setattr(state, "evidence_candidates", list(evidence_candidates))
     metrics_branch_meta = payload.get("metrics_branch_meta")
     if isinstance(metrics_branch_meta, dict):
-        setattr(state, "metrics_branch_meta", metrics_branch_meta)
+        current_metrics_branch_meta = getattr(state, "metrics_branch_meta", None)
+        if not isinstance(current_metrics_branch_meta, dict):
+            current_metrics_branch_meta = {}
+        merged_metrics_branch_meta = dict(current_metrics_branch_meta)
+        merged_metrics_branch_meta["mode"] = str(metrics_branch_meta.get("mode") or merged_metrics_branch_meta.get("mode") or "query")
+        merged_metrics_branch_meta["query_type"] = "metrics"
+        request_payload = merged_metrics_branch_meta.get("request_payload")
+        if not isinstance(request_payload, dict):
+            request_payload = {}
+        incoming_request_payload = metrics_branch_meta.get("request_payload")
+        if isinstance(incoming_request_payload, dict):
+            promql = _trim(incoming_request_payload.get("promql"))
+            if promql:
+                request_payload["promql"] = promql
+            if "step_seconds" in incoming_request_payload:
+                try:
+                    step_seconds = int(incoming_request_payload.get("step_seconds"))
+                except (TypeError, ValueError):
+                    step_seconds = 0
+                if step_seconds > 0:
+                    request_payload["step_seconds"] = step_seconds
+        merged_metrics_branch_meta["request_payload"] = request_payload
+        query_request = merged_metrics_branch_meta.get("query_request")
+        if not isinstance(query_request, dict):
+            query_request = {}
+        incoming_query_request = metrics_branch_meta.get("query_request")
+        if isinstance(incoming_query_request, dict):
+            query_text = _trim(incoming_query_request.get("queryText") or incoming_query_request.get("query_text"))
+            if query_text:
+                query_request["queryText"] = query_text
+        merged_metrics_branch_meta["query_request"] = query_request
+        setattr(state, "metrics_branch_meta", merged_metrics_branch_meta)
     logs_branch_meta = payload.get("logs_branch_meta")
     if isinstance(logs_branch_meta, dict):
         current_logs_branch_meta = getattr(state, "logs_branch_meta", None)
