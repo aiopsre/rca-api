@@ -11,7 +11,7 @@ from ..skills.capabilities import (
     PromptSkillConsumeResult,
     get_capability_definition,
 )
-from ..skills.script_runner import ScriptExecutorError, ScriptExecutorRunner
+from ..skills.script_runner import ScriptExecutorError, ScriptExecutorResult, ScriptExecutorRunner
 from ..tooling.invoker import TOOLING_META_KEY, ToolInvokeError
 from ..tooling.toolset_config import normalize_tool_name
 from ..tools_rca_api import RCAApiClient
@@ -75,6 +75,27 @@ class SkillToolCallResult:
     tool_request: dict[str, Any]
     tool_result: dict[str, Any]
     latency_ms: int
+
+
+def _script_result_to_prompt_result(result: ScriptExecutorResult) -> PromptSkillConsumeResult:
+    return PromptSkillConsumeResult(
+        payload=dict(result.payload),
+        session_patch=dict(result.session_patch),
+        observations=[item for item in result.observations if isinstance(item, dict)],
+    )
+
+
+def _serialize_tool_results(tool_results: list[SkillToolCallResult]) -> list[dict[str, Any]]:
+    return [
+        {
+            "tool": item.tool_name,
+            "tool_name": item.tool_name,
+            "tool_request": item.tool_request,
+            "tool_result": item.tool_result,
+            "latency_ms": item.latency_ms,
+        }
+        for item in tool_results
+    ]
 
 
 def _trim_text(value: Any, *, max_len: int = 160) -> str:
@@ -1517,6 +1538,27 @@ class OrchestratorRuntime:
         output_contract: dict[str, Any],
         skill_document: str,
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None, str]:
+        if (
+            capability == "evidence.plan"
+            and self._skills_tool_calling_mode in {"evidence_plan_single_hop", "evidence_plan_dual_tool"}
+        ):
+            raw_output, post_apply_context = self._consume_evidence_plan_with_optional_tools(
+                stage=stage,
+                graph_state=graph_state,
+                node_name=node_name,
+                evidence_ids=evidence_ids,
+                selected_candidate=selected_candidate,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                skill_resources=skill_resources,
+                output_contract=output_contract,
+                skill_document=skill_document,
+            )
+            return (
+                raw_output,
+                post_apply_context,
+                "skill.execute" if selected_candidate.executor_mode == "script" else "skill.consume",
+            )
         if selected_candidate.executor_mode == "script":
             return (
                 self._execute_script_skill(
@@ -1525,6 +1567,7 @@ class OrchestratorRuntime:
                     input_payload=input_payload,
                     knowledge_context=knowledge_context,
                     skill_resources=skill_resources,
+                    tool_calling_mode="disabled",
                 ),
                 None,
                 "skill.execute",
@@ -1552,7 +1595,36 @@ class OrchestratorRuntime:
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]],
         skill_resources: list[dict[str, Any]],
+        tool_calling_mode: str,
     ) -> PromptSkillConsumeResult:
+        result = self._run_script_skill_phase(
+            capability=capability,
+            selected_candidate=selected_candidate,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            skill_resources=skill_resources,
+            phase="final",
+            tool_requests=[],
+            tool_results=[],
+            tool_calling_mode=tool_calling_mode,
+        )
+        if result.tool_calls:
+            raise ScriptExecutorError("script executor tool_calls are not supported for this capability")
+        return _script_result_to_prompt_result(result)
+
+    def _run_script_skill_phase(
+        self,
+        *,
+        capability: str,
+        selected_candidate: "SkillCandidate",
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        skill_resources: list[dict[str, Any]],
+        phase: str,
+        tool_requests: list[dict[str, Any]],
+        tool_results: list[dict[str, Any]],
+        tool_calling_mode: str,
+    ) -> ScriptExecutorResult:
         if self._skill_catalog is None:
             raise ScriptExecutorError("skill catalog is not configured")
         catalog_skill = self._skill_catalog.get_skill(selected_candidate.binding_key)
@@ -1567,6 +1639,10 @@ class OrchestratorRuntime:
                 "knowledge_context": knowledge_context,
                 "skill_resources": skill_resources,
                 "allowed_tools": list(selected_candidate.allowed_tools),
+                "phase": phase,
+                "tool_requests": list(tool_requests),
+                "tool_results": list(tool_results),
+                "tool_calling_mode": tool_calling_mode,
             },
             module_suffix=f"{selected_candidate.skill_id}_{selected_candidate.version}_{selected_candidate.binding_key}",
         )
@@ -1586,22 +1662,6 @@ class OrchestratorRuntime:
         output_contract: dict[str, Any],
         skill_document: str,
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
-        if (
-            capability == "evidence.plan"
-            and self._skills_tool_calling_mode in {"evidence_plan_single_hop", "evidence_plan_dual_tool"}
-        ):
-            return self._consume_evidence_plan_with_optional_tools(
-                stage=stage,
-                graph_state=graph_state,
-                node_name=node_name,
-                evidence_ids=evidence_ids,
-                selected_candidate=selected_candidate,
-                input_payload=input_payload,
-                knowledge_context=knowledge_context,
-                skill_resources=skill_resources,
-                output_contract=output_contract,
-                skill_document=skill_document,
-            )
         return (
             self._skill_agent.consume_skill(
                 capability=capability,
@@ -1631,47 +1691,71 @@ class OrchestratorRuntime:
         skill_document: str,
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
         available_tools = self._available_evidence_plan_prompt_tools(selected_candidate)
-        if not available_tools:
-            self._report_observation_best_effort(
-                tool="skill.fallback",
-                node_name=node_name,
-                params={
-                    "capability": "evidence.plan",
-                    "stage": stage,
-                    "selected_binding_key": selected_candidate.binding_key,
-                },
-                response={
-                    "status": "fallback",
-                    "reason": "tool_calling_not_allowed",
-                    "skill_id": selected_candidate.skill_id,
-                    "selected_binding_key": selected_candidate.binding_key,
-                    "allowed_tools": self._effective_prompt_skill_tools(selected_candidate),
-                },
-                evidence_ids=evidence_ids,
-            )
-            return (
-                self._skill_agent.consume_skill(
-                    capability="evidence.plan",
-                    skill_id=selected_candidate.skill_id,
-                    skill_version=selected_candidate.version,
-                    skill_document=skill_document,
-                    input_payload=input_payload,
-                    knowledge_context=knowledge_context,
-                    skill_resources=skill_resources,
-                    output_contract=output_contract,
-                ),
-                None,
-            )
-
         tool_plan_started = time.monotonic()
-        tool_requests = self._plan_evidence_prompt_tool_sequence(
-            selected_candidate=selected_candidate,
-            skill_document=skill_document,
-            input_payload=input_payload,
-            knowledge_context=knowledge_context,
-            skill_resources=skill_resources,
-            available_tools=available_tools,
-        )
+        if selected_candidate.executor_mode == "script":
+            initial_result = self._run_script_skill_phase(
+                capability="evidence.plan",
+                selected_candidate=selected_candidate,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                skill_resources=skill_resources,
+                phase="plan_tools",
+                tool_requests=[],
+                tool_results=[],
+                tool_calling_mode=self._skills_tool_calling_mode,
+            )
+            if initial_result.tool_calls and initial_result.payload:
+                raise ScriptExecutorError("script executor plan_tools phase must return tool_calls or payload, not both")
+            if initial_result.tool_calls and initial_result.session_patch:
+                raise ScriptExecutorError("script executor plan_tools phase must not return session_patch with tool_calls")
+            try:
+                tool_requests = self._validate_skill_tool_sequence(
+                    raw_plans=initial_result.tool_calls,
+                    allowed_tools=available_tools,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise ScriptExecutorError(f"script executor returned invalid tool_calls: {exc}") from exc
+        else:
+            if not available_tools:
+                self._report_observation_best_effort(
+                    tool="skill.fallback",
+                    node_name=node_name,
+                    params={
+                        "capability": "evidence.plan",
+                        "stage": stage,
+                        "selected_binding_key": selected_candidate.binding_key,
+                    },
+                    response={
+                        "status": "fallback",
+                        "reason": "tool_calling_not_allowed",
+                        "skill_id": selected_candidate.skill_id,
+                        "selected_binding_key": selected_candidate.binding_key,
+                        "allowed_tools": self._effective_prompt_skill_tools(selected_candidate),
+                    },
+                    evidence_ids=evidence_ids,
+                )
+                return (
+                    self._skill_agent.consume_skill(
+                        capability="evidence.plan",
+                        skill_id=selected_candidate.skill_id,
+                        skill_version=selected_candidate.version,
+                        skill_document=skill_document,
+                        input_payload=input_payload,
+                        knowledge_context=knowledge_context,
+                        skill_resources=skill_resources,
+                        output_contract=output_contract,
+                    ),
+                    None,
+                )
+            initial_result = None
+            tool_requests = self._plan_evidence_prompt_tool_sequence(
+                selected_candidate=selected_candidate,
+                skill_document=skill_document,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                skill_resources=skill_resources,
+                available_tools=available_tools,
+            )
         tool_plan_latency_ms = max(1, int((time.monotonic() - tool_plan_started) * 1000))
         self._report_observation_best_effort(
             tool="skill.tool_plan",
@@ -1699,6 +1783,10 @@ class OrchestratorRuntime:
             evidence_ids=evidence_ids,
         )
         if not tool_requests:
+            if selected_candidate.executor_mode == "script":
+                if initial_result is None:
+                    raise ScriptExecutorError("script executor initial result missing")
+                return _script_result_to_prompt_result(initial_result), None
             return (
                 self._skill_agent.consume_skill(
                     capability="evidence.plan",
@@ -1723,29 +1811,31 @@ class OrchestratorRuntime:
                     tool_request=tool_request,
                 )
             )
-        raw_output = self._consume_prompt_skill_after_tools(
-            capability="evidence.plan",
-            selected_candidate=selected_candidate,
-            skill_document=skill_document,
-            input_payload=input_payload,
-            knowledge_context=knowledge_context,
-            skill_resources=skill_resources,
-            tool_results=tool_results,
-            output_contract=output_contract,
-        )
+        if selected_candidate.executor_mode == "script":
+            raw_output = self._consume_script_skill_after_tools(
+                selected_candidate=selected_candidate,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                skill_resources=skill_resources,
+                tool_requests=tool_requests,
+                tool_results=tool_results,
+            )
+        else:
+            raw_output = self._consume_prompt_skill_after_tools(
+                capability="evidence.plan",
+                selected_candidate=selected_candidate,
+                skill_document=skill_document,
+                input_payload=input_payload,
+                knowledge_context=knowledge_context,
+                skill_resources=skill_resources,
+                tool_results=tool_results,
+                output_contract=output_contract,
+            )
         return (
             raw_output,
             {
                 "kind": "evidence_plan_tool_warm",
-                "tool_results": [
-                    {
-                        "tool_name": item.tool_name,
-                        "tool_request": item.tool_request,
-                        "tool_result": item.tool_result,
-                        "latency_ms": item.latency_ms,
-                    }
-                    for item in tool_results
-                ],
+                "tool_results": _serialize_tool_results(tool_results),
             },
         )
 
@@ -1802,14 +1892,23 @@ class OrchestratorRuntime:
             max_tool_calls=max_tool_calls,
         )
         raw_plans = getattr(tool_sequence, "tool_calls", [])
+        return self._validate_skill_tool_sequence(raw_plans=raw_plans, allowed_tools=available_tools)
+
+    def _validate_skill_tool_sequence(
+        self,
+        *,
+        raw_plans: Any,
+        allowed_tools: list[str],
+    ) -> list[dict[str, Any]]:
         if not isinstance(raw_plans, list):
             raw_plans = []
+        max_tool_calls = 1 if self._skills_tool_calling_mode == "evidence_plan_single_hop" else 2
         if len(raw_plans) > max_tool_calls:
             raise RuntimeError("prompt skill tool sequence exceeds max_tool_calls")
         validated: list[dict[str, Any]] = []
         seen_tools: set[str] = set()
         for raw_plan in raw_plans:
-            tool_request = self._validate_prompt_skill_tool_plan(raw_plan, allowed_tools=available_tools)
+            tool_request = self._validate_prompt_skill_tool_plan(raw_plan, allowed_tools=allowed_tools)
             tool_name = str(tool_request.get("tool") or "")
             if tool_name in seen_tools:
                 raise RuntimeError(f"prompt skill tool sequence repeats tool: {tool_name}")
@@ -1865,6 +1964,32 @@ class OrchestratorRuntime:
                 output_contract=output_contract,
             )
         raise RuntimeError("agent_missing_consume_after_tools")
+
+    def _consume_script_skill_after_tools(
+        self,
+        *,
+        selected_candidate: "SkillCandidate",
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        skill_resources: list[dict[str, Any]],
+        tool_requests: list[dict[str, Any]],
+        tool_results: list[SkillToolCallResult],
+    ) -> PromptSkillConsumeResult:
+        serialized_tool_results = _serialize_tool_results(tool_results)
+        final_result = self._run_script_skill_phase(
+            capability="evidence.plan",
+            selected_candidate=selected_candidate,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            skill_resources=skill_resources,
+            phase="after_tools",
+            tool_requests=[dict(item) for item in tool_requests],
+            tool_results=serialized_tool_results,
+            tool_calling_mode=self._skills_tool_calling_mode,
+        )
+        if final_result.tool_calls:
+            raise ScriptExecutorError("script executor after_tools phase must not return tool_calls")
+        return _script_result_to_prompt_result(final_result)
 
     def _apply_prompt_skill_post_merge(
         self,

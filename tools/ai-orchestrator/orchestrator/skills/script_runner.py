@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 import importlib.util
 from pathlib import Path
 import sys
 from typing import Any, Iterator
-
-from .capabilities import PromptSkillConsumeResult
 
 
 _ENTRYPOINT_RELATIVE_PATH = Path("scripts/executor.py")
@@ -19,6 +18,14 @@ def _trim(value: Any) -> str:
 
 class ScriptExecutorError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ScriptExecutorResult:
+    payload: dict[str, Any] = field(default_factory=dict)
+    session_patch: dict[str, Any] = field(default_factory=dict)
+    observations: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @contextmanager
@@ -52,7 +59,7 @@ class ScriptExecutorRunner:
         input_payload: dict[str, Any],
         ctx: dict[str, Any],
         module_suffix: str,
-    ) -> PromptSkillConsumeResult:
+    ) -> ScriptExecutorResult:
         script_path = bundle_root / self._entrypoint_relative_path
         if not script_path.exists() or not script_path.is_file():
             raise ScriptExecutorError(f"script executor missing entrypoint: {self._entrypoint_relative_path.as_posix()}")
@@ -93,10 +100,22 @@ class ScriptExecutorRunner:
         if not isinstance(observations, list):
             raise ScriptExecutorError("script executor observations must be an array")
 
-        return PromptSkillConsumeResult(
+        tool_calls = result.get("tool_calls")
+        if tool_calls is None:
+            tool_calls = []
+        if not isinstance(tool_calls, list):
+            raise ScriptExecutorError("script executor tool_calls must be an array")
+
+        normalized_tool_calls: list[dict[str, Any]] = []
+        for item in tool_calls:
+            if isinstance(item, dict):
+                normalized_tool_calls.append(dict(item))
+
+        return ScriptExecutorResult(
             payload=payload,
             session_patch=session_patch,
             observations=[item for item in observations if isinstance(item, dict)],
+            tool_calls=normalized_tool_calls,
         )
 
     def _sanitize_module_suffix(self, value: str) -> str:

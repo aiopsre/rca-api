@@ -10,6 +10,8 @@ PIPELINE_ID="${PIPELINE_ID:-basic_rca}"
 SKILLSET_NAME="${SKILLSET_NAME:-prompt_first_evidence_plan}"
 EXECUTOR_SKILL_ID="${EXECUTOR_SKILL_ID:-claude.evidence.prompt_planner}"
 EXECUTOR_SKILL_VERSION="${EXECUTOR_SKILL_VERSION:-1.0.0}"
+EXECUTOR_MODE="${EXECUTOR_MODE:-prompt}"
+EXECUTOR_OBSERVATION_TOOL="${EXECUTOR_OBSERVATION_TOOL:-skill.consume}"
 ELASTIC_SKILL_ID="${ELASTIC_SKILL_ID:-elasticsearch.evidence.plan}"
 ELASTIC_SKILL_VERSION="${ELASTIC_SKILL_VERSION:-1.0.0}"
 PROM_SKILL_ID="${PROM_SKILL_ID:-prometheus.evidence.plan}"
@@ -36,6 +38,8 @@ PROM_BUNDLE_DIR="${PROM_BUNDLE_DIR:-/opt/workspace/study/rca-api/tools/ai-orches
 WORKDIR="${WORKDIR:-$(mktemp -d)}"
 KEEP_WORKDIR="${KEEP_WORKDIR:-0}"
 DEBUG="${DEBUG:-0}"
+SMOKE_LABEL="${SMOKE_LABEL:-prompt-first evidence.plan smoke}"
+REPORT_BASENAME="${REPORT_BASENAME:-prompt_first_evidence_plan_smoke_report.json}"
 
 INCIDENT_ID=""
 JOB_ID=""
@@ -327,6 +331,7 @@ SKILLSET_UPDATE_BODY="$(cat <<JSON
       "version": "${EXECUTOR_SKILL_VERSION}",
       "capability": "${SKILL_CAPABILITY}",
       "role": "executor",
+      "executor_mode": "${EXECUTOR_MODE}",
       "allowed_tools": ["query_logs","query_metrics"],
       "priority": 100,
       "enabled": true
@@ -357,11 +362,16 @@ assert_json_expr "ResolveSkillsets" "${SKILLSET_RESOLVE_RESPONSE}" '
     (.data.skillsets // .skillsets // [])[]?
     | select((.skillsetID // .skillset_id // "") == "'"${SKILLSET_NAME}"'")
     | (.skills // [])[]
-    | {skill_id:(.skillID // .skill_id // ""), capability:(.capability // ""), role:(.role // "executor")}
+    | {
+        skill_id:(.skillID // .skill_id // ""),
+        capability:(.capability // ""),
+        role:(.role // "executor"),
+        executor_mode:(.executorMode // .executor_mode // "prompt")
+      }
   ]
   | any(.[]; .skill_id == "'"${ELASTIC_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "knowledge")
   and any(.[]; .skill_id == "'"${PROM_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "knowledge")
-  and any(.[]; .skill_id == "'"${EXECUTOR_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "executor")
+  and any(.[]; .skill_id == "'"${EXECUTOR_SKILL_ID}"'" and .capability == "'"${SKILL_CAPABILITY}"'" and .role == "executor" and .executor_mode == "'"${EXECUTOR_MODE}"'")
 '
 
 start_orchestrator
@@ -412,7 +422,7 @@ assert_json_expr "SkillSelectObservation" "${TOOLCALLS_RESPONSE}" '
 '
 assert_json_expr "SkillConsumeObservation" "${TOOLCALLS_RESPONSE}" '
   any((.data.toolCalls // .toolCalls // [])[]?;
-    (.toolName // .tool_name // "") == "skill.consume"
+    (.toolName // .tool_name // "") == "'"${EXECUTOR_OBSERVATION_TOOL}"'"
   )
 '
 assert_json_expr "KnowledgeResourceSelectObservation" "${TOOLCALLS_RESPONSE}" '
@@ -490,7 +500,7 @@ assert_json_expr "PlanEvidenceSkillApplied" "${TOOLCALLS_RESPONSE}" '
   )
 '
 
-REPORT_PATH="${WORKDIR}/prompt_first_evidence_plan_smoke_report.json"
+REPORT_PATH="${WORKDIR}/${REPORT_BASENAME}"
 cat > "${REPORT_PATH}" <<JSON
 {
   "generated_at": "$("${PYTHON_BIN}" - <<'PY'
@@ -508,11 +518,11 @@ PY
   "incident_id": $(json_escape "${INCIDENT_ID}"),
   "job_id": $(json_escape "${JOB_ID}"),
   "worker_log": $(json_escape "${ORCH_LOG}"),
-  "report": "prompt-first evidence.plan smoke passed with selective skill resource loading"
+  "report": "${SMOKE_LABEL} passed with selective skill resource loading"
 }
 JSON
 
-echo "PASS prompt-first evidence.plan smoke"
+echo "PASS ${SMOKE_LABEL}"
 echo "incident_id=${INCIDENT_ID}"
 echo "job_id=${JOB_ID}"
 echo "worker_log=${ORCH_LOG}"

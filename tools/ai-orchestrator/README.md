@@ -57,6 +57,9 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
   - script executor（`executor_mode=script`）
 - `diagnosis.enrich` 已支持 executor resources 的渐进式披露。
 - `evidence.plan` 已支持“多个 knowledge skills + 单 executor skill”的运行模型。
+- `evidence.plan` 的 executor 现在同时支持：
+  - prompt executor
+  - script executor（`executor_mode=script`）
 - `evidence.plan` 还支持 Knowledge / Executor 两侧的资源渐进式披露：
   - worker 扫描 `references/`、`templates/`、`examples/`
   - Agent 先看摘要，再点名需要的资源 id
@@ -64,12 +67,14 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - checked-in prompt-only Skill 样板位于：
   - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
   - `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/SKILL.md`
-  - `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
+- `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
   - `evidence.plan` 的 executor 样板
+- `tools/ai-orchestrator/skill-bundles/evidence-script-plan/SKILL.md`
+  - `evidence.plan` 的 script executor 样板
 - `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`
   - Elasticsearch / ECS 风格的 `evidence.plan` knowledge 样板
 - `tools/ai-orchestrator/skill-bundles/prometheus-evidence-plan/SKILL.md`
   - Prometheus / metrics planning 的 `evidence.plan` knowledge 样板
 - `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/scripts/executor.py`
   - `diagnosis.enrich` 的 script executor 固定 entrypoint 样板
-- 受控 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 运行时支持最多一次 `mcp.query_metrics` + 最多一次 `mcp.query_logs`，并让 `query_metrics` / `query_logs` 节点复用预热结果，但默认保持关闭
+- 受控 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 的 prompt executor 和 script executor 都支持最多一次 `mcp.query_metrics` + 最多一次 `mcp.query_logs`，并让 `query_metrics` / `query_logs` 节点复用预热结果，但默认保持关闭

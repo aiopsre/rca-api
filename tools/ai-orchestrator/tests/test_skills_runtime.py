@@ -496,6 +496,12 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertEqual(frontmatter["name"], "RCA Diagnosis Script Enricher")
         self.assertIn("script executor", frontmatter["description"].lower())
 
+    def test_checked_in_evidence_script_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "evidence-script-plan" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "RCA Evidence Script Planner")
+        self.assertIn("script executor", frontmatter["description"].lower())
+
     def test_capability_registry_exposes_diagnosis_and_evidence_plan(self) -> None:
         diagnosis = get_capability_definition("diagnosis.enrich")
         evidence = get_capability_definition("evidence.plan")
@@ -894,6 +900,84 @@ class SkillCatalogTest(unittest.TestCase):
                 skill_dir,
                 name="Broken Script Enricher",
                 description="Analyze incident evidence",
+            )
+            bundle_path = base / "broken-script-enricher.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.diagnosis.script_enricher",
+                    version="1.0.0",
+                    name="Broken Script Enricher",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    executor_mode="script",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.diagnosis.script_enricher\x001.0.0\x00diagnosis.enrich",
+                        reason="use script executor",
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_SelectingAgent(),
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=GraphState(job_id="job-1", incident_id="inc-1"),
+                input_payload={"incident_id": "inc-1", "diagnosis_json": {}, "evidence_ids": []},
+            )
+            self.assertIsNone(result)
+
+    def test_prompt_first_runtime_rejects_tool_calls_from_diagnosis_script_executor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Broken Script Enricher",
+                description="Analyze incident evidence",
+                script_body=(
+                    "def run(input_payload, ctx):\n"
+                    "    return {\n"
+                    "        'tool_calls': [\n"
+                    "            {\n"
+                    "                'tool': 'mcp.query_logs',\n"
+                    "                'input': {\n"
+                    "                    'datasource_id': 'ds-logs',\n"
+                    "                    'query': 'message:error',\n"
+                    "                    'start_ts': 100,\n"
+                    "                    'end_ts': 200,\n"
+                    "                    'limit': 10,\n"
+                    "                },\n"
+                    "            }\n"
+                    "        ]\n"
+                    "    }\n"
+                ),
             )
             bundle_path = base / "broken-script-enricher.zip"
             bundle_digest = _zip_dir(skill_dir, bundle_path)
@@ -2353,6 +2437,499 @@ class SkillCatalogTest(unittest.TestCase):
             result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
             self.assertIsInstance(result, dict)
             self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "claude.evidence.plan")
+            self.assertIsNone(state.logs_query_status)
+
+    def test_script_executor_evidence_plan_dual_tool_warms_logs_and_metrics_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            elastic_dir = base / "elastic"
+            prom_dir = base / "prom"
+            executor_dir = base / "executor"
+            elastic_dir.mkdir(parents=True)
+            prom_dir.mkdir(parents=True)
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(
+                elastic_dir,
+                name="Elastic Knowledge",
+                description="Elastic guidance",
+                resources=[("references/ecs-fields.md", "# ECS Fields\n\nUse service.name.\n")],
+            )
+            _write_skill_dir(
+                prom_dir,
+                name="Prometheus Knowledge",
+                description="Prometheus guidance",
+                resources=[("references/metric-families.md", "# Metric Families\n\nUse error rate.\n")],
+            )
+            _write_skill_dir(
+                executor_dir,
+                name="Evidence Script Planner",
+                description="Script executor planner",
+                resources=[("templates/evidence-script-output-rules.md", "# Output Rules\n\nKeep payload conservative.\n")],
+                script_body=(
+                    "def _resource_ids(ctx):\n"
+                    "    out = []\n"
+                    "    for item in ctx.get('skill_resources', []):\n"
+                    "        if isinstance(item, dict) and item.get('resource_id'):\n"
+                    "            out.append(item['resource_id'])\n"
+                    "    return out\n"
+                    "def _knowledge_skill_ids(ctx):\n"
+                    "    out = []\n"
+                    "    for item in ctx.get('knowledge_context', []):\n"
+                    "        if isinstance(item, dict) and item.get('skill_id'):\n"
+                    "            out.append(item['skill_id'])\n"
+                    "    return out\n"
+                    "def run(input_payload, ctx):\n"
+                    "    if ctx.get('phase') == 'plan_tools':\n"
+                    "        return {\n"
+                    "            'tool_calls': [\n"
+                    "                {\n"
+                    "                    'tool': 'mcp.query_metrics',\n"
+                    "                    'input': {\n"
+                    "                        'datasource_id': 'ds-metrics',\n"
+                    "                        'promql': 'sum(rate(http_requests_total{service=\"svc-a\",status=~\"5..\"}[5m]))',\n"
+                    "                        'start_ts': 100,\n"
+                    "                        'end_ts': 200,\n"
+                    "                        'step_seconds': 60,\n"
+                    "                    },\n"
+                    "                },\n"
+                    "                {\n"
+                    "                    'tool': 'mcp.query_logs',\n"
+                    "                    'input': {\n"
+                    "                        'datasource_id': 'ds-logs',\n"
+                    "                        'query': 'service.name:\"svc-a\" AND log.level:(error OR fatal)',\n"
+                    "                        'start_ts': 100,\n"
+                    "                        'end_ts': 200,\n"
+                    "                        'limit': 200,\n"
+                    "                    },\n"
+                    "                },\n"
+                    "            ],\n"
+                    "            'observations': [{'kind': 'note', 'message': 'planning tools'}],\n"
+                    "        }\n"
+                    "    tool_results = ctx.get('tool_results', [])\n"
+                    "    return {\n"
+                    "        'payload': {\n"
+                    "            'evidence_plan_patch': {\n"
+                    "                'metadata': {\n"
+                    "                    'prompt_skill': 'claude.evidence.script_planner',\n"
+                    "                    'knowledge_skills': _knowledge_skill_ids(ctx),\n"
+                    "                    'resource_ids': _resource_ids(ctx),\n"
+                    "                    'tool_result_count': len(tool_results),\n"
+                    "                }\n"
+                    "            },\n"
+                    "            'metrics_branch_meta': {\n"
+                    "                'mode': 'query',\n"
+                    "                'query_type': 'metrics',\n"
+                    "                'request_payload': {\n"
+                    "                    'promql': 'sum(rate(http_requests_total{service=\"svc-a\",status=~\"5..\"}[5m]))',\n"
+                    "                    'step_seconds': 60,\n"
+                    "                },\n"
+                    "                'query_request': {\n"
+                    "                    'queryText': 'sum(rate(http_requests_total{service=\"svc-a\",status=~\"5..\"}[5m]))',\n"
+                    "                },\n"
+                    "            },\n"
+                    "            'logs_branch_meta': {\n"
+                    "                'mode': 'query',\n"
+                    "                'query_type': 'logs',\n"
+                    "                'request_payload': {\n"
+                    "                    'query': 'service.name:\"svc-a\" AND log.level:(error OR fatal)',\n"
+                    "                },\n"
+                    "                'query_request': {\n"
+                    "                    'queryText': 'service.name:\"svc-a\" AND log.level:(error OR fatal)',\n"
+                    "                },\n"
+                    "            },\n"
+                    "        },\n"
+                    "        'observations': [{'kind': 'note', 'message': 'after tools'}],\n"
+                    "    }\n"
+                ),
+            )
+            elastic_bundle = base / "elastic.zip"
+            prom_bundle = base / "prom.zip"
+            executor_bundle = base / "executor.zip"
+            elastic_digest = _zip_dir(elastic_dir, elastic_bundle)
+            prom_digest = _zip_dir(prom_dir, prom_bundle)
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "elasticsearch.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": elastic_bundle.resolve().as_uri(),
+                                "bundleDigest": elastic_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Elastic Knowledge","description":"Elastic guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "allowedTools": [],
+                                "priority": 150,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "prometheus.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": prom_bundle.resolve().as_uri(),
+                                "bundleDigest": prom_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prometheus Knowledge","description":"Prometheus guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "allowedTools": [],
+                                "priority": 140,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "claude.evidence.script_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Evidence Script Planner","description":"Script executor planner","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "executorMode": "script",
+                                "allowedTools": ["query_logs", "query_metrics"],
+                                "priority": 100,
+                                "enabled": True,
+                            },
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_knowledge_skills(self, **_: object):
+                    class _Selection:
+                        selected_binding_keys = [
+                            "elasticsearch.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                            "prometheus.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                        ]
+                        reason = "need logs and metrics knowledge"
+
+                    return _Selection()
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.script_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="use script planner",
+                    )
+
+                def select_skill_resources(self, **kwargs: object):
+                    skill_id = str(kwargs.get("skill_id") or "")
+
+                    class _Selection:
+                        reason = "load selected resource"
+                        selected_resource_ids: list[str]
+
+                    selection = _Selection()
+                    if skill_id == "elasticsearch.evidence.plan":
+                        selection.selected_resource_ids = ["references/ecs-fields.md"]
+                    elif skill_id == "prometheus.evidence.plan":
+                        selection.selected_resource_ids = ["references/metric-families.md"]
+                    else:
+                        selection.selected_resource_ids = ["templates/evidence-script-output-rules.md"]
+                    return selection
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_dual_tool",
+                skill_agent=_SelectingAgent(),
+            )
+
+            toolcalls: list[dict[str, object]] = []
+            runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
+            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 96,
+                "isTruncated": False,
+            }
+            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 88,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 2}, "candidates": [{"type": "metrics"}, {"type": "logs"}]},
+                evidence_candidates=[{"type": "metrics"}, {"type": "logs"}],
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "ds-metrics",
+                        "promql": "sum(up)",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {"datasourceID": "ds-metrics", "queryText": "sum(up)", "queryJSON": "{}"},
+                },
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": "message:error",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {"datasourceID": "ds-logs", "queryText": "message:error", "queryJSON": "{}"},
+                },
+                evidence_mode="query",
+                incident_context={"service": "svc-a", "namespace": "default"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.evidence.script_planner")
+            self.assertEqual(
+                result["knowledge_skill_ids"],
+                ["elasticsearch.evidence.plan", "prometheus.evidence.plan"],
+            )
+            self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "claude.evidence.script_planner")
+            self.assertEqual(state.evidence_plan["metadata"]["resource_ids"], ["templates/evidence-script-output-rules.md"])
+            self.assertEqual(state.evidence_plan["metadata"]["tool_result_count"], 2)
+            self.assertEqual(state.metrics_query_status, "ok")
+            self.assertEqual(state.logs_query_status, "ok")
+            self.assertTrue(state.metrics_branch_meta["tool_result_reusable"])
+            self.assertTrue(state.logs_branch_meta["tool_result_reusable"])
+            self.assertEqual([item["tool_name"] for item in toolcalls], ["mcp.query_metrics", "mcp.query_logs"])
+
+    def test_script_executor_evidence_plan_after_tools_rejects_tool_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            executor_dir = base / "executor"
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(
+                executor_dir,
+                name="Evidence Script Planner",
+                description="Script executor planner",
+                script_body=(
+                    "def run(input_payload, ctx):\n"
+                    "    if ctx.get('phase') == 'plan_tools':\n"
+                    "        return {\n"
+                    "            'tool_calls': [\n"
+                    "                {\n"
+                    "                    'tool': 'mcp.query_metrics',\n"
+                    "                    'input': {\n"
+                    "                        'datasource_id': 'ds-metrics',\n"
+                    "                        'promql': 'sum(up)',\n"
+                    "                        'start_ts': 100,\n"
+                    "                        'end_ts': 200,\n"
+                    "                        'step_seconds': 30,\n"
+                    "                    },\n"
+                    "                }\n"
+                    "            ]\n"
+                    "        }\n"
+                    "    return {\n"
+                    "        'tool_calls': [\n"
+                    "            {\n"
+                    "                'tool': 'mcp.query_logs',\n"
+                    "                'input': {\n"
+                    "                    'datasource_id': 'ds-logs',\n"
+                    "                    'query': 'message:error',\n"
+                    "                    'start_ts': 100,\n"
+                    "                    'end_ts': 200,\n"
+                    "                    'limit': 10,\n"
+                    "                },\n"
+                    "            }\n"
+                    "        ]\n"
+                    "    }\n"
+                ),
+            )
+            executor_bundle = base / "executor.zip"
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "claude.evidence.script_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Evidence Script Planner","description":"Script executor planner","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "executorMode": "script",
+                                "allowedTools": ["query_metrics", "query_logs"],
+                                "priority": 100,
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.script_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="use script planner",
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_dual_tool",
+                skill_agent=_SelectingAgent(),
+            )
+
+            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 96,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 2}},
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "ds-metrics",
+                        "promql": "sum(up)",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {"datasourceID": "ds-metrics", "queryText": "sum(up)", "queryJSON": "{}"},
+                },
+                evidence_mode="query",
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsNone(result)
+            self.assertIsNone(state.metrics_query_status)
+            self.assertIsNone(state.logs_query_status)
+
+    def test_script_executor_evidence_plan_without_tool_mode_returns_final_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            executor_dir = base / "executor"
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(
+                executor_dir,
+                name="Evidence Script Planner",
+                description="Script executor planner",
+                script_body=(
+                    "def run(input_payload, ctx):\n"
+                    "    return {\n"
+                    "        'payload': {\n"
+                    "            'evidence_plan_patch': {\n"
+                    "                'metadata': {\n"
+                    "                    'prompt_skill': 'claude.evidence.script_planner',\n"
+                    "                    'executor_mode': 'script',\n"
+                    "                }\n"
+                    "            }\n"
+                    "        }\n"
+                    "    }\n"
+                ),
+            )
+            executor_bundle = base / "executor.zip"
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "claude.evidence.script_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Evidence Script Planner","description":"Script executor planner","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "executorMode": "script",
+                                "allowedTools": ["query_metrics", "query_logs"],
+                                "priority": 100,
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.script_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="use script planner",
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="disabled",
+                skill_agent=_SelectingAgent(),
+            )
+
+            state = GraphState(job_id="job-1", incident_id="inc-1", evidence_plan={"budget": {"max_calls": 1}}, evidence_mode="query")
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.evidence.script_planner")
+            self.assertEqual(state.evidence_plan["metadata"]["executor_mode"], "script")
+            self.assertIsNone(state.metrics_query_status)
             self.assertIsNone(state.logs_query_status)
 
     def test_query_logs_node_reuses_prewarmed_skill_result(self) -> None:
