@@ -35,6 +35,15 @@ Help the orchestrator choose better evidence collection priorities by:
 - Knowledge skills may be supplied as additional context; treat them as supporting guidance, not as independent outputs.
 - Keep all output within the `evidence.plan` contract.
 
+## Resource usage
+
+- Do not load every resource automatically.
+- Inspect `available_resources` first.
+- Only request bundle-relative resource ids that materially help the current planner execution.
+- Executor resources are optional supporting material, not a second source of truth.
+- Typical executor resource ids include:
+  - `templates/evidence-plan-output-rules.md`
+
 ## Allowed output
 
 Return strict JSON only.

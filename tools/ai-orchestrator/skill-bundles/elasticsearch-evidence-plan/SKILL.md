@@ -31,6 +31,15 @@ You are responsible for:
 - Do not produce the final `evidence.plan` payload yourself.
 - Act only as supporting knowledge for a separate executor skill.
 
+## Resource usage
+
+- Do not ask for every resource by default.
+- Inspect `available_resources` first.
+- Only request resource ids that are clearly useful for the current task.
+- Return resource ids exactly as bundle-relative paths, for example:
+  - `references/ecs-fields.md`
+  - `examples/log-querytext-examples.md`
+
 ## ECS-oriented guidance
 
 Prefer these common ECS-style fields when they are supported by the current environment:

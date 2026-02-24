@@ -28,15 +28,18 @@ def _write_skill_dir(
     name: str,
     description: str,
     compatibility: str = "",
+    resources: list[tuple[str, str]] | None = None,
 ) -> None:
     compatibility_line = f"compatibility: {compatibility}\n" if compatibility else ""
     (root_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: {description}\n{compatibility_line}---\n\n# test skill\n",
         encoding="utf-8",
     )
-    resource_path = root_dir / "templates" / "guide.txt"
-    resource_path.parent.mkdir(parents=True, exist_ok=True)
-    resource_path.write_text("guide\n", encoding="utf-8")
+    resource_items = resources or [("templates/guide.txt", "guide\n")]
+    for relative_path, content in resource_items:
+        resource_path = root_dir / relative_path
+        resource_path.parent.mkdir(parents=True, exist_ok=True)
+        resource_path.write_text(content, encoding="utf-8")
 
 
 def _zip_dir(root_dir: Path, zip_path: Path) -> str:
@@ -276,6 +279,95 @@ class SkillCatalogTest(unittest.TestCase):
             )
             candidates = catalog.candidates_for_capability("diagnosis.enrich")
             self.assertEqual([item.skill_id for item in candidates], ["skill.two", "skill.one"])
+
+    def test_skill_catalog_lists_and_loads_selected_resources_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Claude Analysis",
+                description="Analyze incident evidence",
+                resources=[
+                    ("references/ecs-fields.md", "# ECS Fields\n\nUse service.name and namespace fields.\n"),
+                    ("examples/query.txt", 'service.name:"checkout"\n'),
+                    ("templates/output.md", "# Output Rules\n\nKeep payload minimal.\n"),
+                ],
+            )
+            bundle_path = base / "claude.analysis.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.analysis",
+                    version="1.0.0",
+                    name="Claude Analysis",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            candidate = catalog.candidates_for_capability("diagnosis.enrich")[0]
+            resources = catalog.list_skill_resources(candidate.binding_key)
+            self.assertEqual(
+                [item.resource_id for item in resources],
+                [
+                    "examples/query.txt",
+                    "references/ecs-fields.md",
+                    "templates/output.md",
+                ],
+            )
+            self.assertEqual(resources[1].resource_kind, "reference")
+            self.assertEqual(resources[1].title, "ECS Fields")
+            self.assertIn("service.name", resources[1].preview)
+
+            loaded = catalog.load_skill_resources(
+                candidate.binding_key,
+                ["references/ecs-fields.md", "templates/output.md"],
+            )
+            self.assertEqual([item.resource_id for item in loaded], ["references/ecs-fields.md", "templates/output.md"])
+            self.assertEqual(loaded[0].to_agent_payload()["resource_kind"], "reference")
+            self.assertIn("service.name", loaded[0].content)
+            self.assertIn("Keep payload minimal", loaded[1].content)
+
+    def test_skill_catalog_ignores_unsupported_and_oversized_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Claude Analysis",
+                description="Analyze incident evidence",
+                resources=[
+                    ("references/valid.md", "# Valid\n\nShort preview.\n"),
+                    ("references/binary.bin", "not-supported\n"),
+                    ("examples/too-large.txt", "a" * (33 * 1024)),
+                ],
+            )
+            bundle_path = base / "claude.analysis.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.analysis",
+                    version="1.0.0",
+                    name="Claude Analysis",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            candidate = catalog.candidates_for_capability("diagnosis.enrich")[0]
+            resources = catalog.list_skill_resources(candidate.binding_key)
+            self.assertEqual([item.resource_id for item in resources], ["references/valid.md"])
 
     def test_candidates_for_capability_split_by_role(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -947,6 +1039,296 @@ class SkillCatalogTest(unittest.TestCase):
                 state.evidence_plan["metadata"]["knowledge_skills"],
                 ["elasticsearch.evidence.plan", "prometheus.evidence.plan"],
             )
+
+    def test_prompt_first_runtime_loads_selected_knowledge_and_executor_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            elastic_dir = base / "elastic"
+            metrics_dir = base / "metrics"
+            executor_dir = base / "executor"
+            elastic_dir.mkdir(parents=True)
+            metrics_dir.mkdir(parents=True)
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(
+                elastic_dir,
+                name="Elastic Knowledge",
+                description="Elastic logs guidance",
+                resources=[
+                    ("references/ecs-fields.md", "# ECS Fields\n\nPrefer service.name and namespace fields.\n"),
+                    ("examples/log-querytext-examples.md", "# Logs Query Examples\n\nservice.name:\"checkout\"\n"),
+                ],
+            )
+            _write_skill_dir(
+                metrics_dir,
+                name="Prometheus Knowledge",
+                description="Prometheus metrics guidance",
+                resources=[
+                    ("references/metric-families.md", "# Metric Families\n\nUse request rate and error rate.\n"),
+                    ("examples/promql-scope-examples.md", "# PromQL Scope Examples\n\nsum(rate(http_requests_total[5m]))\n"),
+                ],
+            )
+            _write_skill_dir(
+                executor_dir,
+                name="Prompt Planner",
+                description="Planner executor",
+                resources=[
+                    ("templates/evidence-plan-output-rules.md", "# Output Rules\n\nKeep payload conservative.\n"),
+                ],
+            )
+            elastic_bundle = base / "elastic.zip"
+            metrics_bundle = base / "metrics.zip"
+            executor_bundle = base / "executor.zip"
+            elastic_digest = _zip_dir(elastic_dir, elastic_bundle)
+            metrics_digest = _zip_dir(metrics_dir, metrics_bundle)
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "elasticsearch.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": elastic_bundle.resolve().as_uri(),
+                                "bundleDigest": elastic_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Elastic Knowledge","description":"Elastic logs guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "priority": 150,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "prometheus.evidence.plan",
+                                "version": "1.0.0",
+                                "artifactURL": metrics_bundle.resolve().as_uri(),
+                                "bundleDigest": metrics_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prometheus Knowledge","description":"Prometheus metrics guidance","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "knowledge",
+                                "priority": 140,
+                                "enabled": True,
+                            },
+                            {
+                                "skillID": "claude.evidence.prompt_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prompt Planner","description":"Planner executor","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "priority": 100,
+                                "enabled": True,
+                            },
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _ResourceAwareAgent:
+                configured = True
+
+                def select_knowledge_skills(self, **_: object):
+                    class _Selection:
+                        selected_binding_keys = [
+                            "elasticsearch.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                            "prometheus.evidence.plan\x001.0.0\x00evidence.plan\x00knowledge",
+                        ]
+                        reason = "use both knowledge skills"
+
+                    return _Selection()
+
+                def select_skill_resources(self, **kwargs: object):
+                    skill_id = str(kwargs.get("skill_id") or "")
+
+                    class _Selection:
+                        reason = "load only needed resources"
+                        selected_resource_ids: list[str]
+
+                    selection = _Selection()
+                    if skill_id == "elasticsearch.evidence.plan":
+                        selection.selected_resource_ids = ["references/ecs-fields.md"]
+                    elif skill_id == "prometheus.evidence.plan":
+                        selection.selected_resource_ids = ["examples/promql-scope-examples.md"]
+                    else:
+                        selection.selected_resource_ids = ["templates/evidence-plan-output-rules.md"]
+                    return selection
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.prompt_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="single planner",
+                    )
+
+                def consume_skill(self, **kwargs: object) -> PromptSkillConsumeResult:
+                    knowledge_context = kwargs.get("knowledge_context")
+                    skill_resources = kwargs.get("skill_resources")
+                    assert isinstance(knowledge_context, list)
+                    assert isinstance(skill_resources, list)
+                    assert len(knowledge_context) == 2
+                    assert len(skill_resources) == 1
+                    resource_index = {
+                        str(item.get("skill_id")): item.get("resources")
+                        for item in knowledge_context
+                        if isinstance(item, dict)
+                    }
+                    assert isinstance(resource_index.get("elasticsearch.evidence.plan"), list)
+                    assert isinstance(resource_index.get("prometheus.evidence.plan"), list)
+                    assert resource_index["elasticsearch.evidence.plan"][0]["resource_id"] == "references/ecs-fields.md"
+                    assert resource_index["prometheus.evidence.plan"][0]["resource_id"] == "examples/promql-scope-examples.md"
+                    assert skill_resources[0]["resource_id"] == "templates/evidence-plan-output-rules.md"
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {
+                                "metadata": {
+                                    "prompt_skill": "claude.evidence.prompt_planner",
+                                    "resource_mode": "selected",
+                                }
+                            }
+                        }
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_ResourceAwareAgent(),
+            )
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}},
+                evidence_mode="query",
+                incident_context={"service": "svc-a", "namespace": "default"},
+                input_hints={},
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": "message:error",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {"datasourceID": "ds-logs", "queryText": "message:error"},
+                },
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsInstance(result, dict)
+            self.assertEqual(state.evidence_plan["metadata"]["resource_mode"], "selected")
+
+    def test_prompt_first_runtime_filters_invalid_and_overflow_skill_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            executor_dir = base / "executor"
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(
+                executor_dir,
+                name="Prompt Planner",
+                description="Planner executor",
+                resources=[
+                    ("templates/one.md", "# One\n\nfirst\n"),
+                    ("templates/two.md", "# Two\n\nsecond\n"),
+                    ("templates/three.md", "# Three\n\nthird\n"),
+                    ("templates/four.md", "# Four\n\nfourth\n"),
+                ],
+            )
+            executor_bundle = base / "executor.zip"
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "claude.evidence.prompt_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Prompt Planner","description":"Planner executor","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "priority": 100,
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _ResourceFilterAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.prompt_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="single executor",
+                    )
+
+                def select_skill_resources(self, **_: object):
+                    class _Selection:
+                        reason = "test filtering"
+                        selected_resource_ids = [
+                            "templates/one.md",
+                            "missing.md",
+                            "templates/two.md",
+                            "templates/three.md",
+                            "templates/four.md",
+                        ]
+
+                    return _Selection()
+
+                def consume_skill(self, **kwargs: object) -> PromptSkillConsumeResult:
+                    skill_resources = kwargs.get("skill_resources")
+                    assert isinstance(skill_resources, list)
+                    assert [item.get("resource_id") for item in skill_resources] == [
+                        "templates/one.md",
+                        "templates/two.md",
+                        "templates/three.md",
+                    ]
+                    return PromptSkillConsumeResult(
+                        payload={"evidence_plan_patch": {"metadata": {"resource_filtering": "ok"}}}
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_ResourceFilterAgent(),
+            )
+
+            state = GraphState(job_id="job-1", incident_id="inc-1", evidence_plan={"budget": {"max_calls": 1}}, evidence_mode="query")
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+            self.assertIsInstance(result, dict)
+            self.assertEqual(state.evidence_plan["metadata"]["resource_filtering"], "ok")
 
     def test_prompt_first_evidence_plan_single_hop_tool_call_warms_logs_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -27,6 +27,15 @@ Provide concise planning knowledge about:
 - Do not invent datasource identifiers, credentials, or platform config.
 - Act only as supporting knowledge for a separate executor skill.
 
+## Resource usage
+
+- Do not request every resource automatically.
+- Inspect `available_resources` first.
+- Only request resource ids that materially help the current planning task.
+- Return resource ids exactly as bundle-relative paths, for example:
+  - `references/metric-families.md`
+  - `examples/promql-scope-examples.md`
+
 ## Guidance
 
 - If `incident_context.service` is known, bias metrics planning toward service-scoped queries first.

@@ -74,6 +74,20 @@ class KnowledgeSelectionResult:
         self.reason = reason
 
 
+class SkillResourceSelectionResult:
+    def __init__(self, *, selected_resource_ids: list[str] | None = None, reason: str = "") -> None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in selected_resource_ids or []:
+            resource_id = _trim(item)
+            if not resource_id or resource_id in seen:
+                continue
+            seen.add(resource_id)
+            normalized.append(resource_id)
+        self.selected_resource_ids = normalized
+        self.reason = reason
+
+
 class ExecutorSelectionResult(SkillSelectionResult):
     pass
 
@@ -223,6 +237,7 @@ class PromptSkillAgent:
         skill_document: str,
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]] | None = None,
+        skill_resources: list[dict[str, Any]] | None = None,
         output_contract: dict[str, Any],
     ) -> PromptSkillConsumeResult:
         if not self.configured:
@@ -241,6 +256,7 @@ class PromptSkillAgent:
             "skill_document": skill_document,
             "input": input_payload,
             "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
+            "skill_resources": [item for item in (skill_resources or []) if isinstance(item, dict)],
             "output_contract": output_contract,
         }
         response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
@@ -262,6 +278,7 @@ class PromptSkillAgent:
         skill_document: str,
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]] | None = None,
+        skill_resources: list[dict[str, Any]] | None = None,
         available_tools: list[str],
     ) -> ToolCallPlan:
         sequence = self.plan_tool_calls(
@@ -271,6 +288,7 @@ class PromptSkillAgent:
             skill_document=skill_document,
             input_payload=input_payload,
             knowledge_context=knowledge_context,
+            skill_resources=skill_resources,
             available_tools=available_tools,
             max_tool_calls=1,
         )
@@ -287,6 +305,7 @@ class PromptSkillAgent:
         skill_document: str,
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]] | None = None,
+        skill_resources: list[dict[str, Any]] | None = None,
         available_tools: list[str],
         max_tool_calls: int = 2,
     ) -> ToolCallSequence:
@@ -308,6 +327,7 @@ class PromptSkillAgent:
             "skill_document": skill_document,
             "input": input_payload,
             "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
+            "skill_resources": [item for item in (skill_resources or []) if isinstance(item, dict)],
             "available_tools": [item for item in available_tools if _trim(item)],
             "max_tool_calls": max(int(max_tool_calls), 1),
             "output_contract": {
@@ -347,6 +367,7 @@ class PromptSkillAgent:
         skill_document: str,
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]] | None = None,
+        skill_resources: list[dict[str, Any]] | None = None,
         tool_request: dict[str, Any],
         tool_result: dict[str, Any],
         output_contract: dict[str, Any],
@@ -358,6 +379,7 @@ class PromptSkillAgent:
             skill_document=skill_document,
             input_payload=input_payload,
             knowledge_context=knowledge_context,
+            skill_resources=skill_resources,
             tool_results=[
                 {
                     "tool_request": tool_request if isinstance(tool_request, dict) else {},
@@ -376,6 +398,7 @@ class PromptSkillAgent:
         skill_document: str,
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]] | None = None,
+        skill_resources: list[dict[str, Any]] | None = None,
         tool_results: list[dict[str, Any]] | None = None,
         output_contract: dict[str, Any],
     ) -> PromptSkillConsumeResult:
@@ -396,6 +419,7 @@ class PromptSkillAgent:
             "skill_document": skill_document,
             "input": input_payload,
             "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
+            "skill_resources": [item for item in (skill_resources or []) if isinstance(item, dict)],
             "tool_results": [item for item in (tool_results or []) if isinstance(item, dict)],
             "output_contract": output_contract,
         }
@@ -451,6 +475,49 @@ class PromptSkillAgent:
             diagnosis_patch=diagnosis_patch if isinstance(diagnosis_patch, dict) else {},
             session_patch=result.session_patch,
             observations=result.observations,
+        )
+
+    def select_skill_resources(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        role: str,
+        skill_document: str,
+        stage_summary: dict[str, Any],
+        available_resources: list[dict[str, Any]],
+        knowledge_context: list[dict[str, Any]] | None = None,
+    ) -> SkillResourceSelectionResult:
+        if not self.configured:
+            raise RuntimeError("prompt skill agent is not configured")
+        system_prompt = (
+            "You are selecting zero or more supporting resources for a prompt-first RCA skill.\n"
+            "Read the skill document and the resource summaries, then choose only the files that are clearly useful.\n"
+            "Do not ask for every resource by default.\n"
+            "Return strict JSON with keys selected_resource_ids and reason."
+        )
+        user_payload = {
+            "capability": capability,
+            "skill_id": skill_id,
+            "skill_version": skill_version,
+            "role": role,
+            "skill_document": skill_document,
+            "stage_summary": stage_summary,
+            "available_resources": [item for item in available_resources if isinstance(item, dict)],
+            "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
+            "output_contract": {
+                "selected_resource_ids": "array of resource ids",
+                "reason": "short explanation",
+            },
+        }
+        response = self._invoke_json(system_prompt=system_prompt, user_payload=user_payload)
+        selected_resource_ids = response.get("selected_resource_ids")
+        if not isinstance(selected_resource_ids, list):
+            selected_resource_ids = []
+        return SkillResourceSelectionResult(
+            selected_resource_ids=[_trim(item) for item in selected_resource_ids],
+            reason=_trim(response.get("reason")),
         )
 
     def _invoke_json(self, *, system_prompt: str, user_payload: dict[str, Any]) -> dict[str, Any]:

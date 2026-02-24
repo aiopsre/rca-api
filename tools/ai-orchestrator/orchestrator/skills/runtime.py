@@ -10,6 +10,14 @@ from .cache import prepare_bundle
 
 _DEFAULT_INSTRUCTION_FILE = "SKILL.md"
 _DEFAULT_BUNDLE_FORMAT = "claude_skill_v1"
+_RESOURCE_DIR_KINDS = {
+    "references": "reference",
+    "templates": "template",
+    "examples": "example",
+}
+_SUPPORTED_RESOURCE_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
+_MAX_RESOURCE_BYTES = 32 * 1024
+_RESOURCE_PREVIEW_MAX_CHARS = 240
 
 
 def _trim(value: Any) -> str:
@@ -76,6 +84,67 @@ def read_skill_frontmatter(skill_path: Path) -> dict[str, str]:
     return parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
 
 
+def _read_utf8_text(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _extract_resource_title(path: Path, content: str) -> str:
+    if path.suffix.lower() == ".md":
+        for raw_line in content.replace("\r\n", "\n").split("\n"):
+            line = raw_line.strip()
+            if line.startswith("#"):
+                title = line.lstrip("#").strip()
+                if title:
+                    return title
+    return path.name
+
+
+def _extract_resource_preview(content: str) -> str:
+    text = content.replace("\r\n", "\n")
+    paragraphs = [part.strip() for part in text.split("\n\n")]
+    for paragraph in paragraphs:
+        if not paragraph:
+            continue
+        lines = [line.strip() for line in paragraph.split("\n") if line.strip()]
+        if not lines:
+            continue
+        if lines[0].startswith("#"):
+            lines = lines[1:]
+        preview = " ".join(line for line in lines if line)
+        if preview:
+            if len(preview) <= _RESOURCE_PREVIEW_MAX_CHARS:
+                return preview
+            return f"{preview[: _RESOURCE_PREVIEW_MAX_CHARS - 3]}..."
+    return ""
+
+
+def _resource_kind_and_id(root_dir: Path, path: Path) -> tuple[str, str] | None:
+    try:
+        relative = path.relative_to(root_dir).as_posix()
+    except ValueError:
+        return None
+    if not relative or relative == _DEFAULT_INSTRUCTION_FILE:
+        return None
+    parts = relative.split("/")
+    if not parts:
+        return None
+    resource_kind = _RESOURCE_DIR_KINDS.get(parts[0])
+    if not resource_kind:
+        return None
+    if path.suffix.lower() not in _SUPPORTED_RESOURCE_SUFFIXES:
+        return None
+    try:
+        size_bytes = int(path.stat().st_size)
+    except OSError:
+        return None
+    if size_bytes <= 0 or size_bytes > _MAX_RESOURCE_BYTES:
+        return None
+    return resource_kind, relative
+
+
 @dataclass(frozen=True)
 class SkillSummary:
     skill_id: str
@@ -118,6 +187,44 @@ class SkillSummary:
             bundle_format=bundle_format,
             instruction_file=instruction_file,
         )
+
+
+@dataclass(frozen=True)
+class SkillResourceSummary:
+    resource_id: str
+    resource_kind: str
+    title: str
+    preview: str
+    path: str
+    size_bytes: int
+
+    def to_summary_dict(self) -> dict[str, Any]:
+        return {
+            "resource_id": self.resource_id,
+            "resource_kind": self.resource_kind,
+            "title": self.title,
+            "preview": self.preview,
+            "path": self.path,
+            "size_bytes": self.size_bytes,
+        }
+
+
+@dataclass(frozen=True)
+class SkillResourceDocument:
+    resource_id: str
+    resource_kind: str
+    title: str
+    content: str
+    path: str
+    size_bytes: int
+
+    def to_agent_payload(self) -> dict[str, Any]:
+        return {
+            "resource_id": self.resource_id,
+            "resource_kind": self.resource_kind,
+            "title": self.title,
+            "content": self.content,
+        }
 
 
 @dataclass(frozen=True)
@@ -213,6 +320,7 @@ class SkillCatalog:
         self._skills: dict[str, CatalogSkill] = {}
         self._skill_ids: dict[str, list[str]] = {}
         self._skillset_ids: list[str] = []
+        self._resource_summaries: dict[str, tuple[SkillResourceSummary, ...]] = {}
 
     @classmethod
     def from_resolved_skillsets(
@@ -303,6 +411,36 @@ class SkillCatalog:
             raise RuntimeError(f"skill bundle missing {item.summary.instruction_file}")
         return skill_path.read_text(encoding="utf-8")
 
+    def list_skill_resources(self, binding_key: str) -> list[SkillResourceSummary]:
+        item = self._lookup_skill(binding_key)
+        if item is None:
+            raise RuntimeError(f"unknown skill binding: {binding_key}")
+        cached = self._resource_summaries.get(item.binding_key)
+        if cached is None:
+            cached = tuple(self._scan_skill_resources(item.root_dir))
+            self._resource_summaries[item.binding_key] = cached
+        return list(cached)
+
+    def load_skill_resources(self, binding_key: str, resource_ids: list[str]) -> list[SkillResourceDocument]:
+        item = self._lookup_skill(binding_key)
+        if item is None:
+            raise RuntimeError(f"unknown skill binding: {binding_key}")
+        available = {summary.resource_id: summary for summary in self.list_skill_resources(binding_key)}
+        loaded: list[SkillResourceDocument] = []
+        seen: set[str] = set()
+        for raw_id in resource_ids:
+            resource_id = _trim(raw_id)
+            if not resource_id or resource_id in seen:
+                continue
+            seen.add(resource_id)
+            summary = available.get(resource_id)
+            if summary is None:
+                continue
+            document = self._load_resource_document(item.root_dir, summary)
+            if document is not None:
+                loaded.append(document)
+        return loaded
+
     def get_skill(self, binding_key: str) -> CatalogSkill:
         item = self._lookup_skill(binding_key)
         if item is None:
@@ -377,6 +515,7 @@ class SkillCatalog:
                     existing = self._skills[binding_key]
                     self._validate_bundle_summary(skill_dir, expected_summary=existing.summary)
                     self._skills[binding_key] = replace(existing, root_dir=skill_dir, source="local_override")
+                    self._resource_summaries.pop(binding_key, None)
 
     def _validate_bundle_summary(self, root_dir: Path, *, expected_summary: SkillSummary) -> None:
         skill_path = root_dir / expected_summary.instruction_file
@@ -401,6 +540,56 @@ class SkillCatalog:
                 _binding_key(legacy_parts[0], legacy_parts[1], legacy_parts[2], "executor")
             )
         return None
+
+    def _scan_skill_resources(self, root_dir: Path) -> list[SkillResourceSummary]:
+        summaries: list[SkillResourceSummary] = []
+        for path in sorted(root_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            kind_and_id = _resource_kind_and_id(root_dir, path)
+            if kind_and_id is None:
+                continue
+            resource_kind, resource_id = kind_and_id
+            content = _read_utf8_text(path)
+            if content is None:
+                continue
+            title = _extract_resource_title(path, content)
+            preview = _extract_resource_preview(content)
+            summaries.append(
+                SkillResourceSummary(
+                    resource_id=resource_id,
+                    resource_kind=resource_kind,
+                    title=title,
+                    preview=preview,
+                    path=resource_id,
+                    size_bytes=int(path.stat().st_size),
+                )
+            )
+        return summaries
+
+    def _load_resource_document(
+        self,
+        root_dir: Path,
+        summary: SkillResourceSummary,
+    ) -> SkillResourceDocument | None:
+        path = root_dir / summary.path
+        try:
+            size_bytes = int(path.stat().st_size)
+        except OSError:
+            return None
+        if size_bytes <= 0 or size_bytes > _MAX_RESOURCE_BYTES:
+            return None
+        content = _read_utf8_text(path)
+        if content is None:
+            return None
+        return SkillResourceDocument(
+            resource_id=summary.resource_id,
+            resource_kind=summary.resource_kind,
+            title=summary.title,
+            content=content,
+            path=summary.path,
+            size_bytes=size_bytes,
+        )
 
 
 def _binding_key(skill_id: str, version: str, capability: str, role: str) -> str:

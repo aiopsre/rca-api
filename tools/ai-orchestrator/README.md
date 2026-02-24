@@ -54,6 +54,10 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`。
 - `diagnosis.enrich` 仍是单 executor prompt-only。
 - `evidence.plan` 已支持“多个 knowledge skills + 单 executor skill”的运行模型。
+- `evidence.plan` 还支持 Knowledge / Executor 两侧的资源渐进式披露：
+  - worker 扫描 `references/`、`templates/`、`examples/`
+  - Agent 先看摘要，再点名需要的资源 id
+  - runtime 只加载被点名的文本资源正文
 - checked-in prompt-only Skill 样板位于：
   - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
   - `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
