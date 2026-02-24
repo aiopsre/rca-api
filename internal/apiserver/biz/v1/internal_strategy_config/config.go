@@ -504,6 +504,7 @@ type SkillRef struct {
 	Version      string   `json:"version"`
 	Capability   string   `json:"capability"`
 	Role         string   `json:"role,omitempty"`
+	ExecutorMode string   `json:"executor_mode,omitempty"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	Priority     *int     `json:"priority,omitempty"`
 	Enabled      *bool    `json:"enabled,omitempty"`
@@ -1056,6 +1057,7 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 		version := strings.TrimSpace(item.Version)
 		capability := strings.TrimSpace(item.Capability)
 		role := normalizeSkillRole(item.Role)
+		executorMode := normalizeExecutorMode(item.ExecutorMode, role)
 		if skillID == "" || version == "" || capability == "" {
 			continue
 		}
@@ -1078,6 +1080,7 @@ func normalizeSkillRefs(in []*SkillRef) []*SkillRef {
 			Version:      version,
 			Capability:   capability,
 			Role:         role,
+			ExecutorMode: executorMode,
 			AllowedTools: allowedTools,
 			Priority:     intPtr(priority),
 			Enabled:      boolPtr(enabled),
@@ -1097,6 +1100,20 @@ func normalizeSkillRole(in string) string {
 		return "knowledge"
 	default:
 		return "executor"
+	}
+}
+
+func normalizeExecutorMode(in string, role string) string {
+	if normalizeSkillRole(role) != "executor" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(in)) {
+	case "", "prompt":
+		return "prompt"
+	case "script":
+		return "script"
+	default:
+		return "prompt"
 	}
 }
 

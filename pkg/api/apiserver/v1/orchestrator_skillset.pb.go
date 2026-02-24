@@ -37,6 +37,7 @@ type OrchestratorSkillRelease struct {
 	Priority      int32                  `protobuf:"varint,9,opt,name=priority,proto3" json:"priority,omitempty"`
 	Enabled       bool                   `protobuf:"varint,10,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	Role          string                 `protobuf:"bytes,11,opt,name=role,proto3" json:"role,omitempty"`
+	ExecutorMode  string                 `protobuf:"bytes,12,opt,name=executorMode,proto3" json:"executorMode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -144,6 +145,13 @@ func (x *OrchestratorSkillRelease) GetEnabled() bool {
 func (x *OrchestratorSkillRelease) GetRole() string {
 	if x != nil {
 		return x.Role
+	}
+	return ""
+}
+
+func (x *OrchestratorSkillRelease) GetExecutorMode() string {
+	if x != nil {
+		return x.ExecutorMode
 	}
 	return ""
 }
@@ -304,7 +312,7 @@ var File_apiserver_v1_orchestrator_skillset_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_orchestrator_skillset_proto_rawDesc = "" +
 	"\n" +
-	"(apiserver/v1/orchestrator_skillset.proto\x12\fapiserver.v1\"\xf4\x02\n" +
+	"(apiserver/v1/orchestrator_skillset.proto\x12\fapiserver.v1\"\x98\x03\n" +
 	"\x18OrchestratorSkillRelease\x12\x18\n" +
 	"\askillID\x18\x01 \x01(\tR\askillID\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
@@ -319,7 +327,8 @@ const file_apiserver_v1_orchestrator_skillset_proto_rawDesc = "" +
 	"\bpriority\x18\t \x01(\x05R\bpriority\x12\x18\n" +
 	"\aenabled\x18\n" +
 	" \x01(\bR\aenabled\x12\x12\n" +
-	"\x04role\x18\v \x01(\tR\x04roleB\x0f\n" +
+	"\x04role\x18\v \x01(\tR\x04role\x12\"\n" +
+	"\fexecutorMode\x18\f \x01(\tR\fexecutorModeB\x0f\n" +
 	"\r_manifestJSON\"v\n" +
 	"\x14OrchestratorSkillset\x12\x1e\n" +
 	"\n" +

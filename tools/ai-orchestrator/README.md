@@ -52,7 +52,10 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - 任一节点异常会写入 `last_error`，并继续执行 `finalize_job` 走 failed 路径。
 - 仅做只读取证与 diagnosis 写回，不包含高风险自动处置动作。
 - 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`。
-- `diagnosis.enrich` 仍是单 executor prompt-only，并已支持 executor resources 的渐进式披露。
+- `diagnosis.enrich` 当前支持两类单 executor 形态：
+  - prompt executor
+  - script executor（`executor_mode=script`）
+- `diagnosis.enrich` 已支持 executor resources 的渐进式披露。
 - `evidence.plan` 已支持“多个 knowledge skills + 单 executor skill”的运行模型。
 - `evidence.plan` 还支持 Knowledge / Executor 两侧的资源渐进式披露：
   - worker 扫描 `references/`、`templates/`、`examples/`
@@ -60,10 +63,13 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
   - runtime 只加载被点名的文本资源正文
 - checked-in prompt-only Skill 样板位于：
   - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
+  - `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/SKILL.md`
   - `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
   - `evidence.plan` 的 executor 样板
 - `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`
   - Elasticsearch / ECS 风格的 `evidence.plan` knowledge 样板
 - `tools/ai-orchestrator/skill-bundles/prometheus-evidence-plan/SKILL.md`
   - Prometheus / metrics planning 的 `evidence.plan` knowledge 样板
+- `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/scripts/executor.py`
+  - `diagnosis.enrich` 的 script executor 固定 entrypoint 样板
 - 受控 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 运行时支持最多一次 `mcp.query_metrics` + 最多一次 `mcp.query_logs`，并让 `query_metrics` / `query_logs` 节点复用预热结果，但默认保持关闭

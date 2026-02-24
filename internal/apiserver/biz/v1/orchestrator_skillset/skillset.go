@@ -98,6 +98,7 @@ func (b *skillsetBiz) Resolve(
 				ManifestJSON: cloneOptionalTrimmedString(release.ManifestJSON),
 				Capability:   strings.TrimSpace(ref.Capability),
 				Role:         strings.TrimSpace(ref.Role),
+				ExecutorMode: strings.TrimSpace(ref.ExecutorMode),
 				AllowedTools: append([]string(nil), ref.AllowedTools...),
 				Priority:     priority,
 				Enabled:      ref.Enabled == nil || *ref.Enabled,

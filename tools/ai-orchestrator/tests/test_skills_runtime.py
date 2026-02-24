@@ -29,6 +29,7 @@ def _write_skill_dir(
     description: str,
     compatibility: str = "",
     resources: list[tuple[str, str]] | None = None,
+    script_body: str | None = None,
 ) -> None:
     compatibility_line = f"compatibility: {compatibility}\n" if compatibility else ""
     (root_dir / "SKILL.md").write_text(
@@ -40,6 +41,10 @@ def _write_skill_dir(
         resource_path = root_dir / relative_path
         resource_path.parent.mkdir(parents=True, exist_ok=True)
         resource_path.write_text(content, encoding="utf-8")
+    if script_body is not None:
+        executor_path = root_dir / "scripts" / "executor.py"
+        executor_path.parent.mkdir(parents=True, exist_ok=True)
+        executor_path.write_text(script_body, encoding="utf-8")
 
 
 def _zip_dir(root_dir: Path, zip_path: Path) -> str:
@@ -62,6 +67,7 @@ def _resolved_skillsets_payload(
     bundle_digest: str,
     capability: str = "diagnosis.enrich",
     role: str = "executor",
+    executor_mode: str | None = None,
     allowed_tools: list[str] | None = None,
     priority: int = 100,
     enabled: bool = True,
@@ -83,6 +89,7 @@ def _resolved_skillsets_payload(
                     "manifestJSON": envelope,
                     "capability": capability,
                     "role": role,
+                    "executorMode": executor_mode,
                     "allowedTools": allowed_tools or [],
                     "priority": priority,
                     "enabled": enabled,
@@ -421,6 +428,43 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertEqual([item.skill_id for item in executors], ["claude.evidence.prompt_planner"])
             self.assertEqual(knowledge[0].role, "knowledge")
             self.assertEqual(executors[0].role, "executor")
+            self.assertEqual(knowledge[0].executor_mode, "")
+            self.assertEqual(executors[0].executor_mode, "prompt")
+
+    def test_executor_candidates_include_script_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "script-executor"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Script Enricher",
+                description="Executor planner",
+                script_body=(
+                    "def run(input_payload, ctx):\n"
+                    "    return {\"payload\": {}, \"session_patch\": {}, \"observations\": []}\n"
+                ),
+            )
+            bundle_path = base / "script-executor.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.diagnosis.script_enricher",
+                    version="1.0.0",
+                    name="Script Enricher",
+                    description="Executor planner",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    role="executor",
+                    executor_mode="script",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            candidate = catalog.executor_candidates_for_capability("diagnosis.enrich")[0]
+            self.assertEqual(candidate.executor_mode, "script")
 
     def test_checked_in_prompt_only_bundle_has_valid_frontmatter(self) -> None:
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "diagnosis-enrich" / "SKILL.md"
@@ -445,6 +489,12 @@ class SkillCatalogTest(unittest.TestCase):
         frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
         self.assertEqual(frontmatter["name"], "Prometheus Evidence Planner Knowledge")
         self.assertIn("Prometheus-backed metrics", frontmatter["description"])
+
+    def test_checked_in_diagnosis_script_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "diagnosis-script-enrich" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "RCA Diagnosis Script Enricher")
+        self.assertIn("script executor", frontmatter["description"].lower())
 
     def test_capability_registry_exposes_diagnosis_and_evidence_plan(self) -> None:
         diagnosis = get_capability_definition("diagnosis.enrich")
@@ -697,6 +747,197 @@ class SkillCatalogTest(unittest.TestCase):
                 skill_catalog=skill_catalog,
                 skills_execution_mode="prompt_first",
                 skill_agent=_FakeAgent(),
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=GraphState(job_id="job-1", incident_id="inc-1"),
+                input_payload={"incident_id": "inc-1", "diagnosis_json": {}, "evidence_ids": []},
+            )
+            self.assertIsNone(result)
+
+    def test_prompt_first_runtime_executes_script_diagnosis_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Script Enricher",
+                description="Analyze incident evidence",
+                resources=[
+                    ("references/quality-gate-guidance.md", "# Quality Gate Guidance\n\nUse lower confidence wording when signals are partial.\n"),
+                    ("templates/diagnosis-output-rules.md", "# Output Rules\n\nReturn concise operator wording.\n"),
+                ],
+                script_body=(
+                    "def run(input_payload, ctx):\n"
+                    "    resources = [item.get('resource_id') for item in ctx.get('skill_resources', []) if isinstance(item, dict)]\n"
+                    "    return {\n"
+                    "        'payload': {\n"
+                    "            'diagnosis_patch': {\n"
+                    "                'summary': 'Script improved summary',\n"
+                    "                'root_cause': {\n"
+                    "                    'summary': 'Script improved root cause summary',\n"
+                    "                    'statement': 'Script improved statement',\n"
+                    "                    'confidence': 0.99,\n"
+                    "                },\n"
+                    "                'incident_id': 'forbidden',\n"
+                    "                'next_steps': ['collect traces'],\n"
+                    "            }\n"
+                    "        },\n"
+                    "        'session_patch': {\n"
+                    "            'latest_summary': {'summary': 'Script improved summary'},\n"
+                    "            'context_state_patch': {'skills': {'diagnosis_script_enrich': {'applied': True, 'resources': resources}}},\n"
+                    "        },\n"
+                    "        'observations': [{'kind': 'note', 'message': 'script applied'}],\n"
+                    "    }\n"
+                ),
+            )
+            bundle_path = base / "script-enricher.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.diagnosis.script_enricher",
+                    version="1.0.0",
+                    name="Script Enricher",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    executor_mode="script",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.diagnosis.script_enricher\x001.0.0\x00diagnosis.enrich",
+                        reason="use script executor",
+                    )
+
+                def select_skill_resources(self, **kwargs: object):
+                    assert kwargs.get("role") == "executor"
+
+                    class _Selection:
+                        reason = "load script diagnosis resources"
+                        selected_resource_ids = [
+                            "references/quality-gate-guidance.md",
+                            "templates/diagnosis-output-rules.md",
+                        ]
+
+                    return _Selection()
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    raise AssertionError("script executor should not call consume_skill")
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_SelectingAgent(),
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=GraphState(job_id="job-1", incident_id="inc-1"),
+                input_payload={
+                    "incident_id": "inc-1",
+                    "incident_context": {"service": "svc-a"},
+                    "input_hints": {},
+                    "quality_gate_decision": "success",
+                    "quality_gate_reasons": [],
+                    "missing_evidence": [],
+                    "evidence_ids": ["ev-1"],
+                    "evidence_meta": [{"evidence_id": "ev-1"}],
+                    "diagnosis_json": {
+                        "summary": "Native summary",
+                        "root_cause": {
+                            "summary": "Native root summary",
+                            "statement": "Native statement",
+                            "confidence": 0.65,
+                            "evidence_ids": ["ev-1"],
+                        },
+                    },
+                },
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.diagnosis.script_enricher")
+            diagnosis_patch = result["payload"]["diagnosis_patch"]
+            self.assertEqual(diagnosis_patch["summary"], "Script improved summary")
+            self.assertEqual(diagnosis_patch["root_cause"]["summary"], "Script improved root cause summary")
+            self.assertNotIn("incident_id", diagnosis_patch)
+            self.assertNotIn("confidence", diagnosis_patch["root_cause"])
+            self.assertEqual(result["session_patch"]["actor"], "skill:claude.diagnosis.script_enricher")
+            self.assertEqual(result["session_patch"]["source"], "skill.script")
+
+    def test_prompt_first_runtime_falls_back_for_invalid_script_executor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Broken Script Enricher",
+                description="Analyze incident evidence",
+            )
+            bundle_path = base / "broken-script-enricher.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.diagnosis.script_enricher",
+                    version="1.0.0",
+                    name="Broken Script Enricher",
+                    description="Analyze incident evidence",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    executor_mode="script",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.diagnosis.script_enricher\x001.0.0\x00diagnosis.enrich",
+                        reason="use script executor",
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_SelectingAgent(),
             )
 
             result = runtime.consume_diagnosis_enrich_skill(

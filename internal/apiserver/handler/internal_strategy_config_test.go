@@ -194,7 +194,7 @@ func TestInternalStrategyConfigAPI_SkillsetRoleRoundTrip(t *testing.T) {
 		client,
 		http.MethodPost,
 		baseURL+"/v1/config/skillset/update",
-		[]byte(`{"pipeline_id":"basic_rca","skillset_name":"skillset_with_roles","skills":[{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","role":"knowledge","allowed_tools":["query_logs"]},{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich"}]}`),
+		[]byte(`{"pipeline_id":"basic_rca","skillset_name":"skillset_with_roles","skills":[{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","role":"knowledge","executor_mode":"script","allowed_tools":["query_logs"]},{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","executor_mode":"script"}]}`),
 		adminToken,
 	)
 	require.NoError(t, err)
@@ -210,6 +210,8 @@ func TestInternalStrategyConfigAPI_SkillsetRoleRoundTrip(t *testing.T) {
 	require.Len(t, skills, 2)
 	require.Equal(t, "knowledge", extractString(skills[0].(map[string]any), "role", "Role"))
 	require.Equal(t, "executor", extractString(skills[1].(map[string]any), "role", "Role"))
+	require.Empty(t, extractString(skills[0].(map[string]any), "executor_mode", "executorMode", "ExecutorMode"))
+	require.Equal(t, "script", extractString(skills[1].(map[string]any), "executor_mode", "executorMode", "ExecutorMode"))
 
 	getStatus, getBody, err := doJSONRequestWithToken(client, http.MethodGet, baseURL+"/v1/config/skillset/basic_rca", nil, adminToken)
 	require.NoError(t, err)
@@ -225,6 +227,8 @@ func TestInternalStrategyConfigAPI_SkillsetRoleRoundTrip(t *testing.T) {
 	require.Len(t, getSkills, 2)
 	require.Equal(t, "knowledge", extractString(getSkills[0].(map[string]any), "role", "Role"))
 	require.Equal(t, "executor", extractString(getSkills[1].(map[string]any), "role", "Role"))
+	require.Empty(t, extractString(getSkills[0].(map[string]any), "executor_mode", "executorMode", "ExecutorMode"))
+	require.Equal(t, "script", extractString(getSkills[1].(map[string]any), "executor_mode", "executorMode", "ExecutorMode"))
 }
 
 func loginOperatorForTest(t *testing.T, client *http.Client, baseURL string, payload map[string]any) string {

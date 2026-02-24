@@ -11,6 +11,7 @@ from ..skills.capabilities import (
     PromptSkillConsumeResult,
     get_capability_definition,
 )
+from ..skills.script_runner import ScriptExecutorError, ScriptExecutorRunner
 from ..tooling.invoker import TOOLING_META_KEY, ToolInvokeError
 from ..tooling.toolset_config import normalize_tool_name
 from ..tools_rca_api import RCAApiClient
@@ -261,6 +262,7 @@ class OrchestratorRuntime:
         self._skills_execution_mode = str(skills_execution_mode or "catalog").strip().lower() or "catalog"
         self._skills_tool_calling_mode = str(skills_tool_calling_mode or "disabled").strip().lower() or "disabled"
         self._skill_agent = skill_agent
+        self._script_executor_runner = ScriptExecutorRunner()
         self._started = False
         if not self._job_id:
             raise RuntimeError("job_id is required")
@@ -858,7 +860,7 @@ class OrchestratorRuntime:
                 skill_document=skill_document,
                 knowledge_context_summary=[],
             )
-            raw_output, post_apply_context = self._execute_prompt_skill(
+            raw_output, post_apply_context, success_observation_tool = self._execute_selected_skill(
                 capability=capability,
                 stage=stage,
                 graph_state=graph_state,
@@ -879,10 +881,11 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage, "selected_binding_key": selected_binding_key},
                 response={
                     "status": "fallback",
-                    "reason": "consume_failed",
+                    "reason": "script_execute_failed" if isinstance(exc, ScriptExecutorError) else "consume_failed",
                     "latency_ms": consume_latency_ms,
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_binding_key,
+                    "executor_mode": selected_candidate.executor_mode,
                     "error": _trim_text(exc),
                 },
                 evidence_ids=evidence_ids,
@@ -893,7 +896,9 @@ class OrchestratorRuntime:
         if normalized_output.session_patch and not str(normalized_output.session_patch.get("actor") or "").strip():
             normalized_output.session_patch["actor"] = f"skill:{selected_candidate.skill_id}"
         if normalized_output.session_patch and not str(normalized_output.session_patch.get("source") or "").strip():
-            normalized_output.session_patch["source"] = "skill.prompt"
+            normalized_output.session_patch["source"] = (
+                "skill.script" if selected_candidate.executor_mode == "script" else "skill.prompt"
+            )
         apply_result(graph_state, normalized_output, self.merge_session_patch)
         if isinstance(post_apply_context, dict):
             self._apply_prompt_skill_post_merge(
@@ -903,12 +908,13 @@ class OrchestratorRuntime:
             )
         consume_latency_ms = max(1, int((time.monotonic() - consume_started) * 1000))
         self._report_observation_best_effort(
-            tool="skill.consume",
+            tool=success_observation_tool,
             node_name=node_name,
             params={
                 "capability": capability,
                 "stage": stage,
                 "selected_binding_key": selected_binding_key,
+                "executor_mode": selected_candidate.executor_mode,
             },
             response={
                 "status": "ok",
@@ -917,6 +923,7 @@ class OrchestratorRuntime:
                 "selected_binding_key": selected_binding_key,
                 "candidate_count": len(candidates),
                 "candidate_skill_ids": candidate_skill_ids,
+                "executor_mode": selected_candidate.executor_mode,
                 "skill_resource_ids": [str(item.get("resource_id") or "") for item in selected_skill_resources],
                 "payload_keys": sorted(normalized_output.payload.keys()),
                 "session_patch_keys": sorted(normalized_output.session_patch.keys()),
@@ -1146,7 +1153,7 @@ class OrchestratorRuntime:
                 skill_document=skill_document,
                 knowledge_context_summary=knowledge_bundle.to_selection_summary(),
             )
-            raw_output, post_apply_context = self._execute_prompt_skill(
+            raw_output, post_apply_context, success_observation_tool = self._execute_selected_skill(
                 capability=capability,
                 stage=stage,
                 graph_state=graph_state,
@@ -1167,10 +1174,11 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage, "selected_binding_key": selected_candidate.binding_key},
                 response={
                     "status": "fallback",
-                    "reason": "consume_failed",
+                    "reason": "script_execute_failed" if isinstance(exc, ScriptExecutorError) else "consume_failed",
                     "latency_ms": consume_latency_ms,
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_candidate.binding_key,
+                    "executor_mode": selected_candidate.executor_mode,
                     "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
                     "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
                     "error": _trim_text(exc),
@@ -1183,7 +1191,9 @@ class OrchestratorRuntime:
         if normalized_output.session_patch and not str(normalized_output.session_patch.get("actor") or "").strip():
             normalized_output.session_patch["actor"] = f"skill:{selected_candidate.skill_id}"
         if normalized_output.session_patch and not str(normalized_output.session_patch.get("source") or "").strip():
-            normalized_output.session_patch["source"] = "skill.prompt"
+            normalized_output.session_patch["source"] = (
+                "skill.script" if selected_candidate.executor_mode == "script" else "skill.prompt"
+            )
         apply_result(graph_state, normalized_output, self.merge_session_patch)
         if isinstance(post_apply_context, dict):
             self._apply_prompt_skill_post_merge(
@@ -1193,18 +1203,20 @@ class OrchestratorRuntime:
             )
         consume_latency_ms = max(1, int((time.monotonic() - consume_started) * 1000))
         self._report_observation_best_effort(
-            tool="skill.consume",
+            tool=success_observation_tool,
             node_name=node_name,
             params={
                 "capability": capability,
                 "stage": stage,
                 "selected_binding_key": selected_candidate.binding_key,
+                "executor_mode": selected_candidate.executor_mode,
             },
             response={
                 "status": "ok",
                 "latency_ms": consume_latency_ms,
                 "skill_id": selected_candidate.skill_id,
                 "selected_binding_key": selected_candidate.binding_key,
+                "executor_mode": selected_candidate.executor_mode,
                 "knowledge_selected_binding_keys": list(knowledge_bundle.selected_binding_keys),
                 "knowledge_selected_skill_ids": knowledge_bundle.skill_ids,
                 "skill_resource_ids": [str(item.get("resource_id") or "") for item in selected_skill_resources],
@@ -1489,6 +1501,75 @@ class OrchestratorRuntime:
         summarized = self._executor_stage_summary(stage_summary=stage_summary, knowledge_bundle=knowledge_bundle)
         summarized["knowledge_context"] = knowledge_bundle.to_selection_summary()
         return summarized
+
+    def _execute_selected_skill(
+        self,
+        *,
+        capability: str,
+        stage: str,
+        graph_state: Any,
+        node_name: str,
+        evidence_ids: list[str],
+        selected_candidate: "SkillCandidate",
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        skill_resources: list[dict[str, Any]],
+        output_contract: dict[str, Any],
+        skill_document: str,
+    ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None, str]:
+        if selected_candidate.executor_mode == "script":
+            return (
+                self._execute_script_skill(
+                    capability=capability,
+                    selected_candidate=selected_candidate,
+                    input_payload=input_payload,
+                    knowledge_context=knowledge_context,
+                    skill_resources=skill_resources,
+                ),
+                None,
+                "skill.execute",
+            )
+        raw_output, post_apply_context = self._execute_prompt_skill(
+            capability=capability,
+            stage=stage,
+            graph_state=graph_state,
+            node_name=node_name,
+            evidence_ids=evidence_ids,
+            selected_candidate=selected_candidate,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            skill_resources=skill_resources,
+            output_contract=output_contract,
+            skill_document=skill_document,
+        )
+        return raw_output, post_apply_context, "skill.consume"
+
+    def _execute_script_skill(
+        self,
+        *,
+        capability: str,
+        selected_candidate: "SkillCandidate",
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        skill_resources: list[dict[str, Any]],
+    ) -> PromptSkillConsumeResult:
+        if self._skill_catalog is None:
+            raise ScriptExecutorError("skill catalog is not configured")
+        catalog_skill = self._skill_catalog.get_skill(selected_candidate.binding_key)
+        return self._script_executor_runner.run(
+            bundle_root=catalog_skill.root_dir,
+            input_payload=input_payload,
+            ctx={
+                "capability": capability,
+                "skill_id": selected_candidate.skill_id,
+                "version": selected_candidate.version,
+                "role": selected_candidate.role,
+                "knowledge_context": knowledge_context,
+                "skill_resources": skill_resources,
+                "allowed_tools": list(selected_candidate.allowed_tools),
+            },
+            module_suffix=f"{selected_candidate.skill_id}_{selected_candidate.version}_{selected_candidate.binding_key}",
+        )
 
     def _execute_prompt_skill(
         self,

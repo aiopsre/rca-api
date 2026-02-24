@@ -143,6 +143,7 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 				Version:      "1.0.0",
 				Capability:   "diagnosis.enrich",
 				Role:         "knowledge",
+				ExecutorMode: "script",
 				AllowedTools: []string{"query_logs"},
 			},
 		},
@@ -154,6 +155,7 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 	require.Len(t, view.Items[0].Skills, 1)
 	require.Equal(t, "claude.analysis", view.Items[0].Skills[0].SkillID)
 	require.Equal(t, "knowledge", view.Items[0].Skills[0].Role)
+	require.Empty(t, view.Items[0].Skills[0].ExecutorMode)
 
 	resolved, source, err := biz.ResolveSkillsetByPipeline(ctx, "basic_rca")
 	require.NoError(t, err)
@@ -164,6 +166,7 @@ func TestConfigBiz_SkillReleaseAndSkillsetDynamic(t *testing.T) {
 	require.Equal(t, "1.0.0", resolved[0].Skills[0].Version)
 	require.Equal(t, "diagnosis.enrich", resolved[0].Skills[0].Capability)
 	require.Equal(t, "knowledge", resolved[0].Skills[0].Role)
+	require.Empty(t, resolved[0].Skills[0].ExecutorMode)
 	require.Equal(t, []string{"query_logs"}, resolved[0].Skills[0].AllowedTools)
 	require.NotNil(t, resolved[0].Skills[0].Priority)
 	require.Equal(t, 100, *resolved[0].Skills[0].Priority)
@@ -193,6 +196,34 @@ func TestConfigBiz_SkillsetDefaultsMissingRoleToExecutor(t *testing.T) {
 	require.Len(t, resolved, 1)
 	require.Len(t, resolved[0].Skills, 1)
 	require.Equal(t, "executor", resolved[0].Skills[0].Role)
+	require.Equal(t, "prompt", resolved[0].Skills[0].ExecutorMode)
+}
+
+func TestConfigBiz_SkillsetExecutorModeRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	biz, _ := newConfigBizTestSetup(t)
+
+	_, err := biz.UpsertSkillset(ctx, &UpsertSkillsetConfigRequest{
+		PipelineID:   "basic_rca",
+		SkillsetName: "script_executor",
+		Skills: []*SkillRef{
+			{
+				SkillID:      "claude.diagnosis.script_enricher",
+				Version:      "1.0.0",
+				Capability:   "diagnosis.enrich",
+				Role:         "executor",
+				ExecutorMode: "script",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	resolved, _, err := biz.ResolveSkillsetByPipeline(ctx, "basic_rca")
+	require.NoError(t, err)
+	require.Len(t, resolved, 1)
+	require.Len(t, resolved[0].Skills, 1)
+	require.Equal(t, "executor", resolved[0].Skills[0].Role)
+	require.Equal(t, "script", resolved[0].Skills[0].ExecutorMode)
 }
 
 func TestConfigBiz_UploadSkillReleaseUsesArtifactStorage(t *testing.T) {

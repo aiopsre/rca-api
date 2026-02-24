@@ -41,6 +41,7 @@ type skillRefRequest struct {
 	Version      string   `json:"version"`
 	Capability   string   `json:"capability"`
 	Role         string   `json:"role,omitempty"`
+	ExecutorMode string   `json:"executor_mode,omitempty"`
 	AllowedTools []string `json:"allowed_tools,omitempty"`
 	Priority     *int     `json:"priority,omitempty"`
 	Enabled      *bool    `json:"enabled,omitempty"`
@@ -214,6 +215,7 @@ func (h *Handler) UpsertSkillsetConfig(c *gin.Context) {
 			Version:      item.Version,
 			Capability:   item.Capability,
 			Role:         item.Role,
+			ExecutorMode: item.ExecutorMode,
 			AllowedTools: item.AllowedTools,
 			Priority:     item.Priority,
 			Enabled:      item.Enabled,

@@ -18,6 +18,7 @@ message OrchestratorSkillRelease {
   int32 priority = 9;
   bool enabled = 10;
   string role = 11;
+  string executorMode = 12;
 }
 
 // OrchestratorSkillset is one resolved skillset definition.

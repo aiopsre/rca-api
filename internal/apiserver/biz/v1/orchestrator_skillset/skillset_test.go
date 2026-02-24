@@ -36,11 +36,20 @@ func TestSkillsetBiz_ResolvePresignsArtifactURL(t *testing.T) {
 		ManifestJSON: &manifest,
 		Status:       "active",
 	}))
-	skillRefsJSON := `[{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","role":"knowledge","allowed_tools":["query_logs"],"priority":120,"enabled":true}]`
+	skillRefsJSON := `[{"skill_id":"claude.analysis","version":"1.0.0","capability":"diagnosis.enrich","role":"knowledge","executor_mode":"script","allowed_tools":["query_logs"],"priority":120,"enabled":true},{"skill_id":"claude.diagnosis.script_enricher","version":"1.0.0","capability":"diagnosis.enrich","role":"executor","executor_mode":"script","allowed_tools":[],"priority":100,"enabled":true}]`
 	require.NoError(t, s.InternalStrategyConfig().UpsertSkillsetConfig(ctx, &model.SkillsetConfigDynamicM{
 		PipelineID:    "basic_rca",
 		SkillsetName:  "claude_default",
 		SkillRefsJSON: &skillRefsJSON,
+	}))
+
+	require.NoError(t, s.InternalStrategyConfig().UpsertSkillRelease(ctx, &model.SkillReleaseM{
+		SkillID:      "claude.diagnosis.script_enricher",
+		Version:      "1.0.0",
+		BundleDigest: "9f990ba0b577b51cf009ea049368c16bbda1b21e1b93be07a824758bb253c39d",
+		ArtifactURL:  "s3://rca-skills-dev/skills/claude.diagnosis.script_enricher/1.0.0/bundle.zip",
+		ManifestJSON: &manifest,
+		Status:       "active",
 	}))
 
 	restore := skillartifact.SetRuntimeManagerForTest(&fakeResolveManager{
@@ -53,14 +62,18 @@ func TestSkillsetBiz_ResolvePresignsArtifactURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "basic_rca", resp.GetPipeline())
 	require.Len(t, resp.GetSkillsets(), 1)
-	require.Len(t, resp.GetSkillsets()[0].GetSkills(), 1)
+	require.Len(t, resp.GetSkillsets()[0].GetSkills(), 2)
 	require.Equal(t, "claude.analysis", resp.GetSkillsets()[0].GetSkills()[0].GetSkillID())
 	require.Equal(t, "http://192.168.39.3:9000/rca-skills-dev/skills/claude.analysis/1.0.0/bundle.zip?X-Amz-Signature=test", resp.GetSkillsets()[0].GetSkills()[0].GetArtifactURL())
 	require.Equal(t, "diagnosis.enrich", resp.GetSkillsets()[0].GetSkills()[0].GetCapability())
 	require.Equal(t, "knowledge", resp.GetSkillsets()[0].GetSkills()[0].GetRole())
+	require.Empty(t, resp.GetSkillsets()[0].GetSkills()[0].GetExecutorMode())
 	require.Equal(t, []string{"query_logs"}, resp.GetSkillsets()[0].GetSkills()[0].GetAllowedTools())
 	require.Equal(t, int32(120), resp.GetSkillsets()[0].GetSkills()[0].GetPriority())
 	require.True(t, resp.GetSkillsets()[0].GetSkills()[0].GetEnabled())
+	require.Equal(t, "claude.diagnosis.script_enricher", resp.GetSkillsets()[0].GetSkills()[1].GetSkillID())
+	require.Equal(t, "executor", resp.GetSkillsets()[0].GetSkills()[1].GetRole())
+	require.Equal(t, "script", resp.GetSkillsets()[0].GetSkills()[1].GetExecutorMode())
 }
 
 type fakeResolveManager struct {

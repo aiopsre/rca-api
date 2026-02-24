@@ -231,6 +231,7 @@ class SkillResourceDocument:
 class SkillBinding:
     capability: str
     role: str
+    executor_mode: str
     allowed_tools: tuple[str, ...]
     priority: int = 100
     enabled: bool = True
@@ -253,9 +254,15 @@ class SkillBinding:
         role = _trim(payload.get("role")).lower() or "executor"
         if role not in {"knowledge", "executor"}:
             role = "executor"
+        executor_mode = _trim(payload.get("executor_mode") or payload.get("executorMode")).lower()
+        if role != "executor":
+            executor_mode = ""
+        elif executor_mode not in {"prompt", "script"}:
+            executor_mode = "prompt"
         return cls(
             capability=capability,
             role=role,
+            executor_mode=executor_mode,
             allowed_tools=tuple(_string_list(payload.get("allowed_tools") or payload.get("allowedTools"))),
             priority=priority,
             enabled=bool(enabled),
@@ -286,6 +293,7 @@ class SkillCandidate:
     compatibility: str
     capability: str
     role: str
+    executor_mode: str
     allowed_tools: tuple[str, ...]
     priority: int
     source: str
@@ -300,6 +308,7 @@ class SkillCandidate:
             "compatibility": self.compatibility,
             "capability": self.capability,
             "role": self.role,
+            "executor_mode": self.executor_mode,
             "allowed_tools": list(self.allowed_tools),
             "priority": self.priority,
             "source": self.source,
@@ -362,6 +371,7 @@ class SkillCatalog:
                     "compatibility": item.summary.compatibility,
                     "capability": item.binding.capability,
                     "role": item.binding.role,
+                    "executor_mode": item.binding.executor_mode,
                     "allowed_tools": list(item.binding.allowed_tools),
                     "priority": item.binding.priority,
                     "enabled": item.binding.enabled,
@@ -388,6 +398,7 @@ class SkillCatalog:
                     compatibility=item.summary.compatibility,
                     capability=item.binding.capability,
                     role=item.binding.role,
+                    executor_mode=item.binding.executor_mode,
                     allowed_tools=item.binding.allowed_tools,
                     priority=item.binding.priority,
                     source=item.source,
