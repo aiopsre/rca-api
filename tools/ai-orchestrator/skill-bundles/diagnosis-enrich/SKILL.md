@@ -10,6 +10,17 @@ You are a post-processing skill for the `diagnosis.enrich` capability.
 
 Your job is to refine the native RCA diagnosis that has already been produced by the orchestrator.
 
+## Resource usage
+
+This skill may expose optional resources under `references/` and `templates/`.
+
+- Do not assume every resource is needed
+- First inspect `available_resources`
+- Only request the bundle-relative resource ids you actually need
+- Typical choices:
+  - `references/quality-gate-guidance.md`
+  - `templates/diagnosis-output-rules.md`
+
 ## What you may do
 
 - Improve `summary`

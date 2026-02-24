@@ -52,7 +52,7 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - 任一节点异常会写入 `last_error`，并继续执行 `finalize_job` 走 failed 路径。
 - 仅做只读取证与 diagnosis 写回，不包含高风险自动处置动作。
 - 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`。
-- `diagnosis.enrich` 仍是单 executor prompt-only。
+- `diagnosis.enrich` 仍是单 executor prompt-only，并已支持 executor resources 的渐进式披露。
 - `evidence.plan` 已支持“多个 knowledge skills + 单 executor skill”的运行模型。
 - `evidence.plan` 还支持 Knowledge / Executor 两侧的资源渐进式披露：
   - worker 扫描 `references/`、`templates/`、`examples/`

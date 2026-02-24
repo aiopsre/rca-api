@@ -476,7 +476,15 @@ class SkillCatalogTest(unittest.TestCase):
             base = Path(tmp_dir)
             skill_dir = base / "remote"
             skill_dir.mkdir(parents=True)
-            _write_skill_dir(skill_dir, name="Claude Analysis", description="Analyze incident evidence")
+            _write_skill_dir(
+                skill_dir,
+                name="Claude Analysis",
+                description="Analyze incident evidence",
+                resources=[
+                    ("references/quality-gate-guidance.md", "# Quality Gate Guidance\n\nCalibrate certainty by quality gate.\n"),
+                    ("templates/diagnosis-output-rules.md", "# Output Rules\n\nRewrite native wording.\n"),
+                ],
+            )
             bundle_path = base / "claude.analysis.zip"
             bundle_digest = _zip_dir(skill_dir, bundle_path)
             skill_catalog = SkillCatalog.from_resolved_skillsets(
@@ -519,7 +527,15 @@ class SkillCatalogTest(unittest.TestCase):
             base = Path(tmp_dir)
             skill_dir = base / "remote"
             skill_dir.mkdir(parents=True)
-            _write_skill_dir(skill_dir, name="Claude Analysis", description="Analyze incident evidence")
+            _write_skill_dir(
+                skill_dir,
+                name="Claude Analysis",
+                description="Analyze incident evidence",
+                resources=[
+                    ("references/quality-gate-guidance.md", "# Quality Gate Guidance\n\nCalibrate certainty by quality gate.\n"),
+                    ("templates/diagnosis-output-rules.md", "# Output Rules\n\nRewrite native wording.\n"),
+                ],
+            )
             bundle_path = base / "claude.analysis.zip"
             bundle_digest = _zip_dir(skill_dir, bundle_path)
             skill_catalog = SkillCatalog.from_resolved_skillsets(
@@ -551,7 +567,27 @@ class SkillCatalogTest(unittest.TestCase):
                 def select_skill(self, **_: object) -> SkillSelectionResult:
                     return SkillSelectionResult(selected_binding_key="claude.analysis\x001.0.0\x00diagnosis.enrich", reason="best match")
 
-                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                def select_skill_resources(self, **kwargs: object):
+                    assert kwargs.get("role") == "executor"
+
+                    class _Selection:
+                        reason = "load diagnosis guidance only"
+                        selected_resource_ids = [
+                            "references/quality-gate-guidance.md",
+                            "templates/diagnosis-output-rules.md",
+                        ]
+
+                    return _Selection()
+
+                def consume_skill(self, **kwargs: object) -> PromptSkillConsumeResult:
+                    knowledge_context = kwargs.get("knowledge_context")
+                    skill_resources = kwargs.get("skill_resources")
+                    assert knowledge_context == []
+                    assert isinstance(skill_resources, list)
+                    assert [item.get("resource_id") for item in skill_resources] == [
+                        "references/quality-gate-guidance.md",
+                        "templates/diagnosis-output-rules.md",
+                    ]
                     return PromptSkillConsumeResult(
                         payload={
                             "diagnosis_patch": {

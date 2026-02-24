@@ -367,6 +367,27 @@ assert_json_expr "SkillConsumeObservation" "${TOOLCALLS_RESPONSE}" '
     (.toolName // .tool_name // "") == "skill.consume"
   )
 '
+assert_json_expr "ExecutorResourceSelectObservation" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "skill.resource_select"
+    and (
+      ((.responseJSON // .response_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
+      | (.selected_resource_ids | type == "array")
+      and (.selected_resource_ids | length) >= 1
+    )
+    and (.requestJSON // .request_json // {} | if type == "string" then (try fromjson catch {}) else . end | (.role // "") == "executor")
+  )
+'
+assert_json_expr "ExecutorResourceLoadObservation" "${TOOLCALLS_RESPONSE}" '
+  any((.data.toolCalls // .toolCalls // [])[]?;
+    (.toolName // .tool_name // "") == "skill.resource_load"
+    and (
+      ((.responseJSON // .response_json // {}) | if type == "string" then (try fromjson catch {}) else . end)
+      | (.resource_count // 0) >= 1
+    )
+    and (.requestJSON // .request_json // {} | if type == "string" then (try fromjson catch {}) else . end | (.role // "") == "executor")
+  )
+'
 
 REPORT_PATH="${WORKDIR}/prompt_first_diagnosis_enrich_smoke_report.json"
 cat > "${REPORT_PATH}" <<JSON

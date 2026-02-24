@@ -847,6 +847,17 @@ class OrchestratorRuntime:
         consume_started = time.monotonic()
         try:
             skill_document = self._skill_catalog.load_skill_document(selected_binding_key)
+            selected_skill_resources = self._select_skill_resources(
+                capability=capability,
+                stage=stage,
+                node_name=node_name,
+                stage_summary=stage_summary,
+                evidence_ids=evidence_ids,
+                selected_candidate=selected_candidate,
+                role="executor",
+                skill_document=skill_document,
+                knowledge_context_summary=[],
+            )
             raw_output, post_apply_context = self._execute_prompt_skill(
                 capability=capability,
                 stage=stage,
@@ -856,7 +867,7 @@ class OrchestratorRuntime:
                 selected_candidate=selected_candidate,
                 input_payload=input_payload,
                 knowledge_context=[],
-                skill_resources=[],
+                skill_resources=selected_skill_resources,
                 output_contract=output_contract,
                 skill_document=skill_document,
             )
@@ -906,6 +917,7 @@ class OrchestratorRuntime:
                 "selected_binding_key": selected_binding_key,
                 "candidate_count": len(candidates),
                 "candidate_skill_ids": candidate_skill_ids,
+                "skill_resource_ids": [str(item.get("resource_id") or "") for item in selected_skill_resources],
                 "payload_keys": sorted(normalized_output.payload.keys()),
                 "session_patch_keys": sorted(normalized_output.session_patch.keys()),
                 "observation_count": len(normalized_output.observations),
