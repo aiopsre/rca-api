@@ -10,6 +10,8 @@ class OrchestratorConfig:
     force_conflict: bool = False
     ds_base_url: str = ""
     ds_type: str = "prometheus"
+    metrics_ds_type: str = "prometheus"
+    logs_ds_type: str = "prometheus"
     auto_create_datasource: bool = True
     a3_max_calls: int = 6
     a3_max_total_bytes: int = 2 * 1024 * 1024

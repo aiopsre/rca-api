@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib/skills_release_helpers.sh
+source "${SCRIPT_DIR}/lib/skills_release_helpers.sh"
+
 BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 SCOPES="${SCOPES:-*}"
 CONFIG_SCOPES="${CONFIG_SCOPES:-config.admin,ai.read,ai.run}"
@@ -26,6 +30,8 @@ AGENT_API_KEY="${AGENT_API_KEY:-}"
 AGENT_TIMEOUT_SECONDS="${AGENT_TIMEOUT_SECONDS:-20}"
 DS_BASE_URL="${DS_BASE_URL:-}"
 DS_TYPE="${DS_TYPE:-prometheus}"
+METRICS_DS_TYPE="${METRICS_DS_TYPE:-${DS_TYPE}}"
+LOGS_DS_TYPE="${LOGS_DS_TYPE:-elasticsearch}"
 ORCH_CMD="${ORCH_CMD:-python3 -m orchestrator.main}"
 CURL_BIN="${CURL_BIN:-curl}"
 JQ_BIN="${JQ_BIN:-jq}"
@@ -40,6 +46,9 @@ KEEP_WORKDIR="${KEEP_WORKDIR:-0}"
 DEBUG="${DEBUG:-0}"
 SMOKE_LABEL="${SMOKE_LABEL:-prompt-first evidence.plan smoke}"
 REPORT_BASENAME="${REPORT_BASENAME:-prompt_first_evidence_plan_smoke_report.json}"
+SKILL_RELEASE_MODE="${SKILL_RELEASE_MODE:-upload}"
+ARTIFACT_BASE_URL="${ARTIFACT_BASE_URL:-}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-}"
 
 INCIDENT_ID=""
 JOB_ID=""
@@ -142,6 +151,28 @@ call_token_multipart() {
     -F "status=active"
 }
 
+publish_skill_release() {
+  local skill_id="$1"
+  local version="$2"
+  local bundle_dir="$3"
+  local bundle_path="$4"
+  skills_release_publish \
+    "${SKILL_RELEASE_MODE}" \
+    "${BASE_URL}" \
+    "${TOKEN}" \
+    "${CONFIG_SCOPES}" \
+    "${CURL_BIN}" \
+    "${JQ_BIN}" \
+    "${PYTHON_BIN}" \
+    "${bundle_dir}" \
+    "${bundle_path}" \
+    "${skill_id}" \
+    "${version}" \
+    "${ARTIFACT_BASE_URL}" \
+    "${ARTIFACT_DIR}" \
+    "active"
+}
+
 assert_json_success() {
   local step="$1"
   local json="$2"
@@ -211,6 +242,8 @@ start_orchestrator() {
       RUN_QUERY=1 \
       DS_BASE_URL="${DS_BASE_URL}" \
       DS_TYPE="${DS_TYPE}" \
+      METRICS_DS_TYPE="${METRICS_DS_TYPE}" \
+      LOGS_DS_TYPE="${LOGS_DS_TYPE}" \
       RUN_VERIFICATION=0 \
       POST_FINALIZE_OBSERVE=0 \
       SKILLS_EXECUTION_MODE=prompt_first \
@@ -293,7 +326,7 @@ upload_skill() {
   local bundle_path="${WORKDIR}/${skill_id}-${version}.zip"
   (cd "${bundle_dir}" && "${ZIP_BIN}" -qr "${bundle_path}" .)
   local upload_response
-  upload_response="$(call_token_multipart "${BASE_URL}/v1/config/skill-release/upload" "${TOKEN}" "${bundle_path}" "${skill_id}" "${version}")"
+  upload_response="$(publish_skill_release "${skill_id}" "${version}" "${bundle_dir}" "${bundle_path}")"
   assert_json_success "${step}" "${upload_response}"
   assert_json_expr "${step}" "${upload_response}" '(.data.skill_id // .skill_id) == "'"${skill_id}"'"'
   assert_json_expr "${step}" "${upload_response}" '(.data.version // .version) == "'"${version}"'"'

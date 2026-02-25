@@ -761,6 +761,8 @@ def main() -> None:
         f"force_no_evidence={int(settings.force_no_evidence)} "
         f"force_conflict={int(settings.force_conflict)} "
         f"ds_type={settings.ds_type} "
+        f"metrics_ds_type={settings.metrics_ds_type} "
+        f"logs_ds_type={settings.logs_ds_type} "
         f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
         f"a3_max_calls={settings.a3_max_calls} "
         f"a3_max_total_bytes={settings.a3_max_total_bytes} "
@@ -791,6 +793,8 @@ def main() -> None:
         force_conflict=settings.force_conflict,
         ds_base_url=settings.ds_base_url,
         ds_type=settings.ds_type,
+        metrics_ds_type=settings.metrics_ds_type,
+        logs_ds_type=settings.logs_ds_type,
         auto_create_datasource=settings.auto_create_datasource,
         a3_max_calls=settings.a3_max_calls,
         a3_max_total_bytes=settings.a3_max_total_bytes,

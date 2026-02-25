@@ -78,3 +78,6 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/scripts/executor.py`
   - `diagnosis.enrich` 的 script executor 固定 entrypoint 样板
 - 受控 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 的 prompt executor 和 script executor 都支持最多一次 `mcp.query_metrics` + 最多一次 `mcp.query_logs`，并让 `query_metrics` / `query_logs` 节点复用预热结果，但默认保持关闭
+- 本地统一 Skills smoke harness 入口：
+  - `scripts/run_skills_smoke_suite.sh`
+  - 默认会把 suite report / case report 导出到 workdir 之外；若需要保留完整 workdir 和 worker log，请设置 `SKILLS_SMOKE_KEEP_WORKDIR=1`

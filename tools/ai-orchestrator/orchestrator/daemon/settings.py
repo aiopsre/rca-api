@@ -39,6 +39,8 @@ class Settings:
     toolset_config_path: str
     toolset_config_json: str
     ds_type: str = "prometheus"
+    metrics_ds_type: str = "prometheus"
+    logs_ds_type: str = "prometheus"
     skills_execution_mode: str = "catalog"
     skills_tool_calling_mode: str = "disabled"
     skills_cache_dir: str = "/tmp/rca-ai-orchestrator/skills-cache"
@@ -100,6 +102,12 @@ def load_settings() -> Settings:
     ds_type = os.getenv("DS_TYPE", "prometheus").strip().lower() or "prometheus"
     if ds_type not in {"prometheus", "loki", "elasticsearch"}:
         ds_type = "prometheus"
+    metrics_ds_type = os.getenv("METRICS_DS_TYPE", ds_type).strip().lower() or ds_type
+    if metrics_ds_type not in {"prometheus", "loki", "elasticsearch"}:
+        metrics_ds_type = ds_type
+    logs_ds_type = os.getenv("LOGS_DS_TYPE", ds_type).strip().lower() or ds_type
+    if logs_ds_type not in {"prometheus", "loki", "elasticsearch"}:
+        logs_ds_type = ds_type
     return Settings(
         base_url=os.getenv("BASE_URL", "http://127.0.0.1:5555").strip() or "http://127.0.0.1:5555",
         scopes=os.getenv("SCOPES", "").strip(),
@@ -114,6 +122,8 @@ def load_settings() -> Settings:
         force_conflict=_env_bool("FORCE_CONFLICT", False),
         ds_base_url=os.getenv("DS_BASE_URL", "").strip(),
         ds_type=ds_type,
+        metrics_ds_type=metrics_ds_type,
+        logs_ds_type=logs_ds_type,
         auto_create_datasource=_env_bool("AUTO_CREATE_DATASOURCE", True),
         debug=_env_bool("DEBUG", False),
         pull_limit=max(1, min(50, _env_int("PULL_LIMIT", 10))),

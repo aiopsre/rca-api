@@ -12,4 +12,4 @@ export EXECUTOR_BUNDLE_DIR="${EXECUTOR_BUNDLE_DIR:-/opt/workspace/study/rca-api/
 export SMOKE_LABEL="${SMOKE_LABEL:-script-executor evidence.plan smoke}"
 export REPORT_BASENAME="${REPORT_BASENAME:-script_executor_evidence_plan_smoke_report.json}"
 
-exec "${SCRIPT_DIR}/test_prompt_first_evidence_plan_smoke.sh"
+exec bash "${SCRIPT_DIR}/test_prompt_first_evidence_plan_smoke.sh"

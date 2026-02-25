@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib/skills_release_helpers.sh
+source "${SCRIPT_DIR}/lib/skills_release_helpers.sh"
+
 BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 SCOPES="${SCOPES:-*}"
 CONFIG_SCOPES="${CONFIG_SCOPES:-config.admin,ai.read,ai.run}"
@@ -28,6 +32,9 @@ BUNDLE_DIR="${BUNDLE_DIR:-/opt/workspace/study/rca-api/tools/ai-orchestrator/ski
 WORKDIR="${WORKDIR:-$(mktemp -d)}"
 KEEP_WORKDIR="${KEEP_WORKDIR:-0}"
 DEBUG="${DEBUG:-0}"
+SKILL_RELEASE_MODE="${SKILL_RELEASE_MODE:-upload}"
+ARTIFACT_BASE_URL="${ARTIFACT_BASE_URL:-}"
+ARTIFACT_DIR="${ARTIFACT_DIR:-}"
 
 NATIVE_SUMMARY="Suspected root cause based on consistent available evidence."
 NATIVE_ROOT_CAUSE_STATEMENT="Metrics and logs indicate correlated service degradation in the same window."
@@ -129,6 +136,25 @@ call_token_multipart() {
     -F "skill_id=${SKILL_ID}" \
     -F "version=${SKILL_VERSION}" \
     -F "status=active"
+}
+
+publish_skill_release() {
+  local bundle_path="$1"
+  skills_release_publish \
+    "${SKILL_RELEASE_MODE}" \
+    "${BASE_URL}" \
+    "${TOKEN}" \
+    "${CONFIG_SCOPES}" \
+    "${CURL_BIN}" \
+    "${JQ_BIN}" \
+    "${PYTHON_BIN}" \
+    "${BUNDLE_DIR}" \
+    "${bundle_path}" \
+    "${SKILL_ID}" \
+    "${SKILL_VERSION}" \
+    "${ARTIFACT_BASE_URL}" \
+    "${ARTIFACT_DIR}" \
+    "active"
 }
 
 assert_json_success() {
@@ -256,7 +282,7 @@ assert_json_expr "RegisterTemplate" "${TEMPLATE_REGISTER_RESPONSE}" '(.data.coun
 BUNDLE_PATH="${WORKDIR}/${SKILL_ID}-${SKILL_VERSION}.zip"
 (cd "${BUNDLE_DIR}" && "${ZIP_BIN}" -qr "${BUNDLE_PATH}" .)
 
-UPLOAD_RESPONSE="$(call_token_multipart "${BASE_URL}/v1/config/skill-release/upload" "${TOKEN}" "${BUNDLE_PATH}")"
+UPLOAD_RESPONSE="$(publish_skill_release "${BUNDLE_PATH}")"
 assert_json_success "UploadSkillRelease" "${UPLOAD_RESPONSE}"
 assert_json_expr "UploadSkillRelease" "${UPLOAD_RESPONSE}" '(.data.skill_id // .skill_id) == "'"${SKILL_ID}"'"'
 assert_json_expr "UploadSkillRelease" "${UPLOAD_RESPONSE}" '(.data.version // .version) == "'"${SKILL_VERSION}"'"'
