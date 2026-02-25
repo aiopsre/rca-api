@@ -36,19 +36,21 @@ def run(input_payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
         statement = f"Available metrics and logs indicate a service-side degradation window for {service} that needs operator confirmation."
     elif quality_gate == "missing":
         summary = f"Script executor reframed the diagnosis for {service} around missing evidence."
-        statement = f"Current signals suggest {service} degradation, but the missing evidence list is still too large for a strong causal claim."
+        statement = ""
     else:
         summary = f"Script executor rewrote the diagnosis for {service} with conservative operator wording."
-        statement = f"Correlated signals around {service} point to degradation, but the evidence remains mixed and should be verified further."
+        statement = ""
+
+    root_cause_patch: dict[str, Any] = {
+        "summary": f"Script executor summary for {service}",
+        "statement": statement,
+    }
 
     return {
         "payload": {
             "diagnosis_patch": {
                 "summary": summary,
-                "root_cause": {
-                    "summary": f"Script executor summary for {service}",
-                    "statement": statement,
-                },
+                "root_cause": root_cause_patch,
                 "recommendations": [
                     f"Review recent changes and service-side errors for {service} in the affected window."
                 ],

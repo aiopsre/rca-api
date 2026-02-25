@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -15,9 +16,18 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.runtime import OrchestratorRuntime
-from orchestrator.langgraph.nodes import query_logs_node, query_metrics_node
+from orchestrator.langgraph.nodes import (
+    _merge_diagnosis_patch as merge_langgraph_diagnosis_patch,
+    query_logs_node,
+    query_metrics_node,
+)
 from orchestrator.skills.agent import SkillSelectionResult
-from orchestrator.skills.capabilities import PromptSkillConsumeResult, get_capability_definition
+from orchestrator.skills.capabilities import (
+    PromptSkillConsumeResult,
+    _merge_diagnosis_patch as merge_skill_diagnosis_patch,
+    _sanitize_diagnosis_patch,
+    get_capability_definition,
+)
 from orchestrator.skills.runtime import SkillCatalog, parse_skill_frontmatter
 from orchestrator.state import GraphState
 
@@ -890,6 +900,186 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertNotIn("confidence", diagnosis_patch["root_cause"])
             self.assertEqual(result["session_patch"]["actor"], "skill:claude.diagnosis.script_enricher")
             self.assertEqual(result["session_patch"]["source"], "skill.script")
+
+    def test_prompt_first_runtime_script_diagnosis_clears_statement_for_missing_quality_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            source_bundle = (
+                REPO_ROOT
+                / "tools"
+                / "ai-orchestrator"
+                / "skill-bundles"
+                / "diagnosis-script-enrich"
+            )
+            shutil.copytree(source_bundle, skill_dir, dirs_exist_ok=True)
+            bundle_path = base / "diagnosis-script-enrich.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="claude.diagnosis.script_enricher",
+                    version="1.0.0",
+                    name="RCA Diagnosis Script Enricher",
+                    description="Script executor for diagnosis.enrich that rewrites the native diagnosis using selected guidance resources.",
+                    compatibility="Script executor. Selected by Agent, executed via scripts/executor.py:run. Do not call tools.",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    executor_mode="script",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.diagnosis.script_enricher\x001.0.0\x00diagnosis.enrich\x00executor",
+                        reason="use script executor",
+                    )
+
+                def select_skill_resources(self, **_: object):
+                    class _Selection:
+                        latency_ms = 1
+                        reason = "load script diagnosis resources"
+                        selected_resource_ids = ["references/quality-gate-guidance.md"]
+
+                    return _Selection()
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_SelectingAgent(),
+            )
+
+            graph_state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                diagnosis_json={
+                    "summary": "Native summary",
+                    "root_cause": {
+                        "summary": "Native root summary",
+                        "statement": "Native statement",
+                        "confidence": 0.15,
+                        "evidence_ids": ["ev-1"],
+                    },
+                },
+            )
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=graph_state,
+                input_payload={
+                    "incident_id": "inc-1",
+                    "incident_context": {"service": "svc-a"},
+                    "input_hints": {},
+                    "quality_gate_decision": "missing",
+                    "quality_gate_reasons": [],
+                    "missing_evidence": ["logs", "traces"],
+                    "evidence_ids": ["ev-1"],
+                    "evidence_meta": [{"evidence_id": "ev-1"}],
+                    "diagnosis_json": {
+                        "summary": "Native summary",
+                        "root_cause": {
+                            "summary": "Native root summary",
+                            "statement": "Native statement",
+                            "confidence": 0.15,
+                            "evidence_ids": ["ev-1"],
+                        },
+                    },
+                },
+            )
+
+            self.assertIsInstance(result, dict)
+            diagnosis_patch = result["payload"]["diagnosis_patch"]
+            self.assertEqual(
+                diagnosis_patch["summary"],
+                "Script executor reframed the diagnosis for svc-a around missing evidence.",
+            )
+            self.assertEqual(diagnosis_patch["root_cause"]["summary"], "Script executor summary for svc-a")
+            self.assertEqual(diagnosis_patch["root_cause"]["statement"], "")
+            self.assertEqual(graph_state.diagnosis_json["root_cause"]["summary"], "Script executor summary for svc-a")
+            self.assertNotIn("statement", graph_state.diagnosis_json["root_cause"])
+
+    def test_sanitize_diagnosis_patch_keeps_explicit_empty_statement(self) -> None:
+        sanitized, dropped = _sanitize_diagnosis_patch(
+            {
+                "summary": "Refined summary",
+                "root_cause": {
+                    "summary": "Refined root summary",
+                    "statement": "",
+                },
+            }
+        )
+
+        self.assertEqual(
+            sanitized,
+            {
+                "summary": "Refined summary",
+                "root_cause": {
+                    "summary": "Refined root summary",
+                    "statement": "",
+                },
+            },
+        )
+        self.assertNotIn("root_cause.statement", dropped)
+
+    def test_diagnosis_patch_merge_helpers_handle_statement_clear_preserve_and_override(self) -> None:
+        base_diagnosis = {
+            "summary": "Native summary",
+            "root_cause": {
+                "summary": "Native root summary",
+                "statement": "Native statement",
+                "confidence": 0.65,
+            },
+        }
+
+        for merge in (merge_skill_diagnosis_patch, merge_langgraph_diagnosis_patch):
+            cleared = merge(
+                base_diagnosis,
+                {
+                    "root_cause": {
+                        "summary": "Updated root summary",
+                        "statement": "",
+                    }
+                },
+            )
+            self.assertEqual(cleared["root_cause"]["summary"], "Updated root summary")
+            self.assertNotIn("statement", cleared["root_cause"])
+
+            preserved = merge(
+                base_diagnosis,
+                {
+                    "root_cause": {
+                        "summary": "Updated root summary",
+                    }
+                },
+            )
+            self.assertEqual(preserved["root_cause"]["summary"], "Updated root summary")
+            self.assertEqual(preserved["root_cause"]["statement"], "Native statement")
+
+            overridden = merge(
+                base_diagnosis,
+                {
+                    "root_cause": {
+                        "statement": "Updated statement",
+                    }
+                },
+            )
+            self.assertEqual(overridden["root_cause"]["statement"], "Updated statement")
 
     def test_prompt_first_runtime_falls_back_for_invalid_script_executor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -134,8 +134,11 @@ def plan_evidence(
             pass
         state.incident_context = incident_context
 
-        datasource_id = runtime.ensure_datasource(cfg.ds_base_url, cfg.ds_type)
-        state.datasource_id = datasource_id
+        metrics_ds_type = str(getattr(cfg, "metrics_ds_type", cfg.ds_type) or cfg.ds_type).strip().lower() or cfg.ds_type
+        logs_ds_type = str(getattr(cfg, "logs_ds_type", cfg.ds_type) or cfg.ds_type).strip().lower() or cfg.ds_type
+        metrics_datasource_id = runtime.ensure_datasource(cfg.ds_base_url, metrics_ds_type)
+        logs_datasource_id = runtime.ensure_datasource(cfg.ds_base_url, logs_ds_type)
+        state.datasource_id = metrics_datasource_id
 
         planning_context: dict[str, Any] = {
             "incident_id": state.incident_id,
@@ -150,12 +153,12 @@ def plan_evidence(
         metrics_candidate = select_candidate(candidates, "metrics")
         logs_candidate = select_candidate(candidates, "logs")
         state.metrics_branch_meta = prepare_query_branch_meta(
-            datasource_id=datasource_id,
+            datasource_id=metrics_datasource_id,
             candidate=metrics_candidate,
             query_type="metrics",
         )
         state.logs_branch_meta = prepare_query_branch_meta(
-            datasource_id=datasource_id,
+            datasource_id=logs_datasource_id,
             candidate=logs_candidate,
             query_type="logs",
         )
@@ -858,9 +861,12 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
         root_summary = root_cause_patch.get("summary")
         if isinstance(root_summary, str) and root_summary.strip():
             current_root_cause["summary"] = root_summary.strip()
-        root_statement = root_cause_patch.get("statement")
-        if isinstance(root_statement, str) and root_statement.strip():
-            current_root_cause["statement"] = root_statement.strip()
+        if "statement" in root_cause_patch:
+            root_statement = root_cause_patch.get("statement")
+            if isinstance(root_statement, str) and root_statement.strip():
+                current_root_cause["statement"] = root_statement.strip()
+            elif isinstance(root_statement, str):
+                current_root_cause.pop("statement", None)
         merged["root_cause"] = current_root_cause
 
     recommendations = diagnosis_patch.get("recommendations")

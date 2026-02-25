@@ -183,8 +183,12 @@ def _sanitize_diagnosis_patch(patch: Any) -> tuple[dict[str, Any], list[str]]:
             allowed_root_cause["summary"] = summary_value.strip()
         elif "summary" in root_cause and summary_value is not None:
             dropped.append("root_cause.summary")
-        if isinstance(statement_value, str) and statement_value.strip():
-            allowed_root_cause["statement"] = statement_value.strip()
+        if isinstance(statement_value, str):
+            if statement_value.strip():
+                allowed_root_cause["statement"] = statement_value.strip()
+            elif "statement" in root_cause:
+                # An explicit empty string means "clear the inherited statement".
+                allowed_root_cause["statement"] = ""
         elif "statement" in root_cause and statement_value is not None:
             dropped.append("root_cause.statement")
         if allowed_root_cause:
@@ -237,9 +241,12 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
         summary_value = root_cause_patch.get("summary")
         if isinstance(summary_value, str) and summary_value.strip():
             root_cause["summary"] = summary_value.strip()
-        statement_value = root_cause_patch.get("statement")
-        if isinstance(statement_value, str) and statement_value.strip():
-            root_cause["statement"] = statement_value.strip()
+        if "statement" in root_cause_patch:
+            statement_value = root_cause_patch.get("statement")
+            if isinstance(statement_value, str) and statement_value.strip():
+                root_cause["statement"] = statement_value.strip()
+            elif isinstance(statement_value, str):
+                root_cause.pop("statement", None)
         merged["root_cause"] = root_cause
     recommendations = diagnosis_patch.get("recommendations")
     if isinstance(recommendations, list):
