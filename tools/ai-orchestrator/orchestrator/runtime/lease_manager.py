@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
+from ..sdk.runtime_contract import ClaimStartResponse
 from ..tools_rca_api import RCAApiClient
 
 
@@ -22,6 +23,7 @@ class LeaseManager:
         self._execute_with_retry = execute_with_retry
 
         self._job_id = ""
+        self._claim_response: ClaimStartResponse | None = None
         self._stop_event = threading.Event()
         self._lease_lost_event = threading.Event()
         self._lease_lost_reason = ""
@@ -33,12 +35,15 @@ class LeaseManager:
         if not normalized_job_id:
             raise RuntimeError("job_id is required")
 
-        claimed = self._client.start_job(normalized_job_id)
-        if not claimed:
+        claim_response = self._client.start_job(normalized_job_id)
+        # ClaimStartResponse is truthy even when empty (successful claim with no skillsets/mcp_servers)
+        # An empty ClaimStartResponse() indicates a successful claim.
+        if claim_response is None:
             return False
 
         with self._lock:
             self._job_id = normalized_job_id
+            self._claim_response = claim_response
             self._lease_lost_reason = ""
             self._lease_lost_event.clear()
             self._stop_event.clear()
@@ -46,6 +51,14 @@ class LeaseManager:
         self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
         return True
+
+    def get_claim_response(self) -> ClaimStartResponse | None:
+        """Return the claim response from the last successful start() call.
+
+        The response contains resolved skillsets and MCP server references for the job's pipeline.
+        """
+        with self._lock:
+            return self._claim_response
 
     def _heartbeat_loop(self) -> None:
         while not self._stop_event.wait(self._heartbeat_interval_seconds):

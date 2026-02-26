@@ -14,6 +14,7 @@ const (
 	// AlertEventID defines alert event resource identifier.
 	AlertEventID ResourceID = "alert-event"
 	// DatasourceID defines datasource resource identifier.
+	// Deprecated: Datasource management removed from platform. External MCP servers handle datasources.
 	DatasourceID ResourceID = "datasource"
 	// EvidenceID defines evidence resource identifier.
 	EvidenceID ResourceID = "evidence"
@@ -37,6 +38,8 @@ const (
 	SessionID ResourceID = "session"
 	// SessionHistoryEventID defines session history event resource identifier.
 	SessionHistoryEventID ResourceID = "session-history"
+	// McpServerID defines MCP server resource identifier.
+	McpServerID ResourceID = "mcp"
 )
 
 // String 将资源标识符转换为字符串.

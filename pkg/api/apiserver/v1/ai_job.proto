@@ -122,7 +122,14 @@ message StartAIJobRequest {
 }
 
 // StartAIJobResponse indicates transition result.
-message StartAIJobResponse {}
+message StartAIJobResponse {
+  // skillsetsJSON contains resolved skillset configuration for the job's pipeline.
+  // Follows the ResolveOrchestratorSkillsetsResponse format.
+  optional string skillsetsJSON = 1;
+  // mcpServersJSON contains resolved MCP server references for the job's pipeline.
+  // Follows the McpServerRef array format.
+  optional string mcpServersJSON = 2;
+}
 
 // CancelAIJobRequest transitions job to canceled.
 message CancelAIJobRequest {

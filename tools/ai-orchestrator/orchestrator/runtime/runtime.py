@@ -2383,6 +2383,36 @@ class OrchestratorRuntime:
     def lease_lost_reason(self) -> str:
         return self._lease_manager.lease_lost_reason()
 
+    def get_claim_response(self):
+        """Return the claim response from the last successful start() call.
+
+        The response contains resolved skillsets and MCP server references for the job's pipeline.
+        Returns ClaimStartResponse or None if not yet claimed.
+        """
+        return self._lease_manager.get_claim_response()
+
+    def merge_tool_invoker(self, invoker: "ToolInvoker | ToolInvokerChain") -> None:
+        """Merge a secondary tool invoker with the existing one.
+
+        Creates a ToolInvokerChain that tries the existing invoker first,
+        then falls back to the secondary invoker for tools not allowed by the first.
+
+        This is used after claim to add MCP server tool providers resolved from
+        the platform's McpServerConfigM.
+
+        Args:
+            invoker: Secondary invoker to merge (typically from MCP server refs).
+        """
+        if invoker is None:
+            return
+        if self._tool_invoker is None:
+            self._tool_invoker = invoker
+            return
+        # Import locally to avoid circular import at module load time
+        from ..tooling.invoker import ToolInvokerChain
+
+        self._tool_invoker = ToolInvokerChain(toolset_invokers=[self._tool_invoker, invoker])
+
     def observe_post_finalize(
         self,
         *,

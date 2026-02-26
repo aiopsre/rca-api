@@ -47,6 +47,59 @@ class ClaimStartRequest:
 
 
 @dataclass(frozen=True)
+class ClaimStartResponse:
+    """Canonical response model for worker claim/start.
+
+    Contains resolved skillsets and MCP server references for the job's pipeline.
+    """
+
+    skillsets_json: str | None = None
+    mcp_servers_json: str | None = None
+
+    @classmethod
+    def from_api_response(cls, payload: dict[str, Any]) -> "ClaimStartResponse":
+        data = payload.get("data", payload)
+        if not isinstance(data, dict):
+            return cls()
+        skillsets_json = None
+        raw_skillsets = data.get("skillsetsJSON")
+        if isinstance(raw_skillsets, str) and raw_skillsets.strip():
+            skillsets_json = raw_skillsets.strip()
+        mcp_servers_json = None
+        raw_mcp_servers = data.get("mcpServersJSON")
+        if isinstance(raw_mcp_servers, str) and raw_mcp_servers.strip():
+            mcp_servers_json = raw_mcp_servers.strip()
+        return cls(
+            skillsets_json=skillsets_json,
+            mcp_servers_json=mcp_servers_json,
+        )
+
+    def has_skillsets(self) -> bool:
+        return isinstance(self.skillsets_json, str) and self.skillsets_json != ""
+
+    def has_mcp_servers(self) -> bool:
+        return isinstance(self.mcp_servers_json, str) and self.mcp_servers_json != ""
+
+    def parse_skillsets(self) -> dict[str, Any] | None:
+        if not self.has_skillsets():
+            return None
+        try:
+            parsed = json.loads(self.skillsets_json)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    def parse_mcp_servers(self) -> list[dict[str, Any]] | None:
+        if not self.has_mcp_servers():
+            return None
+        try:
+            parsed = json.loads(self.mcp_servers_json)
+            return parsed if isinstance(parsed, list) else None
+        except json.JSONDecodeError:
+            return None
+
+
+@dataclass(frozen=True)
 class RenewHeartbeatRequest:
     """Canonical request model for worker renew/heartbeat."""
 

@@ -23,6 +23,7 @@ from ..tooling import (
     ToolsetConfig,
     build_tool_invoker,
     build_tool_invoker_chain,
+    build_tool_invoker_from_mcpserver_refs_json,
     load_toolset_config,
     load_toolset_config_from_env,
 )
@@ -647,6 +648,26 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         if debug:
             _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
         return
+
+    # Merge MCP server invoker from claim response after successful claim
+    # Use getattr to handle test fakes that don't have these methods
+    get_claim_response = getattr(runtime, "get_claim_response", None)
+    merge_tool_invoker = getattr(runtime, "merge_tool_invoker", None)
+    if callable(get_claim_response) and callable(merge_tool_invoker):
+        claim_response = get_claim_response()
+        if claim_response is not None and claim_response.has_mcp_servers():
+            try:
+                mcp_invoker = build_tool_invoker_from_mcpserver_refs_json(claim_response.mcp_servers_json)
+                if mcp_invoker is not None:
+                    merge_tool_invoker(mcp_invoker)
+                    if debug:
+                        mcp_tools = mcp_invoker.allowed_tools()
+                        _log(
+                            f"[DEBUG] job={job_id} merged MCP server toolset tools={mcp_tools[:8]}... "
+                            f"count={len(mcp_tools)}"
+                        )
+            except Exception as mcp_exc:  # noqa: BLE001
+                _log(f"job={job_id} MCP server invoker build failed: {mcp_exc}")
 
     if selection_error_message:
         try:

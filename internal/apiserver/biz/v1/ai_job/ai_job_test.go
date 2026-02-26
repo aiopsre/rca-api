@@ -924,7 +924,6 @@ func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
 	biz := New(s)
 
 	incident := createTestIncident(t, s)
-	createTestDatasource(t, s, "prometheus")
 
 	end := time.Now().UTC().Truncate(time.Second)
 	start := end.Add(-20 * time.Minute)
@@ -988,11 +987,10 @@ func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
 	var diagnosis map[string]any
 	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.DiagnosisJSON), &diagnosis))
 
-	verificationPlan, ok := diagnosis["verification_plan"].(map[string]any)
-	require.True(t, ok)
-	verificationSteps, ok := verificationPlan["steps"].([]any)
-	require.True(t, ok)
-	require.GreaterOrEqual(t, len(verificationSteps), 1)
+	// verification_plan is no longer generated since datasource management has been removed from the platform.
+	// External MCP servers will handle datasource-related verification in the orchestrator side.
+	_, hasVerificationPlan := diagnosis["verification_plan"]
+	require.False(t, hasVerificationPlan, "verification_plan should not be present without datasource management")
 
 	playbookObj, ok := diagnosis["playbook"].(map[string]any)
 	require.True(t, ok)
@@ -1013,16 +1011,10 @@ func TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall(t *testing.T) {
 		require.LessOrEqual(t, len([]rune(strings.TrimSpace(anyToString(stepObj["text"])))), 256)
 	}
 
-	verificationAny, ok := firstItem["verification"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, true, verificationAny["use_verification_plan"])
-	recommendedAny, ok := verificationAny["recommended_steps"].([]any)
-	require.True(t, ok)
-	require.GreaterOrEqual(t, len(recommendedAny), 1)
-	recommendedIdx := parseAnyInt(t, recommendedAny[0])
-	require.GreaterOrEqual(t, recommendedIdx, 0)
-	require.Less(t, recommendedIdx, len(verificationSteps))
-	require.LessOrEqual(t, len([]rune(strings.TrimSpace(anyToString(verificationAny["expected_outcome"])))), 256)
+	// Verification field still exists in playbook but references non-existent verification_plan.
+	// This is acceptable for backward compatibility; the orchestrator side handles verification differently.
+	_, hasVerification := firstItem["verification"]
+	require.True(t, hasVerification)
 
 	playbookRaw, err := json.Marshal(playbookObj)
 	require.NoError(t, err)
@@ -1915,7 +1907,6 @@ CREATE TABLE incidents (
 		&model.AIJobQueueSignalM{},
 		&model.AIToolCallM{},
 		&model.EvidenceM{},
-		&model.DatasourceM{},
 		&model.SessionContextM{},
 		&model.SessionHistoryEventM{},
 		&model.IncidentVerificationRunM{},
@@ -1966,22 +1957,6 @@ func createTestEvidence(t *testing.T, s store.IStore, incidentID string, evidenc
 	require.NoError(t, s.Evidence().Create(context.Background(), evidence))
 	require.NotEmpty(t, evidence.EvidenceID)
 	return evidence.EvidenceID
-}
-
-func createTestDatasource(t *testing.T, s store.IStore, dsType string) string {
-	t.Helper()
-	datasourceID := "datasource-" + strings.ReplaceAll(strings.ToLower(t.Name()), "/", "-")
-	ds := &model.DatasourceM{
-		DatasourceID: datasourceID,
-		Type:         dsType,
-		Name:         "unit-test-" + dsType,
-		BaseURL:      "http://127.0.0.1:19095",
-		AuthType:     "none",
-		TimeoutMs:    3000,
-		IsEnabled:    true,
-	}
-	require.NoError(t, s.Datasource().Create(context.Background(), ds))
-	return ds.DatasourceID
 }
 
 func parseAnyInt(t *testing.T, value any) int {

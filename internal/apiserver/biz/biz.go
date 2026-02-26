@@ -7,7 +7,6 @@ import (
 	aijobv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job"
 	alerteventv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alert_event"
 	alertingpolicyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/alerting_policy"
-	datasourcev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/datasource"
 	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	internalstrategyconfigv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
@@ -35,7 +34,6 @@ var ProviderSet = wire.NewSet(NewBiz, wire.Bind(new(IBiz), new(*biz)))
 type IBiz interface {
 	IncidentV1() incidentv1.IncidentBiz
 	AlertEventV1() alerteventv1.AlertEventBiz
-	DatasourceV1() datasourcev1.DatasourceBiz
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
 	InternalStrategyConfigV1() internalstrategyconfigv1.ConfigBiz
@@ -61,8 +59,6 @@ type biz struct {
 	incidentBiz                incidentv1.IncidentBiz
 	alertEventOnce             sync.Once
 	alertEventBiz              alerteventv1.AlertEventBiz
-	datasourceOnce             sync.Once
-	datasourceBiz              datasourcev1.DatasourceBiz
 	evidenceOnce               sync.Once
 	evidenceBiz                evidencev1.EvidenceBiz
 	aiJobOnce                  sync.Once
@@ -116,13 +112,6 @@ func (b *biz) AlertEventV1() alerteventv1.AlertEventBiz {
 		b.alertEventBiz = alerteventv1.New(b.store)
 	})
 	return b.alertEventBiz
-}
-
-func (b *biz) DatasourceV1() datasourcev1.DatasourceBiz {
-	b.datasourceOnce.Do(func() {
-		b.datasourceBiz = datasourcev1.New(b.store)
-	})
-	return b.datasourceBiz
 }
 
 func (b *biz) EvidenceV1() evidencev1.EvidenceBiz {
@@ -231,7 +220,6 @@ func (b *biz) Close() error {
 		var errs []error
 		errs = appendCloseIfSupported(errs, b.incidentBiz)
 		errs = appendCloseIfSupported(errs, b.alertEventBiz)
-		errs = appendCloseIfSupported(errs, b.datasourceBiz)
 		errs = appendCloseIfSupported(errs, b.evidenceBiz)
 		errs = appendCloseIfSupported(errs, b.aiJobBiz)
 		errs = appendCloseIfSupported(errs, b.internalStrategyConfigBiz)

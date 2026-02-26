@@ -37,7 +37,7 @@ func TestMCPListTools(t *testing.T) {
 	require.Equal(t, mcpToolRegistryVersion, asString(payload["version"]))
 	rawTools, ok := payload["tools"].([]any)
 	require.True(t, ok)
-	require.Len(t, rawTools, 22)
+	require.Len(t, rawTools, 18)
 
 	names := make(map[string]struct{}, len(rawTools))
 	for _, item := range rawTools {
@@ -52,13 +52,11 @@ func TestMCPListTools(t *testing.T) {
 	require.Contains(t, names, "get_incident_timeline")
 	require.Contains(t, names, "list_alert_events_current")
 	require.Contains(t, names, "list_alert_events_history")
-	require.Contains(t, names, "list_datasources")
-	require.Contains(t, names, "get_datasource")
+	// Datasource tools removed - no longer managed by platform
 	require.Contains(t, names, "get_evidence")
 	require.Contains(t, names, "list_incident_evidence")
 	require.Contains(t, names, "search_evidence")
-	require.Contains(t, names, "query_metrics")
-	require.Contains(t, names, "query_logs")
+	// query_metrics and query_logs removed - will be handled by external MCP servers
 	require.Contains(t, names, "get_ai_job")
 	require.Contains(t, names, "list_ai_jobs")
 	require.Contains(t, names, "list_tool_calls")
@@ -335,46 +333,6 @@ func TestMCPCallScopeDenied_FixedError(t *testing.T) {
 	require.Equal(t, mcpToolCallToolPrefix+"get_incident", list[len(list)-1].ToolName)
 }
 
-func TestMCPCallQueryLogs_GuardrailInvalidArgument(t *testing.T) {
-	baseURL, cleanup, s, client := newMCPTestServer(t)
-	defer cleanup()
-
-	ds := &model.DatasourceM{
-		Type:      "loki",
-		Name:      "mcp-logs-ds",
-		BaseURL:   "http://127.0.0.1:9090",
-		AuthType:  "none",
-		TimeoutMs: 1000,
-		IsEnabled: true,
-	}
-	require.NoError(t, s.Datasource().Create(context.Background(), ds))
-	require.NotEmpty(t, ds.DatasourceID)
-
-	now := time.Now().UTC().Unix()
-	body := map[string]any{
-		"tool": "query_logs",
-		"input": map[string]any{
-			"datasource_id":    ds.DatasourceID,
-			"query":            "{app=\"demo\"}",
-			"time_range_start": map[string]any{"seconds": now - 300, "nanos": 0},
-			"time_range_end":   map[string]any{"seconds": now, "nanos": 0},
-			"limit":            999,
-		},
-	}
-	rawBody, err := json.Marshal(body)
-	require.NoError(t, err)
-
-	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "evidence.query")
-	require.NoError(t, err)
-	require.Equal(t, http.StatusBadRequest, status)
-
-	var payload map[string]any
-	require.NoError(t, json.Unmarshal(respBody, &payload))
-	errorObj, ok := payload["error"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, string(MCPErrorCodeInvalidArg), asString(errorObj["code"]))
-}
-
 func TestMCPCallListAlertEventsCurrent_ResponseTruncated(t *testing.T) {
 	baseURL, cleanup, s, client := newMCPTestServer(t)
 	defer cleanup()
@@ -497,46 +455,6 @@ func TestMCPCallAudit_RequestAndResponseAreSanitizedAndClamped(t *testing.T) {
 	require.NotContains(t, lowerRequest, "access_token")
 	require.NotContains(t, lowerRequest, "authorization")
 	require.NotContains(t, lowerRequest, "super-secret-token")
-}
-
-func TestMCPCallGetDatasource_MetadataOnly(t *testing.T) {
-	baseURL, cleanup, s, client := newMCPTestServer(t)
-	defer cleanup()
-
-	ds := &model.DatasourceM{
-		Type:               "prometheus",
-		Name:               "mcp-ds-meta",
-		BaseURL:            "http://127.0.0.1:19090",
-		AuthType:           "bearer",
-		AuthSecretRef:      ptrStringValue("vault://prod/metrics"),
-		TimeoutMs:          3000,
-		IsEnabled:          true,
-		DefaultHeadersJSON: ptrStringValue(`{"Authorization":"Bearer top-secret-token","X-Test":"demo"}`),
-		TLSConfigJSON:      ptrStringValue(`{"insecure_skip_verify":true}`),
-	}
-	require.NoError(t, s.Datasource().Create(context.Background(), ds))
-
-	rawBody, err := json.Marshal(map[string]any{
-		"tool": "get_datasource",
-		"input": map[string]any{
-			"datasource_id": ds.DatasourceID,
-		},
-	})
-	require.NoError(t, err)
-
-	status, respBody, err := doScopedJSONRequest(client, http.MethodPost, baseURL+"/v1/mcp/tools/call", rawBody, "datasource.read")
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, status)
-	assertNoSensitiveLeak(t, respBody)
-
-	var payload map[string]any
-	require.NoError(t, json.Unmarshal(respBody, &payload))
-	output, ok := payload["output"].(map[string]any)
-	require.True(t, ok)
-	require.Equal(t, ds.DatasourceID, asString(output["datasourceID"]))
-	require.NotContains(t, output, "authSecretRef")
-	require.NotContains(t, output, "defaultHeadersJSON")
-	require.NotContains(t, output, "tlsConfigJSON")
 }
 
 func TestMCPCallListToolCalls_SanitizedAndClamped(t *testing.T) {
@@ -971,7 +889,6 @@ func newMCPTestDB(t *testing.T) *gorm.DB {
 	db := newAIJobLongPollTestDB(t)
 	require.NoError(t, db.AutoMigrate(
 		&model.AlertEventM{},
-		&model.DatasourceM{},
 		&model.EvidenceM{},
 		&model.NoticeChannelM{},
 		&model.NoticeDeliveryM{},

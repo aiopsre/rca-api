@@ -743,9 +743,15 @@ func (x *StartAIJobRequest) GetJobID() string {
 
 // StartAIJobResponse indicates transition result.
 type StartAIJobResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// skillsetsJSON contains resolved skillset configuration for the job's pipeline.
+	// Follows the ResolveOrchestratorSkillsetsResponse format.
+	SkillsetsJSON *string `protobuf:"bytes,1,opt,name=skillsetsJSON,proto3,oneof" json:"skillsetsJSON,omitempty"`
+	// mcpServersJSON contains resolved MCP server references for the job's pipeline.
+	// Follows the McpServerRef array format.
+	McpServersJSON *string `protobuf:"bytes,2,opt,name=mcpServersJSON,proto3,oneof" json:"mcpServersJSON,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *StartAIJobResponse) Reset() {
@@ -776,6 +782,20 @@ func (x *StartAIJobResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use StartAIJobResponse.ProtoReflect.Descriptor instead.
 func (*StartAIJobResponse) Descriptor() ([]byte, []int) {
 	return file_apiserver_v1_ai_job_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *StartAIJobResponse) GetSkillsetsJSON() string {
+	if x != nil && x.SkillsetsJSON != nil {
+		return *x.SkillsetsJSON
+	}
+	return ""
+}
+
+func (x *StartAIJobResponse) GetMcpServersJSON() string {
+	if x != nil && x.McpServersJSON != nil {
+		return *x.McpServersJSON
+	}
+	return ""
 }
 
 // CancelAIJobRequest transitions job to canceled.
@@ -1543,8 +1563,12 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"totalCount\x12'\n" +
 	"\x04jobs\x18\x02 \x03(\v2\x13.apiserver.v1.AIJobR\x04jobs\")\n" +
 	"\x11StartAIJobRequest\x12\x14\n" +
-	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"\x14\n" +
-	"\x12StartAIJobResponse\"R\n" +
+	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"\x91\x01\n" +
+	"\x12StartAIJobResponse\x12)\n" +
+	"\rskillsetsJSON\x18\x01 \x01(\tH\x00R\rskillsetsJSON\x88\x01\x01\x12+\n" +
+	"\x0emcpServersJSON\x18\x02 \x01(\tH\x01R\x0emcpServersJSON\x88\x01\x01B\x10\n" +
+	"\x0e_skillsetsJSONB\x11\n" +
+	"\x0f_mcpServersJSON\"R\n" +
 	"\x12CancelAIJobRequest\x12\x14\n" +
 	"\x05jobID\x18\x01 \x01(\tR\x05jobID\x12\x1b\n" +
 	"\x06reason\x18\x02 \x01(\tH\x00R\x06reason\x88\x01\x01B\t\n" +
@@ -1679,6 +1703,7 @@ func file_apiserver_v1_ai_job_proto_init() {
 	}
 	file_apiserver_v1_ai_job_proto_msgTypes[0].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[1].OneofWrappers = []any{}
+	file_apiserver_v1_ai_job_proto_msgTypes[10].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[11].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[13].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[15].OneofWrappers = []any{}

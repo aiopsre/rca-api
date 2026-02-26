@@ -7,8 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -19,8 +17,6 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
-	integrationds "github.com/aiopsre/rca-api/internal/apiserver/pkg/integrations/datasource"
-	"github.com/aiopsre/rca-api/internal/apiserver/pkg/metrics"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -30,18 +26,14 @@ import (
 )
 
 const (
-	defaultQueryStepSeconds = int64(30)
-	defaultLogsLimit        = int64(200)
-	defaultListLimit        = int64(20)
-	defaultEvidenceCreator  = "system"
+	defaultListLimit       = int64(20)
+	defaultEvidenceCreator = "system"
 )
 
 // EvidenceBiz defines evidence use-cases.
 //
 //nolint:interfacebloat // Query/save/get/list/search are intentionally grouped in one biz entrypoint.
 type EvidenceBiz interface {
-	QueryMetrics(ctx context.Context, rq *v1.QueryMetricsRequest) (*v1.QueryMetricsResponse, error)
-	QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*v1.QueryLogsResponse, error)
 	Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1.SaveEvidenceResponse, error)
 	Get(ctx context.Context, rq *v1.GetEvidenceRequest) (*v1.GetEvidenceResponse, error)
 	ListByIncident(ctx context.Context, rq *v1.ListIncidentEvidenceRequest) (*v1.ListIncidentEvidenceResponse, error)
@@ -56,18 +48,16 @@ type EvidenceExpansion interface{}
 type evidenceBiz struct {
 	store      store.IStore
 	guardrails policy.EvidenceGuardrails
-	limiter    *policy.DatasourceRateLimiter
-	adapter    integrationds.QueryAdapter
 }
 
 type SearchEvidenceRequest struct {
-	Offset       int64
-	Limit        int64
-	IncidentID   *string
-	DatasourceID *string
-	Type         *string
-	TimeFrom     *time.Time
-	TimeTo       *time.Time
+	Offset        int64
+	Limit         int64
+	IncidentID    *string
+	DatasourceRef *string
+	Type          *string
+	TimeFrom      *time.Time
+	TimeTo        *time.Time
 }
 
 type SearchEvidenceResponse struct {
@@ -80,190 +70,10 @@ var _ EvidenceBiz = (*evidenceBiz)(nil)
 // New creates evidence biz with default guardrails.
 func New(store store.IStore) *evidenceBiz {
 	guardrails := policy.DefaultEvidenceGuardrails()
-	return NewWithDeps(store, guardrails, integrationds.NewHTTPAdapter())
-}
-
-// NewWithDeps creates evidence biz with injected dependencies for tests.
-func NewWithDeps(store store.IStore, guardrails policy.EvidenceGuardrails, adapter integrationds.QueryAdapter) *evidenceBiz {
 	return &evidenceBiz{
 		store:      store,
 		guardrails: guardrails,
-		limiter:    policy.NewDatasourceRateLimiter(guardrails),
-		adapter:    adapter,
 	}
-}
-
-//nolint:gocognit,gocyclo // Guardrails and error mapping are intentionally explicit.
-func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsRequest) (*v1.QueryMetricsResponse, error) {
-	startedAt := time.Now()
-	outcome := "ok"
-	datasourceType := "prometheus"
-	defer func() {
-		if metrics.M != nil {
-			metrics.M.RecordEvidenceQuery(ctx, "metrics", datasourceType, outcome, time.Since(startedAt))
-		}
-	}()
-
-	datasource, err := b.getActiveDatasource(ctx, rq.GetDatasourceID())
-	if err != nil {
-		outcome = "failed"
-		return nil, err
-	}
-	datasourceType = strings.ToLower(strings.TrimSpace(datasource.Type))
-	if !b.limiter.Allow(rq.GetDatasourceID()) {
-		outcome = "rate_limited"
-		return nil, errno.ErrEvidenceRateLimited
-	}
-
-	start := rq.GetTimeRangeStart().AsTime()
-	end := rq.GetTimeRangeEnd().AsTime()
-	if err := b.validateTimeRange(start, end, b.guardrails.MaxMetricsRange); err != nil {
-		outcome = "invalid_argument"
-		return nil, err
-	}
-
-	step := rq.GetStepSeconds()
-	if step <= 0 {
-		step = defaultQueryStepSeconds
-	}
-	if step > 300 {
-		outcome = "invalid_argument"
-		return nil, errorsx.ErrInvalidArgument
-	}
-
-	timeout := b.guardrails.ClampDatasourceTimeout(datasource.TimeoutMs)
-	queryResult, err := b.adapter.QueryMetricsRange(
-		ctx,
-		datasource,
-		integrationds.MetricsRangeQuery{
-			PromQL:      strings.TrimSpace(rq.GetPromql()),
-			Start:       start,
-			End:         end,
-			StepSeconds: step,
-			Timeout:     timeout,
-		},
-	)
-	if err != nil {
-		mapped := toDatasourceQueryError(err)
-		if errors.Is(mapped, errno.ErrEvidenceQueryTimeout) {
-			outcome = "timeout"
-		} else {
-			outcome = "dependency_error"
-		}
-		return nil, mapped
-	}
-
-	resultJSON, sizeBytes, truncated := b.normalizeResult(queryResult.ResultJSON, b.guardrails.MaxResultBytes)
-	rowCount := queryResult.RowCount
-	if rowCount > b.guardrails.MaxMetricsRows {
-		truncated = true
-		resultJSON = b.truncatedResultJSON(resultJSON, "max_metrics_rows_exceeded")
-		sizeBytes = int64(len(resultJSON))
-	}
-
-	slog.InfoContext(ctx, "evidence metrics query done",
-		"request_id", contextx.RequestID(ctx),
-		"incident_id", "",
-		"job_id", "",
-		"tool_call_id", "",
-		"datasource_id", rq.GetDatasourceID(),
-		"row_count", rowCount,
-		"truncated", truncated,
-	)
-
-	return &v1.QueryMetricsResponse{
-		QueryResultJSON: resultJSON,
-		ResultSizeBytes: sizeBytes,
-		RowCount:        rowCount,
-		IsTruncated:     truncated,
-	}, nil
-}
-
-//nolint:gocognit,gocyclo // Guardrails and backend selection are intentionally explicit.
-func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*v1.QueryLogsResponse, error) {
-	startedAt := time.Now()
-	outcome := "ok"
-	datasourceType := "logs"
-	defer func() {
-		if metrics.M != nil {
-			metrics.M.RecordEvidenceQuery(ctx, "logs", datasourceType, outcome, time.Since(startedAt))
-		}
-	}()
-
-	datasource, err := b.getActiveDatasource(ctx, rq.GetDatasourceID())
-	if err != nil {
-		outcome = "failed"
-		return nil, err
-	}
-	datasourceType = strings.ToLower(strings.TrimSpace(datasource.Type))
-	if !b.limiter.Allow(rq.GetDatasourceID()) {
-		outcome = "rate_limited"
-		return nil, errno.ErrEvidenceRateLimited
-	}
-
-	start := rq.GetTimeRangeStart().AsTime()
-	end := rq.GetTimeRangeEnd().AsTime()
-	if err := b.validateTimeRange(start, end, b.guardrails.MaxLogsRange); err != nil {
-		outcome = "invalid_argument"
-		return nil, err
-	}
-
-	limit := rq.GetLimit()
-	if limit <= 0 {
-		limit = defaultLogsLimit
-	}
-	if limit > b.guardrails.MaxLogsLimit {
-		outcome = "invalid_argument"
-		return nil, errorsx.ErrInvalidArgument
-	}
-
-	timeout := b.guardrails.ClampDatasourceTimeout(datasource.TimeoutMs)
-	queryResult, err := b.adapter.QueryLogsRange(
-		ctx,
-		datasource,
-		integrationds.LogsRangeQuery{
-			QueryText: strings.TrimSpace(rq.GetQueryText()),
-			QueryJSON: rq.QueryJSON,
-			Start:     start,
-			End:       end,
-			Limit:     limit,
-			Timeout:   timeout,
-		},
-	)
-	if err != nil {
-		mapped := toDatasourceQueryError(err)
-		if errors.Is(mapped, errno.ErrEvidenceQueryTimeout) {
-			outcome = "timeout"
-		} else {
-			outcome = "dependency_error"
-		}
-		return nil, mapped
-	}
-
-	resultJSON, sizeBytes, truncated := b.normalizeResult(queryResult.ResultJSON, b.guardrails.MaxResultBytes)
-	rowCount := queryResult.RowCount
-	if rowCount > b.guardrails.MaxLogsRows {
-		truncated = true
-		resultJSON = b.truncatedResultJSON(resultJSON, "max_logs_rows_exceeded")
-		sizeBytes = int64(len(resultJSON))
-	}
-
-	slog.InfoContext(ctx, "evidence logs query done",
-		"request_id", contextx.RequestID(ctx),
-		"incident_id", "",
-		"job_id", "",
-		"tool_call_id", "",
-		"datasource_id", rq.GetDatasourceID(),
-		"row_count", rowCount,
-		"truncated", truncated,
-	)
-
-	return &v1.QueryLogsResponse{
-		QueryResultJSON: resultJSON,
-		ResultSizeBytes: sizeBytes,
-		RowCount:        rowCount,
-		IsTruncated:     truncated,
-	}, nil
 }
 
 //nolint:gocognit,gocyclo // Save flow keeps idempotency and guardrails explicit.
@@ -272,12 +82,6 @@ func (b *evidenceBiz) Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1
 	end := rq.GetTimeRangeEnd().AsTime()
 	if err := b.validateTimeRange(start, end, b.guardrails.MaxMetricsRange); err != nil {
 		return nil, err
-	}
-
-	if rq.DatasourceID != nil && strings.TrimSpace(rq.GetDatasourceID()) != "" {
-		if _, err := b.getActiveDatasource(ctx, rq.GetDatasourceID()); err != nil {
-			return nil, err
-		}
 	}
 
 	idempotencyKey := ""
@@ -352,7 +156,7 @@ func (b *evidenceBiz) Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1
 		"incident_id", rq.GetIncidentID(),
 		"job_id", rq.GetJobID(),
 		"tool_call_id", "",
-		"datasource_id", rq.GetDatasourceID(),
+		"datasource_ref", rq.GetDatasourceID(),
 		"evidence_id", m.EvidenceID,
 		"idempotency_key", idempotencyKey,
 	)
@@ -411,7 +215,7 @@ func (b *evidenceBiz) Search(ctx context.Context, rq *SearchEvidenceRequest) (*S
 	if v := trimOptionalString(rq.IncidentID); v != "" {
 		whr = whr.F("incident_id", v)
 	}
-	if v := trimOptionalString(rq.DatasourceID); v != "" {
+	if v := trimOptionalString(rq.DatasourceRef); v != "" {
 		whr = whr.F("datasource_id", v)
 	}
 	if v := trimOptionalString(rq.Type); v != "" {
@@ -445,20 +249,6 @@ func (b *evidenceBiz) Search(ctx context.Context, rq *SearchEvidenceRequest) (*S
 	}, nil
 }
 
-func (b *evidenceBiz) getActiveDatasource(ctx context.Context, datasourceID string) (*model.DatasourceM, error) {
-	m, err := b.store.Datasource().Get(ctx, where.T(ctx).F("datasource_id", strings.TrimSpace(datasourceID)))
-	if err != nil {
-		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errno.ErrDatasourceNotFound
-		}
-		return nil, errno.ErrDatasourceGetFailed
-	}
-	if !m.IsEnabled {
-		return nil, errno.ErrDatasourceDisabled
-	}
-	return m, nil
-}
-
 func (b *evidenceBiz) validateTimeRange(start, end time.Time, maxRange time.Duration) error {
 	if start.IsZero() || end.IsZero() {
 		return errorsx.ErrInvalidArgument
@@ -470,15 +260,6 @@ func (b *evidenceBiz) validateTimeRange(start, end time.Time, maxRange time.Dura
 		return errorsx.ErrInvalidArgument
 	}
 	return nil
-}
-
-func (b *evidenceBiz) normalizeResult(result map[string]any, maxBytes int) (string, int64, bool) {
-	raw, err := json.Marshal(result)
-	if err != nil {
-		msg := fmt.Sprintf(`{"error":"marshal result failed: %s"}`, err.Error())
-		return msg, int64(len(msg)), false
-	}
-	return b.normalizeRawResult(string(raw), maxBytes)
 }
 
 func (b *evidenceBiz) normalizeRawResult(result string, maxBytes int) (string, int64, bool) {
@@ -502,42 +283,9 @@ func (b *evidenceBiz) normalizeRawResult(result string, maxBytes int) (string, i
 	return string(out), size, true
 }
 
-func (b *evidenceBiz) truncatedResultJSON(existing string, reason string) string {
-	wrapped := map[string]any{
-		"truncated": true,
-		"reason":    reason,
-		"preview":   existing,
-	}
-	out, err := json.Marshal(wrapped)
-	if err != nil {
-		return `{"truncated":true,"reason":"marshal_failed"}`
-	}
-	return string(out)
-}
-
-func toDatasourceQueryError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	var integrationErr *integrationds.QueryError
-	if errors.As(err, &integrationErr) {
-		switch integrationErr.Code {
-		case integrationds.QueryErrorCodeTimeout:
-			return errno.ErrEvidenceQueryTimeout
-		case integrationds.QueryErrorCodeUnsupportedType:
-			return errno.ErrDatasourceUnsupportedType
-		default:
-			return errno.ErrEvidenceQueryFailed
-		}
-	}
-
-	return errno.ErrEvidenceQueryFailed
-}
-
-func hashQuery(datasourceID string, typ string, queryText string, queryJSON string, start time.Time, end time.Time) string {
+func hashQuery(datasourceRef string, typ string, queryText string, queryJSON string, start time.Time, end time.Time) string {
 	payload := strings.Join([]string{
-		strings.TrimSpace(datasourceID),
+		strings.TrimSpace(datasourceRef),
 		strings.TrimSpace(strings.ToLower(typ)),
 		strings.TrimSpace(queryText),
 		strings.TrimSpace(queryJSON),

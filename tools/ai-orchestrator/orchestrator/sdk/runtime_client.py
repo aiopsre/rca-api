@@ -6,6 +6,7 @@ import uuid
 from .errors import OrchestratorErrorCategory, RCAApiError
 from .runtime_contract import (
     ClaimStartRequest,
+    ClaimStartResponse,
     EvidencePublishRequest,
     FinalizeRequest,
     GetJobSessionContextRequest,
@@ -71,15 +72,15 @@ class RuntimeAPIClient:
         self._request = request_fn
         self._default_timeout_s = float(default_timeout_s)
 
-    def start_job(self, request: ClaimStartRequest) -> bool:
+    def start_job(self, request: ClaimStartRequest) -> ClaimStartResponse:
         try:
-            self._request("POST", request.path())
-            return True
+            payload = self._request("POST", request.path())
+            return ClaimStartResponse.from_api_response(payload)
         except RCAApiError as exc:
             if exc.http_status == 409:
-                return False
+                return ClaimStartResponse()
             if exc.category in {OrchestratorErrorCategory.CONFLICT, OrchestratorErrorCategory.OWNER_LOST}:
-                return False
+                return ClaimStartResponse()
             raise
 
     def renew_job_lease(self, request: RenewHeartbeatRequest) -> None:

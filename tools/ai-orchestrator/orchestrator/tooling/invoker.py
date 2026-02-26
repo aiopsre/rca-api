@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 from typing import Any, Protocol
 
+from .mcp_server_loader import McpServerRef, build_provider_configs_from_mcpserver_refs
 from .providers.mcp_http import MCPHttpProvider
 from .toolset_config import ToolsetConfig, ToolsetDefinition, normalize_tool_name
 
 TOOLING_META_KEY = "_tooling_meta"
 _LOGGER = logging.getLogger(__name__)
 _CHAIN_SUMMARY_MAX_LEN = 160
+_MCP_SERVERS_TOOLSET_ID = "mcp_servers"
 
 
 class ToolProvider(Protocol):
@@ -262,3 +265,89 @@ def _summarize_toolset_chain(toolset_ids: list[str]) -> str:
     if len(summary) <= _CHAIN_SUMMARY_MAX_LEN:
         return summary
     return f"{summary[: _CHAIN_SUMMARY_MAX_LEN - 3]}..."
+
+
+def build_tool_invoker_from_mcpserver_refs(
+    refs: list[McpServerRef],
+    *,
+    toolset_id: str = _MCP_SERVERS_TOOLSET_ID,
+) -> ToolInvoker | None:
+    """Build a ToolInvoker from McpServerRefs resolved from the platform.
+
+    This creates a toolset that routes tool calls to external MCP servers
+    configured via the platform's McpServer management.
+
+    Args:
+        refs: List of McpServerRef objects from claim response.
+        toolset_id: Toolset ID to use for this invoker.
+
+    Returns:
+        ToolInvoker if refs is non-empty, None otherwise.
+    """
+    if not refs:
+        return None
+
+    configs = build_provider_configs_from_mcpserver_refs(refs)
+    if not configs:
+        return None
+
+    providers: list[_ProviderBinding] = []
+    for cfg in configs:
+        provider = MCPHttpProvider(
+            base_url=cfg.base_url,
+            scopes=cfg.scopes,
+            timeout_s=cfg.timeout_s,
+        )
+        providers.append(
+            _ProviderBinding(
+                name=cfg.name,
+                provider_type="mcp_http",
+                allow_tools=frozenset(cfg.allow_tools),
+                provider=provider,
+            )
+        )
+
+    return ToolInvoker(toolset_id=toolset_id, providers=providers)
+
+
+def merge_tool_invokers(
+    primary: ToolInvoker,
+    secondary: ToolInvoker | None,
+) -> ToolInvoker | ToolInvokerChain:
+    """Merge two tool invokers into a chain.
+
+    If secondary is None, returns primary unchanged.
+    If secondary is present, returns a chain that tries primary first.
+
+    Args:
+        primary: Primary invoker (tried first).
+        secondary: Secondary invoker (tried if primary denies tool).
+
+    Returns:
+        ToolInvoker if secondary is None, ToolInvokerChain otherwise.
+    """
+    if secondary is None:
+        return primary
+    return ToolInvokerChain(toolset_invokers=[primary, secondary])
+
+
+def build_tool_invoker_from_mcpserver_refs_json(
+    mcpserver_refs_json: str,
+    *,
+    toolset_id: str = _MCP_SERVERS_TOOLSET_ID,
+) -> ToolInvoker | None:
+    """Build a ToolInvoker from mcpserver_refs_json string.
+
+    Convenience function that parses JSON and builds invoker.
+
+    Args:
+        mcpserver_refs_json: JSON string from claim response.
+        toolset_id: Toolset ID to use for this invoker.
+
+    Returns:
+        ToolInvoker if valid refs, None otherwise.
+    """
+    from .mcp_server_loader import parse_mcpserver_refs
+
+    refs = parse_mcpserver_refs(mcpserver_refs_json)
+    return build_tool_invoker_from_mcpserver_refs(refs, toolset_id=toolset_id)

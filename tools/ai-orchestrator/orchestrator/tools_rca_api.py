@@ -13,6 +13,7 @@ from .sdk.errors import OrchestratorErrorCategory, RCAApiError
 from .sdk.runtime_client import RuntimeAPIClient
 from .sdk.runtime_contract import (
     ClaimStartRequest,
+    ClaimStartResponse,
     EvidencePublishRequest,
     FinalizeRequest,
     GetJobSessionContextRequest,
@@ -337,7 +338,8 @@ class RCAApiClient:
             raise RuntimeError("invalid register_templates response")
         return data
 
-    def start_job(self, job_id: str) -> bool:
+    def start_job(self, job_id: str) -> ClaimStartResponse:
+        """Start/claim a job and return the claim response with resolved skillsets and MCP servers."""
         return self.runtime.start_job(ClaimStartRequest(job_id=job_id))
 
     def renew_job_lease(self, job_id: str) -> None:

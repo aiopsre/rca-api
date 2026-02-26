@@ -14,8 +14,10 @@ import (
 	"gorm.io/gorm"
 
 	kbbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/kb"
+	mcpserverbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/mcpserver"
 	playbookbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/playbook"
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
+	skillsetbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_skillset"
 	verificationbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/verification"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
@@ -118,6 +120,8 @@ type AIJobExpansion interface {
 type aiJobBiz struct {
 	store             store.IStore
 	sessionBiz        sessionbiz.SessionBiz
+	skillsetBiz       skillsetbiz.SkillsetBiz
+	mcpServerBiz      mcpserverbiz.McpServerBiz
 	operatorReadCache *operatorReadCache
 }
 
@@ -162,6 +166,8 @@ func New(store store.IStore) *aiJobBiz {
 	return &aiJobBiz{
 		store:             store,
 		sessionBiz:        sessionbiz.New(store),
+		skillsetBiz:       skillsetbiz.New(store),
+		mcpServerBiz:      mcpserverbiz.New(store),
 		operatorReadCache: newOperatorReadCache(defaultOperatorReadCacheTTL),
 	}
 }
@@ -381,11 +387,13 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 	if err != nil {
 		return nil, err
 	}
+	var pipeline string
 	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
 		}
+		pipeline = job.Pipeline
 		if isTerminalStatus(job.Status) {
 			return errno.ErrAIJobInvalidTransition
 		}
@@ -429,7 +437,30 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 	if err != nil {
 		return nil, err
 	}
-	return &v1.StartAIJobResponse{}, nil
+
+	// Resolve skillsets and MCP servers for the pipeline
+	resp := &v1.StartAIJobResponse{}
+	if pipeline != "" {
+		skillsetsResp, skillsetErr := b.skillsetBiz.Resolve(ctx, &v1.ResolveOrchestratorSkillsetsRequest{
+			Pipeline: &pipeline,
+		})
+		if skillsetErr == nil && skillsetsResp != nil && len(skillsetsResp.Skillsets) > 0 {
+			if data, marshalErr := json.Marshal(skillsetsResp); marshalErr == nil {
+				skillsetsJSON := string(data)
+				resp.SkillsetsJSON = &skillsetsJSON
+			}
+		}
+
+		mcpServerRefs, mcpErr := b.mcpServerBiz.ResolveMcpServerRefs(ctx, pipeline)
+		if mcpErr == nil && len(mcpServerRefs) > 0 {
+			if data, marshalErr := json.Marshal(mcpServerRefs); marshalErr == nil {
+				mcpServersJSON := string(data)
+				resp.McpServersJSON = &mcpServersJSON
+			}
+		}
+	}
+
+	return resp, nil
 }
 
 func (b *aiJobBiz) Renew(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
@@ -828,63 +859,10 @@ func (b *aiJobBiz) buildVerificationPlan(ctx context.Context, toolCalls []*model
 	return out
 }
 
-//nolint:gocognit,gocyclo,wsl_v5 // Datasource resolution keeps explicit precedence for deterministic fallback.
+// resolveVerificationDatasourceIDs returns empty strings as datasource management has been removed from the platform.
+// The orchestrator side now resolves datasources through external MCP servers.
 func (b *aiJobBiz) resolveVerificationDatasourceIDs(ctx context.Context, toolCalls []*model.AIToolCallM) (string, string, string) {
-	// Prefer datasource_id captured in tool-call requests when available.
-	for _, toolCall := range toolCalls {
-		payload := parseJSONObject(toolCall.RequestJSON)
-		if payload == nil {
-			continue
-		}
-		datasourceID := strings.TrimSpace(anyToString(payload["datasource_id"]))
-		if datasourceID == "" {
-			datasourceID = strings.TrimSpace(anyToString(payload["datasourceID"]))
-		}
-		if datasourceID != "" {
-			ds, err := b.store.Datasource().Get(ctx, where.T(ctx).F("datasource_id", datasourceID))
-			if err == nil && ds != nil && ds.IsEnabled {
-				dsType := strings.ToLower(strings.TrimSpace(ds.Type))
-				switch dsType {
-				case "prometheus":
-					return ds.DatasourceID, "", ds.DatasourceID
-				case "loki", "elasticsearch":
-					return "", ds.DatasourceID, ds.DatasourceID
-				default:
-					return "", "", ds.DatasourceID
-				}
-			}
-		}
-	}
-
-	// Fallback to latest enabled datasources.
-	_, list, err := b.store.Datasource().List(ctx, where.T(ctx).P(0, 20).F("is_enabled", true))
-	if err != nil {
-		return "", "", ""
-	}
-
-	prometheusID := ""
-	logsID := ""
-	defaultID := ""
-	for _, item := range list {
-		if item == nil || !item.IsEnabled {
-			continue
-		}
-		if defaultID == "" {
-			defaultID = item.DatasourceID
-		}
-		dsType := strings.ToLower(strings.TrimSpace(item.Type))
-		switch dsType {
-		case "prometheus":
-			if prometheusID == "" {
-				prometheusID = item.DatasourceID
-			}
-		case "loki", "elasticsearch":
-			if logsID == "" {
-				logsID = item.DatasourceID
-			}
-		}
-	}
-	return prometheusID, logsID, defaultID
+	return "", "", ""
 }
 
 func (b *aiJobBiz) mirrorVerificationPlanToToolCall(ctx context.Context, toolCalls []*model.AIToolCallM, plan map[string]any) error {

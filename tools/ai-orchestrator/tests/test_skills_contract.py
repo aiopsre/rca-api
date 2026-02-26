@@ -803,6 +803,7 @@ class TestCatalogDescribeContract(unittest.TestCase):
 
 from orchestrator.sdk.runtime_contract import (
     ClaimStartRequest,
+    ClaimStartResponse,
     RenewHeartbeatRequest,
     ToolCallReportRequest,
     FinalizeRequest,
@@ -824,6 +825,83 @@ class TestClaimStartRequestContract(unittest.TestCase):
         """Job ID should be trimmed in path."""
         req = ClaimStartRequest(job_id="  job-123  ")
         self.assertEqual(req.path(), "/v1/ai/jobs/job-123/start")
+
+
+class TestClaimStartResponseContract(unittest.TestCase):
+    """Contract tests for ClaimStartResponse."""
+
+    def test_from_api_response_empty(self) -> None:
+        """Empty response should return default ClaimStartResponse."""
+        resp = ClaimStartResponse.from_api_response({})
+        self.assertIsNone(resp.skillsets_json)
+        self.assertIsNone(resp.mcp_servers_json)
+        self.assertFalse(resp.has_skillsets())
+        self.assertFalse(resp.has_mcp_servers())
+
+    def test_from_api_response_with_skillsets(self) -> None:
+        """Response with skillsetsJSON should populate skillsets."""
+        payload = {"data": {"skillsetsJSON": '{"skillsets": []}'}}
+        resp = ClaimStartResponse.from_api_response(payload)
+        self.assertEqual(resp.skillsets_json, '{"skillsets": []}')
+        self.assertTrue(resp.has_skillsets())
+        self.assertIsNone(resp.mcp_servers_json)
+
+    def test_from_api_response_with_mcp_servers(self) -> None:
+        """Response with mcpServersJSON should populate mcp_servers."""
+        payload = {"data": {"mcpServersJSON": '[{"name": "prometheus"}]'}}
+        resp = ClaimStartResponse.from_api_response(payload)
+        self.assertEqual(resp.mcp_servers_json, '[{"name": "prometheus"}]')
+        self.assertTrue(resp.has_mcp_servers())
+        self.assertIsNone(resp.skillsets_json)
+
+    def test_from_api_response_with_both(self) -> None:
+        """Response with both fields should populate both."""
+        payload = {
+            "data": {
+                "skillsetsJSON": '{"skillsets": []}',
+                "mcpServersJSON": '[{"name": "prometheus"}]',
+            }
+        }
+        resp = ClaimStartResponse.from_api_response(payload)
+        self.assertTrue(resp.has_skillsets())
+        self.assertTrue(resp.has_mcp_servers())
+
+    def test_parse_skillsets_valid_json(self) -> None:
+        """parse_skillsets should return parsed dict for valid JSON."""
+        resp = ClaimStartResponse(skillsets_json='{"skillsets": [{"skillID": "test"}]}')
+        parsed = resp.parse_skillsets()
+        self.assertIsInstance(parsed, dict)
+        self.assertIn("skillsets", parsed)
+
+    def test_parse_skillsets_invalid_json(self) -> None:
+        """parse_skillsets should return None for invalid JSON."""
+        resp = ClaimStartResponse(skillsets_json="not valid json")
+        parsed = resp.parse_skillsets()
+        self.assertIsNone(parsed)
+
+    def test_parse_mcp_servers_valid_json(self) -> None:
+        """parse_mcp_servers should return parsed list for valid JSON."""
+        resp = ClaimStartResponse(mcp_servers_json='[{"name": "prometheus"}]')
+        parsed = resp.parse_mcp_servers()
+        self.assertIsInstance(parsed, list)
+        self.assertEqual(len(parsed), 1)
+
+    def test_parse_mcp_servers_invalid_json(self) -> None:
+        """parse_mcp_servers should return None for invalid JSON."""
+        resp = ClaimStartResponse(mcp_servers_json="not valid json")
+        parsed = resp.parse_mcp_servers()
+        self.assertIsNone(parsed)
+
+    def test_empty_response_is_truthy(self) -> None:
+        """Empty ClaimStartResponse should be truthy for backward compatibility."""
+        resp = ClaimStartResponse()
+        self.assertTrue(resp)
+
+    def test_strip_whitespace_from_json_fields(self) -> None:
+        """Whitespace should be stripped from JSON fields."""
+        payload = {"data": {"skillsetsJSON": '  {"skillsets": []}  '}}
+        resp = ClaimStartResponse.from_api_response(payload)
+        self.assertEqual(resp.skillsets_json, '{"skillsets": []}')
 
 
 class TestRenewHeartbeatRequestContract(unittest.TestCase):

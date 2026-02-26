@@ -289,44 +289,6 @@ var mcpReadonlyTools = []mcpToolDefinition{
 		Execute: (*Handler).mcpListAlertEventsHistory,
 	},
 	{
-		Name:           "list_datasources",
-		Description:    "List datasource metadata with optional filters and page/limit.",
-		RequiredScopes: []string{authz.ScopeDatasourceRead},
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"type": map[string]any{"type": "string"},
-				"name": map[string]any{"type": "string"},
-				"is_enabled": map[string]any{
-					"type": "boolean",
-				},
-				"page":   map[string]any{"type": "integer"},
-				"offset": map[string]any{"type": "integer"},
-				"limit":  map[string]any{"type": "integer"},
-			},
-		},
-		OutputSchema: map[string]any{
-			"type": "object",
-		},
-		Execute: (*Handler).mcpListDatasources,
-	},
-	{
-		Name:           "get_datasource",
-		Description:    "Get one datasource metadata by datasource_id.",
-		RequiredScopes: []string{authz.ScopeDatasourceRead},
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"datasource_id": map[string]any{"type": "string"},
-			},
-			"required": []string{"datasource_id"},
-		},
-		OutputSchema: map[string]any{
-			"type": "object",
-		},
-		Execute: (*Handler).mcpGetDatasource,
-	},
-	{
 		Name:           "get_evidence",
 		Description:    "Get one evidence by evidence_id.",
 		RequiredScopes: []string{authz.ScopeEvidenceRead},
@@ -367,69 +329,20 @@ var mcpReadonlyTools = []mcpToolDefinition{
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"incident_id":   map[string]any{"type": "string"},
-				"datasource_id": map[string]any{"type": "string"},
-				"type":          map[string]any{"type": "string"},
-				"time_from":     map[string]any{"type": "string"},
-				"time_to":       map[string]any{"type": "string"},
-				"page":          map[string]any{"type": "integer"},
-				"offset":        map[string]any{"type": "integer"},
-				"limit":         map[string]any{"type": "integer"},
+				"incident_id":    map[string]any{"type": "string"},
+				"datasource_ref": map[string]any{"type": "string"},
+				"type":           map[string]any{"type": "string"},
+				"time_from":      map[string]any{"type": "string"},
+				"time_to":        map[string]any{"type": "string"},
+				"page":           map[string]any{"type": "integer"},
+				"offset":         map[string]any{"type": "integer"},
+				"limit":          map[string]any{"type": "integer"},
 			},
 		},
 		OutputSchema: map[string]any{
 			"type": "object",
 		},
 		Execute: (*Handler).mcpSearchEvidence,
-	},
-	{
-		Name:           "query_metrics",
-		Description:    "Read-only metrics query with evidence guardrails.",
-		RequiredScopes: []string{authz.ScopeEvidenceQuery},
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"datasource_id": map[string]any{"type": "string"},
-				"expr":          map[string]any{"type": "string"},
-				"time_range_start": map[string]any{
-					"type": "string",
-				},
-				"time_range_end": map[string]any{
-					"type": "string",
-				},
-				"step_seconds": map[string]any{"type": "integer"},
-			},
-			"required": []string{"datasource_id", "expr", "time_range_start", "time_range_end"},
-		},
-		OutputSchema: map[string]any{
-			"type": "object",
-		},
-		Execute: (*Handler).mcpQueryMetrics,
-	},
-	{
-		Name:           "query_logs",
-		Description:    "Read-only logs query with evidence guardrails.",
-		RequiredScopes: []string{authz.ScopeEvidenceQuery},
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"datasource_id": map[string]any{"type": "string"},
-				"query":         map[string]any{"type": "string"},
-				"query_json":    map[string]any{"type": "object"},
-				"time_range_start": map[string]any{
-					"type": "string",
-				},
-				"time_range_end": map[string]any{
-					"type": "string",
-				},
-				"limit": map[string]any{"type": "integer"},
-			},
-			"required": []string{"datasource_id", "query", "time_range_start", "time_range_end"},
-		},
-		OutputSchema: map[string]any{
-			"type": "object",
-		},
-		Execute: (*Handler).mcpQueryLogs,
 	},
 	{
 		Name:           "get_ai_job",
@@ -1351,8 +1264,8 @@ func (h *Handler) mcpSearchEvidence(c *gin.Context, input map[string]any) (any, 
 	if v := readInputString(input, "incident_id", "incidentID"); v != "" {
 		req.IncidentID = &v
 	}
-	if v := readInputString(input, "datasource_id", "datasourceID"); v != "" {
-		req.DatasourceID = &v
+	if v := readInputString(input, "datasource_ref", "datasourceRef"); v != "" {
+		req.DatasourceRef = &v
 	}
 	if v := readInputString(input, "type"); v != "" {
 		req.Type = &v
@@ -1388,159 +1301,6 @@ func (h *Handler) mcpSearchEvidence(c *gin.Context, input map[string]any) (any, 
 		"limit":      limit,
 		"evidence":   items,
 	}, false, nil
-}
-
-func (h *Handler) mcpListDatasources(c *gin.Context, input map[string]any) (any, bool, error) {
-	offset, limit, err := parsePageOffset(input)
-	if err != nil {
-		return nil, false, err
-	}
-
-	req := &v1.ListDatasourceRequest{
-		Offset: offset,
-		Limit:  limit,
-	}
-	if v := readInputString(input, "type"); v != "" {
-		req.Type = &v
-	}
-	if v := readInputString(input, "name"); v != "" {
-		req.Name = &v
-	}
-	if v, ok, err := readInputBool(input, "is_enabled", "isEnabled"); err != nil {
-		return nil, false, err
-	} else if ok {
-		req.IsEnabled = &v
-	}
-	if err := h.val.ValidateListDatasourceRequest(c.Request.Context(), req); err != nil {
-		return nil, false, err
-	}
-
-	resp, err := h.biz.DatasourceV1().List(c.Request.Context(), req)
-	if err != nil {
-		return nil, false, err
-	}
-
-	items := make([]map[string]any, 0, len(resp.GetDatasources()))
-	for _, item := range resp.GetDatasources() {
-		items = append(items, buildMCPDatasourceOutput(item))
-	}
-	return map[string]any{
-		"totalCount":  resp.GetTotalCount(),
-		"offset":      offset,
-		"limit":       limit,
-		"datasources": items,
-	}, false, nil
-}
-
-//nolint:dupl // Pattern matches other get-by-id tool branches by design.
-func (h *Handler) mcpGetDatasource(c *gin.Context, input map[string]any) (any, bool, error) {
-	req := &v1.GetDatasourceRequest{
-		DatasourceID: readInputString(input, "datasource_id", "datasourceID"),
-	}
-	if err := h.val.ValidateGetDatasourceRequest(c.Request.Context(), req); err != nil {
-		return nil, false, err
-	}
-
-	resp, err := h.biz.DatasourceV1().Get(c.Request.Context(), req)
-	if err != nil {
-		return nil, false, err
-	}
-	ds := resp.GetDatasource()
-	if ds == nil {
-		return nil, false, errno.ErrDatasourceNotFound
-	}
-	return buildMCPDatasourceOutput(ds), false, nil
-}
-
-func (h *Handler) mcpQueryMetrics(c *gin.Context, input map[string]any) (any, bool, error) {
-	startTS, _, err := readInputTimestamp(input, "time_range_start", "timeRangeStart", "start")
-	if err != nil {
-		return nil, false, err
-	}
-	endTS, _, err := readInputTimestamp(input, "time_range_end", "timeRangeEnd", "end")
-	if err != nil {
-		return nil, false, err
-	}
-	step, hasStep, err := readInputInt64(input, "step_seconds", "stepSeconds", "step")
-	if err != nil {
-		return nil, false, err
-	}
-
-	req := &v1.QueryMetricsRequest{
-		DatasourceID:   readInputString(input, "datasource_id", "datasourceID"),
-		Promql:         firstNonEmpty(readInputString(input, "expr"), readInputString(input, "promql")),
-		TimeRangeStart: startTS,
-		TimeRangeEnd:   endTS,
-	}
-	if hasStep {
-		req.StepSeconds = &step
-	}
-
-	if err := h.val.ValidateQueryMetricsRequest(c.Request.Context(), req); err != nil {
-		return nil, false, err
-	}
-
-	resp, err := h.biz.EvidenceV1().QueryMetrics(c.Request.Context(), req)
-	if err != nil {
-		return nil, false, err
-	}
-
-	out := map[string]any{
-		"queryResultJSON": sanitizeJSONString(resp.GetQueryResultJSON()),
-		"resultSizeBytes": resp.GetResultSizeBytes(),
-		"rowCount":        resp.GetRowCount(),
-		"isTruncated":     resp.GetIsTruncated(),
-	}
-	return out, resp.GetIsTruncated(), nil
-}
-
-func (h *Handler) mcpQueryLogs(c *gin.Context, input map[string]any) (any, bool, error) {
-	startTS, _, err := readInputTimestamp(input, "time_range_start", "timeRangeStart", "start")
-	if err != nil {
-		return nil, false, err
-	}
-	endTS, _, err := readInputTimestamp(input, "time_range_end", "timeRangeEnd", "end")
-	if err != nil {
-		return nil, false, err
-	}
-	limit, hasLimit, err := readInputInt64(input, "limit")
-	if err != nil {
-		return nil, false, err
-	}
-	queryJSONString, hasQueryJSON, err := readOptionalJSONString(input, "query_json", "queryJSON")
-	if err != nil {
-		return nil, false, err
-	}
-
-	req := &v1.QueryLogsRequest{
-		DatasourceID:   readInputString(input, "datasource_id", "datasourceID"),
-		QueryText:      firstNonEmpty(readInputString(input, "query"), readInputString(input, "query_text", "queryText")),
-		TimeRangeStart: startTS,
-		TimeRangeEnd:   endTS,
-	}
-	if hasQueryJSON {
-		req.QueryJSON = &queryJSONString
-	}
-	if hasLimit {
-		req.Limit = &limit
-	}
-
-	if err := h.val.ValidateQueryLogsRequest(c.Request.Context(), req); err != nil {
-		return nil, false, err
-	}
-
-	resp, err := h.biz.EvidenceV1().QueryLogs(c.Request.Context(), req)
-	if err != nil {
-		return nil, false, err
-	}
-
-	out := map[string]any{
-		"queryResultJSON": sanitizeJSONString(resp.GetQueryResultJSON()),
-		"resultSizeBytes": resp.GetResultSizeBytes(),
-		"rowCount":        resp.GetRowCount(),
-		"isTruncated":     resp.GetIsTruncated(),
-	}
-	return out, resp.GetIsTruncated(), nil
 }
 
 //nolint:dupl // Pattern matches other get-by-id tool branches by design.
@@ -2897,24 +2657,6 @@ func buildMCPAlertEventOutput(item *v1.AlertEvent) map[string]any {
 	}
 	if ts := timestampToRFC3339(item.GetAckedAt()); ts != "" {
 		out["ackedAt"] = ts
-	}
-	return out
-}
-
-func buildMCPDatasourceOutput(item *v1.Datasource) map[string]any {
-	out := map[string]any{
-		"datasourceID": item.GetDatasourceID(),
-		"type":         item.GetType(),
-		"name":         item.GetName(),
-		"baseURL":      item.GetBaseURL(),
-		"authType":     item.GetAuthType(),
-		"timeoutMs":    item.GetTimeoutMs(),
-		"isEnabled":    item.GetIsEnabled(),
-		"createdAt":    timestampToRFC3339(item.GetCreatedAt()),
-		"updatedAt":    timestampToRFC3339(item.GetUpdatedAt()),
-	}
-	if labels := strings.TrimSpace(item.GetLabelsJSON()); labels != "" {
-		out["labelsJSON"] = sanitizeJSONString(labels)
 	}
 	return out
 }

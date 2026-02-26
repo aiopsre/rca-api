@@ -32,7 +32,6 @@ type IStore interface {
 	Fake() FakeStore
 	Incident() IncidentStore
 	AlertEvent() AlertEventStore
-	Datasource() DatasourceStore
 	Evidence() EvidenceStore
 	AIJob() AIJobStore
 	AIJobQueueSignal() AIJobQueueSignalStore
@@ -49,6 +48,8 @@ type IStore interface {
 	RBAC() RBACStore
 	AlertingPolicy() AlertingPolicyStore
 	Playbook() PlaybookStore
+	McpServer() McpServerStore
+	McpServerConfig() McpServerConfigStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -130,10 +131,6 @@ func (s *store) AlertEvent() AlertEventStore {
 	return newAlertEventStore(s)
 }
 
-func (s *store) Datasource() DatasourceStore {
-	return newDatasourceStore(s)
-}
-
 func (s *store) Evidence() EvidenceStore {
 	return newEvidenceStore(s)
 }
@@ -196,4 +193,12 @@ func (s *store) AlertingPolicy() AlertingPolicyStore {
 
 func (s *store) Playbook() PlaybookStore {
 	return newPlaybookStore(s)
+}
+
+func (s *store) McpServer() McpServerStore {
+	return newMcpServerStore(s)
+}
+
+func (s *store) McpServerConfig() McpServerConfigStore {
+	return newMcpServerConfigStore(s)
 }
