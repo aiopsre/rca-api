@@ -31,6 +31,21 @@ if TYPE_CHECKING:
 _OBSERVED_MAX_LEN = 512
 _MAX_SELECTED_SKILL_RESOURCES = 3
 
+# Canonical set of observation tool names for skill.* audit events (passed as tool= to
+# report_observation / _report_observation_best_effort). Excludes session_patch["source"]
+# values (e.g. skill.prompt, skill.script). Used by contract tests to detect audit-surface
+# regressions.
+ALLOWED_SKILL_OBSERVATION_TOOLS: frozenset[str] = frozenset({
+    "skill.select",
+    "skill.resource_select",
+    "skill.resource_load",
+    "skill.consume",
+    "skill.execute",
+    "skill.fallback",
+    "skill.tool_reuse",
+    "skill.tool_plan",
+})
+
 
 @dataclass(frozen=True)
 class KnowledgeContextBundle:

@@ -28,7 +28,12 @@ from orchestrator.skills.capabilities import (
     _sanitize_diagnosis_patch,
     get_capability_definition,
 )
-from orchestrator.skills.runtime import SkillCatalog, parse_skill_frontmatter
+from orchestrator.skills.runtime import (
+    SkillBinding,
+    SkillCatalog,
+    SkillSummary,
+    parse_skill_frontmatter,
+)
 from orchestrator.state import GraphState
 
 
@@ -3235,6 +3240,136 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertEqual(runtime.reported[0]["tool_name"], "evidence.metrics.reuse")
         self.assertEqual(len(runtime.observations), 1)
         self.assertEqual(runtime.observations[0]["tool"], "skill.tool_reuse")
+
+
+class TestSkillsResolveAndBindingContract(unittest.TestCase):
+    """Contract tests for resolve payload and binding (see docs/tooling/claude-skill-bundle-and-binding.md)."""
+
+    def test_resolve_payload_requires_manifest_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "s"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="N", description="D")
+            bundle_path = base / "s.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            payload = _resolved_skillsets_payload(
+                skillset_id="set1",
+                skill_id="s",
+                version="1.0.0",
+                name="N",
+                description="D",
+                compatibility="",
+                bundle_path=bundle_path,
+                bundle_digest=bundle_digest,
+            )
+            payload[0]["skills"][0]["manifestJSON"] = ""
+            with self.assertRaisesRegex(RuntimeError, "missing manifestJSON"):
+                SkillCatalog.from_resolved_skillsets(
+                    skillsets_payload=payload,
+                    cache_dir=str(base / "cache"),
+                )
+
+    def test_skill_summary_envelope_contract_requires_name_and_description(self) -> None:
+        valid = '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"A","description":"B"}'
+        summary = SkillSummary.from_envelope(valid, skill_id="s", version="1.0.0")
+        self.assertEqual(summary.name, "A")
+        self.assertEqual(summary.description, "B")
+        self.assertEqual(summary.bundle_format, "claude_skill_v1")
+        self.assertEqual(summary.instruction_file, "SKILL.md")
+
+        with self.assertRaisesRegex(ValueError, "name and description"):
+            SkillSummary.from_envelope(
+                '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"","description":"B"}',
+                skill_id="s",
+                version="1.0.0",
+            )
+        with self.assertRaisesRegex(ValueError, "name and description"):
+            SkillSummary.from_envelope(
+                '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"A","description":""}',
+                skill_id="s",
+                version="1.0.0",
+            )
+
+    def test_skill_binding_from_payload_contract(self) -> None:
+        binding = SkillBinding.from_payload({
+            "capability": "diagnosis.enrich",
+            "role": "executor",
+            "executor_mode": "prompt",
+            "allowed_tools": ["query_logs"],
+            "priority": 120,
+            "enabled": True,
+        })
+        self.assertEqual(binding.capability, "diagnosis.enrich")
+        self.assertEqual(binding.role, "executor")
+        self.assertEqual(binding.executor_mode, "prompt")
+        self.assertEqual(list(binding.allowed_tools), ["query_logs"])
+        self.assertEqual(binding.priority, 120)
+        self.assertTrue(binding.enabled)
+
+        with self.assertRaisesRegex(ValueError, "requires capability"):
+            SkillBinding.from_payload({"role": "executor"})
+
+        default_role = SkillBinding.from_payload({"capability": "evidence.plan"})
+        self.assertEqual(default_role.role, "executor")
+        self.assertEqual(default_role.executor_mode, "prompt")
+        self.assertEqual(default_role.priority, 100)
+        self.assertTrue(default_role.enabled)
+
+    def test_skill_audit_observation_tool_values_match_runtime_contract(self) -> None:
+        """Emitted skill.* observation tool names must be in runtime ALLOWED_SKILL_OBSERVATION_TOOLS."""
+        from orchestrator.runtime.runtime import ALLOWED_SKILL_OBSERVATION_TOOLS
+
+        # Recording runtime: captures every report_observation(tool=..., ...) emission
+        class _RecordingRuntime:
+            def __init__(self) -> None:
+                self.reported: list[dict[str, object]] = []
+                self.observations: list[dict[str, object]] = []
+
+            def report_tool_call(self, **kwargs: object) -> int:
+                self.reported.append(kwargs)
+                return len(self.reported)
+
+            def report_observation(self, **kwargs: object) -> int:
+                self.observations.append(kwargs)
+                return len(self.observations)
+
+            def query_metrics(self, **kwargs: object) -> dict[str, object]:
+                raise AssertionError("query_metrics should not run when prewarmed")
+
+        runtime = _RecordingRuntime()
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            metrics_branch_meta={
+                "mode": "query",
+                "query_type": "metrics",
+                "tool_result_reusable": True,
+                "tool_result_source": "skill_prompt_first",
+                "request_payload": {"datasource_id": "ds-m", "promql": "up", "start_ts": 0, "end_ts": 1, "step_seconds": 1},
+                "query_request": {"datasourceID": "ds-m", "queryText": "up", "queryJSON": "{}"},
+            },
+            metrics_query_status="ok",
+            metrics_query_output={
+                "queryResultJSON": "{}",
+                "rowCount": 0,
+                "resultSizeBytes": 0,
+                "isTruncated": False,
+            },
+            metrics_query_latency_ms=0,
+            metrics_query_result_size_bytes=0,
+        )
+        query_metrics_node(state, runtime)  # type: ignore[arg-type]
+        emitted_skill_tools = [
+            ob["tool"] for ob in runtime.observations
+            if isinstance(ob.get("tool"), str) and ob["tool"].startswith("skill.")
+        ]
+        self.assertGreater(len(emitted_skill_tools), 0, "test must emit at least one skill.* observation")
+        for tool in emitted_skill_tools:
+            self.assertIn(tool, ALLOWED_SKILL_OBSERVATION_TOOLS, msg=f"emitted tool {tool!r} not in runtime contract")
+        # Ensure contract set is not accidentally shrunk (core tools must remain)
+        for required in ("skill.select", "skill.consume", "skill.execute", "skill.fallback", "skill.tool_reuse"):
+            self.assertIn(required, ALLOWED_SKILL_OBSERVATION_TOOLS, msg=f"contract must include {required!r}")
 
 
 if __name__ == "__main__":

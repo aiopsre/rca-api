@@ -93,9 +93,9 @@ def load_settings() -> Settings:
         post_finalize_wait_interval_ms,
         _env_int("POST_FINALIZE_WAIT_MAX_INTERVAL_MS", 2000),
     )
-    skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "catalog").strip().lower() or "catalog"
+    skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "prompt_first").strip().lower() or "prompt_first"
     if skills_execution_mode not in {"catalog", "prompt_first"}:
-        skills_execution_mode = "catalog"
+        skills_execution_mode = "prompt_first"
     skills_tool_calling_mode = os.getenv("SKILLS_TOOL_CALLING_MODE", "disabled").strip().lower() or "disabled"
     if skills_tool_calling_mode not in {"disabled", "evidence_plan_single_hop", "evidence_plan_dual_tool"}:
         skills_tool_calling_mode = "disabled"
