@@ -3127,6 +3127,157 @@ class SkillCatalogTest(unittest.TestCase):
             self.assertIsNone(state.metrics_query_status)
             self.assertIsNone(state.logs_query_status)
 
+    def test_script_executor_evidence_plan_single_hop_warms_logs_state(self) -> None:
+        """Test script executor with single_hop mode only warms logs state, not metrics."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            executor_dir = base / "executor"
+            executor_dir.mkdir(parents=True)
+            _write_skill_dir(
+                executor_dir,
+                name="Evidence Script Planner",
+                description="Script executor planner",
+                script_body=(
+                    "def run(input_payload, ctx):\n"
+                    "    if ctx.get('phase') == 'plan_tools':\n"
+                    "        return {\n"
+                    "            'tool_calls': [\n"
+                    "                {\n"
+                    "                    'tool': 'mcp.query_logs',\n"
+                    "                    'input': {\n"
+                    "                        'datasource_id': 'ds-logs',\n"
+                    "                        'query': 'service.name:\"svc-a\" AND log.level:(error OR fatal)',\n"
+                    "                        'start_ts': 100,\n"
+                    "                        'end_ts': 200,\n"
+                    "                        'limit': 200,\n"
+                    "                    },\n"
+                    "                },\n"
+                    "            ],\n"
+                    "            'observations': [{'kind': 'note', 'message': 'planning single tool'}],\n"
+                    "        }\n"
+                    "    tool_results = ctx.get('tool_results', [])\n"
+                    "    return {\n"
+                    "        'payload': {\n"
+                    "            'evidence_plan_patch': {\n"
+                    "                'metadata': {\n"
+                    "                    'prompt_skill': 'claude.evidence.script_planner',\n"
+                    "                    'tool_result_count': len(tool_results),\n"
+                    "                }\n"
+                    "            },\n"
+                    "            'logs_branch_meta': {\n"
+                    "                'mode': 'query',\n"
+                    "                'query_type': 'logs',\n"
+                    "                'request_payload': {\n"
+                    "                    'query': 'service.name:\"svc-a\" AND log.level:(error OR fatal)',\n"
+                    "                },\n"
+                    "                'query_request': {\n"
+                    "                    'queryText': 'service.name:\"svc-a\" AND log.level:(error OR fatal)',\n"
+                    "                },\n"
+                    "            },\n"
+                    "        },\n"
+                    "    }\n"
+                ),
+            )
+            executor_bundle = base / "executor.zip"
+            executor_digest = _zip_dir(executor_dir, executor_bundle)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[
+                    {
+                        "skillsetID": "skillset.default",
+                        "skills": [
+                            {
+                                "skillID": "claude.evidence.script_planner",
+                                "version": "1.0.0",
+                                "artifactURL": executor_bundle.resolve().as_uri(),
+                                "bundleDigest": executor_digest,
+                                "manifestJSON": '{"bundle_format":"claude_skill_v1","instruction_file":"SKILL.md","name":"Evidence Script Planner","description":"Script executor planner","compatibility":""}',
+                                "capability": "evidence.plan",
+                                "role": "executor",
+                                "executorMode": "script",
+                                "allowedTools": ["query_logs", "query_metrics"],
+                                "priority": 100,
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                ],
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _SelectingAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="claude.evidence.script_planner\x001.0.0\x00evidence.plan\x00executor",
+                        reason="use script planner",
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_single_hop",
+                skill_agent=_SelectingAgent(),
+            )
+
+            toolcalls: list[dict[str, object]] = []
+            runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
+            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                "rowCount": 1,
+                "resultSizeBytes": 88,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}, "candidates": [{"type": "logs"}]},
+                evidence_candidates=[{"type": "logs"}],
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": "message:error",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {"datasourceID": "ds-logs", "queryText": "message:error", "queryJSON": "{}"},
+                },
+                evidence_mode="query",
+                incident_context={"service": "svc-a", "namespace": "default"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "claude.evidence.script_planner")
+            self.assertEqual(state.evidence_plan["metadata"]["prompt_skill"], "claude.evidence.script_planner")
+            self.assertEqual(state.evidence_plan["metadata"]["tool_result_count"], 1)
+            # Single hop mode: only logs state should be warmed
+            self.assertEqual(state.logs_query_status, "ok")
+            self.assertTrue(state.logs_branch_meta["tool_result_reusable"])
+            # Metrics should NOT be warmed in single_hop mode
+            self.assertIsNone(state.metrics_query_status)
+            self.assertNotIn("tool_result_reusable", state.metrics_branch_meta or {})
+            self.assertEqual([item["tool_name"] for item in toolcalls], ["mcp.query_logs"])
+
     def test_query_logs_node_reuses_prewarmed_skill_result(self) -> None:
         class _ReuseRuntime:
             def __init__(self) -> None:
@@ -3240,6 +3391,617 @@ class SkillCatalogTest(unittest.TestCase):
         self.assertEqual(runtime.reported[0]["tool_name"], "evidence.metrics.reuse")
         self.assertEqual(len(runtime.observations), 1)
         self.assertEqual(runtime.observations[0]["tool"], "skill.tool_reuse")
+
+
+class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
+    """Integration tests for skill execution merging results to graph state."""
+
+    def test_diagnosis_enrich_skill_merges_to_graph_state_correctly(self) -> None:
+        """Verify diagnosis.enrich skill execution correctly merges diagnosis_patch to graph state."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(
+                skill_dir,
+                name="Diagnosis Enricher",
+                description="Enrich diagnosis results",
+                resources=[
+                    ("templates/output-rules.md", "# Rules\n\nOutput structured patch.\n"),
+                ],
+            )
+            bundle_path = base / "diagnosis.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="diagnosis.enricher",
+                    version="1.0.0",
+                    name="Diagnosis Enricher",
+                    description="Enrich diagnosis results",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="diagnosis.enrich",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="diagnosis.enricher\x001.0.0\x00diagnosis.enrich",
+                        reason="best match",
+                    )
+
+                def select_skill_resources(self, **_: object):
+                    class _Selection:
+                        reason = "load output rules"
+                        selected_resource_ids = ["templates/output-rules.md"]
+
+                    return _Selection()
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "diagnosis_patch": {
+                                "summary": "Enriched: database connection timeout",
+                                "root_cause": {
+                                    "summary": "PostgreSQL connection pool exhausted",
+                                    "statement": "Connection pool limit (100) reached during traffic spike",
+                                },
+                                "unknowns": ["need to check pool metrics"],
+                                "next_steps": ["increase pool size", "add connection timeout"],
+                            },
+                        },
+                        session_patch={
+                            "latest_summary": {"summary": "Enriched: database connection timeout"},
+                        },
+                        observations=[{"kind": "note", "message": "diagnosis enriched"}],
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_FakeAgent(),
+            )
+
+            initial_diagnosis = {
+                "summary": "Native summary",
+                "root_cause": {
+                    "summary": "Native root cause",
+                    "statement": "Native statement",
+                    "confidence": 0.6,
+                    "evidence_ids": ["ev-1"],
+                },
+            }
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                diagnosis_json=initial_diagnosis,
+                evidence_ids=["ev-1"],
+                evidence_meta=[{"evidence_id": "ev-1", "evidence_type": "logs"}],
+            )
+
+            result = runtime.consume_diagnosis_enrich_skill(
+                graph_state=state,
+                input_payload={
+                    "incident_id": "inc-1",
+                    "diagnosis_json": initial_diagnosis,
+                    "evidence_ids": ["ev-1"],
+                    "evidence_meta": [{"evidence_id": "ev-1"}],
+                    "input_hints": {},
+                    "quality_gate_decision": "success",
+                    "quality_gate_reasons": [],
+                    "missing_evidence": [],
+                },
+            )
+
+            # Verify result structure
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "diagnosis.enricher")
+
+            # Verify diagnosis_patch merged correctly
+            diagnosis_patch = result["payload"]["diagnosis_patch"]
+            self.assertEqual(diagnosis_patch["summary"], "Enriched: database connection timeout")
+            self.assertEqual(diagnosis_patch["root_cause"]["summary"], "PostgreSQL connection pool exhausted")
+            self.assertEqual(diagnosis_patch["unknowns"], ["need to check pool metrics"])
+            self.assertEqual(diagnosis_patch["next_steps"], ["increase pool size", "add connection timeout"])
+
+            # Verify session_patch has correct actor/source
+            self.assertEqual(result["session_patch"]["actor"], "skill:diagnosis.enricher")
+            self.assertEqual(result["session_patch"]["source"], "skill.prompt")
+
+            # Verify observations
+            self.assertEqual(len(result["observations"]), 1)
+            self.assertEqual(result["observations"][0]["kind"], "note")
+
+    def test_evidence_plan_skill_merges_branch_meta_to_graph_state(self) -> None:
+        """Verify evidence.plan skill execution correctly merges branch_meta to graph state."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Evidence Planner", description="Plan evidence queries")
+            bundle_path = base / "evidence.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="evidence.planner",
+                    version="1.0.0",
+                    name="Evidence Planner",
+                    description="Plan evidence queries",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="evidence.planner\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {
+                                "budget": {"max_calls": 3},
+                                "metadata": {"planner": "evidence.planner"},
+                            },
+                            "evidence_candidates": [{"type": "logs"}, {"type": "metrics"}],
+                            "logs_branch_meta": {
+                                "mode": "query",
+                                "query_type": "logs",
+                                "request_payload": {
+                                    "datasource_id": "ds-logs",
+                                    "query": "service:api error",
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "limit": 100,
+                                },
+                                "query_request": {
+                                    "datasourceID": "ds-logs",
+                                    "queryText": "service:api error",
+                                },
+                            },
+                            "metrics_branch_meta": {
+                                "mode": "query",
+                                "query_type": "metrics",
+                                "request_payload": {
+                                    "datasource_id": "ds-metrics",
+                                    "promql": "rate(http_requests_total[5m])",
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "step_seconds": 60,
+                                },
+                                "query_request": {
+                                    "datasourceID": "ds-metrics",
+                                    "queryText": "rate(http_requests_total[5m])",
+                                },
+                            },
+                        },
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skill_agent=_FakeAgent(),
+            )
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}, "candidates": []},
+                evidence_candidates=[],
+                evidence_mode="query",
+                incident_context={"service": "api"},
+                input_hints={},
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "original-ds-logs",
+                        "query": "original query",
+                        "start_ts": 0,
+                        "end_ts": 100,
+                        "limit": 50,
+                    },
+                    "query_request": {"datasourceID": "original-ds-logs", "queryText": "original query"},
+                },
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "original-ds-metrics",
+                        "promql": "original_promql",
+                        "start_ts": 0,
+                        "end_ts": 100,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {"datasourceID": "original-ds-metrics", "queryText": "original_promql"},
+                },
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            # Verify result structure
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result["skill_id"], "evidence.planner")
+
+            # Verify evidence_plan merged correctly
+            self.assertEqual(state.evidence_plan["budget"]["max_calls"], 3)
+            self.assertEqual(state.evidence_plan["metadata"]["planner"], "evidence.planner")
+            self.assertEqual(state.evidence_candidates, [{"type": "logs"}, {"type": "metrics"}])
+
+            # Verify logs_branch_meta merged correctly - datasource_id is preserved from original state
+            self.assertEqual(state.logs_branch_meta["mode"], "query")
+            self.assertEqual(state.logs_branch_meta["query_type"], "logs")
+            self.assertEqual(state.logs_branch_meta["request_payload"]["datasource_id"], "original-ds-logs")
+            self.assertEqual(state.logs_branch_meta["request_payload"]["query"], "service:api error")
+
+            # Verify metrics_branch_meta merged correctly - datasource_id is preserved from original state
+            self.assertEqual(state.metrics_branch_meta["mode"], "query")
+            self.assertEqual(state.metrics_branch_meta["query_type"], "metrics")
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["datasource_id"], "original-ds-metrics")
+            self.assertEqual(state.metrics_branch_meta["request_payload"]["promql"], "rate(http_requests_total[5m])")
+
+    def test_tool_result_reusable_flag_set_correctly_for_logs(self) -> None:
+        """Verify tool_result_reusable and tool_result_source are set correctly after tool calling for logs."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Logs Planner", description="Plan logs query")
+            bundle_path = base / "logs.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="logs.planner",
+                    version="1.0.0",
+                    name="Logs Planner",
+                    description="Plan logs query",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=["query_logs"],
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="logs.planner\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def plan_tool_call(self, **_: object):
+                    class _Plan:
+                        tool = "mcp.query_logs"
+                        input_payload = {
+                            "datasource_id": "ds-logs",
+                            "query": "service:api error",
+                            "start_ts": 100,
+                            "end_ts": 200,
+                            "limit": 100,
+                        }
+                        reason = "query logs for errors"
+
+                    return _Plan()
+
+                def consume_after_tool(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {"metadata": {"planner": "logs.planner"}},
+                            "logs_branch_meta": {
+                                "mode": "query",
+                                "query_type": "logs",
+                                "request_payload": {"query": "service:api error"},
+                                "query_request": {"queryText": "service:api error"},
+                            },
+                        },
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_single_hop",
+                skill_agent=_FakeAgent(),
+            )
+            runtime.report_tool_call = lambda **kwargs: 1  # type: ignore[method-assign]
+            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[]}}',
+                "rowCount": 0,
+                "resultSizeBytes": 0,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}},
+                evidence_mode="query",
+                logs_branch_meta={
+                    "mode": "query",
+                    "query_type": "logs",
+                    "request_payload": {
+                        "datasource_id": "ds-logs",
+                        "query": "message:error",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "limit": 200,
+                    },
+                    "query_request": {"datasourceID": "ds-logs", "queryText": "message:error"},
+                },
+                incident_context={"service": "api"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            # Verify tool_result_reusable is True
+            self.assertTrue(state.logs_branch_meta["tool_result_reusable"])
+            # Verify tool_result_source is skill_prompt_first
+            self.assertEqual(state.logs_branch_meta["tool_result_source"], "skill_prompt_first")
+            # Verify logs_query_status is ok
+            self.assertEqual(state.logs_query_status, "ok")
+            self.assertIsNone(state.logs_query_error)
+
+    def test_tool_result_reusable_flag_set_correctly_for_metrics(self) -> None:
+        """Verify tool_result_reusable and tool_result_source are set correctly after tool calling for metrics."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Metrics Planner", description="Plan metrics query")
+            bundle_path = base / "metrics.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="metrics.planner",
+                    version="1.0.0",
+                    name="Metrics Planner",
+                    description="Plan metrics query",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=["query_metrics"],  # Metrics only
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="metrics.planner\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def plan_tool_calls(self, **_: object):
+                    # Return a single metrics tool call
+                    class _Plan:
+                        tool_calls = [
+                            type("_ToolCall", (), {
+                                "tool": "mcp.query_metrics",
+                                "input_payload": {
+                                    "datasource_id": "ds-metrics",
+                                    "promql": "rate(http_requests_total[5m])",
+                                    "start_ts": 100,
+                                    "end_ts": 200,
+                                    "step_seconds": 60,
+                                },
+                                "reason": "query request rate",
+                            })()
+                        ]
+
+                    return _Plan()
+
+                def consume_after_tools(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {"metadata": {"planner": "metrics.planner"}},
+                            "metrics_branch_meta": {
+                                "mode": "query",
+                                "query_type": "metrics",
+                                "request_payload": {"promql": "rate(http_requests_total[5m])", "step_seconds": 60},
+                                "query_request": {"queryText": "rate(http_requests_total[5m])"},
+                            },
+                        },
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_dual_tool",  # Dual tool mode for metrics
+                skill_agent=_FakeAgent(),
+            )
+            runtime.report_tool_call = lambda **kwargs: 1  # type: ignore[method-assign]
+            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
+                "queryResultJSON": '{"data":{"result":[]}}',
+                "rowCount": 0,
+                "resultSizeBytes": 0,
+                "isTruncated": False,
+            }
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}},
+                evidence_mode="query",
+                metrics_branch_meta={
+                    "mode": "query",
+                    "query_type": "metrics",
+                    "request_payload": {
+                        "datasource_id": "ds-metrics",
+                        "promql": "up",
+                        "start_ts": 100,
+                        "end_ts": 200,
+                        "step_seconds": 30,
+                    },
+                    "query_request": {"datasourceID": "ds-metrics", "queryText": "up"},
+                },
+                incident_context={"service": "api"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            # Verify tool_result_reusable is True
+            self.assertTrue(state.metrics_branch_meta["tool_result_reusable"])
+            # Verify tool_result_source is skill_prompt_first
+            self.assertEqual(state.metrics_branch_meta["tool_result_source"], "skill_prompt_first")
+            # Verify metrics_query_status is ok
+            self.assertEqual(state.metrics_query_status, "ok")
+            self.assertIsNone(state.metrics_query_error)
+
+    def test_tool_result_not_reusable_without_tool_calling(self) -> None:
+        """Verify tool_result_reusable is NOT set when tool calling is disabled."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            skill_dir = base / "remote"
+            skill_dir.mkdir(parents=True)
+            _write_skill_dir(skill_dir, name="Simple Planner", description="Plan without tools")
+            bundle_path = base / "simple.zip"
+            bundle_digest = _zip_dir(skill_dir, bundle_path)
+            skill_catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=_resolved_skillsets_payload(
+                    skillset_id="skillset.default",
+                    skill_id="simple.planner",
+                    version="1.0.0",
+                    name="Simple Planner",
+                    description="Plan without tools",
+                    compatibility="",
+                    bundle_path=bundle_path,
+                    bundle_digest=bundle_digest,
+                    capability="evidence.plan",
+                    allowed_tools=[],  # No tools allowed
+                ),
+                cache_dir=str(base / "cache"),
+            )
+
+            class _FakeSession:
+                def __init__(self) -> None:
+                    self.headers: dict[str, str] = {}
+
+            class _FakeClient:
+                def __init__(self) -> None:
+                    self.session = _FakeSession()
+                    self.instance_id = ""
+
+            class _FakeAgent:
+                configured = True
+
+                def select_skill(self, **_: object) -> SkillSelectionResult:
+                    return SkillSelectionResult(
+                        selected_binding_key="simple.planner\x001.0.0\x00evidence.plan",
+                        reason="best match",
+                    )
+
+                def consume_skill(self, **_: object) -> PromptSkillConsumeResult:
+                    return PromptSkillConsumeResult(
+                        payload={
+                            "evidence_plan_patch": {"metadata": {"planner": "simple.planner"}},
+                        },
+                    )
+
+            runtime = OrchestratorRuntime(
+                client=_FakeClient(),
+                job_id="job-1",
+                instance_id="orc-test",
+                heartbeat_interval_seconds=10,
+                skill_catalog=skill_catalog,
+                skills_execution_mode="prompt_first",
+                skills_tool_calling_mode="evidence_plan_single_hop",
+                skill_agent=_FakeAgent(),
+            )
+
+            state = GraphState(
+                job_id="job-1",
+                incident_id="inc-1",
+                evidence_plan={"budget": {"max_calls": 1}},
+                evidence_mode="query",
+                incident_context={"service": "api"},
+                input_hints={},
+            )
+
+            result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
+
+            self.assertIsInstance(result, dict)
+            # Verify tool_result_reusable is NOT set (no tool calling happened)
+            self.assertNotIn("tool_result_reusable", state.logs_branch_meta if state.logs_branch_meta else {})
+            self.assertNotIn("tool_result_reusable", state.metrics_branch_meta if state.metrics_branch_meta else {})
 
 
 class TestSkillsResolveAndBindingContract(unittest.TestCase):
