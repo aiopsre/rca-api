@@ -2017,3 +2017,317 @@ func rawJSONPtr(v string) *json.RawMessage {
 	raw := json.RawMessage(v)
 	return &raw
 }
+
+// =============================================================================
+// Contract Tests for Claim / Renew / Finalize Lease Behavior
+// =============================================================================
+
+// TestClaimStartContract_Idempotent verifies that the same owner can call Start multiple times
+// and the operation is idempotent (returns success without side effects).
+func TestClaimStartContract_Idempotent(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-idempotent")
+
+	// First start should succeed
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Verify job is in running state
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "running", job.Status)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-idempotent", *job.LeaseOwner)
+
+	// Second start with same owner should also succeed (idempotent)
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Job should still be in running state with same owner
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "running", job.Status)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-idempotent", *job.LeaseOwner)
+}
+
+// TestClaimStartContract_Conflict verifies that a different owner cannot claim an already claimed job.
+func TestClaimStartContract_Conflict(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+
+	// Owner A claims the job
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Owner B tries to claim - should fail with conflict
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidTransition, err)
+
+	// Verify job still owned by owner A
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-a", *job.LeaseOwner)
+}
+
+// TestRenewHeartbeatContract_OwnerCheck verifies that only the lease owner can renew.
+func TestRenewHeartbeatContract_OwnerCheck(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+
+	// Owner A claims the job
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Owner B tries to renew - should fail
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Error(t, err)
+
+	// Owner A renews (calls Start again) - should succeed
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+// TestFinalizeContract_ClearsLease verifies that finalize clears the lease.
+func TestFinalizeContract_ClearsLease(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-finalize")
+
+	// Claim the job
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Verify lease exists
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-finalize", *job.LeaseOwner)
+
+	// Finalize the job
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"test diagnosis",
+			"root_cause":{"category":"unknown","statement":"","confidence":0.2}
+		}`),
+	})
+	require.NoError(t, err)
+
+	// Verify lease is cleared
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", job.Status)
+	require.Nil(t, job.LeaseOwner)
+	require.Nil(t, job.LeaseExpiresAt)
+}
+
+// TestFinalizeContract_SessionPatchBuild verifies buildSessionFinalizePatch output structure.
+func TestFinalizeContract_SessionPatchBuild(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	// Create a session for the incident
+	session := &model.SessionContextM{
+		SessionType: "incident",
+		BusinessKey: incident.IncidentID,
+		Status:      "active",
+	}
+	require.NoError(t, s.SessionContext().Create(context.Background(), session))
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-session")
+
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "test evidence")
+
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"test diagnosis summary",
+			"root_cause":{"category":"db","statement":"root cause statement","confidence":0.5,"evidence_ids":["` + evidenceID + `"]}
+		}`),
+		EvidenceIDs: []string{evidenceID},
+	})
+	require.NoError(t, err)
+
+	// Verify session context was updated
+	updatedSession, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", session.SessionID))
+	require.NoError(t, err)
+	require.NotNil(t, updatedSession.LatestSummaryJSON)
+	require.Contains(t, *updatedSession.LatestSummaryJSON, "test diagnosis summary")
+}
+
+// TestFinalizeContract_EvidenceIDsAssociation verifies evidence_ids_json is correctly written.
+func TestFinalizeContract_EvidenceIDsAssociation(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-evidence")
+
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID1 := createTestEvidence(t, s, incident.IncidentID, "metrics", "evidence 1")
+	evidenceID2 := createTestEvidence(t, s, incident.IncidentID, "logs", "evidence 2")
+
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:       runResp.JobID,
+		Status:      "succeeded",
+		EvidenceIDs: []string{evidenceID1, evidenceID2, evidenceID1}, // Include duplicate
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"test",
+			"root_cause":{"category":"db","statement":"test","confidence":0.5,"evidence_ids":["` + evidenceID1 + `"]}
+		}`),
+	})
+	require.NoError(t, err)
+
+	// Verify evidence_ids_json is stored and deduplicated
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.EvidenceIDsJSON)
+
+	var storedIDs []string
+	require.NoError(t, json.Unmarshal([]byte(*job.EvidenceIDsJSON), &storedIDs))
+	// Should contain both evidence IDs, deduplicated
+	require.Len(t, storedIDs, 2)
+	require.Contains(t, storedIDs, evidenceID1)
+	require.Contains(t, storedIDs, evidenceID2)
+}
+
+// TestFinalizeContract_DiagnosisJSONNormalization verifies diagnosis_json is normalized.
+func TestFinalizeContract_DiagnosisJSONNormalization(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-diagnosis")
+
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Diagnosis with extra whitespace and fields - confidence 0.5 requires at least 1 evidence_id
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "test evidence")
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary": "  normalized summary  ",
+			"root_cause": {
+				"category": "  DB  ",
+				"statement": "  pool exhausted  ",
+				"confidence": 0.5,
+				"evidence_ids": ["` + evidenceID + `"]
+			}
+		}`),
+		EvidenceIDs: []string{evidenceID},
+	})
+	require.NoError(t, err)
+
+	// Verify diagnosis_json is normalized (only category is trimmed/lowercased)
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.OutputJSON)
+
+	var diagnosis map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.OutputJSON), &diagnosis))
+	// Note: summary is NOT normalized (original whitespace preserved)
+	require.Equal(t, "  normalized summary  ", diagnosis["summary"])
+
+	rootCause, ok := diagnosis["root_cause"].(map[string]any)
+	require.True(t, ok)
+	// Category IS normalized (trimmed and lowercased)
+	require.Equal(t, "db", rootCause["category"])
+	// Statement is NOT normalized (original whitespace preserved)
+	require.Equal(t, "  pool exhausted  ", rootCause["statement"])
+}
