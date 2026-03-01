@@ -1,0 +1,177 @@
+// Playbook API 定义：剧本的请求和响应消息
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// Playbook 表示剧本配置
+// 支持版本管理和激活/回滚机制
+message Playbook {
+  // id 表示剧本唯一标识（自增主键）
+  int64 id = 1;
+
+  // name 表示剧本名称（唯一）
+  string name = 2;
+  // description 表示剧本描述
+  optional string description = 3;
+
+  // lineageID 表示逻辑剧本版本链归属 ID（用于关联同一剧本的多个版本）
+  string lineageID = 4;
+  // version 表示版本号（自动递增）
+  int32 version = 5;
+  // configJSON 表示剧本配置 JSON
+  string configJSON = 6;
+
+  // active 表示是否激活（同一时间只能有一个激活）
+  bool active = 7;
+  // activatedAt 表示激活时间
+  optional google.protobuf.Timestamp activatedAt = 8;
+  // activatedBy 表示激活人
+  optional string activatedBy = 9;
+  // previousVersion 表示前一个版本号（用于回滚）
+  optional int32 previousVersion = 10;
+
+  // createdBy 表示创建人
+  string createdBy = 11;
+  // updatedBy 表示更新人
+  optional string updatedBy = 12;
+  // createdAt 表示创建时间
+  google.protobuf.Timestamp createdAt = 13;
+  // updatedAt 表示更新时间
+  google.protobuf.Timestamp updatedAt = 14;
+}
+
+// CreatePlaybookRequest 表示创建剧本请求
+message CreatePlaybookRequest {
+  // name 表示剧本名称（必填）
+  string name = 1;
+  // description 表示剧本描述
+  optional string description = 2;
+  // configJSON 表示剧本配置 JSON（必填）
+  string configJSON = 3;
+}
+
+// CreatePlaybookResponse 表示创建剧本响应
+message CreatePlaybookResponse {
+  // playbook 表示创建的剧本信息
+  Playbook playbook = 1;
+}
+
+// GetPlaybookRequest 表示获取剧本请求
+message GetPlaybookRequest {
+  // id 表示要获取的剧本 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+}
+
+// GetPlaybookResponse 表示获取剧本响应
+message GetPlaybookResponse {
+  // playbook 表示返回的剧本信息
+  Playbook playbook = 1;
+}
+
+// ListPlaybooksRequest 表示获取剧本列表请求
+message ListPlaybooksRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // name 表示可选的名称过滤
+  optional string name = 3;
+  // active 表示可选的激活状态过滤
+  optional bool active = 4;
+}
+
+// ListPlaybooksResponse 表示获取剧本列表响应
+message ListPlaybooksResponse {
+  // totalCount 表示总数
+  int64 totalCount = 1;
+  // playbooks 表示剧本列表
+  repeated Playbook playbooks = 2;
+}
+
+// UpdatePlaybookRequest 表示更新剧本请求
+message UpdatePlaybookRequest {
+  // id 表示要更新的剧本 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+
+  // name 表示剧本名称
+  optional string name = 2;
+  // description 表示剧本描述
+  optional string description = 3;
+  // configJSON 表示剧本配置 JSON
+  optional string configJSON = 4;
+  // expectedVersion 表示期望的版本号（用于乐观锁）
+  optional int32 expectedVersion = 5;
+}
+
+// UpdatePlaybookResponse 表示更新剧本响应
+message UpdatePlaybookResponse {
+  // playbook 表示更新后的剧本信息
+  Playbook playbook = 1;
+}
+
+// DeletePlaybookRequest 表示删除剧本请求
+message DeletePlaybookRequest {
+  // id 表示要删除的剧本 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+}
+
+// DeletePlaybookResponse 表示删除剧本响应
+message DeletePlaybookResponse {}
+
+// ActivatePlaybookRequest 表示激活剧本请求
+message ActivatePlaybookRequest {
+  // id 表示要激活的剧本 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+
+  // operator 表示操作者（可选，默认从上下文获取）
+  optional string operator = 2;
+}
+
+// ActivatePlaybookResponse 表示激活剧本响应
+message ActivatePlaybookResponse {}
+
+// DeactivatePlaybookRequest 表示停用剧本请求
+message DeactivatePlaybookRequest {
+  // id 表示要停用的剧本 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+}
+
+// DeactivatePlaybookResponse 表示停用剧本响应
+message DeactivatePlaybookResponse {}
+
+// RollbackPlaybookRequest 表示回滚剧本请求
+message RollbackPlaybookRequest {
+  // id 表示要回滚的剧本 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+
+  // version 表示要回滚到的版本号（必填）
+  int32 version = 2;
+  // operator 表示操作者（可选，默认从上下文获取）
+  optional string operator = 3;
+}
+
+// RollbackPlaybookResponse 表示回滚剧本响应
+message RollbackPlaybookResponse {}
+
+// GetActivePlaybookRequest 表示获取当前激活的剧本请求
+message GetActivePlaybookRequest {}
+
+// GetActivePlaybookResponse 表示获取当前激活的剧本响应
+message GetActivePlaybookResponse {
+  // playbook 表示当前激活的剧本
+  Playbook playbook = 1;
+}

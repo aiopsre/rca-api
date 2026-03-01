@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
@@ -26,11 +28,11 @@ const (
 //
 //nolint:interfacebloat // CRUD + list intentionally grouped in one biz entrypoint.
 type McpServerBiz interface {
-	Create(ctx context.Context, rq *CreateMcpServerRequest) (*CreateMcpServerResponse, error)
-	Get(ctx context.Context, rq *GetMcpServerRequest) (*GetMcpServerResponse, error)
-	List(ctx context.Context, rq *ListMcpServersRequest) (*ListMcpServersResponse, error)
-	Update(ctx context.Context, rq *UpdateMcpServerRequest) (*UpdateMcpServerResponse, error)
-	Delete(ctx context.Context, rq *DeleteMcpServerRequest) error
+	Create(ctx context.Context, rq *v1.CreateMcpServerRequest) (*v1.CreateMcpServerResponse, error)
+	Get(ctx context.Context, rq *v1.GetMcpServerRequest) (*v1.GetMcpServerResponse, error)
+	List(ctx context.Context, rq *v1.ListMcpServersRequest) (*v1.ListMcpServersResponse, error)
+	Update(ctx context.Context, rq *v1.UpdateMcpServerRequest) (*v1.UpdateMcpServerResponse, error)
+	Delete(ctx context.Context, rq *v1.DeleteMcpServerRequest) (*v1.DeleteMcpServerResponse, error)
 	// ResolveMcpServerRefs resolves MCP server references for a given pipeline.
 	ResolveMcpServerRefs(ctx context.Context, pipelineID string) ([]model.McpServerRef, error)
 
@@ -51,80 +53,12 @@ func New(store store.IStore) *mcpServerBiz {
 	return &mcpServerBiz{store: store}
 }
 
-// CreateMcpServerRequest defines the request for creating an MCP server.
-type CreateMcpServerRequest struct {
-	Name          string
-	DisplayName   *string
-	Description   *string
-	BaseURL       string
-	AuthType      string
-	AuthSecretRef *string
-	AllowedTools  []string
-	TimeoutSec    int
-	Scopes        *string
-	CreatedBy     *string
-}
-
-// CreateMcpServerResponse defines the response for creating an MCP server.
-type CreateMcpServerResponse struct {
-	McpServer *model.McpServerM `json:"mcp_server"`
-}
-
-// GetMcpServerRequest defines the request for getting an MCP server.
-type GetMcpServerRequest struct {
-	McpServerID string
-}
-
-// GetMcpServerResponse defines the response for getting an MCP server.
-type GetMcpServerResponse struct {
-	McpServer *model.McpServerM `json:"mcp_server"`
-}
-
-// ListMcpServersRequest defines the request for listing MCP servers.
-type ListMcpServersRequest struct {
-	Name   *string
-	Status *string
-	Offset int64
-	Limit  *int64
-}
-
-// ListMcpServersResponse defines the response for listing MCP servers.
-type ListMcpServersResponse struct {
-	TotalCount int64                `json:"total_count"`
-	McpServers []*model.McpServerM `json:"mcp_servers"`
-}
-
-// UpdateMcpServerRequest defines the request for updating an MCP server.
-type UpdateMcpServerRequest struct {
-	McpServerID   string
-	DisplayName   *string
-	Description   *string
-	BaseURL       *string
-	AuthType      *string
-	AuthSecretRef *string
-	AllowedTools  []string
-	TimeoutSec    *int
-	Scopes        *string
-	Status        *string
-	UpdatedBy     *string
-}
-
-// UpdateMcpServerResponse defines the response for updating an MCP server.
-type UpdateMcpServerResponse struct {
-	McpServer *model.McpServerM `json:"mcp_server"`
-}
-
-// DeleteMcpServerRequest defines the request for deleting an MCP server.
-type DeleteMcpServerRequest struct {
-	McpServerID string
-}
-
-func (b *mcpServerBiz) Create(ctx context.Context, rq *CreateMcpServerRequest) (*CreateMcpServerResponse, error) {
-	if rq == nil || strings.TrimSpace(rq.Name) == "" || strings.TrimSpace(rq.BaseURL) == "" {
+func (b *mcpServerBiz) Create(ctx context.Context, rq *v1.CreateMcpServerRequest) (*v1.CreateMcpServerResponse, error) {
+	if rq == nil || strings.TrimSpace(rq.GetName()) == "" || strings.TrimSpace(rq.GetBaseURL()) == "" {
 		return nil, errorsx.ErrInvalidArgument
 	}
 
-	name := strings.TrimSpace(rq.Name)
+	name := strings.TrimSpace(rq.GetName())
 
 	// Check if name already exists
 	existing, err := b.store.McpServer().Get(ctx, where.T(ctx).F("name", name))
@@ -136,31 +70,27 @@ func (b *mcpServerBiz) Create(ctx context.Context, rq *CreateMcpServerRequest) (
 	}
 
 	authType := "none"
-	if rq.AuthType != "" {
-		authType = strings.ToLower(strings.TrimSpace(rq.AuthType))
+	if rq.AuthType != nil && strings.TrimSpace(*rq.AuthType) != "" {
+		authType = strings.ToLower(strings.TrimSpace(*rq.AuthType))
 	}
 	timeoutSec := 10
-	if rq.TimeoutSec > 0 {
-		timeoutSec = rq.TimeoutSec
+	if rq.TimeoutSec != nil && *rq.TimeoutSec > 0 {
+		timeoutSec = int(*rq.TimeoutSec)
 	}
 
 	var allowedToolsJSON *string
-	if len(rq.AllowedTools) > 0 {
-		data, err := json.Marshal(rq.AllowedTools)
-		if err != nil {
-			return nil, errorsx.ErrInvalidArgument
-		}
-		v := string(data)
+	if rq.AllowedToolsJSON != nil && strings.TrimSpace(*rq.AllowedToolsJSON) != "" {
+		v := strings.TrimSpace(*rq.AllowedToolsJSON)
 		allowedToolsJSON = &v
 	}
 
-	createdBy := normalizeCreatedBy(ctx, rq.CreatedBy)
+	createdBy := normalizeCreatedBy(ctx, nil)
 
 	obj := &model.McpServerM{
 		Name:          name,
 		DisplayName:   trimStringPtr(rq.DisplayName),
 		Description:   trimStringPtr(rq.Description),
-		BaseURL:       strings.TrimSpace(rq.BaseURL),
+		BaseURL:       strings.TrimSpace(rq.GetBaseURL()),
 		AuthType:      authType,
 		AuthSecretRef: trimStringPtr(rq.AuthSecretRef),
 		AllowedTools:  allowedToolsJSON,
@@ -174,24 +104,24 @@ func (b *mcpServerBiz) Create(ctx context.Context, rq *CreateMcpServerRequest) (
 		return nil, errno.ErrMcpServerCreateFailed
 	}
 
-	return &CreateMcpServerResponse{McpServer: obj}, nil
+	return &v1.CreateMcpServerResponse{McpServer: modelToProto(obj)}, nil
 }
 
-func (b *mcpServerBiz) Get(ctx context.Context, rq *GetMcpServerRequest) (*GetMcpServerResponse, error) {
-	if rq == nil || strings.TrimSpace(rq.McpServerID) == "" {
+func (b *mcpServerBiz) Get(ctx context.Context, rq *v1.GetMcpServerRequest) (*v1.GetMcpServerResponse, error) {
+	if rq == nil || strings.TrimSpace(rq.GetMcpServerID()) == "" {
 		return nil, errorsx.ErrInvalidArgument
 	}
 
-	m, err := b.store.McpServer().Get(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.McpServerID)))
+	m, err := b.store.McpServer().Get(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.GetMcpServerID())))
 	if err != nil {
 		return nil, toMcpServerGetError(err)
 	}
-	return &GetMcpServerResponse{McpServer: m}, nil
+	return &v1.GetMcpServerResponse{McpServer: modelToProto(m)}, nil
 }
 
-func (b *mcpServerBiz) List(ctx context.Context, rq *ListMcpServersRequest) (*ListMcpServersResponse, error) {
+func (b *mcpServerBiz) List(ctx context.Context, rq *v1.ListMcpServersRequest) (*v1.ListMcpServersResponse, error) {
 	if rq == nil {
-		rq = &ListMcpServersRequest{}
+		rq = &v1.ListMcpServersRequest{}
 	}
 
 	limit := normalizeListLimit(rq.Limit)
@@ -209,18 +139,23 @@ func (b *mcpServerBiz) List(ctx context.Context, rq *ListMcpServersRequest) (*Li
 		return nil, errno.ErrMcpServerListFailed
 	}
 
-	return &ListMcpServersResponse{
+	protoList := make([]*v1.McpServer, 0, len(list))
+	for _, m := range list {
+		protoList = append(protoList, modelToProto(m))
+	}
+
+	return &v1.ListMcpServersResponse{
 		TotalCount: total,
-		McpServers: list,
+		McpServers: protoList,
 	}, nil
 }
 
-func (b *mcpServerBiz) Update(ctx context.Context, rq *UpdateMcpServerRequest) (*UpdateMcpServerResponse, error) {
-	if rq == nil || strings.TrimSpace(rq.McpServerID) == "" {
+func (b *mcpServerBiz) Update(ctx context.Context, rq *v1.UpdateMcpServerRequest) (*v1.UpdateMcpServerResponse, error) {
+	if rq == nil || strings.TrimSpace(rq.GetMcpServerID()) == "" {
 		return nil, errorsx.ErrInvalidArgument
 	}
 
-	obj, err := b.store.McpServer().Get(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.McpServerID)))
+	obj, err := b.store.McpServer().Get(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.GetMcpServerID())))
 	if err != nil {
 		return nil, toMcpServerGetError(err)
 	}
@@ -240,20 +175,16 @@ func (b *mcpServerBiz) Update(ctx context.Context, rq *UpdateMcpServerRequest) (
 	if rq.AuthSecretRef != nil {
 		obj.AuthSecretRef = trimStringPtr(rq.AuthSecretRef)
 	}
-	if rq.AllowedTools != nil {
-		if len(rq.AllowedTools) > 0 {
-			data, err := json.Marshal(rq.AllowedTools)
-			if err != nil {
-				return nil, errorsx.ErrInvalidArgument
-			}
-			v := string(data)
+	if rq.AllowedToolsJSON != nil {
+		v := strings.TrimSpace(*rq.AllowedToolsJSON)
+		if v != "" {
 			obj.AllowedTools = &v
 		} else {
 			obj.AllowedTools = nil
 		}
 	}
 	if rq.TimeoutSec != nil && *rq.TimeoutSec > 0 {
-		obj.TimeoutSec = *rq.TimeoutSec
+		obj.TimeoutSec = int(*rq.TimeoutSec)
 	}
 	if rq.Scopes != nil {
 		obj.Scopes = trimStringPtr(rq.Scopes)
@@ -261,30 +192,29 @@ func (b *mcpServerBiz) Update(ctx context.Context, rq *UpdateMcpServerRequest) (
 	if rq.Status != nil {
 		obj.Status = strings.ToLower(strings.TrimSpace(*rq.Status))
 	}
-	_ = normalizeCreatedBy(ctx, rq.UpdatedBy) // Track who made the update for audit
 	obj.UpdatedAt = time.Now()
 
 	if err := b.store.McpServer().Update(ctx, obj); err != nil {
 		return nil, errno.ErrMcpServerUpdateFailed
 	}
 
-	return &UpdateMcpServerResponse{McpServer: obj}, nil
+	return &v1.UpdateMcpServerResponse{McpServer: modelToProto(obj)}, nil
 }
 
-func (b *mcpServerBiz) Delete(ctx context.Context, rq *DeleteMcpServerRequest) error {
-	if rq == nil || strings.TrimSpace(rq.McpServerID) == "" {
-		return errorsx.ErrInvalidArgument
+func (b *mcpServerBiz) Delete(ctx context.Context, rq *v1.DeleteMcpServerRequest) (*v1.DeleteMcpServerResponse, error) {
+	if rq == nil || strings.TrimSpace(rq.GetMcpServerID()) == "" {
+		return nil, errorsx.ErrInvalidArgument
 	}
 
-	_, err := b.store.McpServer().Get(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.McpServerID)))
+	_, err := b.store.McpServer().Get(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.GetMcpServerID())))
 	if err != nil {
-		return toMcpServerGetError(err)
+		return nil, toMcpServerGetError(err)
 	}
 
-	if err := b.store.McpServer().Delete(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.McpServerID))); err != nil {
-		return errno.ErrMcpServerDeleteFailed
+	if err := b.store.McpServer().Delete(ctx, where.T(ctx).F("mcp_server_id", strings.TrimSpace(rq.GetMcpServerID()))); err != nil {
+		return nil, errno.ErrMcpServerDeleteFailed
 	}
-	return nil
+	return &v1.DeleteMcpServerResponse{}, nil
 }
 
 // ResolveMcpServerRefs resolves MCP server references for a given pipeline.
@@ -317,15 +247,36 @@ func (b *mcpServerBiz) ResolveMcpServerRefs(ctx context.Context, pipelineID stri
 	return refs, nil
 }
 
+func modelToProto(m *model.McpServerM) *v1.McpServer {
+	if m == nil {
+		return nil
+	}
+	return &v1.McpServer{
+		McpServerID:     m.McpServerID,
+		Name:            m.Name,
+		DisplayName:     m.DisplayName,
+		Description:     m.Description,
+		BaseURL:         m.BaseURL,
+		AuthType:        m.AuthType,
+		AuthSecretRef:   m.AuthSecretRef,
+		AllowedToolsJSON: m.AllowedTools,
+		TimeoutSec:      int32(m.TimeoutSec),
+		Scopes:          m.Scopes,
+		Status:          m.Status,
+		CreatedBy:       m.CreatedBy,
+		CreatedAt:       timestamppb.New(m.CreatedAt),
+		UpdatedAt:       timestamppb.New(m.UpdatedAt),
+	}
+}
 
-func normalizeListLimit(limit *int64) int64 {
-	if limit == nil || *limit <= 0 {
+func normalizeListLimit(limit int64) int64 {
+	if limit <= 0 {
 		return defaultListLimit
 	}
-	if *limit > maxListLimit {
+	if limit > maxListLimit {
 		return maxListLimit
 	}
-	return *limit
+	return limit
 }
 
 func normalizeCreatedBy(ctx context.Context, fallback *string) *string {

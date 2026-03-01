@@ -10,6 +10,8 @@ import (
 	evidencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence"
 	incidentv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/incident"
 	internalstrategyconfigv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
+	kbv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/kb"
+	mcpserverv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/mcpserver"
 	noticev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/notice"
 	orchestratorskillsetv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_skillset"
 	orchestratorstrategyv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_strategy"
@@ -37,6 +39,8 @@ type IBiz interface {
 	EvidenceV1() evidencev1.EvidenceBiz
 	AIJobV1() aijobv1.AIJobBiz
 	InternalStrategyConfigV1() internalstrategyconfigv1.ConfigBiz
+	KBEntryV1() kbv1.KBEntryBiz
+	McpServerV1() mcpserverv1.McpServerBiz
 	OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz
 	OrchestratorSkillsetV1() orchestratorskillsetv1.SkillsetBiz
 	OrchestratorTemplateV1() orchestratortemplatev1.TemplateBiz
@@ -65,6 +69,10 @@ type biz struct {
 	aiJobBiz                   aijobv1.AIJobBiz
 	internalStrategyConfigOnce sync.Once
 	internalStrategyConfigBiz  internalstrategyconfigv1.ConfigBiz
+	kbEntryOnce                sync.Once
+	kbEntryBiz                 kbv1.KBEntryBiz
+	mcpServerOnce              sync.Once
+	mcpServerBiz               mcpserverv1.McpServerBiz
 	orchestratorStrategyOnce   sync.Once
 	orchestratorStrategyBiz    orchestratorstrategyv1.StrategyBiz
 	orchestratorSkillsetOnce   sync.Once
@@ -133,6 +141,20 @@ func (b *biz) InternalStrategyConfigV1() internalstrategyconfigv1.ConfigBiz {
 		b.internalStrategyConfigBiz = internalstrategyconfigv1.New(b.store)
 	})
 	return b.internalStrategyConfigBiz
+}
+
+func (b *biz) KBEntryV1() kbv1.KBEntryBiz {
+	b.kbEntryOnce.Do(func() {
+		b.kbEntryBiz = kbv1.NewKBEntry(b.store)
+	})
+	return b.kbEntryBiz
+}
+
+func (b *biz) McpServerV1() mcpserverv1.McpServerBiz {
+	b.mcpServerOnce.Do(func() {
+		b.mcpServerBiz = mcpserverv1.New(b.store)
+	})
+	return b.mcpServerBiz
 }
 
 func (b *biz) OrchestratorStrategyV1() orchestratorstrategyv1.StrategyBiz {
@@ -223,6 +245,8 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.evidenceBiz)
 		errs = appendCloseIfSupported(errs, b.aiJobBiz)
 		errs = appendCloseIfSupported(errs, b.internalStrategyConfigBiz)
+		errs = appendCloseIfSupported(errs, b.kbEntryBiz)
+		errs = appendCloseIfSupported(errs, b.mcpServerBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorStrategyBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorSkillsetBiz)
 		errs = appendCloseIfSupported(errs, b.orchestratorTemplateBiz)

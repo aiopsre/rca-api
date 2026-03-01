@@ -1,0 +1,342 @@
+// RBAC API 定义：用户、角色、权限的请求和响应消息
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// User 表示 RBAC 用户
+message User {
+  // user_id 表示用户唯一标识
+  string user_id = 1;
+  // username 表示用户名
+  string username = 2;
+  // team_id 表示团队 ID
+  string team_id = 3;
+  // status 表示用户状态（active/disabled）
+  string status = 4;
+  // created_at 表示创建时间
+  google.protobuf.Timestamp created_at = 5;
+  // updated_at 表示更新时间
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// Role 表示 RBAC 角色
+message Role {
+  // role_id 表示角色唯一标识
+  string role_id = 1;
+  // display_name 表示角色显示名称
+  string display_name = 2;
+  // description 表示角色描述
+  string description = 3;
+  // status 表示角色状态（active/disabled）
+  string status = 4;
+  // created_at 表示创建时间
+  google.protobuf.Timestamp created_at = 5;
+  // updated_at 表示更新时间
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// Permission 表示 RBAC 权限
+message Permission {
+  // permission_id 表示权限唯一标识
+  string permission_id = 1;
+  // resource 表示资源
+  string resource = 2;
+  // action 表示操作
+  string action = 3;
+  // description 表示权限描述
+  string description = 4;
+  // status 表示权限状态（active/disabled）
+  string status = 5;
+  // created_at 表示创建时间
+  google.protobuf.Timestamp created_at = 6;
+  // updated_at 表示更新时间
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+// UserAccess 表示用户访问权限视图
+message UserAccess {
+  // user_id 表示用户 ID
+  string user_id = 1;
+  // role_ids 表示用户关联的角色 ID 列表
+  repeated string role_ids = 2;
+  // permissions 表示用户拥有的权限列表
+  repeated Permission permissions = 3;
+}
+
+// RoleAccess 表示角色访问权限视图
+message RoleAccess {
+  // role_id 表示角色 ID
+  string role_id = 1;
+  // permissions 表示角色拥有的权限列表
+  repeated Permission permissions = 2;
+}
+
+// LoginProfile 表示登录配置
+message LoginProfile {
+  // user 表示用户信息
+  User user = 1;
+  // role_ids 表示用户角色 ID 列表
+  repeated string role_ids = 2;
+  // permissions 表示用户权限列表
+  repeated Permission permissions = 3;
+  // effective_actions 表示有效操作列表
+  repeated string effective_actions = 4;
+  // effective_team_ids 表示有效团队 ID 列表
+  repeated string effective_team_ids = 5;
+  // password_validated 表示密码是否已验证
+  bool password_validated = 6;
+}
+
+// ==================== User API ====================
+
+// ListUsersRequest 表示获取用户列表请求
+message ListUsersRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+}
+
+// ListUsersResponse 表示获取用户列表响应
+message ListUsersResponse {
+  // total 表示总数
+  int64 total = 1;
+  // items 表示用户列表
+  repeated User items = 2;
+}
+
+// GetUserRequest 表示获取用户请求
+message GetUserRequest {
+  // user_id 表示要获取的用户 ID
+  // @gotags: uri:"id"
+  string user_id = 1;
+}
+
+// GetUserResponse 表示获取用户响应
+message GetUserResponse {
+  // user 表示用户信息
+  User user = 1;
+}
+
+// UpsertUserRequest 表示创建或更新用户请求
+message UpsertUserRequest {
+  // user_id 表示用户 ID（更新时从 URI 获取）
+  // @gotags: uri:"id"
+  string user_id = 1;
+  // username 表示用户名
+  string username = 2;
+  // password 表示密码（可选，用于设置或更新密码）
+  optional string password = 3;
+  // team_id 表示团队 ID
+  string team_id = 4;
+  // status 表示用户状态
+  string status = 5;
+}
+
+// UpsertUserResponse 表示创建或更新用户响应
+message UpsertUserResponse {
+  // user 表示用户信息
+  User user = 1;
+}
+
+// DeleteUserRequest 表示删除用户请求
+message DeleteUserRequest {
+  // user_id 表示要删除的用户 ID
+  // @gotags: uri:"id"
+  string user_id = 1;
+}
+
+// DeleteUserResponse 表示删除用户响应
+message DeleteUserResponse {}
+
+// AssignUserRolesRequest 表示分配用户角色请求
+message AssignUserRolesRequest {
+  // user_id 表示用户 ID
+  // @gotags: uri:"id"
+  string user_id = 1;
+  // role_ids 表示要分配的角色 ID 列表
+  repeated string role_ids = 2;
+}
+
+// AssignUserRolesResponse 表示分配用户角色响应
+message AssignUserRolesResponse {
+  // user_access 表示用户访问权限视图
+  UserAccess user_access = 1;
+}
+
+// GetUserAccessRequest 表示获取用户访问权限请求
+message GetUserAccessRequest {
+  // user_id 表示用户 ID
+  string user_id = 1;
+}
+
+// GetUserAccessResponse 表示获取用户访问权限响应
+message GetUserAccessResponse {
+  // user_access 表示用户访问权限视图
+  UserAccess user_access = 1;
+}
+
+// ==================== Role API ====================
+
+// ListRolesRequest 表示获取角色列表请求
+message ListRolesRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+}
+
+// ListRolesResponse 表示获取角色列表响应
+message ListRolesResponse {
+  // total 表示总数
+  int64 total = 1;
+  // items 表示角色列表
+  repeated Role items = 2;
+}
+
+// GetRoleRequest 表示获取角色请求
+message GetRoleRequest {
+  // role_id 表示要获取的角色 ID
+  // @gotags: uri:"id"
+  string role_id = 1;
+}
+
+// GetRoleResponse 表示获取角色响应
+message GetRoleResponse {
+  // role 表示角色信息
+  Role role = 1;
+}
+
+// UpsertRoleRequest 表示创建或更新角色请求
+message UpsertRoleRequest {
+  // role_id 表示角色 ID（更新时从 URI 获取）
+  // @gotags: uri:"id"
+  string role_id = 1;
+  // display_name 表示角色显示名称
+  string display_name = 2;
+  // description 表示角色描述
+  string description = 3;
+  // status 表示角色状态
+  string status = 4;
+}
+
+// UpsertRoleResponse 表示创建或更新角色响应
+message UpsertRoleResponse {
+  // role 表示角色信息
+  Role role = 1;
+}
+
+// DeleteRoleRequest 表示删除角色请求
+message DeleteRoleRequest {
+  // role_id 表示要删除的角色 ID
+  // @gotags: uri:"id"
+  string role_id = 1;
+}
+
+// DeleteRoleResponse 表示删除角色响应
+message DeleteRoleResponse {}
+
+// AssignRolePermissionsRequest 表示分配角色权限请求
+message AssignRolePermissionsRequest {
+  // role_id 表示角色 ID
+  // @gotags: uri:"id"
+  string role_id = 1;
+  // permission_ids 表示要分配的权限 ID 列表
+  repeated string permission_ids = 2;
+}
+
+// AssignRolePermissionsResponse 表示分配角色权限响应
+message AssignRolePermissionsResponse {
+  // role_access 表示角色访问权限视图
+  RoleAccess role_access = 1;
+}
+
+// ==================== Permission API ====================
+
+// ListPermissionsRequest 表示获取权限列表请求
+message ListPermissionsRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+}
+
+// ListPermissionsResponse 表示获取权限列表响应
+message ListPermissionsResponse {
+  // total 表示总数
+  int64 total = 1;
+  // items 表示权限列表
+  repeated Permission items = 2;
+}
+
+// GetPermissionRequest 表示获取权限请求
+message GetPermissionRequest {
+  // permission_id 表示要获取的权限 ID
+  // @gotags: uri:"id"
+  string permission_id = 1;
+}
+
+// GetPermissionResponse 表示获取权限响应
+message GetPermissionResponse {
+  // permission 表示权限信息
+  Permission permission = 1;
+}
+
+// UpsertPermissionRequest 表示创建或更新权限请求
+message UpsertPermissionRequest {
+  // permission_id 表示权限 ID（更新时从 URI 获取）
+  // @gotags: uri:"id"
+  string permission_id = 1;
+  // resource 表示资源
+  string resource = 2;
+  // action 表示操作
+  string action = 3;
+  // description 表示权限描述
+  string description = 4;
+  // status 表示权限状态
+  string status = 5;
+}
+
+// UpsertPermissionResponse 表示创建或更新权限响应
+message UpsertPermissionResponse {
+  // permission 表示权限信息
+  Permission permission = 1;
+}
+
+// DeletePermissionRequest 表示删除权限请求
+message DeletePermissionRequest {
+  // permission_id 表示要删除的权限 ID
+  // @gotags: uri:"id"
+  string permission_id = 1;
+}
+
+// DeletePermissionResponse 表示删除权限响应
+message DeletePermissionResponse {}
+
+// ==================== Login API ====================
+
+// ResolveLoginProfileRequest 表示解析登录配置请求
+message ResolveLoginProfileRequest {
+  // user_id 表示用户 ID
+  string user_id = 1;
+  // password 表示密码
+  string password = 2;
+  // skip_password_check 表示是否跳过密码检查
+  bool skip_password_check = 3;
+}
+
+// ResolveLoginProfileResponse 表示解析登录配置响应
+message ResolveLoginProfileResponse {
+  // login_profile 表示登录配置
+  LoginProfile login_profile = 1;
+}

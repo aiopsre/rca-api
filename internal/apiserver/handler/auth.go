@@ -7,9 +7,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 
-	rbac "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/rbac"
 	authpkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/auth"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
@@ -108,8 +108,8 @@ func (h *Handler) LoginOperator(c *gin.Context) {
 	}
 
 	password := strings.TrimSpace(normalizeOptionalText(req.Password))
-	loginProfile, err := h.biz.RBACV1().ResolveLoginProfile(c.Request.Context(), &rbac.ResolveLoginProfileRequest{
-		UserID:            operatorID,
+	loginProfileResp, err := h.biz.RBACV1().ResolveLoginProfile(c.Request.Context(), &v1.ResolveLoginProfileRequest{
+		UserId:            operatorID,
 		Password:          password,
 		SkipPasswordCheck: usingOIDC,
 	})
@@ -117,16 +117,17 @@ func (h *Handler) LoginOperator(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
+	loginProfile := loginProfileResp.GetLoginProfile()
 	if username == "" && loginProfile != nil && loginProfile.User != nil {
-		username = strings.TrimSpace(loginProfile.User.Username)
+		username = strings.TrimSpace(loginProfile.User.GetUsername())
 	}
-	if len(req.TeamIDs) == 0 && loginProfile != nil && len(loginProfile.EffectiveTeamIDs) > 0 {
-		req.TeamIDs = append([]string(nil), loginProfile.EffectiveTeamIDs...)
+	if len(req.TeamIDs) == 0 && loginProfile != nil && len(loginProfile.GetEffectiveTeamIds()) > 0 {
+		req.TeamIDs = append([]string(nil), loginProfile.GetEffectiveTeamIds()...)
 	}
 	scopes := req.Scopes
 	if len(scopes) == 0 {
-		if loginProfile != nil && len(loginProfile.EffectiveActions) > 0 {
-			scopes = append([]string(nil), loginProfile.EffectiveActions...)
+		if loginProfile != nil && len(loginProfile.GetEffectiveActions()) > 0 {
+			scopes = append([]string(nil), loginProfile.GetEffectiveActions()...)
 		} else {
 			scopes = []string{authz.ScopeAIRead, authz.ScopeAIRun}
 		}
@@ -145,7 +146,7 @@ func (h *Handler) LoginOperator(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	core.WriteResponse(c, buildOperatorTokenResponse(pairResp, loginProfile), nil)
+	core.WriteResponse(c, buildOperatorTokenResponse(pairResp, loginProfileResp), nil)
 }
 
 func (h *Handler) RefreshOperatorToken(c *gin.Context) {
@@ -176,8 +177,8 @@ func (h *Handler) RefreshOperatorToken(c *gin.Context) {
 		return
 	}
 
-	loginProfile, err := h.biz.RBACV1().ResolveLoginProfile(c.Request.Context(), &rbac.ResolveLoginProfileRequest{
-		UserID:            strings.TrimSpace(refreshClaims.OperatorID),
+	loginProfileResp, err := h.biz.RBACV1().ResolveLoginProfile(c.Request.Context(), &v1.ResolveLoginProfileRequest{
+		UserId:            strings.TrimSpace(refreshClaims.OperatorID),
 		SkipPasswordCheck: true,
 	})
 	if err != nil {
@@ -189,20 +190,23 @@ func (h *Handler) RefreshOperatorToken(c *gin.Context) {
 	username := strings.TrimSpace(refreshClaims.Username)
 	teamIDs := append([]string(nil), refreshClaims.TeamIDs...)
 	scopes := append([]string(nil), refreshClaims.Scopes...)
-	if loginProfile != nil {
-		if loginProfile.User != nil {
-			if u := strings.TrimSpace(loginProfile.User.UserID); u != "" {
-				operatorID = u
+	if loginProfileResp != nil {
+		lp := loginProfileResp.GetLoginProfile()
+		if lp != nil {
+			if lp.User != nil {
+				if u := strings.TrimSpace(lp.User.GetUserId()); u != "" {
+					operatorID = u
+				}
+				if uname := strings.TrimSpace(lp.User.GetUsername()); uname != "" {
+					username = uname
+				}
 			}
-			if uname := strings.TrimSpace(loginProfile.User.Username); uname != "" {
-				username = uname
+			if len(lp.GetEffectiveTeamIds()) > 0 {
+				teamIDs = append([]string(nil), lp.GetEffectiveTeamIds()...)
 			}
-		}
-		if len(loginProfile.EffectiveTeamIDs) > 0 {
-			teamIDs = append([]string(nil), loginProfile.EffectiveTeamIDs...)
-		}
-		if len(loginProfile.EffectiveActions) > 0 {
-			scopes = append([]string(nil), loginProfile.EffectiveActions...)
+			if len(lp.GetEffectiveActions()) > 0 {
+				scopes = append([]string(nil), lp.GetEffectiveActions()...)
+			}
 		}
 	}
 	if operatorID == "" {
@@ -226,10 +230,10 @@ func (h *Handler) RefreshOperatorToken(c *gin.Context) {
 		core.WriteResponse(c, nil, err)
 		return
 	}
-	core.WriteResponse(c, buildOperatorTokenResponse(pairResp, loginProfile), nil)
+	core.WriteResponse(c, buildOperatorTokenResponse(pairResp, loginProfileResp), nil)
 }
 
-func buildOperatorTokenResponse(pairResp *authpkg.IssueTokenPairResponse, profile *rbac.LoginProfile) *operatorLoginResponse {
+func buildOperatorTokenResponse(pairResp *authpkg.IssueTokenPairResponse, profile *v1.ResolveLoginProfileResponse) *operatorLoginResponse {
 	if pairResp == nil || pairResp.Claims == nil {
 		return &operatorLoginResponse{}
 	}
@@ -283,25 +287,29 @@ func resolveOIDCIdentityForLogin(rawOIDCIDToken *string) (*authpkg.OIDCIdentity,
 	return identity, nil
 }
 
-func mapLoginRBAC(profile *rbac.LoginProfile) *operatorRBACPayload {
+func mapLoginRBAC(profile *v1.ResolveLoginProfileResponse) *operatorRBACPayload {
 	if profile == nil {
 		return nil
 	}
-	out := &operatorRBACPayload{
-		RoleIDs: append([]string(nil), profile.RoleIDs...),
+	lp := profile.GetLoginProfile()
+	if lp == nil {
+		return nil
 	}
-	if len(profile.Permissions) == 0 {
+	out := &operatorRBACPayload{
+		RoleIDs: append([]string(nil), lp.GetRoleIds()...),
+	}
+	if len(lp.GetPermissions()) == 0 {
 		return out
 	}
-	items := make([]*operatorPermissionPayload, 0, len(profile.Permissions))
-	for _, item := range profile.Permissions {
+	items := make([]*operatorPermissionPayload, 0, len(lp.GetPermissions()))
+	for _, item := range lp.GetPermissions() {
 		if item == nil {
 			continue
 		}
 		items = append(items, &operatorPermissionPayload{
-			PermissionID: item.PermissionID,
-			Resource:     item.Resource,
-			Action:       item.Action,
+			PermissionID: item.GetPermissionId(),
+			Resource:     item.GetResource(),
+			Action:       item.GetAction(),
 		})
 	}
 	out.Permissions = items

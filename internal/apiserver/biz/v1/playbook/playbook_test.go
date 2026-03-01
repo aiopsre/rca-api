@@ -11,6 +11,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
@@ -37,21 +38,18 @@ func TestPlaybookBiz_Create(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		resp, err := biz.Create(ctx, &CreateRequest{
+		desc := "test description"
+		resp, err := biz.Create(ctx, &v1.CreatePlaybookRequest{
 			Name:        "test-playbook",
-			Description: ptrString("test description"),
-			Config: &PlaybookConfig{
-				Version: "1.0",
-			},
-			CreatedBy: "admin",
+			Description: &desc,
+			ConfigJSON:  `{"version":"1.0"}`,
 		})
 
 		require.NoError(t, err)
 		require.NotNil(t, resp.Playbook)
 		require.Equal(t, "test-playbook", resp.Playbook.Name)
-		require.Equal(t, 1, resp.Playbook.Version)
+		require.Equal(t, int32(1), resp.Playbook.Version)
 		require.False(t, resp.Playbook.Active)
-		require.Equal(t, "admin", resp.Playbook.CreatedBy)
 	})
 
 	t.Run("nil request", func(t *testing.T) {
@@ -66,22 +64,20 @@ func TestPlaybookBiz_Create(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Create(ctx, &CreateRequest{
-			Name:      "",
-			Config:    &PlaybookConfig{Version: "1.0"},
-			CreatedBy: "admin",
+		_, err := biz.Create(ctx, &v1.CreatePlaybookRequest{
+			Name:       "",
+			ConfigJSON: `{"version":"1.0"}`,
 		})
 		require.Error(t, err)
 	})
 
-	t.Run("nil config", func(t *testing.T) {
+	t.Run("empty config", func(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Create(ctx, &CreateRequest{
-			Name:      "test",
-			Config:    nil,
-			CreatedBy: "admin",
+		_, err := biz.Create(ctx, &v1.CreatePlaybookRequest{
+			Name:       "test",
+			ConfigJSON: "",
 		})
 		require.Error(t, err)
 	})
@@ -90,17 +86,15 @@ func TestPlaybookBiz_Create(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Create(ctx, &CreateRequest{
-			Name:      "duplicate",
-			Config:    &PlaybookConfig{Version: "1.0"},
-			CreatedBy: "admin",
+		_, err := biz.Create(ctx, &v1.CreatePlaybookRequest{
+			Name:       "duplicate",
+			ConfigJSON: `{"version":"1.0"}`,
 		})
 		require.NoError(t, err)
 
-		_, err = biz.Create(ctx, &CreateRequest{
-			Name:      "duplicate",
-			Config:    &PlaybookConfig{Version: "1.0"},
-			CreatedBy: "admin",
+		_, err = biz.Create(ctx, &v1.CreatePlaybookRequest{
+			Name:       "duplicate",
+			ConfigJSON: `{"version":"1.0"}`,
 		})
 		require.Error(t, err)
 	})
@@ -119,7 +113,7 @@ func TestPlaybookBiz_Get(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		resp, err := biz.Get(ctx, obj.ID)
+		resp, err := biz.Get(ctx, &v1.GetPlaybookRequest{Id: obj.ID})
 		require.NoError(t, err)
 		require.NotNil(t, resp.Playbook)
 		require.Equal(t, "test-playbook", resp.Playbook.Name)
@@ -129,7 +123,7 @@ func TestPlaybookBiz_Get(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Get(ctx, 0)
+		_, err := biz.Get(ctx, &v1.GetPlaybookRequest{Id: 0})
 		require.Error(t, err)
 	})
 
@@ -137,7 +131,7 @@ func TestPlaybookBiz_Get(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Get(ctx, 999)
+		_, err := biz.Get(ctx, &v1.GetPlaybookRequest{Id: 999})
 		require.Error(t, err)
 	})
 }
@@ -158,9 +152,10 @@ func TestPlaybookBiz_List(t *testing.T) {
 			require.NoError(t, s.Playbook().Create(ctx, obj))
 		}
 
-		resp, err := biz.List(ctx, &ListRequest{
+		limit := int64(10)
+		resp, err := biz.List(ctx, &v1.ListPlaybooksRequest{
 			Offset: 0,
-			Limit:  ptrInt64(10),
+			Limit:  limit,
 		})
 		require.NoError(t, err)
 		require.Equal(t, int64(5), resp.TotalCount)
@@ -179,10 +174,12 @@ func TestPlaybookBiz_List(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		resp, err := biz.List(ctx, &ListRequest{
-			Name:   ptrString("specific-playbook"),
+		name := "specific-playbook"
+		limit := int64(10)
+		resp, err := biz.List(ctx, &v1.ListPlaybooksRequest{
+			Name:   &name,
 			Offset: 0,
-			Limit:  ptrInt64(10),
+			Limit:  limit,
 		})
 		require.NoError(t, err)
 		require.Equal(t, int64(1), resp.TotalCount)
@@ -204,10 +201,12 @@ func TestPlaybookBiz_List(t *testing.T) {
 			require.NoError(t, s.Playbook().Create(ctx, obj))
 		}
 
-		resp, err := biz.List(ctx, &ListRequest{
-			Active: ptrBool(true),
+		active := true
+		limit := int64(10)
+		resp, err := biz.List(ctx, &v1.ListPlaybooksRequest{
+			Active: &active,
 			Offset: 0,
-			Limit:  ptrInt64(10),
+			Limit:  limit,
 		})
 		require.NoError(t, err)
 		require.Equal(t, int64(1), resp.TotalCount)
@@ -236,15 +235,17 @@ func TestPlaybookBiz_Update(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		resp, err := biz.Update(ctx, obj.ID, &UpdateRequest{
-			Name:        ptrString("updated-playbook"),
-			Description: ptrString("updated description"),
-			UpdatedBy:   "admin",
+		name := "updated-playbook"
+		desc := "updated description"
+		resp, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+			Id:          obj.ID,
+			Name:        &name,
+			Description: &desc,
 		})
 
 		require.NoError(t, err)
 		require.Equal(t, "updated-playbook", resp.Playbook.Name)
-		require.Equal(t, 2, resp.Playbook.Version)
+		require.Equal(t, int32(2), resp.Playbook.Version)
 		require.Equal(t, "updated description", *resp.Playbook.Description)
 	})
 
@@ -260,10 +261,12 @@ func TestPlaybookBiz_Update(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		_, err := biz.Update(ctx, obj.ID, &UpdateRequest{
-			Name:            ptrString("updated-playbook"),
-			ExpectedVersion: ptrInt(999),
-			UpdatedBy:       "admin",
+		name := "updated-playbook"
+		expectedVer := int32(999)
+		_, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+			Id:              obj.ID,
+			Name:            &name,
+			ExpectedVersion: &expectedVer,
 		})
 		require.Error(t, err)
 	})
@@ -272,9 +275,10 @@ func TestPlaybookBiz_Update(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Update(ctx, 999, &UpdateRequest{
-			Name:      ptrString("updated"),
-			UpdatedBy: "admin",
+		name := "updated"
+		_, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+			Id:   999,
+			Name: &name,
 		})
 		require.Error(t, err)
 	})
@@ -283,7 +287,7 @@ func TestPlaybookBiz_Update(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.Update(ctx, 1, nil)
+		_, err := biz.Update(ctx, nil)
 		require.Error(t, err)
 	})
 }
@@ -301,10 +305,10 @@ func TestPlaybookBiz_Delete(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Delete(ctx, obj.ID)
+		_, err := biz.Delete(ctx, &v1.DeletePlaybookRequest{Id: obj.ID})
 		require.NoError(t, err)
 
-		_, err = biz.Get(ctx, obj.ID)
+		_, err = biz.Get(ctx, &v1.GetPlaybookRequest{Id: obj.ID})
 		require.Error(t, err)
 	})
 
@@ -312,7 +316,7 @@ func TestPlaybookBiz_Delete(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		err := biz.Delete(ctx, 0)
+		_, err := biz.Delete(ctx, &v1.DeletePlaybookRequest{Id: 0})
 		require.Error(t, err)
 	})
 
@@ -320,7 +324,7 @@ func TestPlaybookBiz_Delete(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		err := biz.Delete(ctx, 999)
+		_, err := biz.Delete(ctx, &v1.DeletePlaybookRequest{Id: 999})
 		require.Error(t, err)
 	})
 }
@@ -339,7 +343,11 @@ func TestPlaybookBiz_Activate(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Activate(ctx, obj.ID, "operator")
+		op := "operator"
+		_, err := biz.Activate(ctx, &v1.ActivatePlaybookRequest{
+			Id:       obj.ID,
+			Operator: &op,
+		})
 		require.NoError(t, err)
 
 		updated, err := s.Playbook().Get(ctx, where.T(ctx).F("id", obj.ID))
@@ -361,7 +369,11 @@ func TestPlaybookBiz_Activate(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Activate(ctx, obj.ID, "operator")
+		op := "operator"
+		_, err := biz.Activate(ctx, &v1.ActivatePlaybookRequest{
+			Id:       obj.ID,
+			Operator: &op,
+		})
 		require.NoError(t, err)
 	})
 
@@ -369,7 +381,11 @@ func TestPlaybookBiz_Activate(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		err := biz.Activate(ctx, 0, "operator")
+		op := "operator"
+		_, err := biz.Activate(ctx, &v1.ActivatePlaybookRequest{
+			Id:       0,
+			Operator: &op,
+		})
 		require.Error(t, err)
 	})
 
@@ -377,7 +393,11 @@ func TestPlaybookBiz_Activate(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		err := biz.Activate(ctx, 999, "operator")
+		op := "operator"
+		_, err := biz.Activate(ctx, &v1.ActivatePlaybookRequest{
+			Id:       999,
+			Operator: &op,
+		})
 		require.Error(t, err)
 	})
 }
@@ -396,7 +416,7 @@ func TestPlaybookBiz_Deactivate(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Deactivate(ctx, obj.ID)
+		_, err := biz.Deactivate(ctx, &v1.DeactivatePlaybookRequest{Id: obj.ID})
 		require.NoError(t, err)
 
 		updated, err := s.Playbook().Get(ctx, where.T(ctx).F("id", obj.ID))
@@ -417,7 +437,7 @@ func TestPlaybookBiz_Deactivate(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Deactivate(ctx, obj.ID)
+		_, err := biz.Deactivate(ctx, &v1.DeactivatePlaybookRequest{Id: obj.ID})
 		require.NoError(t, err)
 	})
 
@@ -425,7 +445,7 @@ func TestPlaybookBiz_Deactivate(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		err := biz.Deactivate(ctx, 0)
+		_, err := biz.Deactivate(ctx, &v1.DeactivatePlaybookRequest{Id: 0})
 		require.Error(t, err)
 	})
 }
@@ -457,7 +477,12 @@ func TestPlaybookBiz_Rollback(t *testing.T) {
 		}
 		require.Equal(t, 3, current.Version)
 
-		err = biz.Rollback(ctx, current.ID, 1, "operator")
+		op := "operator"
+		_, err = biz.Rollback(ctx, &v1.RollbackPlaybookRequest{
+			Id:       current.ID,
+			Version:  1,
+			Operator: &op,
+		})
 		require.NoError(t, err)
 
 		total, list, err = s.Playbook().List(ctx, where.T(ctx).F("name", "versioned-playbook"))
@@ -485,7 +510,12 @@ func TestPlaybookBiz_Rollback(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Rollback(ctx, obj.ID, 0, "operator")
+		op := "operator"
+		_, err := biz.Rollback(ctx, &v1.RollbackPlaybookRequest{
+			Id:       obj.ID,
+			Version:  0,
+			Operator: &op,
+		})
 		require.Error(t, err)
 	})
 
@@ -501,7 +531,12 @@ func TestPlaybookBiz_Rollback(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Rollback(ctx, obj.ID, 1, "operator")
+		op := "operator"
+		_, err := biz.Rollback(ctx, &v1.RollbackPlaybookRequest{
+			Id:       obj.ID,
+			Version:  1,
+			Operator: &op,
+		})
 		require.Error(t, err)
 	})
 
@@ -509,7 +544,12 @@ func TestPlaybookBiz_Rollback(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		err := biz.Rollback(ctx, 999, 1, "operator")
+		op := "operator"
+		_, err := biz.Rollback(ctx, &v1.RollbackPlaybookRequest{
+			Id:       999,
+			Version:  1,
+			Operator: &op,
+		})
 		require.Error(t, err)
 	})
 }
@@ -528,7 +568,7 @@ func TestPlaybookBiz_GetActive(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		resp, err := biz.GetActive(ctx)
+		resp, err := biz.GetActive(ctx, &v1.GetActivePlaybookRequest{})
 		require.NoError(t, err)
 		require.NotNil(t, resp.Playbook)
 		require.Equal(t, "active-playbook", resp.Playbook.Name)
@@ -539,7 +579,7 @@ func TestPlaybookBiz_GetActive(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		_, err := biz.GetActive(ctx)
+		_, err := biz.GetActive(ctx, &v1.GetActivePlaybookRequest{})
 		require.Error(t, err)
 	})
 }
@@ -600,14 +640,13 @@ func TestPlaybookBiz_AuditFieldsAutoPopulated(t *testing.T) {
 		biz, _ := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		resp, err := biz.Create(ctx, &CreateRequest{
-			Name:      "audit-test",
-			Config:    &PlaybookConfig{Version: "1.0"},
-			CreatedBy: "test-user",
+		resp, err := biz.Create(ctx, &v1.CreatePlaybookRequest{
+			Name:       "audit-test",
+			ConfigJSON: `{"version":"1.0"}`,
 		})
 		require.NoError(t, err)
-		require.Equal(t, "test-user", resp.Playbook.CreatedBy)
-		require.Equal(t, "test-user", *resp.Playbook.UpdatedBy)
+		require.Equal(t, "system", resp.Playbook.CreatedBy)
+		require.Equal(t, "system", *resp.Playbook.UpdatedBy)
 	})
 
 	t.Run("update auto populates updated_by", func(t *testing.T) {
@@ -622,12 +661,13 @@ func TestPlaybookBiz_AuditFieldsAutoPopulated(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		resp, err := biz.Update(ctx, obj.ID, &UpdateRequest{
-			Name:      ptrString("updated-audit-test"),
-			UpdatedBy: "updater",
+		name := "updated-audit-test"
+		resp, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+			Id:   obj.ID,
+			Name: &name,
 		})
 		require.NoError(t, err)
-		require.Equal(t, "updater", *resp.Playbook.UpdatedBy)
+		require.Equal(t, "system", *resp.Playbook.UpdatedBy)
 	})
 
 	t.Run("activate populates activated_by and updated_by", func(t *testing.T) {
@@ -643,13 +683,16 @@ func TestPlaybookBiz_AuditFieldsAutoPopulated(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		err := biz.Activate(ctx, obj.ID, "activator")
+		op := "activator"
+		_, err := biz.Activate(ctx, &v1.ActivatePlaybookRequest{
+			Id:       obj.ID,
+			Operator: &op,
+		})
 		require.NoError(t, err)
 
 		updated, err := s.Playbook().Get(ctx, where.T(ctx).F("id", obj.ID))
 		require.NoError(t, err)
 		require.Equal(t, "activator", *updated.ActivatedBy)
-		require.Equal(t, "activator", *updated.UpdatedBy)
 		require.NotNil(t, updated.ActivatedAt)
 	})
 }
@@ -668,12 +711,13 @@ func TestPlaybookBiz_VersionManagement(t *testing.T) {
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
 		for i := 2; i <= 5; i++ {
-			resp, err := biz.Update(ctx, obj.ID, &UpdateRequest{
-				Description: ptrString("version " + string(rune('0'+i))),
-				UpdatedBy:   "admin",
+			desc := "version " + string(rune('0'+i))
+			resp, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+				Id:          obj.ID,
+				Description: &desc,
 			})
 			require.NoError(t, err)
-			require.Equal(t, i, resp.Playbook.Version)
+			require.Equal(t, int32(i), resp.Playbook.Version)
 		}
 	})
 
@@ -689,40 +733,39 @@ func TestPlaybookBiz_VersionManagement(t *testing.T) {
 		}
 		require.NoError(t, s.Playbook().Create(ctx, obj))
 
-		resp, err := biz.Update(ctx, obj.ID, &UpdateRequest{
-			Description: ptrString("v2"),
-			UpdatedBy:   "admin",
+		desc := "v2"
+		resp, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+			Id:          obj.ID,
+			Description: &desc,
 		})
 		require.NoError(t, err)
-		require.Equal(t, 2, resp.Playbook.Version)
+		require.Equal(t, int32(2), resp.Playbook.Version)
 		require.NotNil(t, resp.Playbook.PreviousVersion)
-		require.Equal(t, 1, *resp.Playbook.PreviousVersion)
+		require.Equal(t, int32(1), *resp.Playbook.PreviousVersion)
 	})
 
 	t.Run("rename keeps lineage snapshot and rollback restores old metadata", func(t *testing.T) {
 		biz, s := newTestPlaybookBiz(t)
 		ctx := context.Background()
 
-		createResp, err := biz.Create(ctx, &CreateRequest{
+		desc := "first description"
+		createResp, err := biz.Create(ctx, &v1.CreatePlaybookRequest{
 			Name:        "lineage-playbook-v1",
-			Description: ptrString("first description"),
-			Config: &PlaybookConfig{
-				Version: "1.0",
-			},
-			CreatedBy: "admin",
+			Description: &desc,
+			ConfigJSON:  `{"version":"1.0"}`,
 		})
 		require.NoError(t, err)
 		require.NotEmpty(t, createResp.Playbook.LineageID)
 
 		oldConfigJSON := createResp.Playbook.ConfigJSON
 
-		updateResp, err := biz.Update(ctx, createResp.Playbook.ID, &UpdateRequest{
-			Name:        ptrString("lineage-playbook-v2"),
-			Description: ptrString("second description"),
-			Config: &PlaybookConfig{
-				Version: "2.0",
-			},
-			UpdatedBy: "editor",
+		name := "lineage-playbook-v2"
+		desc2 := "second description"
+		updateResp, err := biz.Update(ctx, &v1.UpdatePlaybookRequest{
+			Id:          createResp.Playbook.Id,
+			Name:        &name,
+			Description: &desc2,
+			ConfigJSON:  ptrString(`{"version":"2.0"}`),
 		})
 		require.NoError(t, err)
 		require.Equal(t, createResp.Playbook.LineageID, updateResp.Playbook.LineageID)
@@ -744,8 +787,16 @@ func TestPlaybookBiz_VersionManagement(t *testing.T) {
 		require.Equal(t, "first description", *snapshot.Description)
 		require.Equal(t, oldConfigJSON, snapshot.ConfigJSON)
 
-		require.NoError(t, biz.Activate(ctx, updateResp.Playbook.ID, "operator"))
-		require.NoError(t, biz.Rollback(ctx, updateResp.Playbook.ID, 1, "rollbacker"))
+		_, err = biz.Activate(ctx, &v1.ActivatePlaybookRequest{
+			Id: updateResp.Playbook.Id,
+		})
+		require.NoError(t, err)
+
+		_, err = biz.Rollback(ctx, &v1.RollbackPlaybookRequest{
+			Id:       updateResp.Playbook.Id,
+			Version:  1,
+		})
+		require.NoError(t, err)
 
 		total, versions, err = s.Playbook().List(ctx, where.T(ctx).F("lineage_id", updateResp.Playbook.LineageID))
 		require.NoError(t, err)
@@ -765,7 +816,6 @@ func TestPlaybookBiz_VersionManagement(t *testing.T) {
 		require.Equal(t, oldConfigJSON, rolledBack.ConfigJSON)
 		require.True(t, rolledBack.Active)
 		require.NotNil(t, rolledBack.ActivatedAt)
-		require.Equal(t, "rollbacker", *rolledBack.ActivatedBy)
 
 		activeCount, activeList, err := s.Playbook().List(ctx, where.T(ctx).F("active", true))
 		require.NoError(t, err)
@@ -796,13 +846,5 @@ func ptrString(v string) *string {
 }
 
 func ptrInt(v int) *int {
-	return &v
-}
-
-func ptrInt64(v int64) *int64 {
-	return &v
-}
-
-func ptrBool(v bool) *bool {
 	return &v
 }

@@ -15,10 +15,12 @@ import (
 	"github.com/casbin/casbin/v2"
 	casbinmodel "github.com/casbin/casbin/v2/model"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
@@ -50,25 +52,25 @@ type RBACBiz interface {
 	Enforce(ctx context.Context, userID string, resource string, action string) (bool, error)
 	Reload(ctx context.Context) error
 
-	ListUsers(ctx context.Context, rq *ListUsersRequest) (*ListUsersResponse, error)
-	GetUser(ctx context.Context, rq *GetUserRequest) (*UserView, error)
-	UpsertUser(ctx context.Context, rq *UpsertUserRequest) (*UserView, error)
-	DeleteUser(ctx context.Context, rq *DeleteUserRequest) error
+	ListUsers(ctx context.Context, rq *v1.ListUsersRequest) (*v1.ListUsersResponse, error)
+	GetUser(ctx context.Context, rq *v1.GetUserRequest) (*v1.GetUserResponse, error)
+	UpsertUser(ctx context.Context, rq *v1.UpsertUserRequest) (*v1.UpsertUserResponse, error)
+	DeleteUser(ctx context.Context, rq *v1.DeleteUserRequest) (*v1.DeleteUserResponse, error)
 
-	ListRoles(ctx context.Context, rq *ListRolesRequest) (*ListRolesResponse, error)
-	GetRole(ctx context.Context, rq *GetRoleRequest) (*RoleView, error)
-	UpsertRole(ctx context.Context, rq *UpsertRoleRequest) (*RoleView, error)
-	DeleteRole(ctx context.Context, rq *DeleteRoleRequest) error
+	ListRoles(ctx context.Context, rq *v1.ListRolesRequest) (*v1.ListRolesResponse, error)
+	GetRole(ctx context.Context, rq *v1.GetRoleRequest) (*v1.GetRoleResponse, error)
+	UpsertRole(ctx context.Context, rq *v1.UpsertRoleRequest) (*v1.UpsertRoleResponse, error)
+	DeleteRole(ctx context.Context, rq *v1.DeleteRoleRequest) (*v1.DeleteRoleResponse, error)
 
-	ListPermissions(ctx context.Context, rq *ListPermissionsRequest) (*ListPermissionsResponse, error)
-	GetPermission(ctx context.Context, rq *GetPermissionRequest) (*PermissionView, error)
-	UpsertPermission(ctx context.Context, rq *UpsertPermissionRequest) (*PermissionView, error)
-	DeletePermission(ctx context.Context, rq *DeletePermissionRequest) error
+	ListPermissions(ctx context.Context, rq *v1.ListPermissionsRequest) (*v1.ListPermissionsResponse, error)
+	GetPermission(ctx context.Context, rq *v1.GetPermissionRequest) (*v1.GetPermissionResponse, error)
+	UpsertPermission(ctx context.Context, rq *v1.UpsertPermissionRequest) (*v1.UpsertPermissionResponse, error)
+	DeletePermission(ctx context.Context, rq *v1.DeletePermissionRequest) (*v1.DeletePermissionResponse, error)
 
-	AssignUserRoles(ctx context.Context, rq *AssignUserRolesRequest) (*UserAccessView, error)
-	AssignRolePermissions(ctx context.Context, rq *AssignRolePermissionsRequest) (*RoleAccessView, error)
-	GetUserAccess(ctx context.Context, rq *GetUserAccessRequest) (*UserAccessView, error)
-	ResolveLoginProfile(ctx context.Context, rq *ResolveLoginProfileRequest) (*LoginProfile, error)
+	AssignUserRoles(ctx context.Context, rq *v1.AssignUserRolesRequest) (*v1.AssignUserRolesResponse, error)
+	AssignRolePermissions(ctx context.Context, rq *v1.AssignRolePermissionsRequest) (*v1.AssignRolePermissionsResponse, error)
+	GetUserAccess(ctx context.Context, rq *v1.GetUserAccessRequest) (*v1.GetUserAccessResponse, error)
+	ResolveLoginProfile(ctx context.Context, rq *v1.ResolveLoginProfileRequest) (*v1.ResolveLoginProfileResponse, error)
 
 	RBACExpansion
 }
@@ -92,151 +94,6 @@ func New(s store.IStore) *rbacBiz {
 		store:     s,
 		modelPath: resolveRBACModelPath(),
 	}
-}
-
-type ListUsersRequest struct {
-	Offset int
-	Limit  int
-}
-
-type ListUsersResponse struct {
-	Total int64       `json:"total"`
-	Items []*UserView `json:"items"`
-}
-
-type GetUserRequest struct {
-	UserID string
-}
-
-type UpsertUserRequest struct {
-	UserID   string
-	Username string
-	Password *string
-	TeamID   string
-	Status   string
-}
-
-type DeleteUserRequest struct {
-	UserID string
-}
-
-type UserView struct {
-	UserID    string `json:"user_id"`
-	Username  string `json:"username,omitempty"`
-	TeamID    string `json:"team_id,omitempty"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-}
-
-type ListRolesRequest struct {
-	Offset int
-	Limit  int
-}
-
-type ListRolesResponse struct {
-	Total int64       `json:"total"`
-	Items []*RoleView `json:"items"`
-}
-
-type GetRoleRequest struct {
-	RoleID string
-}
-
-type UpsertRoleRequest struct {
-	RoleID      string
-	DisplayName string
-	Description string
-	Status      string
-}
-
-type DeleteRoleRequest struct {
-	RoleID string
-}
-
-type RoleView struct {
-	RoleID      string `json:"role_id"`
-	DisplayName string `json:"display_name,omitempty"`
-	Description string `json:"description,omitempty"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-}
-
-type ListPermissionsRequest struct {
-	Offset int
-	Limit  int
-}
-
-type ListPermissionsResponse struct {
-	Total int64             `json:"total"`
-	Items []*PermissionView `json:"items"`
-}
-
-type GetPermissionRequest struct {
-	PermissionID string
-}
-
-type UpsertPermissionRequest struct {
-	PermissionID string
-	Resource     string
-	Action       string
-	Description  string
-	Status       string
-}
-
-type DeletePermissionRequest struct {
-	PermissionID string
-}
-
-type PermissionView struct {
-	PermissionID string `json:"permission_id"`
-	Resource     string `json:"resource"`
-	Action       string `json:"action"`
-	Description  string `json:"description,omitempty"`
-	Status       string `json:"status"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-}
-
-type AssignUserRolesRequest struct {
-	UserID  string
-	RoleIDs []string
-}
-
-type AssignRolePermissionsRequest struct {
-	RoleID        string
-	PermissionIDs []string
-}
-
-type GetUserAccessRequest struct {
-	UserID string
-}
-
-type UserAccessView struct {
-	UserID      string            `json:"user_id"`
-	RoleIDs     []string          `json:"role_ids"`
-	Permissions []*PermissionView `json:"permissions"`
-}
-
-type RoleAccessView struct {
-	RoleID      string            `json:"role_id"`
-	Permissions []*PermissionView `json:"permissions"`
-}
-
-type ResolveLoginProfileRequest struct {
-	UserID            string
-	Password          string
-	SkipPasswordCheck bool
-}
-
-type LoginProfile struct {
-	User              *UserView         `json:"user,omitempty"`
-	RoleIDs           []string          `json:"role_ids,omitempty"`
-	Permissions       []*PermissionView `json:"permissions,omitempty"`
-	EffectiveActions  []string          `json:"effective_actions,omitempty"`
-	EffectiveTeamIDs  []string          `json:"effective_team_ids,omitempty"`
-	PasswordValidated bool              `json:"password_validated"`
 }
 
 func (b *rbacBiz) Enforce(ctx context.Context, userID string, resource string, action string) (bool, error) {
@@ -367,32 +224,32 @@ func (b *rbacBiz) reloadLocked(ctx context.Context) error {
 	return nil
 }
 
-func (b *rbacBiz) ListUsers(ctx context.Context, rq *ListUsersRequest) (*ListUsersResponse, error) {
+func (b *rbacBiz) ListUsers(ctx context.Context, rq *v1.ListUsersRequest) (*v1.ListUsersResponse, error) {
 	if b == nil || b.store == nil {
 		return nil, errno.ErrInvalidArgument
 	}
 	if rq == nil {
-		rq = &ListUsersRequest{}
+		rq = &v1.ListUsersRequest{}
 	}
-	total, list, err := b.store.RBAC().ListUsers(ctx, rq.Offset, rq.Limit)
+	total, list, err := b.store.RBAC().ListUsers(ctx, int(rq.GetOffset()), int(rq.GetLimit()))
 	if err != nil {
 		if isTableMissingError(err) {
-			return &ListUsersResponse{Total: 0, Items: []*UserView{}}, nil
+			return &v1.ListUsersResponse{Total: 0, Items: []*v1.User{}}, nil
 		}
 		return nil, errno.ErrInternal
 	}
-	items := make([]*UserView, 0, len(list))
+	items := make([]*v1.User, 0, len(list))
 	for _, item := range list {
-		items = append(items, mapUser(item))
+		items = append(items, modelToProtoUser(item))
 	}
-	return &ListUsersResponse{Total: total, Items: items}, nil
+	return &v1.ListUsersResponse{Total: total, Items: items}, nil
 }
 
-func (b *rbacBiz) GetUser(ctx context.Context, rq *GetUserRequest) (*UserView, error) {
+func (b *rbacBiz) GetUser(ctx context.Context, rq *v1.GetUserRequest) (*v1.GetUserResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	obj, err := b.store.RBAC().GetUser(ctx, strings.TrimSpace(rq.UserID))
+	obj, err := b.store.RBAC().GetUser(ctx, strings.TrimSpace(rq.GetUserId()))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errno.ErrNotFound
@@ -402,22 +259,22 @@ func (b *rbacBiz) GetUser(ctx context.Context, rq *GetUserRequest) (*UserView, e
 		}
 		return nil, errno.ErrInternal
 	}
-	return mapUser(obj), nil
+	return &v1.GetUserResponse{User: modelToProtoUser(obj)}, nil
 }
 
-func (b *rbacBiz) UpsertUser(ctx context.Context, rq *UpsertUserRequest) (*UserView, error) {
+func (b *rbacBiz) UpsertUser(ctx context.Context, rq *v1.UpsertUserRequest) (*v1.UpsertUserResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	userID := strings.TrimSpace(rq.UserID)
+	userID := strings.TrimSpace(rq.GetUserId())
 	if userID == "" {
 		return nil, errno.ErrInvalidArgument
 	}
-	status := normalizeStatus(rq.Status)
+	status := normalizeStatus(rq.GetStatus())
 	obj := &model.RBACUserM{
 		UserID:   userID,
-		Username: strings.TrimSpace(rq.Username),
-		TeamID:   strings.TrimSpace(rq.TeamID),
+		Username: strings.TrimSpace(rq.GetUsername()),
+		TeamID:   strings.TrimSpace(rq.GetTeamId()),
 		Status:   status,
 	}
 	if rq.Password != nil {
@@ -450,45 +307,48 @@ func (b *rbacBiz) UpsertUser(ctx context.Context, rq *UpsertUserRequest) (*UserV
 	if reloadErr := b.Reload(ctx); reloadErr != nil {
 		return nil, reloadErr
 	}
-	return mapUser(out), nil
+	return &v1.UpsertUserResponse{User: modelToProtoUser(out)}, nil
 }
 
-func (b *rbacBiz) DeleteUser(ctx context.Context, rq *DeleteUserRequest) error {
+func (b *rbacBiz) DeleteUser(ctx context.Context, rq *v1.DeleteUserRequest) (*v1.DeleteUserResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
-		return errno.ErrInvalidArgument
+		return nil, errno.ErrInvalidArgument
 	}
-	if err := b.store.RBAC().DeleteUser(ctx, strings.TrimSpace(rq.UserID)); err != nil {
-		return errno.ErrInternal
+	if err := b.store.RBAC().DeleteUser(ctx, strings.TrimSpace(rq.GetUserId())); err != nil {
+		return nil, errno.ErrInternal
 	}
-	return b.Reload(ctx)
+	if err := b.Reload(ctx); err != nil {
+		return nil, err
+	}
+	return &v1.DeleteUserResponse{}, nil
 }
 
-func (b *rbacBiz) ListRoles(ctx context.Context, rq *ListRolesRequest) (*ListRolesResponse, error) {
+func (b *rbacBiz) ListRoles(ctx context.Context, rq *v1.ListRolesRequest) (*v1.ListRolesResponse, error) {
 	if b == nil || b.store == nil {
 		return nil, errno.ErrInvalidArgument
 	}
 	if rq == nil {
-		rq = &ListRolesRequest{}
+		rq = &v1.ListRolesRequest{}
 	}
-	total, list, err := b.store.RBAC().ListRoles(ctx, rq.Offset, rq.Limit)
+	total, list, err := b.store.RBAC().ListRoles(ctx, int(rq.GetOffset()), int(rq.GetLimit()))
 	if err != nil {
 		if isTableMissingError(err) {
-			return &ListRolesResponse{Total: 0, Items: []*RoleView{}}, nil
+			return &v1.ListRolesResponse{Total: 0, Items: []*v1.Role{}}, nil
 		}
 		return nil, errno.ErrInternal
 	}
-	items := make([]*RoleView, 0, len(list))
+	items := make([]*v1.Role, 0, len(list))
 	for _, item := range list {
-		items = append(items, mapRole(item))
+		items = append(items, modelToProtoRole(item))
 	}
-	return &ListRolesResponse{Total: total, Items: items}, nil
+	return &v1.ListRolesResponse{Total: total, Items: items}, nil
 }
 
-func (b *rbacBiz) GetRole(ctx context.Context, rq *GetRoleRequest) (*RoleView, error) {
+func (b *rbacBiz) GetRole(ctx context.Context, rq *v1.GetRoleRequest) (*v1.GetRoleResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	obj, err := b.store.RBAC().GetRole(ctx, strings.TrimSpace(rq.RoleID))
+	obj, err := b.store.RBAC().GetRole(ctx, strings.TrimSpace(rq.GetRoleId()))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errno.ErrNotFound
@@ -498,22 +358,22 @@ func (b *rbacBiz) GetRole(ctx context.Context, rq *GetRoleRequest) (*RoleView, e
 		}
 		return nil, errno.ErrInternal
 	}
-	return mapRole(obj), nil
+	return &v1.GetRoleResponse{Role: modelToProtoRole(obj)}, nil
 }
 
-func (b *rbacBiz) UpsertRole(ctx context.Context, rq *UpsertRoleRequest) (*RoleView, error) {
+func (b *rbacBiz) UpsertRole(ctx context.Context, rq *v1.UpsertRoleRequest) (*v1.UpsertRoleResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	roleID := strings.TrimSpace(rq.RoleID)
+	roleID := strings.TrimSpace(rq.GetRoleId())
 	if roleID == "" {
 		return nil, errno.ErrInvalidArgument
 	}
 	obj := &model.RBACRoleM{
 		RoleID:      roleID,
-		DisplayName: strings.TrimSpace(rq.DisplayName),
-		Description: strings.TrimSpace(rq.Description),
-		Status:      normalizeStatus(rq.Status),
+		DisplayName: strings.TrimSpace(rq.GetDisplayName()),
+		Description: strings.TrimSpace(rq.GetDescription()),
+		Status:      normalizeStatus(rq.GetStatus()),
 	}
 	if err := b.store.RBAC().UpsertRole(ctx, obj); err != nil {
 		return nil, errno.ErrInternal
@@ -525,45 +385,48 @@ func (b *rbacBiz) UpsertRole(ctx context.Context, rq *UpsertRoleRequest) (*RoleV
 	if reloadErr := b.Reload(ctx); reloadErr != nil {
 		return nil, reloadErr
 	}
-	return mapRole(out), nil
+	return &v1.UpsertRoleResponse{Role: modelToProtoRole(out)}, nil
 }
 
-func (b *rbacBiz) DeleteRole(ctx context.Context, rq *DeleteRoleRequest) error {
+func (b *rbacBiz) DeleteRole(ctx context.Context, rq *v1.DeleteRoleRequest) (*v1.DeleteRoleResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
-		return errno.ErrInvalidArgument
+		return nil, errno.ErrInvalidArgument
 	}
-	if err := b.store.RBAC().DeleteRole(ctx, strings.TrimSpace(rq.RoleID)); err != nil {
-		return errno.ErrInternal
+	if err := b.store.RBAC().DeleteRole(ctx, strings.TrimSpace(rq.GetRoleId())); err != nil {
+		return nil, errno.ErrInternal
 	}
-	return b.Reload(ctx)
+	if err := b.Reload(ctx); err != nil {
+		return nil, err
+	}
+	return &v1.DeleteRoleResponse{}, nil
 }
 
-func (b *rbacBiz) ListPermissions(ctx context.Context, rq *ListPermissionsRequest) (*ListPermissionsResponse, error) {
+func (b *rbacBiz) ListPermissions(ctx context.Context, rq *v1.ListPermissionsRequest) (*v1.ListPermissionsResponse, error) {
 	if b == nil || b.store == nil {
 		return nil, errno.ErrInvalidArgument
 	}
 	if rq == nil {
-		rq = &ListPermissionsRequest{}
+		rq = &v1.ListPermissionsRequest{}
 	}
-	total, list, err := b.store.RBAC().ListPermissions(ctx, rq.Offset, rq.Limit)
+	total, list, err := b.store.RBAC().ListPermissions(ctx, int(rq.GetOffset()), int(rq.GetLimit()))
 	if err != nil {
 		if isTableMissingError(err) {
-			return &ListPermissionsResponse{Total: 0, Items: []*PermissionView{}}, nil
+			return &v1.ListPermissionsResponse{Total: 0, Items: []*v1.Permission{}}, nil
 		}
 		return nil, errno.ErrInternal
 	}
-	items := make([]*PermissionView, 0, len(list))
+	items := make([]*v1.Permission, 0, len(list))
 	for _, item := range list {
-		items = append(items, mapPermission(item))
+		items = append(items, modelToProtoPermission(item))
 	}
-	return &ListPermissionsResponse{Total: total, Items: items}, nil
+	return &v1.ListPermissionsResponse{Total: total, Items: items}, nil
 }
 
-func (b *rbacBiz) GetPermission(ctx context.Context, rq *GetPermissionRequest) (*PermissionView, error) {
+func (b *rbacBiz) GetPermission(ctx context.Context, rq *v1.GetPermissionRequest) (*v1.GetPermissionResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	obj, err := b.store.RBAC().GetPermission(ctx, strings.TrimSpace(rq.PermissionID))
+	obj, err := b.store.RBAC().GetPermission(ctx, strings.TrimSpace(rq.GetPermissionId()))
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errno.ErrNotFound
@@ -573,16 +436,16 @@ func (b *rbacBiz) GetPermission(ctx context.Context, rq *GetPermissionRequest) (
 		}
 		return nil, errno.ErrInternal
 	}
-	return mapPermission(obj), nil
+	return &v1.GetPermissionResponse{Permission: modelToProtoPermission(obj)}, nil
 }
 
-func (b *rbacBiz) UpsertPermission(ctx context.Context, rq *UpsertPermissionRequest) (*PermissionView, error) {
+func (b *rbacBiz) UpsertPermission(ctx context.Context, rq *v1.UpsertPermissionRequest) (*v1.UpsertPermissionResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	permissionID := strings.TrimSpace(rq.PermissionID)
-	resource := strings.TrimSpace(rq.Resource)
-	action := strings.TrimSpace(rq.Action)
+	permissionID := strings.TrimSpace(rq.GetPermissionId())
+	resource := strings.TrimSpace(rq.GetResource())
+	action := strings.TrimSpace(rq.GetAction())
 	if permissionID == "" || resource == "" || action == "" {
 		return nil, errno.ErrInvalidArgument
 	}
@@ -590,8 +453,8 @@ func (b *rbacBiz) UpsertPermission(ctx context.Context, rq *UpsertPermissionRequ
 		PermissionID: permissionID,
 		Resource:     resource,
 		Action:       action,
-		Description:  strings.TrimSpace(rq.Description),
-		Status:       normalizeStatus(rq.Status),
+		Description:  strings.TrimSpace(rq.GetDescription()),
+		Status:       normalizeStatus(rq.GetStatus()),
 	}
 	if err := b.store.RBAC().UpsertPermission(ctx, obj); err != nil {
 		return nil, errno.ErrInternal
@@ -603,24 +466,27 @@ func (b *rbacBiz) UpsertPermission(ctx context.Context, rq *UpsertPermissionRequ
 	if reloadErr := b.Reload(ctx); reloadErr != nil {
 		return nil, reloadErr
 	}
-	return mapPermission(out), nil
+	return &v1.UpsertPermissionResponse{Permission: modelToProtoPermission(out)}, nil
 }
 
-func (b *rbacBiz) DeletePermission(ctx context.Context, rq *DeletePermissionRequest) error {
-	if b == nil || b.store == nil || rq == nil {
-		return errno.ErrInvalidArgument
-	}
-	if err := b.store.RBAC().DeletePermission(ctx, strings.TrimSpace(rq.PermissionID)); err != nil {
-		return errno.ErrInternal
-	}
-	return b.Reload(ctx)
-}
-
-func (b *rbacBiz) AssignUserRoles(ctx context.Context, rq *AssignUserRolesRequest) (*UserAccessView, error) {
+func (b *rbacBiz) DeletePermission(ctx context.Context, rq *v1.DeletePermissionRequest) (*v1.DeletePermissionResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	userID := strings.TrimSpace(rq.UserID)
+	if err := b.store.RBAC().DeletePermission(ctx, strings.TrimSpace(rq.GetPermissionId())); err != nil {
+		return nil, errno.ErrInternal
+	}
+	if err := b.Reload(ctx); err != nil {
+		return nil, err
+	}
+	return &v1.DeletePermissionResponse{}, nil
+}
+
+func (b *rbacBiz) AssignUserRoles(ctx context.Context, rq *v1.AssignUserRolesRequest) (*v1.AssignUserRolesResponse, error) {
+	if b == nil || b.store == nil || rq == nil {
+		return nil, errno.ErrInvalidArgument
+	}
+	userID := strings.TrimSpace(rq.GetUserId())
 	if userID == "" {
 		return nil, errno.ErrInvalidArgument
 	}
@@ -630,7 +496,7 @@ func (b *rbacBiz) AssignUserRoles(ctx context.Context, rq *AssignUserRolesReques
 		}
 		return nil, errno.ErrInternal
 	}
-	roleIDs := uniqueStrings(rq.RoleIDs)
+	roleIDs := uniqueStrings(rq.GetRoleIds())
 	for _, roleID := range roleIDs {
 		if _, err := b.store.RBAC().GetRole(ctx, roleID); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -645,14 +511,18 @@ func (b *rbacBiz) AssignUserRoles(ctx context.Context, rq *AssignUserRolesReques
 	if reloadErr := b.Reload(ctx); reloadErr != nil {
 		return nil, reloadErr
 	}
-	return b.GetUserAccess(ctx, &GetUserAccessRequest{UserID: userID})
+	access, err := b.GetUserAccess(ctx, &v1.GetUserAccessRequest{UserId: userID})
+	if err != nil {
+		return nil, err
+	}
+	return &v1.AssignUserRolesResponse{UserAccess: access.UserAccess}, nil
 }
 
-func (b *rbacBiz) AssignRolePermissions(ctx context.Context, rq *AssignRolePermissionsRequest) (*RoleAccessView, error) {
+func (b *rbacBiz) AssignRolePermissions(ctx context.Context, rq *v1.AssignRolePermissionsRequest) (*v1.AssignRolePermissionsResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	roleID := strings.TrimSpace(rq.RoleID)
+	roleID := strings.TrimSpace(rq.GetRoleId())
 	if roleID == "" {
 		return nil, errno.ErrInvalidArgument
 	}
@@ -662,7 +532,7 @@ func (b *rbacBiz) AssignRolePermissions(ctx context.Context, rq *AssignRolePermi
 		}
 		return nil, errno.ErrInternal
 	}
-	permissionIDs := uniqueStrings(rq.PermissionIDs)
+	permissionIDs := uniqueStrings(rq.GetPermissionIds())
 	for _, permissionID := range permissionIDs {
 		if _, err := b.store.RBAC().GetPermission(ctx, permissionID); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -681,18 +551,18 @@ func (b *rbacBiz) AssignRolePermissions(ctx context.Context, rq *AssignRolePermi
 	if err != nil {
 		return nil, errno.ErrInternal
 	}
-	mapped := make([]*PermissionView, 0, len(permissions))
+	mapped := make([]*v1.Permission, 0, len(permissions))
 	for _, item := range permissions {
-		mapped = append(mapped, mapPermission(item))
+		mapped = append(mapped, modelToProtoPermission(item))
 	}
-	return &RoleAccessView{RoleID: roleID, Permissions: mapped}, nil
+	return &v1.AssignRolePermissionsResponse{RoleAccess: &v1.RoleAccess{RoleId: roleID, Permissions: mapped}}, nil
 }
 
-func (b *rbacBiz) GetUserAccess(ctx context.Context, rq *GetUserAccessRequest) (*UserAccessView, error) {
+func (b *rbacBiz) GetUserAccess(ctx context.Context, rq *v1.GetUserAccessRequest) (*v1.GetUserAccessResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	userID := strings.TrimSpace(rq.UserID)
+	userID := strings.TrimSpace(rq.GetUserId())
 	if userID == "" {
 		return nil, errno.ErrInvalidArgument
 	}
@@ -709,15 +579,15 @@ func (b *rbacBiz) GetUserAccess(ctx context.Context, rq *GetUserAccessRequest) (
 	if err != nil {
 		return nil, errno.ErrInternal
 	}
-	permissionMap := map[string]*PermissionView{}
+	permissionMap := map[string]*v1.Permission{}
 	for _, roleID := range roleIDs {
 		permissions, permErr := b.store.RBAC().ListPermissionsByRole(ctx, roleID)
 		if permErr != nil {
 			return nil, errno.ErrInternal
 		}
 		for _, permission := range permissions {
-			mapped := mapPermission(permission)
-			permissionMap[mapped.PermissionID] = mapped
+			mapped := modelToProtoPermission(permission)
+			permissionMap[mapped.GetPermissionId()] = mapped
 		}
 	}
 	permissionIDs := make([]string, 0, len(permissionMap))
@@ -725,18 +595,18 @@ func (b *rbacBiz) GetUserAccess(ctx context.Context, rq *GetUserAccessRequest) (
 		permissionIDs = append(permissionIDs, permissionID)
 	}
 	sort.Strings(permissionIDs)
-	mappedPermissions := make([]*PermissionView, 0, len(permissionIDs))
+	mappedPermissions := make([]*v1.Permission, 0, len(permissionIDs))
 	for _, permissionID := range permissionIDs {
 		mappedPermissions = append(mappedPermissions, permissionMap[permissionID])
 	}
-	return &UserAccessView{UserID: userID, RoleIDs: roleIDs, Permissions: mappedPermissions}, nil
+	return &v1.GetUserAccessResponse{UserAccess: &v1.UserAccess{UserId: userID, RoleIds: roleIDs, Permissions: mappedPermissions}}, nil
 }
 
-func (b *rbacBiz) ResolveLoginProfile(ctx context.Context, rq *ResolveLoginProfileRequest) (*LoginProfile, error) {
+func (b *rbacBiz) ResolveLoginProfile(ctx context.Context, rq *v1.ResolveLoginProfileRequest) (*v1.ResolveLoginProfileResponse, error) {
 	if b == nil || b.store == nil || rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
-	userID := strings.TrimSpace(rq.UserID)
+	userID := strings.TrimSpace(rq.GetUserId())
 	if userID == "" {
 		return nil, errno.ErrInvalidArgument
 	}
@@ -750,39 +620,40 @@ func (b *rbacBiz) ResolveLoginProfile(ctx context.Context, rq *ResolveLoginProfi
 	if normalizeStatus(obj.Status) != rbacStatusActive {
 		return nil, errno.ErrPermissionDenied
 	}
-	profile := &LoginProfile{
-		User:             mapUser(obj),
-		EffectiveTeamIDs: uniqueStrings(splitCommaList(obj.TeamID)),
+	profile := &v1.LoginProfile{
+		User:             modelToProtoUser(obj),
+		EffectiveTeamIds: uniqueStrings(splitCommaList(obj.TeamID)),
 	}
 
 	hash := strings.TrimSpace(ptrString(obj.PasswordHash))
-	if hash != "" && !rq.SkipPasswordCheck {
-		if strings.TrimSpace(rq.Password) == "" {
+	if hash != "" && !rq.GetSkipPasswordCheck() {
+		if strings.TrimSpace(rq.GetPassword()) == "" {
 			return nil, errno.ErrUnauthenticated
 		}
-		if compareErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(strings.TrimSpace(rq.Password))); compareErr != nil {
+		if compareErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(strings.TrimSpace(rq.GetPassword()))); compareErr != nil {
 			return nil, errno.ErrUnauthenticated
 		}
 		profile.PasswordValidated = true
-	} else if rq.SkipPasswordCheck {
+	} else if rq.GetSkipPasswordCheck() {
 		profile.PasswordValidated = true
 	}
 
-	access, err := b.GetUserAccess(ctx, &GetUserAccessRequest{UserID: userID})
+	access, err := b.GetUserAccess(ctx, &v1.GetUserAccessRequest{UserId: userID})
 	if err != nil {
 		if errors.Is(err, errno.ErrNotFound) {
-			return profile, nil
+			return &v1.ResolveLoginProfileResponse{LoginProfile: profile}, nil
 		}
 		return nil, err
 	}
-	profile.RoleIDs = append([]string(nil), access.RoleIDs...)
-	profile.Permissions = append([]*PermissionView(nil), access.Permissions...)
+	ua := access.GetUserAccess()
+	profile.RoleIds = append([]string(nil), ua.GetRoleIds()...)
+	profile.Permissions = append([]*v1.Permission(nil), ua.GetPermissions()...)
 	actionSet := map[string]struct{}{}
-	for _, permission := range access.Permissions {
+	for _, permission := range ua.GetPermissions() {
 		if permission == nil {
 			continue
 		}
-		action := strings.TrimSpace(permission.Action)
+		action := strings.TrimSpace(permission.GetAction())
 		if action == "" {
 			continue
 		}
@@ -792,51 +663,55 @@ func (b *rbacBiz) ResolveLoginProfile(ctx context.Context, rq *ResolveLoginProfi
 		profile.EffectiveActions = append(profile.EffectiveActions, action)
 	}
 	sort.Strings(profile.EffectiveActions)
-	return profile, nil
+	return &v1.ResolveLoginProfileResponse{LoginProfile: profile}, nil
 }
 
-func mapUser(obj *model.RBACUserM) *UserView {
+// Model to Proto conversion functions
+
+func modelToProtoUser(obj *model.RBACUserM) *v1.User {
 	if obj == nil {
 		return nil
 	}
-	return &UserView{
-		UserID:    strings.TrimSpace(obj.UserID),
+	return &v1.User{
+		UserId:    strings.TrimSpace(obj.UserID),
 		Username:  strings.TrimSpace(obj.Username),
-		TeamID:    strings.TrimSpace(obj.TeamID),
+		TeamId:    strings.TrimSpace(obj.TeamID),
 		Status:    normalizeStatus(obj.Status),
-		CreatedAt: obj.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt: obj.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt: timestamppb.New(obj.CreatedAt.UTC()),
+		UpdatedAt: timestamppb.New(obj.UpdatedAt.UTC()),
 	}
 }
 
-func mapRole(obj *model.RBACRoleM) *RoleView {
+func modelToProtoRole(obj *model.RBACRoleM) *v1.Role {
 	if obj == nil {
 		return nil
 	}
-	return &RoleView{
-		RoleID:      strings.TrimSpace(obj.RoleID),
+	return &v1.Role{
+		RoleId:      strings.TrimSpace(obj.RoleID),
 		DisplayName: strings.TrimSpace(obj.DisplayName),
 		Description: strings.TrimSpace(obj.Description),
 		Status:      normalizeStatus(obj.Status),
-		CreatedAt:   obj.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:   obj.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:   timestamppb.New(obj.CreatedAt.UTC()),
+		UpdatedAt:   timestamppb.New(obj.UpdatedAt.UTC()),
 	}
 }
 
-func mapPermission(obj *model.RBACPermissionM) *PermissionView {
+func modelToProtoPermission(obj *model.RBACPermissionM) *v1.Permission {
 	if obj == nil {
 		return nil
 	}
-	return &PermissionView{
-		PermissionID: strings.TrimSpace(obj.PermissionID),
+	return &v1.Permission{
+		PermissionId: strings.TrimSpace(obj.PermissionID),
 		Resource:     strings.TrimSpace(obj.Resource),
 		Action:       strings.TrimSpace(obj.Action),
 		Description:  strings.TrimSpace(obj.Description),
 		Status:       normalizeStatus(obj.Status),
-		CreatedAt:    obj.CreatedAt.UTC().Format(time.RFC3339Nano),
-		UpdatedAt:    obj.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		CreatedAt:    timestamppb.New(obj.CreatedAt.UTC()),
+		UpdatedAt:    timestamppb.New(obj.UpdatedAt.UTC()),
 	}
 }
+
+// Helper functions
 
 func normalizeStatus(status string) string {
 	trimmed := strings.ToLower(strings.TrimSpace(status))
@@ -921,4 +796,15 @@ func isTableMissingError(err error) bool {
 		return false
 	}
 	return strings.Contains(message, "no such table") || strings.Contains(message, "doesn't exist")
+}
+
+// Compatibility aliases for time formatting (used by tests)
+var (
+	// TimeNow returns current time for testing
+	TimeNow = time.Now
+)
+
+// FormatTime formats time to RFC3339Nano string
+func FormatTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
 }

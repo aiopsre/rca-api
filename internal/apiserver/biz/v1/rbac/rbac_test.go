@@ -13,6 +13,7 @@ import (
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
@@ -22,23 +23,23 @@ func TestRBACBiz_EnforceByRolePermission(t *testing.T) {
 
 	ctx := context.Background()
 
-	_, err := bizObj.UpsertUser(ctx, &UpsertUserRequest{UserID: "alice", Username: "Alice"})
+	_, err := bizObj.UpsertUser(ctx, &v1.UpsertUserRequest{UserId: "alice", Username: "Alice"})
 	require.NoError(t, err)
-	_, err = bizObj.UpsertRole(ctx, &UpsertRoleRequest{RoleID: "operator", DisplayName: "Operator"})
+	_, err = bizObj.UpsertRole(ctx, &v1.UpsertRoleRequest{RoleId: "operator", DisplayName: "Operator"})
 	require.NoError(t, err)
-	_, err = bizObj.UpsertPermission(ctx, &UpsertPermissionRequest{
-		PermissionID: "perm.operator.inbox",
+	_, err = bizObj.UpsertPermission(ctx, &v1.UpsertPermissionRequest{
+		PermissionId: "perm.operator.inbox",
 		Resource:     "/v1/operator/*",
 		Action:       "ai.read",
 	})
 	require.NoError(t, err)
 
-	_, err = bizObj.AssignRolePermissions(ctx, &AssignRolePermissionsRequest{
-		RoleID:        "operator",
-		PermissionIDs: []string{"perm.operator.inbox"},
+	_, err = bizObj.AssignRolePermissions(ctx, &v1.AssignRolePermissionsRequest{
+		RoleId:        "operator",
+		PermissionIds: []string{"perm.operator.inbox"},
 	})
 	require.NoError(t, err)
-	_, err = bizObj.AssignUserRoles(ctx, &AssignUserRolesRequest{UserID: "alice", RoleIDs: []string{"operator"}})
+	_, err = bizObj.AssignUserRoles(ctx, &v1.AssignUserRolesRequest{UserId: "alice", RoleIds: []string{"operator"}})
 	require.NoError(t, err)
 
 	allowed, err := bizObj.Enforce(ctx, "alice", "/v1/operator/inbox", "ai.read")
@@ -60,31 +61,33 @@ func TestRBACBiz_ResolveLoginProfile(t *testing.T) {
 
 	ctx := context.Background()
 	password := "pass-123"
-	_, err := bizObj.UpsertUser(ctx, &UpsertUserRequest{UserID: "reviewer-a", Username: "Reviewer A", Password: &password, TeamID: "payments"})
+	_, err := bizObj.UpsertUser(ctx, &v1.UpsertUserRequest{UserId: "reviewer-a", Username: "Reviewer A", Password: &password, TeamId: "payments"})
 	require.NoError(t, err)
-	_, err = bizObj.UpsertRole(ctx, &UpsertRoleRequest{RoleID: "reviewer"})
+	_, err = bizObj.UpsertRole(ctx, &v1.UpsertRoleRequest{RoleId: "reviewer"})
 	require.NoError(t, err)
-	_, err = bizObj.UpsertPermission(ctx, &UpsertPermissionRequest{
-		PermissionID: "perm.review.start",
+	_, err = bizObj.UpsertPermission(ctx, &v1.UpsertPermissionRequest{
+		PermissionId: "perm.review.start",
 		Resource:     "/v1/sessions/:sessionID/actions/review-start",
 		Action:       "session.review",
 	})
 	require.NoError(t, err)
-	_, err = bizObj.AssignRolePermissions(ctx, &AssignRolePermissionsRequest{RoleID: "reviewer", PermissionIDs: []string{"perm.review.start"}})
+	_, err = bizObj.AssignRolePermissions(ctx, &v1.AssignRolePermissionsRequest{RoleId: "reviewer", PermissionIds: []string{"perm.review.start"}})
 	require.NoError(t, err)
-	_, err = bizObj.AssignUserRoles(ctx, &AssignUserRolesRequest{UserID: "reviewer-a", RoleIDs: []string{"reviewer"}})
+	_, err = bizObj.AssignUserRoles(ctx, &v1.AssignUserRolesRequest{UserId: "reviewer-a", RoleIds: []string{"reviewer"}})
 	require.NoError(t, err)
 
-	profile, err := bizObj.ResolveLoginProfile(ctx, &ResolveLoginProfileRequest{UserID: "reviewer-a", Password: password})
+	resp, err := bizObj.ResolveLoginProfile(ctx, &v1.ResolveLoginProfileRequest{UserId: "reviewer-a", Password: password})
 	require.NoError(t, err)
+	require.NotNil(t, resp)
+	profile := resp.GetLoginProfile()
 	require.NotNil(t, profile)
-	require.Equal(t, "reviewer-a", profile.User.UserID)
-	require.Equal(t, []string{"reviewer"}, profile.RoleIDs)
-	require.Contains(t, profile.EffectiveActions, "session.review")
-	require.True(t, profile.PasswordValidated)
-	require.Equal(t, []string{"payments"}, profile.EffectiveTeamIDs)
+	require.Equal(t, "reviewer-a", profile.User.GetUserId())
+	require.Equal(t, []string{"reviewer"}, profile.GetRoleIds())
+	require.Contains(t, profile.GetEffectiveActions(), "session.review")
+	require.True(t, profile.GetPasswordValidated())
+	require.Equal(t, []string{"payments"}, profile.GetEffectiveTeamIds())
 
-	_, err = bizObj.ResolveLoginProfile(ctx, &ResolveLoginProfileRequest{UserID: "reviewer-a", Password: "wrong"})
+	_, err = bizObj.ResolveLoginProfile(ctx, &v1.ResolveLoginProfileRequest{UserId: "reviewer-a", Password: "wrong"})
 	require.ErrorIs(t, err, errno.ErrUnauthenticated)
 }
 

@@ -12,12 +12,14 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/onexstack/onexstack/pkg/errorsx"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
@@ -27,16 +29,17 @@ const (
 	minVersion       = 1
 )
 
+// PlaybookBiz defines playbook management use-cases.
 type PlaybookBiz interface {
-	Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error)
-	Get(ctx context.Context, id int64) (*GetResponse, error)
-	List(ctx context.Context, req *ListRequest) (*ListResponse, error)
-	Update(ctx context.Context, id int64, req *UpdateRequest) (*UpdateResponse, error)
-	Delete(ctx context.Context, id int64) error
-	Activate(ctx context.Context, id int64, operator string) error
-	Deactivate(ctx context.Context, id int64) error
-	Rollback(ctx context.Context, id int64, version int, operator string) error
-	GetActive(ctx context.Context) (*GetResponse, error)
+	Create(ctx context.Context, rq *v1.CreatePlaybookRequest) (*v1.CreatePlaybookResponse, error)
+	Get(ctx context.Context, rq *v1.GetPlaybookRequest) (*v1.GetPlaybookResponse, error)
+	List(ctx context.Context, rq *v1.ListPlaybooksRequest) (*v1.ListPlaybooksResponse, error)
+	Update(ctx context.Context, rq *v1.UpdatePlaybookRequest) (*v1.UpdatePlaybookResponse, error)
+	Delete(ctx context.Context, rq *v1.DeletePlaybookRequest) (*v1.DeletePlaybookResponse, error)
+	Activate(ctx context.Context, rq *v1.ActivatePlaybookRequest) (*v1.ActivatePlaybookResponse, error)
+	Deactivate(ctx context.Context, rq *v1.DeactivatePlaybookRequest) (*v1.DeactivatePlaybookResponse, error)
+	Rollback(ctx context.Context, rq *v1.RollbackPlaybookRequest) (*v1.RollbackPlaybookResponse, error)
+	GetActive(ctx context.Context, rq *v1.GetActivePlaybookRequest) (*v1.GetActivePlaybookResponse, error)
 	GetActiveForRuntime(ctx context.Context) (*PlaybookConfig, string, error)
 
 	PlaybookExpansion
@@ -54,62 +57,27 @@ func New(store store.IStore) *playbookBiz {
 	return &playbookBiz{store: store}
 }
 
-type CreateRequest struct {
-	Name        string
-	Description *string
-	Config      *PlaybookConfig
-	CreatedBy   string
-}
-
-type CreateResponse struct {
-	Playbook *model.PlaybookM `json:"playbook"`
-}
-
-type GetResponse struct {
-	Playbook *model.PlaybookM `json:"playbook"`
-}
-
-type ListRequest struct {
-	Name   *string
-	Active *bool
-	Offset int64
-	Limit  *int64
-}
-
-type ListResponse struct {
-	TotalCount int64              `json:"total_count"`
-	Playbooks  []*model.PlaybookM `json:"playbooks"`
-}
-
-type UpdateRequest struct {
-	Name            *string
-	Description     *string
-	Config          *PlaybookConfig
-	ExpectedVersion *int
-	UpdatedBy       string
-}
-
-type UpdateResponse struct {
-	Playbook *model.PlaybookM `json:"playbook"`
-}
-
+// PlaybookConfig represents the config structure for validation.
 type PlaybookConfig struct {
 	Version  string   `json:"version"`
 	Rules    []Rule   `json:"rules,omitempty"`
 	Fallback Fallback `json:"fallback,omitempty"`
 }
 
+// Rule represents a playbook rule.
 type Rule struct {
 	ID    string     `json:"id"`
 	Match RuleMatch  `json:"match"`
 	Items []RuleItem `json:"items"`
 }
 
+// RuleMatch represents match conditions for a rule.
 type RuleMatch struct {
 	RootCauseTypes  []string `json:"root_cause_types,omitempty"`
 	PatternsContain []string `json:"patterns_contains,omitempty"`
 }
 
+// RuleItem represents an item in a playbook rule.
 type RuleItem struct {
 	ID           string           `json:"id"`
 	Title        string           `json:"title"`
@@ -119,37 +87,45 @@ type RuleItem struct {
 	Verification RuleVerification `json:"verification"`
 }
 
+// RuleStep represents a step in a rule item.
 type RuleStep struct {
 	Type          string `json:"type"`
 	Text          string `json:"text"`
 	RequiresHuman bool   `json:"requires_human,omitempty"`
 }
 
+// RuleVerification represents verification details.
 type RuleVerification struct {
 	RecommendedSteps []int  `json:"recommended_steps"`
 	ExpectedOutcome  string `json:"expected_outcome"`
 }
 
+// Fallback represents fallback items when no rules match.
 type Fallback struct {
 	Items []RuleItem `json:"items"`
 }
 
-func (b *playbookBiz) Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error) {
-	if req == nil {
+func (b *playbookBiz) Create(ctx context.Context, rq *v1.CreatePlaybookRequest) (*v1.CreatePlaybookResponse, error) {
+	if rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	name := strings.TrimSpace(req.Name)
+	name := strings.TrimSpace(rq.GetName())
 	if name == "" {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	configJSON, err := validatePlaybookConfig(req.Config)
-	if err != nil {
+	configJSON := strings.TrimSpace(rq.GetConfigJSON())
+	if configJSON == "" {
 		return nil, errno.ErrPlaybookInvalidConfig
 	}
 
-	createdBy := normalizeOperator(ctx, req.CreatedBy)
+	// Validate config JSON is valid JSON structure
+	if _, err := validatePlaybookConfigJSON(configJSON); err != nil {
+		return nil, errno.ErrPlaybookInvalidConfig
+	}
+
+	createdBy := normalizeOperator(ctx, "")
 
 	exists, err := b.store.Playbook().Get(ctx, where.T(ctx).F("name", name))
 	if err != nil && !errorsx.Is(err, gorm.ErrRecordNotFound) {
@@ -161,7 +137,7 @@ func (b *playbookBiz) Create(ctx context.Context, req *CreateRequest) (*CreateRe
 
 	obj := &model.PlaybookM{
 		Name:        name,
-		Description: trimStringPtr(req.Description),
+		Description: trimStringPtr(rq.Description),
 		LineageID:   newLineageID(),
 		Version:     minVersion,
 		ConfigJSON:  configJSON,
@@ -174,17 +150,17 @@ func (b *playbookBiz) Create(ctx context.Context, req *CreateRequest) (*CreateRe
 		return nil, errno.ErrPlaybookCreateFailed
 	}
 
-	return &CreateResponse{
-		Playbook: obj,
+	return &v1.CreatePlaybookResponse{
+		Playbook: modelToProto(obj),
 	}, nil
 }
 
-func (b *playbookBiz) Get(ctx context.Context, id int64) (*GetResponse, error) {
-	if id <= 0 {
+func (b *playbookBiz) Get(ctx context.Context, rq *v1.GetPlaybookRequest) (*v1.GetPlaybookResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	obj, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", id))
+	obj, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errno.ErrPlaybookNotFound
@@ -192,28 +168,28 @@ func (b *playbookBiz) Get(ctx context.Context, id int64) (*GetResponse, error) {
 		return nil, errno.ErrPlaybookGetFailed
 	}
 
-	return &GetResponse{
-		Playbook: obj,
+	return &v1.GetPlaybookResponse{
+		Playbook: modelToProto(obj),
 	}, nil
 }
 
-func (b *playbookBiz) List(ctx context.Context, req *ListRequest) (*ListResponse, error) {
-	if req == nil {
-		req = &ListRequest{}
+func (b *playbookBiz) List(ctx context.Context, rq *v1.ListPlaybooksRequest) (*v1.ListPlaybooksResponse, error) {
+	if rq == nil {
+		rq = &v1.ListPlaybooksRequest{}
 	}
 
-	limit := normalizeListLimit(req.Limit)
-	whr := where.T(ctx).O(int(req.Offset)).L(int(limit))
+	limit := normalizeListLimit(rq.GetLimit())
+	whr := where.T(ctx).O(int(rq.GetOffset())).L(int(limit))
 
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
+	if rq.Name != nil {
+		name := strings.TrimSpace(*rq.Name)
 		if name != "" {
 			whr = whr.F("name", name)
 		}
 	}
 
-	if req.Active != nil {
-		whr = whr.F("active", *req.Active)
+	if rq.Active != nil {
+		whr = whr.F("active", *rq.Active)
 	}
 
 	total, list, err := b.store.Playbook().List(ctx, whr)
@@ -221,22 +197,27 @@ func (b *playbookBiz) List(ctx context.Context, req *ListRequest) (*ListResponse
 		return nil, errno.ErrPlaybookListFailed
 	}
 
-	return &ListResponse{
+	protoList := make([]*v1.Playbook, 0, len(list))
+	for _, m := range list {
+		protoList = append(protoList, modelToProto(m))
+	}
+
+	return &v1.ListPlaybooksResponse{
 		TotalCount: total,
-		Playbooks:  list,
+		Playbooks:  protoList,
 	}, nil
 }
 
-func (b *playbookBiz) Update(ctx context.Context, id int64, req *UpdateRequest) (*UpdateResponse, error) {
-	if req == nil || id <= 0 {
+func (b *playbookBiz) Update(ctx context.Context, rq *v1.UpdatePlaybookRequest) (*v1.UpdatePlaybookResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	updatedBy := normalizeOperator(ctx, req.UpdatedBy)
+	updatedBy := normalizeOperator(ctx, "")
 	var updated *model.PlaybookM
 
 	err := b.store.TX(ctx, func(txCtx context.Context) error {
-		obj, err := b.store.Playbook().Get(txCtx, where.T(txCtx).F("id", id))
+		obj, err := b.store.Playbook().Get(txCtx, where.T(txCtx).F("id", rq.GetId()))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
 				return errno.ErrPlaybookNotFound
@@ -244,7 +225,7 @@ func (b *playbookBiz) Update(ctx context.Context, id int64, req *UpdateRequest) 
 			return errno.ErrPlaybookGetFailed
 		}
 
-		if req.ExpectedVersion != nil && *req.ExpectedVersion > 0 && obj.Version != *req.ExpectedVersion {
+		if rq.ExpectedVersion != nil && *rq.ExpectedVersion > 0 && obj.Version != int(*rq.ExpectedVersion) {
 			return errno.ErrPlaybookVersionMismatch
 		}
 
@@ -263,8 +244,8 @@ func (b *playbookBiz) Update(ctx context.Context, id int64, req *UpdateRequest) 
 		oldPreviousVersion := cloneIntPtr(obj.PreviousVersion)
 		oldLineageID := obj.LineageID
 
-		if req.Name != nil {
-			name := strings.TrimSpace(*req.Name)
+		if rq.Name != nil {
+			name := strings.TrimSpace(*rq.Name)
 			if name == "" {
 				return errno.ErrInvalidArgument
 			}
@@ -280,13 +261,16 @@ func (b *playbookBiz) Update(ctx context.Context, id int64, req *UpdateRequest) 
 			obj.Name = name
 		}
 
-		if req.Description != nil {
-			obj.Description = trimStringPtr(req.Description)
+		if rq.Description != nil {
+			obj.Description = trimStringPtr(rq.Description)
 		}
 
-		if req.Config != nil {
-			configJSON, err := validatePlaybookConfig(req.Config)
-			if err != nil {
+		if rq.ConfigJSON != nil {
+			configJSON := strings.TrimSpace(*rq.ConfigJSON)
+			if configJSON == "" {
+				return errno.ErrPlaybookInvalidConfig
+			}
+			if _, err := validatePlaybookConfigJSON(configJSON); err != nil {
 				return errno.ErrPlaybookInvalidConfig
 			}
 			obj.ConfigJSON = configJSON
@@ -325,87 +309,87 @@ func (b *playbookBiz) Update(ctx context.Context, id int64, req *UpdateRequest) 
 		return nil, err
 	}
 
-	return &UpdateResponse{Playbook: updated}, nil
+	return &v1.UpdatePlaybookResponse{Playbook: modelToProto(updated)}, nil
 }
 
-func (b *playbookBiz) Delete(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return errno.ErrInvalidArgument
+func (b *playbookBiz) Delete(ctx context.Context, rq *v1.DeletePlaybookRequest) (*v1.DeletePlaybookResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	_, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", id))
+	_, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return errno.ErrPlaybookNotFound
+			return nil, errno.ErrPlaybookNotFound
 		}
-		return errno.ErrPlaybookGetFailed
+		return nil, errno.ErrPlaybookGetFailed
 	}
 
-	if err := b.store.Playbook().Delete(ctx, where.T(ctx).F("id", id)); err != nil {
-		return errno.ErrPlaybookDeleteFailed
+	if err := b.store.Playbook().Delete(ctx, where.T(ctx).F("id", rq.GetId())); err != nil {
+		return nil, errno.ErrPlaybookDeleteFailed
 	}
 
-	return nil
+	return &v1.DeletePlaybookResponse{}, nil
 }
 
-func (b *playbookBiz) Activate(ctx context.Context, id int64, operator string) error {
-	if id <= 0 {
-		return errno.ErrInvalidArgument
+func (b *playbookBiz) Activate(ctx context.Context, rq *v1.ActivatePlaybookRequest) (*v1.ActivatePlaybookResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	obj, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", id))
+	obj, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return errno.ErrPlaybookNotFound
+			return nil, errno.ErrPlaybookNotFound
 		}
-		return errno.ErrPlaybookGetFailed
+		return nil, errno.ErrPlaybookGetFailed
 	}
 
 	if obj.Active {
-		return nil
+		return &v1.ActivatePlaybookResponse{}, nil
 	}
 
-	op := normalizeOperator(ctx, operator)
+	op := normalizeOperator(ctx, rq.GetOperator())
 
-	if err := b.store.Playbook().Activate(ctx, id, op); err != nil {
-		return errno.ErrPlaybookActivateFailed
+	if err := b.store.Playbook().Activate(ctx, rq.GetId(), op); err != nil {
+		return nil, errno.ErrPlaybookActivateFailed
 	}
 
-	return nil
+	return &v1.ActivatePlaybookResponse{}, nil
 }
 
-func (b *playbookBiz) Deactivate(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return errno.ErrInvalidArgument
+func (b *playbookBiz) Deactivate(ctx context.Context, rq *v1.DeactivatePlaybookRequest) (*v1.DeactivatePlaybookResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	obj, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", id))
+	obj, err := b.store.Playbook().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return errno.ErrPlaybookNotFound
+			return nil, errno.ErrPlaybookNotFound
 		}
-		return errno.ErrPlaybookGetFailed
+		return nil, errno.ErrPlaybookGetFailed
 	}
 
 	if !obj.Active {
-		return nil
+		return &v1.DeactivatePlaybookResponse{}, nil
 	}
 
-	if err := b.store.Playbook().Deactivate(ctx, id); err != nil {
-		return errno.ErrPlaybookDeactivateFailed
+	if err := b.store.Playbook().Deactivate(ctx, rq.GetId()); err != nil {
+		return nil, errno.ErrPlaybookDeactivateFailed
 	}
 
-	return nil
+	return &v1.DeactivatePlaybookResponse{}, nil
 }
 
-func (b *playbookBiz) Rollback(ctx context.Context, id int64, version int, operator string) error {
-	if id <= 0 || version < minVersion {
-		return errno.ErrInvalidArgument
+func (b *playbookBiz) Rollback(ctx context.Context, rq *v1.RollbackPlaybookRequest) (*v1.RollbackPlaybookResponse, error) {
+	if rq == nil || rq.GetId() <= 0 || rq.GetVersion() < minVersion {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	op := normalizeOperator(ctx, operator)
-	return b.store.TX(ctx, func(txCtx context.Context) error {
-		currentObj, err := b.store.Playbook().Get(txCtx, where.T(txCtx).F("id", id))
+	op := normalizeOperator(ctx, rq.GetOperator())
+	err := b.store.TX(ctx, func(txCtx context.Context) error {
+		currentObj, err := b.store.Playbook().Get(txCtx, where.T(txCtx).F("id", rq.GetId()))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
 				return errno.ErrPlaybookNotFound
@@ -413,7 +397,7 @@ func (b *playbookBiz) Rollback(ctx context.Context, id int64, version int, opera
 			return errno.ErrPlaybookGetFailed
 		}
 
-		if version >= currentObj.Version {
+		if int(rq.GetVersion()) >= currentObj.Version {
 			return errno.ErrInvalidArgument
 		}
 
@@ -421,7 +405,7 @@ func (b *playbookBiz) Rollback(ctx context.Context, id int64, version int, opera
 			return err
 		}
 
-		historyObj, err := b.getPlaybookVersion(txCtx, currentObj.LineageID, version)
+		historyObj, err := b.getPlaybookVersion(txCtx, currentObj.LineageID, int(rq.GetVersion()))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
 				return errno.ErrPlaybookNotFound
@@ -444,7 +428,7 @@ func (b *playbookBiz) Rollback(ctx context.Context, id int64, version int, opera
 		}
 
 		if currentObj.Active {
-			if err := b.store.Playbook().Deactivate(txCtx, id); err != nil {
+			if err := b.store.Playbook().Deactivate(txCtx, rq.GetId()); err != nil {
 				return errno.ErrPlaybookDeactivateFailed
 			}
 			now := time.Now()
@@ -459,9 +443,13 @@ func (b *playbookBiz) Rollback(ctx context.Context, id int64, version int, opera
 
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return &v1.RollbackPlaybookResponse{}, nil
 }
 
-func (b *playbookBiz) GetActive(ctx context.Context) (*GetResponse, error) {
+func (b *playbookBiz) GetActive(ctx context.Context, rq *v1.GetActivePlaybookRequest) (*v1.GetActivePlaybookResponse, error) {
 	obj, err := b.store.Playbook().GetActive(ctx)
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
@@ -470,8 +458,8 @@ func (b *playbookBiz) GetActive(ctx context.Context) (*GetResponse, error) {
 		return nil, errno.ErrPlaybookGetFailed
 	}
 
-	return &GetResponse{
-		Playbook: obj,
+	return &v1.GetActivePlaybookResponse{
+		Playbook: modelToProto(obj),
 	}, nil
 }
 
@@ -510,21 +498,15 @@ func (b *playbookBiz) getPlaybookVersion(ctx context.Context, lineageID string, 
 	return b.store.Playbook().Get(ctx, where.T(ctx).F("lineage_id", lineageID).F("version", version))
 }
 
-func validatePlaybookConfig(config *PlaybookConfig) (string, error) {
-	if config == nil {
-		return "", errno.ErrPlaybookInvalidConfig
+func validatePlaybookConfigJSON(configJSON string) (*PlaybookConfig, error) {
+	var config PlaybookConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return nil, err
 	}
-
 	if config.Version == "" {
-		return "", errno.ErrPlaybookInvalidConfig
+		return nil, errno.ErrPlaybookInvalidConfig
 	}
-
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return "", errno.ErrPlaybookInvalidConfig
-	}
-
-	return string(configJSON), nil
+	return &config, nil
 }
 
 // parsePlaybookConfig parses JSON config string from database into PlaybookConfig.
@@ -546,14 +528,14 @@ func normalizeOperator(ctx context.Context, fallback string) string {
 	return "system"
 }
 
-func normalizeListLimit(limit *int64) int64 {
-	if limit == nil || *limit <= 0 {
+func normalizeListLimit(limit int64) int64 {
+	if limit <= 0 {
 		return defaultListLimit
 	}
-	if *limit > maxListLimit {
+	if limit > maxListLimit {
 		return maxListLimit
 	}
-	return *limit
+	return limit
 }
 
 func trimStringPtr(in *string) *string {
@@ -565,6 +547,124 @@ func trimStringPtr(in *string) *string {
 		return nil
 	}
 	return &value
+}
+
+func (b *playbookBiz) ensurePlaybookLineageID(ctx context.Context, obj *model.PlaybookM) error {
+	if obj == nil {
+		return errno.ErrInvalidArgument
+	}
+	if strings.TrimSpace(obj.LineageID) != "" {
+		return nil
+	}
+
+	lineageID := newLineageID()
+	db := b.store.DB(ctx)
+	if err := db.Model(&model.PlaybookM{}).
+		Where("name = ? AND (lineage_id = '' OR lineage_id IS NULL)", obj.Name).
+		Update("lineage_id", lineageID).Error; err != nil {
+		return errno.ErrPlaybookUpdateFailed
+	}
+
+	if err := db.Model(&model.PlaybookM{}).
+		Where("id = ? AND (lineage_id = '' OR lineage_id IS NULL)", obj.ID).
+		Update("lineage_id", lineageID).Error; err != nil {
+		return errno.ErrPlaybookUpdateFailed
+	}
+
+	obj.LineageID = lineageID
+	return nil
+}
+
+func (b *playbookBiz) isPlaybookNameAvailable(ctx context.Context, name string, currentLineageID string) (bool, error) {
+	page := 0
+	for {
+		_, list, err := b.store.Playbook().List(ctx, where.T(ctx).F("name", name).O(page).L(100))
+		if err != nil {
+			return false, errno.ErrPlaybookGetFailed
+		}
+		if len(list) == 0 {
+			return true, nil
+		}
+		for _, item := range list {
+			if currentLineageID != "" && item.LineageID == currentLineageID {
+				continue
+			}
+			return false, nil
+		}
+		if len(list) < 100 {
+			return true, nil
+		}
+		page += 100
+	}
+}
+
+func cloneStringPtr(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
+}
+
+func cloneIntPtr(in *int) *int {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
+}
+
+func cloneTimePtr(in *time.Time) *time.Time {
+	if in == nil {
+		return nil
+	}
+	value := *in
+	return &value
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func int32Ptr(v int32) *int32 {
+	return &v
+}
+
+func newLineageID() string {
+	return uuid.NewString()
+}
+
+func modelToProto(m *model.PlaybookM) *v1.Playbook {
+	if m == nil {
+		return nil
+	}
+	pb := &v1.Playbook{
+		Id:         m.ID,
+		Name:       m.Name,
+		LineageID:  m.LineageID,
+		Version:    int32(m.Version),
+		ConfigJSON: m.ConfigJSON,
+		Active:     m.Active,
+		CreatedBy:  m.CreatedBy,
+		CreatedAt:  timestamppb.New(m.CreatedAt),
+		UpdatedAt:  timestamppb.New(m.UpdatedAt),
+	}
+	if m.Description != nil {
+		pb.Description = m.Description
+	}
+	if m.ActivatedAt != nil {
+		pb.ActivatedAt = timestamppb.New(*m.ActivatedAt)
+	}
+	if m.ActivatedBy != nil {
+		pb.ActivatedBy = m.ActivatedBy
+	}
+	if m.PreviousVersion != nil {
+		pb.PreviousVersion = int32Ptr(int32(*m.PreviousVersion))
+	}
+	if m.UpdatedBy != nil {
+		pb.UpdatedBy = m.UpdatedBy
+	}
+	return pb
 }
 
 // ============================================================================
@@ -663,87 +763,6 @@ func Build(input BuildInput) (*Playbook, bool, error) {
 	}
 
 	return playbook, true, nil
-}
-
-func (b *playbookBiz) ensurePlaybookLineageID(ctx context.Context, obj *model.PlaybookM) error {
-	if obj == nil {
-		return errno.ErrInvalidArgument
-	}
-	if strings.TrimSpace(obj.LineageID) != "" {
-		return nil
-	}
-
-	lineageID := newLineageID()
-	db := b.store.DB(ctx)
-	if err := db.Model(&model.PlaybookM{}).
-		Where("name = ? AND (lineage_id = '' OR lineage_id IS NULL)", obj.Name).
-		Update("lineage_id", lineageID).Error; err != nil {
-		return errno.ErrPlaybookUpdateFailed
-	}
-
-	if err := db.Model(&model.PlaybookM{}).
-		Where("id = ? AND (lineage_id = '' OR lineage_id IS NULL)", obj.ID).
-		Update("lineage_id", lineageID).Error; err != nil {
-		return errno.ErrPlaybookUpdateFailed
-	}
-
-	obj.LineageID = lineageID
-	return nil
-}
-
-func (b *playbookBiz) isPlaybookNameAvailable(ctx context.Context, name string, currentLineageID string) (bool, error) {
-	page := 0
-	for {
-		_, list, err := b.store.Playbook().List(ctx, where.T(ctx).F("name", name).O(page).L(100))
-		if err != nil {
-			return false, errno.ErrPlaybookGetFailed
-		}
-		if len(list) == 0 {
-			return true, nil
-		}
-		for _, item := range list {
-			if currentLineageID != "" && item.LineageID == currentLineageID {
-				continue
-			}
-			return false, nil
-		}
-		if len(list) < 100 {
-			return true, nil
-		}
-		page += 100
-	}
-}
-
-func cloneStringPtr(in *string) *string {
-	if in == nil {
-		return nil
-	}
-	value := *in
-	return &value
-}
-
-func cloneIntPtr(in *int) *int {
-	if in == nil {
-		return nil
-	}
-	value := *in
-	return &value
-}
-
-func cloneTimePtr(in *time.Time) *time.Time {
-	if in == nil {
-		return nil
-	}
-	value := *in
-	return &value
-}
-
-func intPtr(v int) *int {
-	return &v
-}
-
-func newLineageID() string {
-	return uuid.NewString()
 }
 
 func legacyPlaybookItem(id string, title string, risk string, rationale string, steps []PlaybookStep, expectedOutcome string) PlaybookItem {

@@ -1,7 +1,7 @@
 {
   "swagger": "2.0",
   "info": {
-    "title": "apiserver/v1/datasource.proto",
+    "title": "apiserver/v1/kb_entry.proto",
     "version": "version not set"
   },
   "consumes": [

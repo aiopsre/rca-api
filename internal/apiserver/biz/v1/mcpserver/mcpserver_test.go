@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,6 +12,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
@@ -37,7 +39,7 @@ func TestMcpServerBiz_Create(t *testing.T) {
 	biz := New(s)
 
 	t.Run("creates mcp server with required fields", func(t *testing.T) {
-		resp, err := biz.Create(ctx, &CreateMcpServerRequest{
+		resp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 			Name:    "prometheus",
 			BaseURL: "http://prometheus.mcp:8080",
 		})
@@ -48,25 +50,27 @@ func TestMcpServerBiz_Create(t *testing.T) {
 		require.Equal(t, "prometheus", resp.McpServer.Name)
 		require.Equal(t, "http://prometheus.mcp:8080", resp.McpServer.BaseURL)
 		require.Equal(t, "none", resp.McpServer.AuthType)
-		require.Equal(t, 10, resp.McpServer.TimeoutSec)
+		require.Equal(t, int32(10), resp.McpServer.TimeoutSec)
 		require.Equal(t, "active", resp.McpServer.Status)
 	})
 
 	t.Run("creates mcp server with all fields", func(t *testing.T) {
 		displayName := "Prometheus MCP Server"
 		description := "Prometheus metrics query server"
-		allowedTools := []string{"query_metrics", "query_range"}
+		allowedToolsJSON := `["query_metrics", "query_range"]`
 		scopes := "read:metrics"
+		authType := "bearer"
+		timeoutSec := int32(30)
 
-		resp, err := biz.Create(ctx, &CreateMcpServerRequest{
-			Name:         "loki",
-			DisplayName:  &displayName,
-			Description:  &description,
-			BaseURL:      "http://loki.mcp:8080",
-			AuthType:     "bearer",
-			AllowedTools: allowedTools,
-			TimeoutSec:   30,
-			Scopes:       &scopes,
+		resp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
+			Name:              "loki",
+			DisplayName:       &displayName,
+			Description:       &description,
+			BaseURL:           "http://loki.mcp:8080",
+			AuthType:          &authType,
+			AllowedToolsJSON:  &allowedToolsJSON,
+			TimeoutSec:        &timeoutSec,
+			Scopes:            &scopes,
 		})
 		require.NoError(t, err)
 		require.NotNil(t, resp)
@@ -74,12 +78,12 @@ func TestMcpServerBiz_Create(t *testing.T) {
 		require.Equal(t, &displayName, resp.McpServer.DisplayName)
 		require.Equal(t, &description, resp.McpServer.Description)
 		require.Equal(t, "bearer", resp.McpServer.AuthType)
-		require.Equal(t, 30, resp.McpServer.TimeoutSec)
+		require.Equal(t, int32(30), resp.McpServer.TimeoutSec)
 		require.Equal(t, &scopes, resp.McpServer.Scopes)
 	})
 
 	t.Run("rejects duplicate name", func(t *testing.T) {
-		_, err := biz.Create(ctx, &CreateMcpServerRequest{
+		_, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 			Name:    "prometheus",
 			BaseURL: "http://prometheus2.mcp:8080",
 		})
@@ -88,24 +92,25 @@ func TestMcpServerBiz_Create(t *testing.T) {
 	})
 
 	t.Run("rejects missing name", func(t *testing.T) {
-		_, err := biz.Create(ctx, &CreateMcpServerRequest{
+		_, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 			BaseURL: "http://test.mcp:8080",
 		})
 		require.Error(t, err)
 	})
 
 	t.Run("rejects missing base_url", func(t *testing.T) {
-		_, err := biz.Create(ctx, &CreateMcpServerRequest{
+		_, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 			Name: "test-no-url",
 		})
 		require.Error(t, err)
 	})
 
 	t.Run("normalizes auth_type to lowercase", func(t *testing.T) {
-		resp, err := biz.Create(ctx, &CreateMcpServerRequest{
+		authType := "BEARER"
+		resp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 			Name:     "test-auth-normalize",
 			BaseURL:  "http://test.mcp:8080",
-			AuthType: "BEARER",
+			AuthType: &authType,
 		})
 		require.NoError(t, err)
 		require.Equal(t, "bearer", resp.McpServer.AuthType)
@@ -122,14 +127,14 @@ func TestMcpServerBiz_Get(t *testing.T) {
 	biz := New(s)
 
 	// Create a test server
-	createResp, err := biz.Create(ctx, &CreateMcpServerRequest{
+	createResp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 		Name:    "test-get",
 		BaseURL: "http://test.mcp:8080",
 	})
 	require.NoError(t, err)
 
 	t.Run("gets mcp server by id", func(t *testing.T) {
-		resp, err := biz.Get(ctx, &GetMcpServerRequest{
+		resp, err := biz.Get(ctx, &v1.GetMcpServerRequest{
 			McpServerID: createResp.McpServer.McpServerID,
 		})
 		require.NoError(t, err)
@@ -138,7 +143,7 @@ func TestMcpServerBiz_Get(t *testing.T) {
 	})
 
 	t.Run("returns error for non-existent id", func(t *testing.T) {
-		_, err := biz.Get(ctx, &GetMcpServerRequest{
+		_, err := biz.Get(ctx, &v1.GetMcpServerRequest{
 			McpServerID: "non-existent-id",
 		})
 		require.Error(t, err)
@@ -146,7 +151,7 @@ func TestMcpServerBiz_Get(t *testing.T) {
 	})
 
 	t.Run("rejects empty id", func(t *testing.T) {
-		_, err := biz.Get(ctx, &GetMcpServerRequest{})
+		_, err := biz.Get(ctx, &v1.GetMcpServerRequest{})
 		require.Error(t, err)
 	})
 }
@@ -161,16 +166,17 @@ func TestMcpServerBiz_List(t *testing.T) {
 	biz := New(s)
 
 	// Create test servers
-	for i := 0; i < 5; i++ {
-		_, err := biz.Create(ctx, &CreateMcpServerRequest{
-			Name:    "list-test-" + string(rune('a'+i)),
+	names := []string{"list-test-a", "list-test-b", "list-test-c", "list-test-d", "list-test-e"}
+	for _, name := range names {
+		_, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
+			Name:    name,
 			BaseURL: "http://test.mcp:8080",
 		})
 		require.NoError(t, err)
 	}
 
 	t.Run("lists all mcp servers", func(t *testing.T) {
-		resp, err := biz.List(ctx, &ListMcpServersRequest{})
+		resp, err := biz.List(ctx, &v1.ListMcpServersRequest{})
 		require.NoError(t, err)
 		require.NotNil(t, resp)
 		require.Equal(t, int64(5), resp.TotalCount)
@@ -179,8 +185,8 @@ func TestMcpServerBiz_List(t *testing.T) {
 
 	t.Run("lists with limit", func(t *testing.T) {
 		limit := int64(2)
-		resp, err := biz.List(ctx, &ListMcpServersRequest{
-			Limit: &limit,
+		resp, err := biz.List(ctx, &v1.ListMcpServersRequest{
+			Limit: limit,
 		})
 		require.NoError(t, err)
 		require.Equal(t, int64(5), resp.TotalCount)
@@ -188,7 +194,7 @@ func TestMcpServerBiz_List(t *testing.T) {
 	})
 
 	t.Run("lists with offset", func(t *testing.T) {
-		resp, err := biz.List(ctx, &ListMcpServersRequest{
+		resp, err := biz.List(ctx, &v1.ListMcpServersRequest{
 			Offset: 2,
 		})
 		require.NoError(t, err)
@@ -207,7 +213,7 @@ func TestMcpServerBiz_Update(t *testing.T) {
 	biz := New(s)
 
 	// Create a test server
-	createResp, err := biz.Create(ctx, &CreateMcpServerRequest{
+	createResp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 		Name:    "test-update",
 		BaseURL: "http://test.mcp:8080",
 	})
@@ -215,7 +221,7 @@ func TestMcpServerBiz_Update(t *testing.T) {
 
 	t.Run("updates display name", func(t *testing.T) {
 		newDisplayName := "Updated Display Name"
-		resp, err := biz.Update(ctx, &UpdateMcpServerRequest{
+		resp, err := biz.Update(ctx, &v1.UpdateMcpServerRequest{
 			McpServerID: createResp.McpServer.McpServerID,
 			DisplayName: &newDisplayName,
 		})
@@ -224,18 +230,18 @@ func TestMcpServerBiz_Update(t *testing.T) {
 	})
 
 	t.Run("updates allowed tools", func(t *testing.T) {
-		newTools := []string{"tool1", "tool2"}
-		resp, err := biz.Update(ctx, &UpdateMcpServerRequest{
-			McpServerID: createResp.McpServer.McpServerID,
-			AllowedTools: newTools,
+		newToolsJSON := `["tool1", "tool2"]`
+		resp, err := biz.Update(ctx, &v1.UpdateMcpServerRequest{
+			McpServerID:      createResp.McpServer.McpServerID,
+			AllowedToolsJSON: &newToolsJSON,
 		})
 		require.NoError(t, err)
-		require.NotNil(t, resp.McpServer.AllowedTools)
+		require.NotNil(t, resp.McpServer.AllowedToolsJSON)
 	})
 
 	t.Run("updates status", func(t *testing.T) {
 		newStatus := "inactive"
-		resp, err := biz.Update(ctx, &UpdateMcpServerRequest{
+		resp, err := biz.Update(ctx, &v1.UpdateMcpServerRequest{
 			McpServerID: createResp.McpServer.McpServerID,
 			Status:      &newStatus,
 		})
@@ -244,7 +250,7 @@ func TestMcpServerBiz_Update(t *testing.T) {
 	})
 
 	t.Run("returns error for non-existent id", func(t *testing.T) {
-		_, err := biz.Update(ctx, &UpdateMcpServerRequest{
+		_, err := biz.Update(ctx, &v1.UpdateMcpServerRequest{
 			McpServerID: "non-existent-id",
 		})
 		require.Error(t, err)
@@ -262,20 +268,20 @@ func TestMcpServerBiz_Delete(t *testing.T) {
 	biz := New(s)
 
 	// Create a test server
-	createResp, err := biz.Create(ctx, &CreateMcpServerRequest{
+	createResp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
 		Name:    "test-delete",
 		BaseURL: "http://test.mcp:8080",
 	})
 	require.NoError(t, err)
 
 	t.Run("deletes mcp server", func(t *testing.T) {
-		err := biz.Delete(ctx, &DeleteMcpServerRequest{
+		_, err := biz.Delete(ctx, &v1.DeleteMcpServerRequest{
 			McpServerID: createResp.McpServer.McpServerID,
 		})
 		require.NoError(t, err)
 
 		// Verify deleted
-		_, err = biz.Get(ctx, &GetMcpServerRequest{
+		_, err = biz.Get(ctx, &v1.GetMcpServerRequest{
 			McpServerID: createResp.McpServer.McpServerID,
 		})
 		require.Error(t, err)
@@ -283,7 +289,7 @@ func TestMcpServerBiz_Delete(t *testing.T) {
 	})
 
 	t.Run("returns error for non-existent id", func(t *testing.T) {
-		err := biz.Delete(ctx, &DeleteMcpServerRequest{
+		_, err := biz.Delete(ctx, &v1.DeleteMcpServerRequest{
 			McpServerID: "non-existent-id",
 		})
 		require.Error(t, err)
@@ -379,17 +385,21 @@ func TestMcpServerRefJSONSerialization(t *testing.T) {
 
 	t.Run("allowed_tools serialized as json array", func(t *testing.T) {
 		tools := []string{"query_metrics", "query_range", "query_logs"}
-		resp, err := biz.Create(ctx, &CreateMcpServerRequest{
-			Name:         "json-test",
-			BaseURL:      "http://test.mcp:8080",
-			AllowedTools: tools,
+		toolsJSON, err := json.Marshal(tools)
+		require.NoError(t, err)
+		toolsJSONStr := string(toolsJSON)
+
+		resp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
+			Name:             "json-test",
+			BaseURL:          "http://test.mcp:8080",
+			AllowedToolsJSON: &toolsJSONStr,
 		})
 		require.NoError(t, err)
-		require.NotNil(t, resp.McpServer.AllowedTools)
+		require.NotNil(t, resp.McpServer.AllowedToolsJSON)
 
 		// Verify the stored JSON can be parsed back
-		require.Contains(t, *resp.McpServer.AllowedTools, "query_metrics")
-		require.Contains(t, *resp.McpServer.AllowedTools, "query_range")
-		require.Contains(t, *resp.McpServer.AllowedTools, "query_logs")
+		require.Contains(t, *resp.McpServer.AllowedToolsJSON, "query_metrics")
+		require.Contains(t, *resp.McpServer.AllowedToolsJSON, "query_range")
+		require.Contains(t, *resp.McpServer.AllowedToolsJSON, "query_logs")
 	})
 }

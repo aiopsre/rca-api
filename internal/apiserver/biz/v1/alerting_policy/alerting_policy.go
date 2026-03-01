@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/onexstack/onexstack/pkg/errorsx"
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/gorm"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
@@ -19,6 +20,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
@@ -28,16 +30,17 @@ const (
 	minVersion       = 1
 )
 
+// AlertingPolicyBiz defines alerting policy management use-cases.
 type AlertingPolicyBiz interface {
-	Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error)
-	Get(ctx context.Context, id int64) (*GetResponse, error)
-	List(ctx context.Context, req *ListRequest) (*ListResponse, error)
-	Update(ctx context.Context, id int64, req *UpdateRequest) (*UpdateResponse, error)
-	Delete(ctx context.Context, id int64) error
-	Activate(ctx context.Context, id int64, operator string) error
-	Deactivate(ctx context.Context, id int64) error
-	Rollback(ctx context.Context, id int64, version int, operator string) error
-	GetActive(ctx context.Context) (*GetResponse, error)
+	Create(ctx context.Context, rq *v1.CreateAlertingPolicyRequest) (*v1.CreateAlertingPolicyResponse, error)
+	Get(ctx context.Context, rq *v1.GetAlertingPolicyRequest) (*v1.GetAlertingPolicyResponse, error)
+	List(ctx context.Context, rq *v1.ListAlertingPoliciesRequest) (*v1.ListAlertingPoliciesResponse, error)
+	Update(ctx context.Context, rq *v1.UpdateAlertingPolicyRequest) (*v1.UpdateAlertingPolicyResponse, error)
+	Delete(ctx context.Context, rq *v1.DeleteAlertingPolicyRequest) (*v1.DeleteAlertingPolicyResponse, error)
+	Activate(ctx context.Context, rq *v1.ActivateAlertingPolicyRequest) (*v1.ActivateAlertingPolicyResponse, error)
+	Deactivate(ctx context.Context, rq *v1.DeactivateAlertingPolicyRequest) (*v1.DeactivateAlertingPolicyResponse, error)
+	Rollback(ctx context.Context, rq *v1.RollbackAlertingPolicyRequest) (*v1.RollbackAlertingPolicyResponse, error)
+	GetActive(ctx context.Context, rq *v1.GetActiveAlertingPolicyRequest) (*v1.GetActiveAlertingPolicyResponse, error)
 
 	AlertingPolicyExpansion
 }
@@ -63,45 +66,7 @@ func (b *alertingPolicyBiz) refreshRuntimeConfig(ctx context.Context) {
 	}
 }
 
-type CreateRequest struct {
-	Name        string
-	Description *string
-	Config      *AlertingPolicyConfig
-	CreatedBy   string
-}
-
-type CreateResponse struct {
-	AlertingPolicy *model.AlertingPolicyM `json:"alerting_policy"`
-}
-
-type GetResponse struct {
-	AlertingPolicy *model.AlertingPolicyM `json:"alerting_policy"`
-}
-
-type ListRequest struct {
-	Name   *string
-	Active *bool
-	Offset int64
-	Limit  *int64
-}
-
-type ListResponse struct {
-	TotalCount       int64                    `json:"total_count"`
-	AlertingPolicies []*model.AlertingPolicyM `json:"alerting_policies"`
-}
-
-type UpdateRequest struct {
-	Name            *string
-	Description     *string
-	Config          *AlertingPolicyConfig
-	ExpectedVersion *int
-	UpdatedBy       string
-}
-
-type UpdateResponse struct {
-	AlertingPolicy *model.AlertingPolicyM `json:"alerting_policy"`
-}
-
+// AlertingPolicyConfig represents the config structure for validation.
 type AlertingPolicyConfig struct {
 	Version  int            `json:"version"`
 	Defaults map[string]any `json:"defaults,omitempty"`
@@ -109,22 +74,27 @@ type AlertingPolicyConfig struct {
 	Extra    map[string]any `json:"extra,omitempty"`
 }
 
-func (b *alertingPolicyBiz) Create(ctx context.Context, req *CreateRequest) (*CreateResponse, error) {
-	if req == nil {
+func (b *alertingPolicyBiz) Create(ctx context.Context, rq *v1.CreateAlertingPolicyRequest) (*v1.CreateAlertingPolicyResponse, error) {
+	if rq == nil {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	name := strings.TrimSpace(req.Name)
+	name := strings.TrimSpace(rq.GetName())
 	if name == "" {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	configJSON, err := validateAlertingPolicyConfig(req.Config)
-	if err != nil {
+	configJSON := strings.TrimSpace(rq.GetConfigJSON())
+	if configJSON == "" {
 		return nil, errno.ErrAlertingPolicyInvalidConfig
 	}
 
-	createdBy := normalizeOperator(ctx, req.CreatedBy)
+	// Validate config JSON is valid JSON structure
+	if _, err := validateConfigJSON(configJSON); err != nil {
+		return nil, errno.ErrAlertingPolicyInvalidConfig
+	}
+
+	createdBy := normalizeOperator(ctx, "")
 
 	exists, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("name", name))
 	if err != nil && !errorsx.Is(err, gorm.ErrRecordNotFound) {
@@ -136,7 +106,7 @@ func (b *alertingPolicyBiz) Create(ctx context.Context, req *CreateRequest) (*Cr
 
 	obj := &model.AlertingPolicyM{
 		Name:        name,
-		Description: trimStringPtr(req.Description),
+		Description: trimStringPtr(rq.Description),
 		LineageID:   newLineageID(),
 		Version:     minVersion,
 		ConfigJSON:  configJSON,
@@ -149,17 +119,17 @@ func (b *alertingPolicyBiz) Create(ctx context.Context, req *CreateRequest) (*Cr
 		return nil, errno.ErrAlertingPolicyCreateFailed
 	}
 
-	return &CreateResponse{
-		AlertingPolicy: obj,
+	return &v1.CreateAlertingPolicyResponse{
+		AlertingPolicy: modelToProto(obj),
 	}, nil
 }
 
-func (b *alertingPolicyBiz) Get(ctx context.Context, id int64) (*GetResponse, error) {
-	if id <= 0 {
+func (b *alertingPolicyBiz) Get(ctx context.Context, rq *v1.GetAlertingPolicyRequest) (*v1.GetAlertingPolicyResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	obj, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", id))
+	obj, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
 			return nil, errno.ErrAlertingPolicyNotFound
@@ -167,28 +137,28 @@ func (b *alertingPolicyBiz) Get(ctx context.Context, id int64) (*GetResponse, er
 		return nil, errno.ErrAlertingPolicyGetFailed
 	}
 
-	return &GetResponse{
-		AlertingPolicy: obj,
+	return &v1.GetAlertingPolicyResponse{
+		AlertingPolicy: modelToProto(obj),
 	}, nil
 }
 
-func (b *alertingPolicyBiz) List(ctx context.Context, req *ListRequest) (*ListResponse, error) {
-	if req == nil {
-		req = &ListRequest{}
+func (b *alertingPolicyBiz) List(ctx context.Context, rq *v1.ListAlertingPoliciesRequest) (*v1.ListAlertingPoliciesResponse, error) {
+	if rq == nil {
+		rq = &v1.ListAlertingPoliciesRequest{}
 	}
 
-	limit := normalizeListLimit(req.Limit)
-	whr := where.T(ctx).O(int(req.Offset)).L(int(limit))
+	limit := normalizeListLimit(rq.GetLimit())
+	whr := where.T(ctx).O(int(rq.GetOffset())).L(int(limit))
 
-	if req.Name != nil {
-		name := strings.TrimSpace(*req.Name)
+	if rq.Name != nil {
+		name := strings.TrimSpace(*rq.Name)
 		if name != "" {
 			whr = whr.F("name", name)
 		}
 	}
 
-	if req.Active != nil {
-		whr = whr.F("active", *req.Active)
+	if rq.Active != nil {
+		whr = whr.F("active", *rq.Active)
 	}
 
 	total, list, err := b.store.AlertingPolicy().List(ctx, whr)
@@ -196,22 +166,27 @@ func (b *alertingPolicyBiz) List(ctx context.Context, req *ListRequest) (*ListRe
 		return nil, errno.ErrAlertingPolicyListFailed
 	}
 
-	return &ListResponse{
+	protoList := make([]*v1.AlertingPolicy, 0, len(list))
+	for _, m := range list {
+		protoList = append(protoList, modelToProto(m))
+	}
+
+	return &v1.ListAlertingPoliciesResponse{
 		TotalCount:       total,
-		AlertingPolicies: list,
+		AlertingPolicies: protoList,
 	}, nil
 }
 
-func (b *alertingPolicyBiz) Update(ctx context.Context, id int64, req *UpdateRequest) (*UpdateResponse, error) {
-	if req == nil || id <= 0 {
+func (b *alertingPolicyBiz) Update(ctx context.Context, rq *v1.UpdateAlertingPolicyRequest) (*v1.UpdateAlertingPolicyResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
 		return nil, errno.ErrInvalidArgument
 	}
 
-	updatedBy := normalizeOperator(ctx, req.UpdatedBy)
+	updatedBy := normalizeOperator(ctx, "")
 	var updated *model.AlertingPolicyM
 
 	err := b.store.TX(ctx, func(txCtx context.Context) error {
-		obj, err := b.store.AlertingPolicy().Get(txCtx, where.T(txCtx).F("id", id))
+		obj, err := b.store.AlertingPolicy().Get(txCtx, where.T(txCtx).F("id", rq.GetId()))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
 				return errno.ErrAlertingPolicyNotFound
@@ -219,7 +194,7 @@ func (b *alertingPolicyBiz) Update(ctx context.Context, id int64, req *UpdateReq
 			return errno.ErrAlertingPolicyGetFailed
 		}
 
-		if req.ExpectedVersion != nil && *req.ExpectedVersion > 0 && obj.Version != *req.ExpectedVersion {
+		if rq.ExpectedVersion != nil && *rq.ExpectedVersion > 0 && obj.Version != int(*rq.ExpectedVersion) {
 			return errno.ErrAlertingPolicyVersionMismatch
 		}
 
@@ -238,8 +213,8 @@ func (b *alertingPolicyBiz) Update(ctx context.Context, id int64, req *UpdateReq
 		oldPreviousVersion := cloneIntPtr(obj.PreviousVersion)
 		oldLineageID := obj.LineageID
 
-		if req.Name != nil {
-			name := strings.TrimSpace(*req.Name)
+		if rq.Name != nil {
+			name := strings.TrimSpace(*rq.Name)
 			if name == "" {
 				return errno.ErrInvalidArgument
 			}
@@ -255,13 +230,16 @@ func (b *alertingPolicyBiz) Update(ctx context.Context, id int64, req *UpdateReq
 			obj.Name = name
 		}
 
-		if req.Description != nil {
-			obj.Description = trimStringPtr(req.Description)
+		if rq.Description != nil {
+			obj.Description = trimStringPtr(rq.Description)
 		}
 
-		if req.Config != nil {
-			configJSON, err := validateAlertingPolicyConfig(req.Config)
-			if err != nil {
+		if rq.ConfigJSON != nil {
+			configJSON := strings.TrimSpace(*rq.ConfigJSON)
+			if configJSON == "" {
+				return errno.ErrAlertingPolicyInvalidConfig
+			}
+			if _, err := validateConfigJSON(configJSON); err != nil {
 				return errno.ErrAlertingPolicyInvalidConfig
 			}
 			obj.ConfigJSON = configJSON
@@ -301,90 +279,90 @@ func (b *alertingPolicyBiz) Update(ctx context.Context, id int64, req *UpdateReq
 	}
 	b.refreshRuntimeConfig(ctx)
 
-	return &UpdateResponse{AlertingPolicy: updated}, nil
+	return &v1.UpdateAlertingPolicyResponse{AlertingPolicy: modelToProto(updated)}, nil
 }
 
-func (b *alertingPolicyBiz) Delete(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return errno.ErrInvalidArgument
+func (b *alertingPolicyBiz) Delete(ctx context.Context, rq *v1.DeleteAlertingPolicyRequest) (*v1.DeleteAlertingPolicyResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	_, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", id))
+	_, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return errno.ErrAlertingPolicyNotFound
+			return nil, errno.ErrAlertingPolicyNotFound
 		}
-		return errno.ErrAlertingPolicyGetFailed
+		return nil, errno.ErrAlertingPolicyGetFailed
 	}
 
-	if err := b.store.AlertingPolicy().Delete(ctx, where.T(ctx).F("id", id)); err != nil {
-		return errno.ErrAlertingPolicyDeleteFailed
+	if err := b.store.AlertingPolicy().Delete(ctx, where.T(ctx).F("id", rq.GetId())); err != nil {
+		return nil, errno.ErrAlertingPolicyDeleteFailed
 	}
 	b.refreshRuntimeConfig(ctx)
 
-	return nil
+	return &v1.DeleteAlertingPolicyResponse{}, nil
 }
 
-func (b *alertingPolicyBiz) Activate(ctx context.Context, id int64, operator string) error {
-	if id <= 0 {
-		return errno.ErrInvalidArgument
+func (b *alertingPolicyBiz) Activate(ctx context.Context, rq *v1.ActivateAlertingPolicyRequest) (*v1.ActivateAlertingPolicyResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	obj, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", id))
+	obj, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return errno.ErrAlertingPolicyNotFound
+			return nil, errno.ErrAlertingPolicyNotFound
 		}
-		return errno.ErrAlertingPolicyGetFailed
+		return nil, errno.ErrAlertingPolicyGetFailed
 	}
 
 	if obj.Active {
-		return nil
+		return &v1.ActivateAlertingPolicyResponse{}, nil
 	}
 
-	op := normalizeOperator(ctx, operator)
+	op := normalizeOperator(ctx, rq.GetOperator())
 
-	if err := b.store.AlertingPolicy().Activate(ctx, id, op); err != nil {
-		return errno.ErrAlertingPolicyActivateFailed
+	if err := b.store.AlertingPolicy().Activate(ctx, rq.GetId(), op); err != nil {
+		return nil, errno.ErrAlertingPolicyActivateFailed
 	}
 	b.refreshRuntimeConfig(ctx)
 
-	return nil
+	return &v1.ActivateAlertingPolicyResponse{}, nil
 }
 
-func (b *alertingPolicyBiz) Deactivate(ctx context.Context, id int64) error {
-	if id <= 0 {
-		return errno.ErrInvalidArgument
+func (b *alertingPolicyBiz) Deactivate(ctx context.Context, rq *v1.DeactivateAlertingPolicyRequest) (*v1.DeactivateAlertingPolicyResponse, error) {
+	if rq == nil || rq.GetId() <= 0 {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	obj, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", id))
+	obj, err := b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("id", rq.GetId()))
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return errno.ErrAlertingPolicyNotFound
+			return nil, errno.ErrAlertingPolicyNotFound
 		}
-		return errno.ErrAlertingPolicyGetFailed
+		return nil, errno.ErrAlertingPolicyGetFailed
 	}
 
 	if !obj.Active {
-		return nil
+		return &v1.DeactivateAlertingPolicyResponse{}, nil
 	}
 
-	if err := b.store.AlertingPolicy().Deactivate(ctx, id); err != nil {
-		return errno.ErrAlertingPolicyDeactivateFailed
+	if err := b.store.AlertingPolicy().Deactivate(ctx, rq.GetId()); err != nil {
+		return nil, errno.ErrAlertingPolicyDeactivateFailed
 	}
 	b.refreshRuntimeConfig(ctx)
 
-	return nil
+	return &v1.DeactivateAlertingPolicyResponse{}, nil
 }
 
-func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int, operator string) error {
-	if id <= 0 || version < minVersion {
-		return errno.ErrInvalidArgument
+func (b *alertingPolicyBiz) Rollback(ctx context.Context, rq *v1.RollbackAlertingPolicyRequest) (*v1.RollbackAlertingPolicyResponse, error) {
+	if rq == nil || rq.GetId() <= 0 || rq.GetVersion() < minVersion {
+		return nil, errno.ErrInvalidArgument
 	}
 
-	op := normalizeOperator(ctx, operator)
+	op := normalizeOperator(ctx, rq.GetOperator())
 	err := b.store.TX(ctx, func(txCtx context.Context) error {
-		currentObj, err := b.store.AlertingPolicy().Get(txCtx, where.T(txCtx).F("id", id))
+		currentObj, err := b.store.AlertingPolicy().Get(txCtx, where.T(txCtx).F("id", rq.GetId()))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
 				return errno.ErrAlertingPolicyNotFound
@@ -392,7 +370,7 @@ func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int,
 			return errno.ErrAlertingPolicyGetFailed
 		}
 
-		if version >= currentObj.Version {
+		if int(rq.GetVersion()) >= currentObj.Version {
 			return errno.ErrInvalidArgument
 		}
 
@@ -400,7 +378,7 @@ func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int,
 			return err
 		}
 
-		historyObj, err := b.getPolicyVersion(txCtx, currentObj.LineageID, version)
+		historyObj, err := b.getPolicyVersion(txCtx, currentObj.LineageID, int(rq.GetVersion()))
 		if err != nil {
 			if errorsx.Is(err, gorm.ErrRecordNotFound) {
 				return errno.ErrAlertingPolicyNotFound
@@ -423,7 +401,7 @@ func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int,
 		}
 
 		if currentObj.Active {
-			if err := b.store.AlertingPolicy().Deactivate(txCtx, id); err != nil {
+			if err := b.store.AlertingPolicy().Deactivate(txCtx, rq.GetId()); err != nil {
 				return errno.ErrAlertingPolicyDeactivateFailed
 			}
 			now := time.Now()
@@ -439,13 +417,13 @@ func (b *alertingPolicyBiz) Rollback(ctx context.Context, id int64, version int,
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	b.refreshRuntimeConfig(ctx)
-	return nil
+	return &v1.RollbackAlertingPolicyResponse{}, nil
 }
 
-func (b *alertingPolicyBiz) GetActive(ctx context.Context) (*GetResponse, error) {
+func (b *alertingPolicyBiz) GetActive(ctx context.Context, rq *v1.GetActiveAlertingPolicyRequest) (*v1.GetActiveAlertingPolicyResponse, error) {
 	obj, err := b.store.AlertingPolicy().GetActive(ctx)
 	if err != nil {
 		if errorsx.Is(err, gorm.ErrRecordNotFound) {
@@ -454,8 +432,8 @@ func (b *alertingPolicyBiz) GetActive(ctx context.Context) (*GetResponse, error)
 		return nil, errno.ErrAlertingPolicyGetFailed
 	}
 
-	return &GetResponse{
-		AlertingPolicy: obj,
+	return &v1.GetActiveAlertingPolicyResponse{
+		AlertingPolicy: modelToProto(obj),
 	}, nil
 }
 
@@ -466,21 +444,15 @@ func (b *alertingPolicyBiz) getPolicyVersion(ctx context.Context, lineageID stri
 	return b.store.AlertingPolicy().Get(ctx, where.T(ctx).F("lineage_id", lineageID).F("version", version))
 }
 
-func validateAlertingPolicyConfig(config *AlertingPolicyConfig) (string, error) {
-	if config == nil {
-		return "", errno.ErrAlertingPolicyInvalidConfig
+func validateConfigJSON(configJSON string) (*AlertingPolicyConfig, error) {
+	var config AlertingPolicyConfig
+	if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+		return nil, err
 	}
-
 	if config.Version <= 0 {
-		return "", errno.ErrAlertingPolicyInvalidConfig
+		return nil, errno.ErrAlertingPolicyInvalidConfig
 	}
-
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return "", errno.ErrAlertingPolicyInvalidConfig
-	}
-
-	return string(configJSON), nil
+	return &config, nil
 }
 
 func normalizeOperator(ctx context.Context, fallback string) string {
@@ -493,14 +465,14 @@ func normalizeOperator(ctx context.Context, fallback string) string {
 	return "system"
 }
 
-func normalizeListLimit(limit *int64) int64 {
-	if limit == nil || *limit <= 0 {
+func normalizeListLimit(limit int64) int64 {
+	if limit <= 0 {
 		return defaultListLimit
 	}
-	if *limit > maxListLimit {
+	if limit > maxListLimit {
 		return maxListLimit
 	}
-	return *limit
+	return limit
 }
 
 func trimStringPtr(in *string) *string {
@@ -591,6 +563,43 @@ func intPtr(v int) *int {
 	return &v
 }
 
+func int32Ptr(v int32) *int32 {
+	return &v
+}
+
 func newLineageID() string {
 	return uuid.NewString()
+}
+
+func modelToProto(m *model.AlertingPolicyM) *v1.AlertingPolicy {
+	if m == nil {
+		return nil
+	}
+	pb := &v1.AlertingPolicy{
+		Id:          m.ID,
+		Name:        m.Name,
+		LineageID:   m.LineageID,
+		Version:     int32(m.Version),
+		ConfigJSON:  m.ConfigJSON,
+		Active:      m.Active,
+		CreatedBy:   m.CreatedBy,
+		CreatedAt:   timestamppb.New(m.CreatedAt),
+		UpdatedAt:   timestamppb.New(m.UpdatedAt),
+	}
+	if m.Description != nil {
+		pb.Description = m.Description
+	}
+	if m.ActivatedAt != nil {
+		pb.ActivatedAt = timestamppb.New(*m.ActivatedAt)
+	}
+	if m.ActivatedBy != nil {
+		pb.ActivatedBy = m.ActivatedBy
+	}
+	if m.PreviousVersion != nil {
+		pb.PreviousVersion = int32Ptr(int32(*m.PreviousVersion))
+	}
+	if m.UpdatedBy != nil {
+		pb.UpdatedBy = m.UpdatedBy
+	}
+	return pb
 }
