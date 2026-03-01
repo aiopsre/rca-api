@@ -37,7 +37,7 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 - `DS_BASE_URL`：`RUN_QUERY=1` 时需要
 - `AUTO_CREATE_DATASOURCE`：默认 `1`
 - `DEBUG`：默认 `0`
-- `SKILLS_EXECUTION_MODE`：默认 `catalog`；`prompt_first` 时启用 Agent 驱动的 prompt-only Skill 链路
+- `SKILLS_EXECUTION_MODE`：默认 `prompt_first`；`prompt_first` 时启用 Agent 驱动的 prompt-only Skill 链路；`catalog` 为降级兼容路径
 - `SKILLS_CACHE_DIR`：Skill bundle 本地缓存目录
 - `SKILLS_LOCAL_PATHS`：开发态本地 Skill override 目录列表（逗号分隔）
 - `AGENT_MODEL`：`prompt_first` 模式下使用的 OpenAI-compatible 模型名
