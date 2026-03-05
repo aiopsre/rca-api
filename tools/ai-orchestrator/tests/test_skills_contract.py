@@ -19,6 +19,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -43,6 +44,7 @@ from orchestrator.skills.capabilities import (
 from orchestrator.skills.session_bridge import (
     load_session_snapshot_into_state,
     apply_session_patch_to_state,
+    write_session_patch_to_platform,
 )
 from orchestrator.state import GraphState
 
@@ -1379,6 +1381,71 @@ class TestSessionPatchFallbackContract(unittest.TestCase):
         result = sanitize_session_patch(patch)
         self.assertIn("context_state_patch", result)
         self.assertEqual(result["context_state_patch"]["fallback"], True)
+
+
+class TestSessionPatchWriteback(unittest.TestCase):
+    """Contract tests for session_patch writeback to platform."""
+
+    def test_write_session_patch_to_platform_with_empty_patch_returns_true(self) -> None:
+        """write_session_patch_to_platform with empty patch should return True."""
+        state = GraphState(job_id="test-job")
+        state.session_patch = {}
+        mock_runtime = unittest.mock.MagicMock()
+
+        result = write_session_patch_to_platform(state, mock_runtime)
+
+        self.assertTrue(result)
+        mock_runtime.patch_job_session_context.assert_not_called()
+
+    def test_write_session_patch_to_platform_calls_patch_api(self) -> None:
+        """write_session_patch_to_platform should call patch API with correct params."""
+        state = GraphState(job_id="test-job")
+        state.session_patch = {
+            "latest_summary": {"summary": "test"},
+            "pinned_evidence_append": [{"evidence_id": "ev-1"}],
+            "pinned_evidence_remove": ["ev-2"],
+            "context_state_patch": {"review": {"state": "pending"}},
+            "actor": "skill:test",
+            "note": "test note",
+            "source": "skill.test",
+        }
+        mock_runtime = unittest.mock.MagicMock()
+
+        result = write_session_patch_to_platform(state, mock_runtime)
+
+        self.assertTrue(result)
+        mock_runtime.patch_job_session_context.assert_called_once_with(
+            session_revision=None,
+            latest_summary={"summary": "test"},
+            pinned_evidence_append=[{"evidence_id": "ev-1"}],
+            pinned_evidence_remove=["ev-2"],
+            context_state_patch={"review": {"state": "pending"}},
+            actor="skill:test",
+            note="test note",
+            source="skill.test",
+        )
+
+    def test_write_session_patch_to_platform_returns_false_on_error(self) -> None:
+        """write_session_patch_to_platform should return False on error (best effort)."""
+        state = GraphState(job_id="test-job")
+        state.session_patch = {"latest_summary": {"summary": "test"}}
+        mock_runtime = unittest.mock.MagicMock()
+        mock_runtime.patch_job_session_context.side_effect = Exception("API error")
+
+        result = write_session_patch_to_platform(state, mock_runtime)
+
+        self.assertFalse(result)
+
+    def test_write_session_patch_to_platform_ignores_non_dict_patch(self) -> None:
+        """write_session_patch_to_platform should ignore non-dict patch."""
+        state = GraphState(job_id="test-job")
+        state.session_patch = "not a dict"  # type: ignore
+        mock_runtime = unittest.mock.MagicMock()
+
+        result = write_session_patch_to_platform(state, mock_runtime)
+
+        self.assertTrue(result)
+        mock_runtime.patch_job_session_context.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -981,6 +981,11 @@ def finalize_job(
             state.last_error = f"lease_lost: {runtime.lease_lost_reason() or 'lease_renew_failed'}"
         return state
 
+    # 写回 Skills 输出的 session_patch（best effort）
+    from ..skills import write_session_patch_to_platform
+
+    write_session_patch_to_platform(state, runtime)
+
     error_message = (state.last_error or "").strip()
 
     if not error_message and not state.evidence_ids:
