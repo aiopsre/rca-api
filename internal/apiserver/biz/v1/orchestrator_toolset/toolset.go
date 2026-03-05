@@ -4,7 +4,6 @@ package orchestrator_toolset
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
@@ -57,26 +56,9 @@ func (b *toolsetBiz) Resolve(ctx context.Context, req *v1.ResolveToolsetRequest)
 			}
 		}
 	}
-	toolsets, err := orchestratorcfg.ResolveChain(normalizedPipeline)
-	if err != nil {
-		switch {
-		case errors.Is(err, orchestratorcfg.ErrToolsetNotFound):
-			return nil, errno.ErrOrchestratorToolsetNotFound
-		case errors.Is(err, orchestratorcfg.ErrInvalidConfig):
-			return nil, errno.ErrOrchestratorToolsetConfigInvalid
-		default:
-			return nil, errno.ErrInternal
-		}
-	}
-	if len(toolsets) == 0 {
-		return nil, errno.ErrOrchestratorToolsetNotFound
-	}
-
-	return &v1.ResolveToolsetResponse{
-		Pipeline: normalizedPipeline,
-		Toolset:  toolsets[0],
-		Toolsets: toolsets,
-	}, nil
+	// Env-based fallback has been deprecated. Use toolset_config_dynamics table instead.
+	// See docs/tooling/tool-registry.md for configuration guidance.
+	return nil, errno.ErrOrchestratorToolsetNotFound
 }
 
 func mapDynamicToolsets(items []*internalstrategyconfig.ToolsetItem) []*v1.OrchestratorToolset {

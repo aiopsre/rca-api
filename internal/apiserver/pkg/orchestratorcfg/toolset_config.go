@@ -1,3 +1,9 @@
+// Package orchestratorcfg provides orchestrator configuration utilities.
+//
+// Deprecated: The environment-based toolset configuration (RCA_TOOLSET_CONFIG_JSON/PATH)
+// has been deprecated. Use the toolset_config_dynamics table instead, managed via
+// /v1/internal-strategy-config/toolsets API. This package is kept for backward
+// compatibility and may be removed in a future version.
 package orchestratorcfg
 
 import (

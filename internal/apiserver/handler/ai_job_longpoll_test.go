@@ -473,7 +473,7 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}))
+	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIJobQueueSignalM{}, &model.AIToolCallM{}, &model.ToolsetConfigDynamicM{}, &model.PipelineConfigM{}, &model.TriggerConfigM{}))
 	return db
 }
 

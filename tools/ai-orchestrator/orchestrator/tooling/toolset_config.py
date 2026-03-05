@@ -1,3 +1,13 @@
+"""
+Toolset configuration loading from environment variables.
+
+DEPRECATED: The environment-based toolset configuration (TOOLSET_CONFIG_JSON/PATH)
+has been deprecated. Use the toolset_config_dynamics table instead, managed via
+/v1/internal-strategy-config/toolsets API on the Go side. The McpServerRef data
+is passed through the claim response McpServersJSON field.
+
+This module is kept for backward compatibility and may be removed in a future version.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
