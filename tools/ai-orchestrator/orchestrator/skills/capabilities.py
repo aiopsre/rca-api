@@ -498,6 +498,137 @@ def _apply_evidence_plan_result(
         current_plan["candidates"] = current_candidates
 
 
+def _build_tool_plan_input(state: Any) -> dict[str, Any]:
+    return {
+        "incident_id": getattr(state, "incident_id", None),
+        "incident_context": getattr(state, "incident_context", {}) if isinstance(getattr(state, "incident_context", {}), dict) else {},
+        "input_hints": getattr(state, "input_hints", {}) if isinstance(getattr(state, "input_hints", {}), dict) else {},
+        "existing_evidence_ids": getattr(state, "evidence_ids", []) if isinstance(getattr(state, "evidence_ids", []), list) else [],
+        "evidence_mode": getattr(state, "evidence_mode", None),
+    }
+
+
+def _build_tool_plan_stage_summary(input_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "incident_id": _trim(input_payload.get("incident_id")),
+        "evidence_mode": _trim(input_payload.get("evidence_mode")),
+        "has_incident_context": isinstance(input_payload.get("incident_context"), dict) and bool(input_payload.get("incident_context")),
+        "has_input_hints": isinstance(input_payload.get("input_hints"), dict) and bool(input_payload.get("input_hints")),
+        "existing_evidence_count": len(input_payload.get("existing_evidence_ids") or []) if isinstance(input_payload.get("existing_evidence_ids"), list) else 0,
+    }
+
+
+def _sanitize_tool_plan_item(item: Any) -> tuple[dict[str, Any] | None, list[str]]:
+    """Sanitize a single tool call item in the plan."""
+    if not isinstance(item, dict):
+        return None, ["tool_call_plan.items: invalid item type"]
+
+    dropped: list[str] = []
+    result: dict[str, Any] = {}
+
+    tool = _trim(item.get("tool"))
+    if not tool:
+        return None, ["tool_call_plan.items[].tool: required"]
+    result["tool"] = tool
+
+    params = item.get("params")
+    if isinstance(params, dict):
+        result["params"] = dict(params)
+    elif params is not None:
+        dropped.append("tool_call_plan.items[].params: invalid type, using empty dict")
+        result["params"] = {}
+    else:
+        result["params"] = {}
+
+    # Optional fields
+    query_type = _trim(item.get("query_type"))
+    if query_type:
+        result["query_type"] = query_type
+
+    purpose = _trim(item.get("purpose"))
+    if purpose:
+        result["purpose"] = purpose
+
+    evidence_kind = _trim(item.get("evidence_kind"))
+    if evidence_kind:
+        result["evidence_kind"] = evidence_kind
+
+    if item.get("optional") is not None:
+        result["optional"] = bool(item.get("optional"))
+
+    depends_on = item.get("depends_on")
+    if isinstance(depends_on, list):
+        result["depends_on"] = [str(d) for d in depends_on if d is not None]
+    elif depends_on is not None:
+        dropped.append("tool_call_plan.items[].depends_on: invalid type")
+
+    call_id = _trim(item.get("call_id"))
+    if call_id:
+        result["call_id"] = call_id
+
+    return result, dropped
+
+
+def _sanitize_tool_plan_result(result: PromptSkillConsumeResult) -> tuple[PromptSkillConsumeResult, list[str]]:
+    raw_payload = result.payload if isinstance(result.payload, dict) else {}
+    payload: dict[str, Any] = {}
+    dropped: list[str] = []
+
+    tool_call_plan = raw_payload.get("tool_call_plan")
+    if isinstance(tool_call_plan, dict):
+        sanitized_plan: dict[str, Any] = {}
+
+        items = tool_call_plan.get("items")
+        if isinstance(items, list):
+            sanitized_items: list[dict[str, Any]] = []
+            for idx, item in enumerate(items):
+                sanitized_item, item_dropped = _sanitize_tool_plan_item(item)
+                for drop in item_dropped:
+                    dropped.append(f"tool_call_plan.items[{idx}].{drop}" if not drop.startswith("tool_call_plan") else drop)
+                if sanitized_item:
+                    sanitized_items.append(sanitized_item)
+            sanitized_plan["items"] = sanitized_items
+        elif items is not None:
+            dropped.append("tool_call_plan.items: invalid type")
+
+        parallel_groups = tool_call_plan.get("parallel_groups")
+        if isinstance(parallel_groups, list):
+            sanitized_groups: list[list[int]] = []
+            for gidx, group in enumerate(parallel_groups):
+                if isinstance(group, list):
+                    sanitized_group = [int(i) for i in group if isinstance(i, int)]
+                    sanitized_groups.append(sanitized_group)
+            sanitized_plan["parallel_groups"] = sanitized_groups
+        elif parallel_groups is not None:
+            dropped.append("tool_call_plan.parallel_groups: invalid type")
+
+        if sanitized_plan:
+            payload["tool_call_plan"] = sanitized_plan
+    elif tool_call_plan is not None:
+        dropped.append("tool_call_plan: invalid type")
+
+    if result.session_patch:
+        dropped.append("session_patch: must be omitted")
+
+    observations = [item for item in result.observations if isinstance(item, dict)]
+    forbidden_top_level = set(raw_payload.keys()) - {"tool_call_plan"}
+    dropped.extend(sorted(forbidden_top_level))
+
+    return PromptSkillConsumeResult(payload=payload, session_patch={}, observations=observations), sorted(set(dropped))
+
+
+def _apply_tool_plan_result(
+    state: Any,
+    result: PromptSkillConsumeResult,
+    merge_session_patch: Callable[[Any, dict[str, Any] | None], None],
+) -> None:
+    del merge_session_patch
+    payload = result.payload if isinstance(result.payload, dict) else {}
+    tool_call_plan = payload.get("tool_call_plan")
+    if isinstance(tool_call_plan, dict):
+        setattr(state, "tool_call_plan", tool_call_plan)
+
+
 _CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
     "diagnosis.enrich": CapabilityDefinition(
         capability="diagnosis.enrich",
@@ -546,6 +677,35 @@ _CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
         build_stage_summary=_build_evidence_plan_stage_summary,
         sanitize_output=_sanitize_evidence_plan_result,
         apply_result=_apply_evidence_plan_result,
+    ),
+    "tool.plan": CapabilityDefinition(
+        capability="tool.plan",
+        stage="plan_tool_calls",
+        output_contract={
+            "payload": {
+                "tool_call_plan": {
+                    "items": [
+                        {
+                            "tool": "string - tool name (required)",
+                            "params": "object - tool parameters",
+                            "query_type": "string - metrics/logs/traces (optional)",
+                            "purpose": "string - why this tool is called (optional)",
+                            "evidence_kind": "string - evidence type (optional, default: query)",
+                            "optional": "boolean - whether failure is acceptable (optional)",
+                            "depends_on": "list of call_ids this depends on (optional)",
+                            "call_id": "string - unique identifier (optional)",
+                        }
+                    ],
+                    "parallel_groups": "list of index lists for parallel execution (optional)",
+                },
+            },
+            "session_patch": "must be omitted",
+            "observations": "optional list",
+        },
+        build_input=_build_tool_plan_input,
+        build_stage_summary=_build_tool_plan_stage_summary,
+        sanitize_output=_sanitize_tool_plan_result,
+        apply_result=_apply_tool_plan_result,
     ),
 }
 

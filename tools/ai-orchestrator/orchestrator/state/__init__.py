@@ -29,6 +29,10 @@ class GraphState(BaseModel):
     evidence_candidates: List[Dict[str, Any]] = Field(default_factory=list)
     incident_context: Dict[str, Any] = Field(default_factory=dict)
 
+    # Dynamic tool call plan (replaces fixed metrics/logs branch)
+    tool_call_plan: Dict[str, Any] = Field(default_factory=dict)
+    tool_call_results: List[Dict[str, Any]] = Field(default_factory=list)
+
     metrics_query_request: Dict[str, Any] = Field(default_factory=dict)
     metrics_query_output: Dict[str, Any] = Field(default_factory=dict)
     metrics_query_status: Optional[str] = None

@@ -18,12 +18,31 @@ from ..nodes import (
     run_verification,
     summarize_diagnosis,
 )
+from ..nodes_dynamic import (
+    execute_tool_calls,
+    make_execute_tool_calls_entry,
+    make_plan_tool_calls_entry,
+    plan_tool_calls,
+)
 
 
 def build_basic_rca_graph(
     runtime: OrchestratorRuntime,
     cfg: OrchestratorConfig,
+    *,
+    dynamic_tool_execution: bool = False,
 ):
+    """Build the basic RCA graph.
+
+    Args:
+        runtime: Orchestrator runtime instance.
+        cfg: Orchestrator configuration.
+        dynamic_tool_execution: If True, use dynamic tool execution nodes
+            instead of fixed query_metrics and query_logs nodes.
+
+    Returns:
+        Compiled LangGraph graph.
+    """
     builder = StateGraph(GraphState)
     builder.add_node(
         "load_job_and_start",
@@ -33,8 +52,22 @@ def build_basic_rca_graph(
         "plan_evidence",
         guard("plan_evidence", lambda s: plan_evidence(s, cfg, runtime), runtime),
     )
-    builder.add_node("query_metrics", make_query_metrics_entry(runtime))
-    builder.add_node("query_logs", make_query_logs_entry(runtime))
+
+    if dynamic_tool_execution:
+        # Dynamic tool execution path
+        builder.add_node(
+            "plan_tool_calls",
+            guard("plan_tool_calls", lambda s: plan_tool_calls(s, cfg, runtime), runtime),
+        )
+        builder.add_node(
+            "execute_tool_calls",
+            guard("execute_tool_calls", lambda s: execute_tool_calls(s, cfg, runtime), runtime),
+        )
+    else:
+        # Fixed tool execution path (backward compatible)
+        builder.add_node("query_metrics", make_query_metrics_entry(runtime))
+        builder.add_node("query_logs", make_query_logs_entry(runtime))
+
     builder.add_node(
         "merge_evidence",
         guard("merge_evidence", lambda s: merge_evidence(s, cfg, runtime), runtime),
@@ -54,10 +87,17 @@ def build_basic_rca_graph(
     builder.add_edge(START, "load_job_and_start")
     builder.add_edge("load_job_and_start", "plan_evidence")
 
-    builder.add_edge("plan_evidence", "query_metrics")
-    builder.add_edge("plan_evidence", "query_logs")
-    builder.add_edge("query_metrics", "merge_evidence")
-    builder.add_edge("query_logs", "merge_evidence")
+    if dynamic_tool_execution:
+        # Dynamic path: plan_evidence -> plan_tool_calls -> execute_tool_calls -> merge_evidence
+        builder.add_edge("plan_evidence", "plan_tool_calls")
+        builder.add_edge("plan_tool_calls", "execute_tool_calls")
+        builder.add_edge("execute_tool_calls", "merge_evidence")
+    else:
+        # Fixed path: plan_evidence -> query_metrics/query_logs (parallel) -> merge_evidence
+        builder.add_edge("plan_evidence", "query_metrics")
+        builder.add_edge("plan_evidence", "query_logs")
+        builder.add_edge("query_metrics", "merge_evidence")
+        builder.add_edge("query_logs", "merge_evidence")
 
     builder.add_edge("merge_evidence", "quality_gate")
     builder.add_edge("quality_gate", "summarize_diagnosis")

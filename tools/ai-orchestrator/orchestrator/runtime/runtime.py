@@ -2445,6 +2445,19 @@ class OrchestratorRuntime:
             actor=f"ai:{self._job_id}",
         )
 
+    def discover_tools(self) -> "ToolDiscoveryResult":
+        """Discover all tools available through this runtime.
+
+        Returns information about all tools that can be called via call_tool(),
+        including their names, descriptions, tags, and provider information.
+
+        Returns:
+            ToolDiscoveryResult containing all available tools.
+        """
+        from .tool_discovery import discover_tools
+
+        return discover_tools(self)
+
     def shutdown(self) -> None:
         self._started = False
         self._lease_manager.shutdown()
