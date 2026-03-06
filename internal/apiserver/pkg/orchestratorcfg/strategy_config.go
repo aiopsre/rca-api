@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -159,6 +160,11 @@ func resolveStrategyToolsets(
 ) ([]*v1.OrchestratorToolset, error) {
 	// Canonical source: dedicated toolset config (RCA_TOOLSET_CONFIG_JSON/PATH).
 	if toolsetConfigSourceConfigured() {
+		slog.Warn("DEPRECATED: environment-based toolset config is deprecated, migrate to DB config",
+			"env_vars", fmt.Sprintf("%s/%s", envToolsetConfigJSON, envToolsetConfigPath),
+			"migration_api", "/v1/internal-strategy-config/toolsets",
+			"pipeline", normalizedPipeline,
+		)
 		resolvedToolsets, err := ResolveChain(normalizedPipeline)
 		if err != nil {
 			return nil, strategyInvalidConfigf("pipeline=%s resolve toolset config failed: %v", normalizedPipeline, err)

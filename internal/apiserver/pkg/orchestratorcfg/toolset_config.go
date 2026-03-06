@@ -1,9 +1,25 @@
 // Package orchestratorcfg provides orchestrator configuration utilities.
 //
-// Deprecated: The environment-based toolset configuration (RCA_TOOLSET_CONFIG_JSON/PATH)
-// has been deprecated. Use the toolset_config_dynamics table instead, managed via
-// /v1/internal-strategy-config/toolsets API. This package is kept for backward
-// compatibility and may be removed in a future version.
+// # Deprecated: Environment-based Toolset Configuration
+//
+// The environment-based toolset configuration (RCA_TOOLSET_CONFIG_JSON/PATH)
+// has been deprecated. Use the toolset_config_dynamics table instead.
+//
+// # Migration Path
+//
+// 1. Extract pipeline->toolsets mapping from current env config
+// 2. Create DB records via /v1/internal-strategy-config/toolsets API
+// 3. Verify configuration via GET /v1/internal-strategy-config/toolsets?pipeline_id=<pipeline>
+// 4. Remove env variables RCA_TOOLSET_CONFIG_JSON and RCA_TOOLSET_CONFIG_PATH
+//
+// # When This File Can Be Removed
+//
+// This file can be removed when:
+// - All deployments have migrated to DB configuration
+// - No fallback to env config is needed for backward compatibility
+// - The resolveStrategyToolsets() function in strategy_config.go no longer calls toolsetConfigSourceConfigured()
+//
+// See docs/tooling/tool-resolution.md for full documentation.
 package orchestratorcfg
 
 import (

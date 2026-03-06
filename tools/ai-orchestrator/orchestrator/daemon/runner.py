@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import logging
 import threading
 import time
 from typing import Any
 
+from .. import WORKER_VERSION
 from ..graph import OrchestratorConfig
 from ..langgraph.registry import (
     UnknownPipelineError,
@@ -29,7 +31,16 @@ from ..tooling import (
 )
 from ..tools_rca_api import RCAApiClient
 from .health import detect_pubsub_ready
+from .health_server import HealthServer, start_health_server
+from .metrics import (
+    WORKER_JOBS_TOTAL,
+    WORKER_JOBS_IN_PROGRESS,
+    WORKER_JOB_DURATION_SECONDS,
+    WORKER_POLL_ERRORS_TOTAL,
+)
 from .settings import Settings, load_settings
+
+_logger = logging.getLogger("orchestrator.runner")
 
 _TOOLSET_CONFIG_CACHE_LOCK = threading.Lock()
 _TOOLSET_CONFIG_CACHE_KEY: tuple[str, str] | None = None
@@ -41,7 +52,7 @@ _TEMPLATE_REGISTRY_REFRESH_SECONDS = 60.0
 
 
 def _log(msg: str) -> None:
-    print(msg, flush=True)
+    _logger.info(msg)
 
 
 def _extract_jobs(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -572,6 +583,9 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     selected_skillset_source = ""
     selection_error_message = ""
     prefetched_job: dict[str, Any] = {}
+    job_status = "error"
+    job_start_time = time.time()
+    WORKER_JOBS_IN_PROGRESS.inc()
 
     try:
         prefetched_job = client.get_job(job_id)
@@ -628,183 +642,209 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             _log(f"job={job_id} prefetch job for strategy/template selection failed: {exc}")
             selection_error_message = f"template_selection_prefetch_failed: {exc}"
 
-    runtime = OrchestratorRuntime(
-        client=client,
-        job_id=job_id,
-        instance_id=settings.instance_id,
-        heartbeat_interval_seconds=settings.lease_heartbeat_interval_seconds,
-        log_func=_log,
-        verification_max_steps=settings.verification_max_steps,
-        verification_max_total_latency_ms=settings.verification_max_total_latency_ms,
-        verification_max_total_bytes=settings.verification_max_total_bytes,
-        verification_dedupe_enabled=settings.verification_dedupe_enabled,
-        tool_invoker=tool_invoker,
-        skill_catalog=skill_catalog,
-        skills_execution_mode=settings.skills_execution_mode,
-        skills_tool_calling_mode=settings.skills_tool_calling_mode,
-        skill_agent=_build_prompt_skill_agent(settings),
-    )
-    if not runtime.start():
-        if debug:
-            _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
-        return
-
-    # Merge MCP server invoker from claim response after successful claim
-    # Use getattr to handle test fakes that don't have these methods
-    get_claim_response = getattr(runtime, "get_claim_response", None)
-    merge_tool_invoker = getattr(runtime, "merge_tool_invoker", None)
-    if callable(get_claim_response) and callable(merge_tool_invoker):
-        claim_response = get_claim_response()
-        if claim_response is not None and claim_response.has_mcp_servers():
-            try:
-                mcp_invoker = build_tool_invoker_from_mcpserver_refs_json(claim_response.mcp_servers_json)
-                if mcp_invoker is not None:
-                    merge_tool_invoker(mcp_invoker)
-                    if debug:
-                        mcp_tools = mcp_invoker.allowed_tools()
-                        _log(
-                            f"[DEBUG] job={job_id} merged MCP server toolset tools={mcp_tools[:8]}... "
-                            f"count={len(mcp_tools)}"
-                        )
-            except Exception as mcp_exc:  # noqa: BLE001
-                _log(f"job={job_id} MCP server invoker build failed: {mcp_exc}")
-
-    if selection_error_message:
-        try:
-            runtime.finalize(
-                status="failed",
-                diagnosis_json=None,
-                error_message=selection_error_message,
-                evidence_ids=[],
-            )
-        except Exception as finalize_exc:  # noqa: BLE001
-            _log(f"job={job_id} finalize after template/toolset selection failure error: {finalize_exc}")
-        runtime.shutdown()
-        return
-
-    if template_builder is None:
-        _log(f"job={job_id} template selection failed: pipeline={selected_pipeline or '<empty>'} error=empty_builder")
-        try:
-            runtime.finalize(
-                status="failed",
-                diagnosis_json=None,
-                error_message="template_selection_failed: empty_builder",
-                evidence_ids=[],
-            )
-        except Exception as finalize_exc:  # noqa: BLE001
-            _log(f"job={job_id} finalize after empty template builder error: {finalize_exc}")
-        runtime.shutdown()
-        return
-
-    _report_toolset_selection_observation(
-        runtime=runtime,
-        job_id=job_id,
-        pipeline=selected_pipeline,
-        template_id=selected_template_id,
-        template_builder=template_builder,
-        toolsets=selected_toolsets,
-        toolset_source=selected_toolset_source,
-        tool_invoker=tool_invoker,
-    )
-    _report_skillset_selection_observation(
-        runtime=runtime,
-        job_id=job_id,
-        pipeline=selected_pipeline,
-        skill_catalog=skill_catalog,
-        skillsets=selected_skillsets,
-        skillset_source=selected_skillset_source,
-    )
-
-    if debug:
-        selected_toolsets_text = ",".join(selected_toolsets) if selected_toolsets else "<none>"
-        selected_skillsets_text = ",".join(selected_skillsets) if selected_skillsets else "<none>"
-        _log(
-            f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
-            f"template_id={selected_template_id or '<empty>'} "
-            f"template={template_builder.__name__} toolsets={selected_toolsets_text} "
-            f"skillsets={selected_skillsets_text}"
-        )
-
     try:
-        state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
-        if isinstance(prefetched_job, dict):
-            state.session_id = (
-                str(prefetched_job.get("sessionID") or prefetched_job.get("session_id") or "").strip() or None
-            )
-        try:
-            session_snapshot = runtime.get_job_session_context()
-            load_session_snapshot_into_state(state, session_snapshot)
-        except Exception as exc:  # noqa: BLE001
+        runtime = OrchestratorRuntime(
+            client=client,
+            job_id=job_id,
+            instance_id=settings.instance_id,
+            heartbeat_interval_seconds=settings.lease_heartbeat_interval_seconds,
+            log_func=_log,
+            verification_max_steps=settings.verification_max_steps,
+            verification_max_total_latency_ms=settings.verification_max_total_latency_ms,
+            verification_max_total_bytes=settings.verification_max_total_bytes,
+            verification_dedupe_enabled=settings.verification_dedupe_enabled,
+            tool_invoker=tool_invoker,
+            skill_catalog=skill_catalog,
+            skills_execution_mode=settings.skills_execution_mode,
+            skills_tool_calling_mode=settings.skills_tool_calling_mode,
+            skill_agent=_build_prompt_skill_agent(settings),
+        )
+        if not runtime.start():
             if debug:
-                _log(f"[DEBUG] job={job_id} session snapshot load skipped: {exc}")
-        compiled_graph = template_builder(runtime, graph_cfg)
-        final_state = compiled_graph.invoke(state)
-    finally:
-        runtime.shutdown()
+                _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
+            return
 
-    if isinstance(final_state, dict):
-        final_state = GraphState.model_validate(final_state)
-    try:
-        final_state = _apply_session_patch_if_needed(runtime, final_state)
-    except Exception as exc:  # noqa: BLE001
-        _log(f"job={job_id} session patch apply failed: {exc}")
+        # Merge MCP server invoker from claim response after successful claim
+        # Use getattr to handle test fakes that don't have these methods
+        get_claim_response = getattr(runtime, "get_claim_response", None)
+        merge_tool_invoker = getattr(runtime, "merge_tool_invoker", None)
+        if callable(get_claim_response) and callable(merge_tool_invoker):
+            claim_response = get_claim_response()
+            if claim_response is not None and claim_response.has_mcp_servers():
+                try:
+                    mcp_invoker = build_tool_invoker_from_mcpserver_refs_json(claim_response.mcp_servers_json)
+                    if mcp_invoker is not None:
+                        merge_tool_invoker(mcp_invoker)
+                        if debug:
+                            mcp_tools = mcp_invoker.allowed_tools()
+                            _log(
+                                f"[DEBUG] job={job_id} merged MCP server toolset tools={mcp_tools[:8]}... "
+                                f"count={len(mcp_tools)}"
+                            )
+                except Exception as mcp_exc:  # noqa: BLE001
+                    _log(f"job={job_id} MCP server invoker build failed: {mcp_exc}")
 
-    if debug:
-        _log(
-            "[DEBUG] "
-            f"job={job_id} finalized={final_state.finalized} "
-            f"started={final_state.started} evidence_ids={final_state.evidence_ids} "
-            f"last_error={final_state.last_error!r}"
+        if selection_error_message:
+            try:
+                runtime.finalize(
+                    status="failed",
+                    diagnosis_json=None,
+                    error_message=selection_error_message,
+                    evidence_ids=[],
+                )
+            except Exception as finalize_exc:  # noqa: BLE001
+                _log(f"job={job_id} finalize after template/toolset selection failure error: {finalize_exc}")
+            runtime.shutdown()
+            return
+
+        if template_builder is None:
+            _log(f"job={job_id} template selection failed: pipeline={selected_pipeline or '<empty>'} error=empty_builder")
+            try:
+                runtime.finalize(
+                    status="failed",
+                    diagnosis_json=None,
+                    error_message="template_selection_failed: empty_builder",
+                    evidence_ids=[],
+                )
+            except Exception as finalize_exc:  # noqa: BLE001
+                _log(f"job={job_id} finalize after empty template builder error: {finalize_exc}")
+            runtime.shutdown()
+            return
+
+        _report_toolset_selection_observation(
+            runtime=runtime,
+            job_id=job_id,
+            pipeline=selected_pipeline,
+            template_id=selected_template_id,
+            template_builder=template_builder,
+            toolsets=selected_toolsets,
+            toolset_source=selected_toolset_source,
+            tool_invoker=tool_invoker,
         )
+        _report_skillset_selection_observation(
+            runtime=runtime,
+            job_id=job_id,
+            pipeline=selected_pipeline,
+            skill_catalog=skill_catalog,
+            skillsets=selected_skillsets,
+            skillset_source=selected_skillset_source,
+        )
+
+        if debug:
+            selected_toolsets_text = ",".join(selected_toolsets) if selected_toolsets else "<none>"
+            selected_skillsets_text = ",".join(selected_skillsets) if selected_skillsets else "<none>"
+            _log(
+                f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
+                f"template_id={selected_template_id or '<empty>'} "
+                f"template={template_builder.__name__} toolsets={selected_toolsets_text} "
+                f"skillsets={selected_skillsets_text}"
+            )
+
+        try:
+            state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
+            if isinstance(prefetched_job, dict):
+                state.session_id = (
+                    str(prefetched_job.get("sessionID") or prefetched_job.get("session_id") or "").strip() or None
+                )
+            try:
+                session_snapshot = runtime.get_job_session_context()
+                load_session_snapshot_into_state(state, session_snapshot)
+            except Exception as exc:  # noqa: BLE001
+                if debug:
+                    _log(f"[DEBUG] job={job_id} session snapshot load skipped: {exc}")
+            compiled_graph = template_builder(runtime, graph_cfg)
+            final_state = compiled_graph.invoke(state)
+        finally:
+            runtime.shutdown()
+
+        if isinstance(final_state, dict):
+            final_state = GraphState.model_validate(final_state)
+        try:
+            final_state = _apply_session_patch_if_needed(runtime, final_state)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"job={job_id} session patch apply failed: {exc}")
+
+        if debug:
+            _log(
+                "[DEBUG] "
+                f"job={job_id} finalized={final_state.finalized} "
+                f"started={final_state.started} evidence_ids={final_state.evidence_ids} "
+                f"last_error={final_state.last_error!r}"
+            )
+
+        job_status = "success"
+    finally:
+        duration = time.time() - job_start_time
+        WORKER_JOBS_TOTAL.labels(status=job_status).inc()
+        WORKER_JOB_DURATION_SECONDS.labels(pipeline=selected_pipeline or "unknown").observe(duration)
+        WORKER_JOBS_IN_PROGRESS.dec()
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     settings = load_settings()
+    _log(f"orchestrator worker version={WORKER_VERSION}")
     pubsub_enabled, subscribe_ready = detect_pubsub_ready(settings.base_url, settings.scopes)
     redis_enabled = pubsub_enabled
     _log(
-        "orchestrator redis profile "
-        f"enabled={int(redis_enabled)} "
-        f"pubsub={int(pubsub_enabled)} "
-        f"subscribe_ready={int(subscribe_ready)} "
+        f"orchestrator redis profile enabled={int(redis_enabled)} "
+        f"pubsub={int(pubsub_enabled)} subscribe_ready={int(subscribe_ready)} "
         "fallback=db_watermark_longpoll"
     )
     _log(
-        "orchestrator starting "
-        f"base_url={settings.base_url} "
+        f"orchestrator config base_url={settings.base_url} "
         f"instance_id={settings.instance_id} "
-        f"mcp_scopes_set={int(bool(settings.mcp_scopes))} "
-        f"mcp_verify_remote_tools={int(settings.mcp_verify_remote_tools)} "
+        f"concurrency={settings.concurrency} "
         f"poll_interval_ms={settings.poll_interval_ms} "
         f"lease_heartbeat_interval_seconds={settings.lease_heartbeat_interval_seconds} "
-        f"concurrency={settings.concurrency} "
-        f"run_query={int(settings.run_query)} "
+        f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
+        f"pull_limit={settings.pull_limit} "
+        f"debug={int(settings.debug)}"
+    )
+    _log(
+        f"orchestrator features run_query={int(settings.run_query)} "
         f"force_no_evidence={int(settings.force_no_evidence)} "
         f"force_conflict={int(settings.force_conflict)} "
         f"ds_type={settings.ds_type} "
         f"metrics_ds_type={settings.metrics_ds_type} "
         f"logs_ds_type={settings.logs_ds_type} "
-        f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
-        f"a3_max_calls={settings.a3_max_calls} "
+        f"auto_create_datasource={int(settings.auto_create_datasource)}"
+    )
+    _log(
+        f"orchestrator a3 limits a3_max_calls={settings.a3_max_calls} "
         f"a3_max_total_bytes={settings.a3_max_total_bytes} "
-        f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms} "
-        f"post_finalize_observe={int(settings.post_finalize_observe)} "
-        f"run_verification={int(settings.run_verification)} "
+        f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
+    )
+    _log(
+        f"orchestrator verification run_verification={int(settings.run_verification)} "
         f"verification_source={settings.verification_source} "
         f"verification_max_steps={settings.verification_max_steps} "
-        f"verification_max_total_latency_ms={settings.verification_max_total_latency_ms} "
-        f"verification_max_total_bytes={settings.verification_max_total_bytes} "
-        f"verification_dedupe_enabled={int(settings.verification_dedupe_enabled)} "
-        f"post_finalize_wait_timeout_seconds={settings.post_finalize_wait_timeout_seconds} "
-        f"post_finalize_wait_interval_ms={settings.post_finalize_wait_interval_ms} "
-        f"post_finalize_wait_max_interval_ms={settings.post_finalize_wait_max_interval_ms} "
-        f"skills_execution_mode={settings.skills_execution_mode} "
+        f"post_finalize_observe={int(settings.post_finalize_observe)}"
+    )
+    _log(
+        f"orchestrator skills skills_execution_mode={settings.skills_execution_mode} "
         f"skills_tool_calling_mode={settings.skills_tool_calling_mode} "
         f"skills_cache_dir={settings.skills_cache_dir} "
-        f"skills_local_paths_set={int(bool(settings.skills_local_paths))}"
-        f" agent_model_set={int(bool(settings.agent_model))} "
+        f"skills_local_paths_set={int(bool(settings.skills_local_paths))} "
+        f"agent_model_set={int(bool(settings.agent_model))} "
         f"agent_base_url_set={int(bool(settings.agent_base_url))}"
     )
+    _log(
+        f"orchestrator mcp mcp_scopes_set={int(bool(settings.mcp_scopes))} "
+        f"mcp_verify_remote_tools={int(settings.mcp_verify_remote_tools)}"
+    )
+    _log(
+        f"orchestrator health health_port={settings.health_port} "
+        f"health_host={settings.health_host}"
+    )
+
+    # Start health server
+    health_server = start_health_server(port=settings.health_port, host=settings.health_host)
+    if health_server:
+        health_server.set_ready(True)
 
     poll_client = _new_client(settings)
     _register_templates_if_due(settings=settings, client=poll_client, force=True)
@@ -871,4 +911,5 @@ def main() -> None:
                         future.result()
         except Exception as exc:  # noqa: BLE001
             _log(f"poll loop error: {exc}")
+            WORKER_POLL_ERRORS_TOTAL.inc()
             time.sleep(sleep_s)

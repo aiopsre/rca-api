@@ -6,8 +6,23 @@ from typing import Any, Dict, Iterable, Mapping
 """
 Adapter-local MCP tool metadata hints.
 
-Runtime tool availability should be driven by server-resolved strategy/toolset context.
-This module is intentionally scoped to local cache/validation hints and bridge helpers.
+NOT a source of truth for tool availability.
+Tool availability is determined by server-resolved strategy/toolset context.
+
+This module is scoped to:
+- Local cache/validation hints for adapter execution
+- Adapter metadata for tool execution (input/output schemas, scopes)
+- Fallback for offline development scenarios
+
+For tool configuration, see:
+- Server-side: internal/apiserver/pkg/orchestratorcfg/strategy_config.go
+- DB config: toolset_config_dynamics table
+- API: /v1/internal-strategy-config/toolsets
+- Documentation: docs/tooling/tool-resolution.md
+
+Migration Note:
+  Environment-based config (RCA_TOOLSET_CONFIG_JSON/PATH) is deprecated.
+  Use DB configuration via /v1/internal-strategy-config/toolsets API.
 """
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import socket
+from typing import Any
 
 
 @dataclass
@@ -49,6 +50,36 @@ class Settings:
     agent_base_url: str = ""
     agent_api_key: str = ""
     agent_timeout_seconds: float = 20.0
+    health_port: int = 8080
+    health_host: str = "0.0.0.0"
+
+    def safe_summary(self) -> dict[str, Any]:
+        """Return a safe summary of settings for logging (excludes sensitive values)."""
+        return {
+            "base_url": self.base_url,
+            "instance_id": self.instance_id,
+            "concurrency": self.concurrency,
+            "poll_interval_ms": self.poll_interval_ms,
+            "lease_heartbeat_interval_seconds": self.lease_heartbeat_interval_seconds,
+            "long_poll_wait_seconds": self.long_poll_wait_seconds,
+            "pull_limit": self.pull_limit,
+            "debug": self.debug,
+            "ds_type": self.ds_type,
+            "metrics_ds_type": self.metrics_ds_type,
+            "logs_ds_type": self.logs_ds_type,
+            "skills_execution_mode": self.skills_execution_mode,
+            "skills_tool_calling_mode": self.skills_tool_calling_mode,
+            "run_query": self.run_query,
+            "run_verification": self.run_verification,
+            "mcp_scopes_set": bool(self.mcp_scopes),
+            "toolset_config_path_set": bool(self.toolset_config_path),
+            "toolset_config_json_set": bool(self.toolset_config_json),
+            "skills_local_paths_set": bool(self.skills_local_paths),
+            "agent_model_set": bool(self.agent_model),
+            "agent_base_url_set": bool(self.agent_base_url),
+            "health_port": self.health_port,
+            "health_host": self.health_host,
+        }
 
 
 def _env_int(name: str, default: int) -> int:
@@ -157,4 +188,6 @@ def load_settings() -> Settings:
         agent_base_url=os.getenv("AGENT_BASE_URL", "").strip(),
         agent_api_key=os.getenv("AGENT_API_KEY", "").strip(),
         agent_timeout_seconds=max(1.0, _env_float("AGENT_TIMEOUT_SECONDS", 20.0)),
+        health_port=max(0, _env_int("HEALTH_PORT", 8080)),
+        health_host=os.getenv("HEALTH_HOST", "0.0.0.0").strip() or "0.0.0.0",
     )
