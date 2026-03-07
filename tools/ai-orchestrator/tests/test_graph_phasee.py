@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import pathlib
 import sys
+import threading
 import types
 import unittest
 
@@ -34,6 +35,7 @@ class _VerificationResult:
 
 class _FakeRuntime:
     def __init__(self) -> None:
+        self._call_lock = threading.Lock()  # Thread safety for concurrent execution
         self.tool_calls: list[dict[str, object]] = []
         self.query_metrics_calls = 0
         self.query_logs_calls = 0
@@ -258,24 +260,25 @@ class _FakeRuntime:
         return ToolDiscoveryResult(tools=tuple(tools), by_tag=by_tag)
 
     def call_tool(self, *, tool: str, params: dict[str, object]) -> dict[str, object]:
-        """Execute a tool call."""
-        self.call_tool_calls.append({"tool": tool, "params": params})
-        if tool == "prometheus_query":
-            self.query_metrics_calls += 1
-            return {
-                "output": {
-                    "data": {
-                        "result": [{"value": [1, "2"]}],
+        """Execute a tool call (thread-safe)."""
+        with self._call_lock:
+            self.call_tool_calls.append({"tool": tool, "params": params})
+            if tool == "prometheus_query":
+                self.query_metrics_calls += 1
+                return {
+                    "output": {
+                        "data": {
+                            "result": [{"value": [1, "2"]}],
+                        },
                     },
-                },
-            }
-        elif tool == "loki_search":
-            self.query_logs_calls += 1
-            return {
-                "output": {
-                    "rows": [{"line": "error timeout"}],
-                },
-            }
+                }
+            elif tool == "loki_search":
+                self.query_logs_calls += 1
+                return {
+                    "output": {
+                        "rows": [{"line": "error timeout"}],
+                    },
+                }
         return {"output": {}}
 
     def report_observation(

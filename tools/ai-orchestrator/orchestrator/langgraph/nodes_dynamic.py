@@ -19,12 +19,13 @@ from ..state.tool_call_plan import (
     build_default_tool_call_plan,
 )
 from .config import OrchestratorConfig
+from .executor import execute_group_concurrent, ToolExecutionResult
 from .helpers import (
     append_evidence,
     query_result_is_no_data,
     query_result_size_bytes,
 )
-from .reporting import report_node_action
+from .reporting import report_node_action, report_group_execution
 
 
 def plan_tool_calls(
@@ -164,10 +165,10 @@ def execute_tool_calls(
     cfg: OrchestratorConfig,
     runtime: "OrchestratorRuntime",
 ) -> "GraphState":
-    """Execute the tool call plan.
+    """Execute the tool call plan with concurrent group execution.
 
-    Iterates through the tool call plan and executes each tool call,
-    collecting results and creating evidence.
+    Iterates through the tool call plan and executes each parallel group
+    concurrently using ThreadPoolExecutor, collecting results and creating evidence.
 
     Args:
         state: Current graph state.
@@ -213,24 +214,77 @@ def execute_tool_calls(
     results: list[dict[str, Any]] = []
     execution_groups = plan.get_execution_order()
 
-    for group_idx, group_indices in enumerate(execution_groups):
-        for item_idx in group_indices:
-            if item_idx >= len(plan.items):
-                continue
+    # Get concurrent execution configuration
+    max_workers = getattr(cfg, 'tool_execution_max_workers', 5)
+    group_timeout_s = getattr(cfg, 'tool_execution_group_timeout_s', 30.0)
 
-            item = plan.items[item_idx]
-            result = _execute_single_tool_call(state, runtime, item, group_idx)
-            results.append(result)
+    for group_idx, group_indices in enumerate(execution_groups):
+        # Prepare the group's tool calls
+        group_items = [
+            (item_idx, plan.items[item_idx])
+            for item_idx in group_indices
+            if item_idx < len(plan.items)
+        ]
+
+        if not group_items:
+            continue
+
+        # Track group execution time
+        group_start_ms = int(time.time() * 1000)
+
+        # Execute the group concurrently
+        group_results = execute_group_concurrent(
+            items=group_items,
+            runtime=runtime,
+            group_idx=group_idx,
+            max_workers=max_workers,
+            group_timeout_s=group_timeout_s,
+        )
+
+        group_latency_ms = max(1, int(time.time() * 1000) - group_start_ms)
+
+        # Process results
+        group_success = 0
+        group_error = 0
+        group_timeout = 0
+
+        for exec_result in group_results:
+            result_dict = _execution_result_to_dict(exec_result)
+            results.append(result_dict)
+
+            if exec_result.status == "ok":
+                group_success += 1
+            else:
+                group_error += 1
+                if exec_result.error and "timeout" in exec_result.error.lower():
+                    group_timeout += 1
 
             # Save evidence for successful calls
-            if result.get("status") == "ok" and result.get("result"):
-                _save_tool_call_evidence(state, runtime, item, result)
+            if exec_result.status == "ok" and exec_result.result:
+                item = plan.items[exec_result.item_idx]
+                _save_tool_call_evidence(state, runtime, item, result_dict)
+
+            # Report observation for each tool call
+            _report_tool_observation(runtime, exec_result)
+
+        # Report group-level metrics
+        report_group_execution(
+            state,
+            runtime,
+            group_idx=group_idx,
+            parallel_count=len(group_items),
+            group_latency_ms=group_latency_ms,
+            success_count=group_success,
+            error_count=group_error,
+            timeout_count=group_timeout,
+        )
 
     state.tool_call_results = results
 
     # Report overall execution summary
     success_count = sum(1 for r in results if r.get("status") == "ok")
     error_count = sum(1 for r in results if r.get("status") == "error")
+    max_parallel = max((len(g) for g in execution_groups), default=0)
 
     report_node_action(
         state,
@@ -240,12 +294,14 @@ def execute_tool_calls(
         request_json={
             "plan_items_count": len(plan.items),
             "execution_groups_count": len(execution_groups),
+            "max_workers": max_workers,
         },
         response_json={
             "status": "ok",
             "success_count": success_count,
             "error_count": error_count,
             "total_results": len(results),
+            "max_parallel_in_group": max_parallel,
         },
         started_ms=started_ms,
         status="ok",
@@ -255,70 +311,59 @@ def execute_tool_calls(
     return state
 
 
-def _execute_single_tool_call(
-    state: "GraphState",
-    runtime: "OrchestratorRuntime",
-    item: ToolCallItem,
-    group_idx: int,
-) -> dict[str, Any]:
-    """Execute a single tool call.
+def _execution_result_to_dict(result: ToolExecutionResult) -> dict[str, Any]:
+    """Convert ToolExecutionResult to dict for state storage.
 
     Args:
-        state: Current graph state.
-        runtime: Orchestrator runtime instance.
-        item: Tool call item to execute.
-        group_idx: Index of the parallel group this call belongs to.
+        result: ToolExecutionResult to convert.
 
     Returns:
-        Dictionary with execution result.
+        Dictionary representation suitable for state storage.
     """
-    call_started_ms = int(time.time() * 1000)
+    return {
+        "tool": result.tool,
+        "params": result.params,
+        "query_type": result.query_type,
+        "purpose": result.purpose,
+        "status": result.status,
+        "result": result.result,
+        "error": result.error,
+        "latency_ms": result.latency_ms,
+        "group_idx": result.group_idx,
+    }
 
-    try:
-        result = runtime.call_tool(tool=item.tool, params=item.params)
-        status = "ok"
-        error = None
-    except Exception as exc:  # noqa: BLE001
-        result = {}
-        status = "error"
-        error = str(exc)[:512]
 
-    latency_ms = max(1, int(time.time() * 1000) - call_started_ms)
+def _report_tool_observation(
+    runtime: "OrchestratorRuntime",
+    exec_result: ToolExecutionResult,
+) -> None:
+    """Report an observation for a tool execution result.
 
-    # Report the observation
+    Args:
+        runtime: Orchestrator runtime instance.
+        exec_result: Tool execution result to report.
+    """
     try:
         runtime.report_observation(
-            tool=f"tool.execute.{item.tool}",
+            tool=f"tool.execute.{exec_result.tool}",
             node_name="execute_tool_calls",
             params={
-                "tool": item.tool,
-                "params": item.params,
-                "query_type": item.query_type,
-                "purpose": item.purpose,
-                "group_idx": group_idx,
+                "tool": exec_result.tool,
+                "params": exec_result.params,
+                "query_type": exec_result.query_type,
+                "purpose": exec_result.purpose,
+                "group_idx": exec_result.group_idx,
             },
             response={
-                "status": status,
-                "latency_ms": latency_ms,
-                **({"error": error} if error else {}),
-                "result_summary": _summarize_result(result),
+                "status": exec_result.status,
+                "latency_ms": exec_result.latency_ms,
+                **({"error": exec_result.error} if exec_result.error else {}),
+                "result_summary": _summarize_result(exec_result.result),
             },
             evidence_ids=[],
         )
     except Exception:  # noqa: BLE001
         pass
-
-    return {
-        "tool": item.tool,
-        "params": item.params,
-        "query_type": item.query_type,
-        "purpose": item.purpose,
-        "status": status,
-        "result": result,
-        "error": error,
-        "latency_ms": latency_ms,
-        "group_idx": group_idx,
-    }
 
 
 def _save_tool_call_evidence(

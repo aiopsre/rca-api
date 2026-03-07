@@ -22,3 +22,5 @@ class OrchestratorConfig:
     post_finalize_wait_timeout_seconds: int = 8
     post_finalize_wait_interval_ms: int = 500
     post_finalize_wait_max_interval_ms: int = 2000
+    tool_execution_max_workers: int = 5
+    tool_execution_group_timeout_s: float = 30.0

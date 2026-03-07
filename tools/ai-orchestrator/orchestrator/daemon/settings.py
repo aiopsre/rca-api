@@ -52,6 +52,8 @@ class Settings:
     agent_timeout_seconds: float = 20.0
     health_port: int = 8080
     health_host: str = "0.0.0.0"
+    tool_execution_max_workers: int = 5
+    tool_execution_group_timeout_s: float = 30.0
 
     def safe_summary(self) -> dict[str, Any]:
         """Return a safe summary of settings for logging (excludes sensitive values)."""
@@ -79,6 +81,8 @@ class Settings:
             "agent_base_url_set": bool(self.agent_base_url),
             "health_port": self.health_port,
             "health_host": self.health_host,
+            "tool_execution_max_workers": self.tool_execution_max_workers,
+            "tool_execution_group_timeout_s": self.tool_execution_group_timeout_s,
         }
 
 
@@ -190,4 +194,6 @@ def load_settings() -> Settings:
         agent_timeout_seconds=max(1.0, _env_float("AGENT_TIMEOUT_SECONDS", 20.0)),
         health_port=max(0, _env_int("HEALTH_PORT", 8080)),
         health_host=os.getenv("HEALTH_HOST", "0.0.0.0").strip() or "0.0.0.0",
+        tool_execution_max_workers=max(1, min(20, _env_int("TOOL_EXECUTION_MAX_WORKERS", 5))),
+        tool_execution_group_timeout_s=max(1.0, _env_float("TOOL_EXECUTION_GROUP_TIMEOUT_S", 30.0)),
     )
