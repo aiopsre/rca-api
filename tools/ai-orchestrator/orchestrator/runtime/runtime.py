@@ -6,6 +6,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any, Callable
 
+from ..constants import DegradeReason
 from ..sdk.errors import RCAApiError
 from ..skills.capabilities import (
     PromptSkillConsumeResult,
@@ -813,7 +814,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage},
                 response={
                     "status": "fallback",
-                    "reason": "agent_not_configured",
+                    "reason": DegradeReason.AGENT_NOT_CONFIGURED.value,
                     "candidate_count": len(candidates),
                     "candidate_skill_ids": candidate_skill_ids,
                 },
@@ -852,7 +853,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage},
                 response={
                     "status": "fallback",
-                    "reason": "selection_failed",
+                    "reason": DegradeReason.SKILL_SELECTION_FAILED.value,
                     "latency_ms": selection_latency_ms,
                     "candidate_count": len(candidates),
                     "candidate_skill_ids": candidate_skill_ids,
@@ -873,7 +874,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage},
                 response={
                     "status": "fallback",
-                    "reason": "selected_binding_not_found",
+                    "reason": DegradeReason.SKILL_NOT_FOUND.value,
                     "candidate_count": len(candidates),
                     "candidate_skill_ids": candidate_skill_ids,
                     "selected_binding_key": selected_binding_key,
@@ -917,7 +918,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage, "selected_binding_key": selected_binding_key},
                 response={
                     "status": "fallback",
-                    "reason": "script_execute_failed" if isinstance(exc, ScriptExecutorError) else "consume_failed",
+                    "reason": DegradeReason.SCRIPT_EXECUTE_FAILED.value if isinstance(exc, ScriptExecutorError) else DegradeReason.CONSUME_FAILED.value,
                     "latency_ms": consume_latency_ms,
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_binding_key,
@@ -975,7 +976,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage, "selected_binding_key": selected_binding_key},
                 response={
                     "status": "fallback",
-                    "reason": "payload_fields_dropped",
+                    "reason": DegradeReason.PAYLOAD_FIELDS_DROPPED.value,
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_binding_key,
                     "fields": dropped_fields,
@@ -1021,7 +1022,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage},
                 response={
                     "status": "fallback",
-                    "reason": "agent_not_configured",
+                    "reason": DegradeReason.AGENT_NOT_CONFIGURED.value,
                     "knowledge_candidate_count": len(knowledge_candidates),
                     "knowledge_candidate_skill_ids": [item.skill_id for item in knowledge_candidates],
                     "executor_candidate_count": len(executor_candidates),
@@ -1078,7 +1079,7 @@ class OrchestratorRuntime:
                     response={
                         "status": "fallback",
                         "selection_role": "knowledge",
-                        "reason": "knowledge_selection_failed",
+                        "reason": DegradeReason.SKILL_KNOWLEDGE_SELECTION_FAILED.value,
                         "latency_ms": selection_latency_ms,
                         "candidate_count": len(knowledge_candidates),
                         "candidate_skill_ids": [item.skill_id for item in knowledge_candidates],
@@ -1210,7 +1211,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage, "selected_binding_key": selected_candidate.binding_key},
                 response={
                     "status": "fallback",
-                    "reason": "script_execute_failed" if isinstance(exc, ScriptExecutorError) else "consume_failed",
+                    "reason": DegradeReason.SCRIPT_EXECUTE_FAILED.value if isinstance(exc, ScriptExecutorError) else DegradeReason.CONSUME_FAILED.value,
                     "latency_ms": consume_latency_ms,
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_candidate.binding_key,
@@ -1270,7 +1271,7 @@ class OrchestratorRuntime:
                 params={"capability": capability, "stage": stage, "selected_binding_key": selected_candidate.binding_key},
                 response={
                     "status": "fallback",
-                    "reason": "payload_fields_dropped",
+                    "reason": DegradeReason.PAYLOAD_FIELDS_DROPPED.value,
                     "skill_id": selected_candidate.skill_id,
                     "selected_binding_key": selected_candidate.binding_key,
                     "fields": dropped_fields,

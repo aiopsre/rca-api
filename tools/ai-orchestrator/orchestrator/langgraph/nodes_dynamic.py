@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..runtime.runtime import OrchestratorRuntime
     from ..state import GraphState
 
+from ..constants import DegradeReason
 from ..state.tool_call_plan import (
     ToolCallPlan,
     ToolCallItem,
@@ -61,13 +62,19 @@ def plan_tool_calls(
 
     # 2. Check if we have tools to work with
     if not available_tools:
+        reason = DegradeReason.TOOL_DISCOVERY_EMPTY.value
+        state.add_degrade_reason(reason)
         report_node_action(
             state,
             runtime,
             node_name="plan_tool_calls",
             tool_name="tool.discover",
             request_json={},
-            response_json={"status": "no_tools", "tool_count": 0},
+            response_json={
+                "status": "no_tools",
+                "tool_count": 0,
+                "reason": reason,
+            },
             started_ms=started_ms,
             status="ok",
             count_in_state=False,
@@ -77,6 +84,7 @@ def plan_tool_calls(
 
     # 3. Try to use Skills for planning
     plan_result: dict[str, Any] | None = None
+    skill_error_reason: str | None = None
     prompt_skill = getattr(runtime, "consume_prompt_skill", None)
 
     if callable(prompt_skill):
@@ -92,19 +100,40 @@ def plan_tool_calls(
             )
             if isinstance(consumed, dict):
                 plan_result = consumed.get("tool_call_plan")
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             plan_result = None
+            skill_error_reason = f"{DegradeReason.SKILL_EXECUTE_FAILED.value}:{str(exc)[:64]}"
 
     # 4. Build the plan
     if isinstance(plan_result, dict) and plan_result.get("items"):
         state.tool_call_plan = plan_result
     else:
-        # Fallback: generate default plan from available tools
+        # Fallback: generate default plan from available tools with reason tracking
+        reason = skill_error_reason or DegradeReason.TOOL_DISCOVERY_EMPTY.value
+        state.add_degrade_reason(reason)
+
         default_plan = build_default_tool_call_plan(
             available_tools=available_tools,
             incident_context=state.incident_context,
         )
         state.tool_call_plan = default_plan.to_dict()
+
+        # Report fallback observation
+        report_node_action(
+            state,
+            runtime,
+            node_name="plan_tool_calls",
+            tool_name="skill.fallback",
+            request_json={"available_tools_count": len(available_tools)},
+            response_json={
+                "status": "fallback",
+                "reason": reason,
+                "plan_items_count": len(default_plan.items),
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
 
     # 5. Report planning result
     plan = ToolCallPlan.from_dict(state.tool_call_plan)

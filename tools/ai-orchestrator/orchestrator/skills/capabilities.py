@@ -38,7 +38,7 @@ def _merge_mapping(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any
 
 def _sanitize_logs_branch_meta(value: Any) -> tuple[dict[str, Any] | None, list[str]]:
     if not isinstance(value, dict):
-        return None, []
+        return None, ["logs_branch_meta"]
 
     dropped: list[str] = []
     normalized: dict[str, Any] = {}
@@ -83,7 +83,7 @@ def _sanitize_logs_branch_meta(value: Any) -> tuple[dict[str, Any] | None, list[
 
 def _sanitize_metrics_branch_meta(value: Any) -> tuple[dict[str, Any] | None, list[str]]:
     if not isinstance(value, dict):
-        return None, []
+        return None, ["metrics_branch_meta"]
 
     dropped: list[str] = []
     normalized: dict[str, Any] = {}

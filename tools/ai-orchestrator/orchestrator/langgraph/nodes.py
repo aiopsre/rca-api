@@ -1009,11 +1009,13 @@ def finalize_job(
                 "status": finalize_status,
                 "evidence_ids": state.evidence_ids,
                 "error_message": request_error_message,
+                "degrade_reasons": state.degrade_reasons,
             },
             response_json={
                 "status": finalize_status,
                 "finalized": True,
                 "error": error,
+                "degrade_reasons": state.degrade_reasons,
             },
             started_ms=started_ms,
             status=call_status,

@@ -68,3 +68,19 @@ class GraphState(BaseModel):
     force_conflict: bool = False
     started: bool = False
     finalized: bool = False
+
+    # Degradation tracking
+    degrade_reasons: List[str] = Field(default_factory=list)
+
+    def add_degrade_reason(self, reason: str, context: str = "") -> None:
+        """Add a degrade reason with optional context.
+
+        Args:
+            reason: The reason code (e.g., from DegradeReason enum).
+            context: Optional additional context for the degradation.
+        """
+        entry = reason
+        if context:
+            entry = f"{reason}:{context}"
+        if entry not in self.degrade_reasons:
+            self.degrade_reasons.append(entry)
