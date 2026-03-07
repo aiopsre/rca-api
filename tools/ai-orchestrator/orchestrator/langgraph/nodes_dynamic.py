@@ -391,35 +391,3 @@ def _summarize_result(result: dict[str, Any]) -> dict[str, Any]:
         summary["result_size_bytes"] = result_size
 
     return summary
-
-
-def make_plan_tool_calls_entry(runtime: "OrchestratorRuntime", cfg: OrchestratorConfig) -> callable:
-    """Create a LangGraph node function for plan_tool_calls.
-
-    Args:
-        runtime: Orchestrator runtime instance.
-        cfg: Orchestrator configuration.
-
-    Returns:
-        A function suitable for use as a LangGraph node.
-    """
-    def _node(state: "GraphState") -> "GraphState":
-        return plan_tool_calls(state, cfg, runtime)
-
-    return _node
-
-
-def make_execute_tool_calls_entry(runtime: "OrchestratorRuntime", cfg: OrchestratorConfig) -> callable:
-    """Create a LangGraph node function for execute_tool_calls.
-
-    Args:
-        runtime: Orchestrator runtime instance.
-        cfg: Orchestrator configuration.
-
-    Returns:
-        A function suitable for use as a LangGraph node.
-    """
-    def _node(state: "GraphState") -> "GraphState":
-        return execute_tool_calls(state, cfg, runtime)
-
-    return _node

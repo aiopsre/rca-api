@@ -22,4 +22,3 @@ class OrchestratorConfig:
     post_finalize_wait_timeout_seconds: int = 8
     post_finalize_wait_interval_ms: int = 500
     post_finalize_wait_max_interval_ms: int = 2000
-    dynamic_tool_execution: bool = False  # Enable dynamic tool discovery and execution

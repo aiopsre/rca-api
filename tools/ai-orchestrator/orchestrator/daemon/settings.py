@@ -52,7 +52,6 @@ class Settings:
     agent_timeout_seconds: float = 20.0
     health_port: int = 8080
     health_host: str = "0.0.0.0"
-    dynamic_tool_execution: bool = False  # Enable dynamic tool discovery and execution
 
     def safe_summary(self) -> dict[str, Any]:
         """Return a safe summary of settings for logging (excludes sensitive values)."""
@@ -80,7 +79,6 @@ class Settings:
             "agent_base_url_set": bool(self.agent_base_url),
             "health_port": self.health_port,
             "health_host": self.health_host,
-            "dynamic_tool_execution": self.dynamic_tool_execution,
         }
 
 
@@ -192,5 +190,4 @@ def load_settings() -> Settings:
         agent_timeout_seconds=max(1.0, _env_float("AGENT_TIMEOUT_SECONDS", 20.0)),
         health_port=max(0, _env_int("HEALTH_PORT", 8080)),
         health_host=os.getenv("HEALTH_HOST", "0.0.0.0").strip() or "0.0.0.0",
-        dynamic_tool_execution=_env_bool("DYNAMIC_TOOL_EXECUTION", False),
     )
