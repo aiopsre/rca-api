@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 import fnmatch
 
+from .tool_registry import get_tool_metadata
+
 if TYPE_CHECKING:
     from .runtime import OrchestratorRuntime
 
@@ -150,7 +152,12 @@ def _create_tool_descriptor(
     output_schema: dict[str, Any] | None = None,
     tags: tuple[str, ...] | None = None,
 ) -> ToolDescriptor:
-    """Create a ToolDescriptor with inferred tags.
+    """Create a ToolDescriptor with explicit or inferred tags.
+
+    Priority:
+    1. Explicit tags from parameters
+    2. Tags from tool registry
+    3. Inferred tags from tool name
 
     Args:
         tool_name: Name of the tool.
@@ -158,18 +165,24 @@ def _create_tool_descriptor(
         description: Tool description.
         input_schema: Input parameter schema.
         output_schema: Output schema.
-        tags: Optional explicit tags (will be merged with inferred tags).
+        tags: Optional explicit tags (highest priority).
 
     Returns:
-        ToolDescriptor with inferred and explicit tags.
+        ToolDescriptor with appropriate tags.
     """
-    inferred_tags = _infer_tags_from_tool_name(tool_name)
-
+    # 1. Use explicit tags if provided
     if tags:
-        # Merge explicit tags with inferred tags, removing duplicates
-        all_tags = tuple(dict.fromkeys(tags + inferred_tags))
+        final_tags = tags
     else:
-        all_tags = inferred_tags
+        # 2. Look up in registry
+        metadata = get_tool_metadata(tool_name)
+        if metadata:
+            final_tags = metadata.tags
+            if not description and metadata.description:
+                description = metadata.description
+        else:
+            # 3. Fallback to name inference
+            final_tags = _infer_tags_from_tool_name(tool_name)
 
     return ToolDescriptor(
         tool_name=tool_name,
@@ -177,7 +190,7 @@ def _create_tool_descriptor(
         input_schema=input_schema or {},
         output_schema=output_schema or {},
         provider_id=provider_id,
-        tags=all_tags,
+        tags=final_tags,
     )
 
 

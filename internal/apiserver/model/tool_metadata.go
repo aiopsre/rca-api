@@ -14,7 +14,7 @@ type ToolMetadataM struct {
 	ToolName    string    `json:"tool_name" gorm:"column:tool_name;type:varchar(128);uniqueIndex:uniq_tool_metadata_name;not null"`
 	Kind        string    `json:"kind" gorm:"column:kind;type:varchar(32);not null;default:'unknown'"`
 	Domain      string    `json:"domain" gorm:"column:domain;type:varchar(64);not null;default:'general'"`
-	ReadOnly    bool      `json:"read_only" gorm:"column:read_only;not null;default:true"`
+	ReadOnly    bool      `json:"read_only" gorm:"column:read_only;not null"`
 	RiskLevel   string    `json:"risk_level" gorm:"column:risk_level;type:varchar(16);not null;default:'low'"`
 	LatencyTier string    `json:"latency_tier" gorm:"column:latency_tier;type:varchar(16);not null;default:'fast'"`
 	CostHint    string    `json:"cost_hint" gorm:"column:cost_hint;type:varchar(16);not null;default:'free'"`

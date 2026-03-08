@@ -1,83 +1,291 @@
-# ai-orchestrator (P0)
+# AI Orchestrator
 
-`tools/ai-orchestrator` 是 P0 的 LangGraph 编排器实现，负责轮询 `queued` AIJob 并执行固定 4 节点拓扑：
+LangGraph-based orchestrator for Root Cause Analysis (RCA) workflows with dynamic tool discovery and LLM-driven planning.
 
-`load_job_and_start -> collect_evidence -> write_tool_calls -> finalize_job`
+## Architecture Overview
+
+The orchestrator executes a dynamic workflow that discovers available tools at runtime and uses LLM-powered Skills to plan evidence collection and diagnosis.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                           Execution Flow                                  │
+│                                                                          │
+│  load_job_and_start                                                      │
+│         │                                                                │
+│         ▼                                                                │
+│  plan_evidence  ◄── evidence.plan capability (LLM)                      │
+│         │                                                                │
+│         ▼                                                                │
+│  plan_tool_calls  ◄── tool.plan capability (LLM)                        │
+│         │                                                                │
+│         ▼                                                                │
+│  execute_tool_calls  ◄── Dynamic tool execution via MCP                 │
+│         │                                                                │
+│         ▼                                                                │
+│  merge_evidence                                                          │
+│         │                                                                │
+│         ▼                                                                │
+│  quality_gate                                                            │
+│         │                                                                │
+│         ▼                                                                │
+│  summarize_diagnosis  ◄── diagnosis.enrich capability (LLM)             │
+│         │                                                                │
+│         ▼                                                                │
+│  finalize_job                                                            │
+│         │                                                                │
+│         ▼                                                                │
+│  post_finalize_observe ──► run_verification ──► END                     │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Components
+
+| Component | Description |
+|-----------|-------------|
+| **ToolDiscovery** | Discovers available tools from MCP Servers at runtime |
+| **ToolCallPlan** | Dynamic plan for tool execution with parallel groups |
+| **Capabilities** | LLM intervention points: `evidence.plan`, `tool.plan`, `diagnosis.enrich` |
+| **PromptSkillAgent** | LangChain-OpenAI based agent for skill execution |
+| **Skill Bundles** | Declarative skill definitions with prompts and resources |
 
 ## Quick Start
 
-1. 安装依赖（在本目录）：
+### Installation
 
 ```bash
+cd tools/ai-orchestrator
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-2. 启动 orchestrator：
+### Basic Run (No LLM)
 
 ```bash
 SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 ```
 
+### With LLM-Driven Skills
+
+```bash
+SCOPES='*' \
+SKILLS_EXECUTION_MODE=prompt_first \
+AGENT_MODEL=gpt-4o \
+AGENT_BASE_URL=https://api.openai.com/v1 \
+AGENT_API_KEY=sk-xxx \
+python -m orchestrator.main
+```
+
+## LLM Intervention Points
+
+The orchestrator provides three capability hooks for LLM intervention:
+
+### `evidence.plan` (Stage: plan_evidence)
+
+Plans what evidence to collect based on incident context.
+
+**Input**:
+- `incident_id`, `incident_context`, `input_hints`
+- `evidence_mode`, `evidence_candidates`
+
+**Output**:
+- `evidence_plan_patch` - Patch for evidence plan
+- `metrics_branch_meta` - Metrics query parameters
+- `logs_branch_meta` - Logs query parameters
+
+### `tool.plan` (Stage: plan_tool_calls)
+
+Generates dynamic tool call plan based on available tools.
+
+**Input**:
+- `incident_id`, `incident_context`
+- `existing_evidence_ids`
+
+**Output**:
+```json
+{
+  "tool_call_plan": {
+    "items": [
+      {"tool": "prometheus_query", "params": {...}, "query_type": "metrics", "purpose": "..."},
+      {"tool": "loki_search", "params": {...}, "query_type": "logs", "purpose": "..."}
+    ],
+    "parallel_groups": [[0, 1]]
+  }
+}
+```
+
+### `diagnosis.enrich` (Stage: summarize_diagnosis)
+
+Enriches diagnosis with LLM analysis.
+
+**Input**:
+- `incident_context`, `quality_gate_decision`
+- `evidence_ids`, `evidence_meta`, `diagnosis_json`
+
+**Output**:
+- `diagnosis_patch` - Summary, root_cause, recommendations
+
+## Dynamic Tool Execution
+
+The orchestrator discovers tools at runtime from MCP Servers, rather than hardcoding tool names.
+
+### Tool Discovery
+
+```python
+from orchestrator.runtime.tool_discovery import discover_tools
+
+discovery = discover_tools(runtime)
+# discovery.tools - All available tools
+# discovery.find_by_tag("metrics") - Tools tagged as metrics
+# discovery.find_by_pattern("prometheus_*") - Pattern matching
+```
+
+### Tool Call Plan
+
+```python
+from orchestrator.state.tool_call_plan import ToolCallPlan, ToolCallItem
+
+plan = ToolCallPlan(items=[
+    ToolCallItem(tool="prometheus_query", params={"promql": "up"}, query_type="metrics"),
+    ToolCallItem(tool="loki_search", params={"query": "error"}, query_type="logs"),
+], parallel_groups=[[0, 1]])  # Both can run in parallel
+```
+
+### Runtime Tool Calling
+
+```python
+# Execute any discovered tool
+result = runtime.call_tool(tool="prometheus_query", params={"promql": "up"})
+```
+
+## Skill Bundles
+
+Skills are defined as bundles with prompts, templates, and resources:
+
+```
+skill-bundles/
+├── evidence-plan/
+│   └── SKILL.md              # Prompt executor
+├── prometheus-evidence-plan/
+│   ├── SKILL.md
+│   ├── references/           # Knowledge resources
+│   └── examples/             # Few-shot examples
+├── diagnosis-enrich/
+│   └── SKILL.md
+└── diagnosis-script-enrich/
+    ├── SKILL.md
+    ├── scripts/executor.py   # Script executor
+    └── templates/
+```
+
+### Skill Modes
+
+| Mode | Description |
+|------|-------------|
+| `prompt_first` | Uses PromptSkillAgent with OpenAI-compatible API |
+| `catalog` | Platform-resolved skills (fallback mode) |
+
 ## Environment Variables
 
-- `BASE_URL`：默认 `http://127.0.0.1:5555`
-- `SCOPES`：非空时所有请求附带 `X-Scopes`
-- `INSTANCE_ID`：orchestrator 实例标识，默认 `{hostname}-{pid}`，用于 AIJob lease owner
-- `RCA_API_SCOPES`：仅用于 MCP shim 调用（`/v1/mcp/tools/call`），注入到 `X-Scopes`；为空默认拒绝（fail-fast）
-- `MCP_VERIFY_REMOTE_TOOLS`：默认 `0`；`1` 时启动拉取 `/v1/mcp/tools` 做 registry 一致性校验
-- `POLL_INTERVAL_MS`：默认 `1000`（仅用于错误重试或禁用 long poll 时的 sleep/backoff）
-- `LONG_POLL_WAIT_SECONDS`：默认 `20`（范围 `0~30`；上次拉取为空时用于 `wait_seconds`）
-- `LEASE_HEARTBEAT_INTERVAL_SECONDS`：默认 `10`，运行中续租间隔
-- `CONCURRENCY`：默认 `1`
-- `RUN_QUERY`：默认 `0`（`0`=保存 mock evidence，`1`=query metrics + save）
-- `FORCE_NO_EVIDENCE`：默认 `0`（`1`=强制走 L2 证据不足路径，保存占位 evidence + 低置信度 missing_evidence 结论）
-- `FORCE_CONFLICT`：默认 `0`（`1`=强制走 L3 证据冲突路径，不依赖真实 datasource，保存至少 2 条占位 evidence + conflict_evidence 低置信度结论）
-- `DS_BASE_URL`：`RUN_QUERY=1` 时需要
-- `AUTO_CREATE_DATASOURCE`：默认 `1`
-- `DEBUG`：默认 `0`
-- `SKILLS_EXECUTION_MODE`：默认 `prompt_first`；`prompt_first` 时启用 Agent 驱动的 prompt-only Skill 链路；`catalog` 为降级兼容路径
-- `SKILLS_CACHE_DIR`：Skill bundle 本地缓存目录
-- `SKILLS_LOCAL_PATHS`：开发态本地 Skill override 目录列表（逗号分隔）
-- `AGENT_MODEL`：`prompt_first` 模式下使用的 OpenAI-compatible 模型名
-- `AGENT_BASE_URL`：`prompt_first` 模式下的 OpenAI-compatible base URL
-- `AGENT_API_KEY`：`prompt_first` 模式下的 API key
-- `AGENT_TIMEOUT_SECONDS`：`prompt_first` 模式下模型请求超时
-- `SKILLS_TOOL_CALLING_MODE`：默认 `disabled`；`evidence_plan_single_hop` 启用单次 `query_logs`，`evidence_plan_dual_tool` 启用受控的 `query_metrics + query_logs`
+### Required
 
-## Notes
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `BASE_URL` | RCA API base URL | `http://127.0.0.1:5555` |
+| `SCOPES` | Tenant scopes for API requests | (required) |
 
-- P0 保持串行执行（`CONCURRENCY=1` 推荐）。
-- 任一节点异常会写入 `last_error`，并继续执行 `finalize_job` 走 failed 路径。
-- 仅做只读取证与 diagnosis 写回，不包含高风险自动处置动作。
-- 当前 prompt-first Skills 已打通 `diagnosis.enrich` 和 `evidence.plan`。
-- `diagnosis.enrich` 当前支持两类单 executor 形态：
-  - prompt executor
-  - script executor（`executor_mode=script`）
-- `diagnosis.enrich` 已支持 executor resources 的渐进式披露。
-- `evidence.plan` 已支持“多个 knowledge skills + 单 executor skill”的运行模型。
-- `evidence.plan` 的 executor 现在同时支持：
-  - prompt executor
-  - script executor（`executor_mode=script`）
-- `evidence.plan` 还支持 Knowledge / Executor 两侧的资源渐进式披露：
-  - worker 扫描 `references/`、`templates/`、`examples/`
-  - Agent 先看摘要，再点名需要的资源 id
-  - runtime 只加载被点名的文本资源正文
-- checked-in prompt-only Skill 样板位于：
-  - `tools/ai-orchestrator/skill-bundles/diagnosis-enrich/SKILL.md`
-  - `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/SKILL.md`
-- `tools/ai-orchestrator/skill-bundles/evidence-plan/SKILL.md`
-  - `evidence.plan` 的 executor 样板
-- `tools/ai-orchestrator/skill-bundles/evidence-script-plan/SKILL.md`
-  - `evidence.plan` 的 script executor 样板
-- `tools/ai-orchestrator/skill-bundles/elasticsearch-evidence-plan/SKILL.md`
-  - Elasticsearch / ECS 风格的 `evidence.plan` knowledge 样板
-- `tools/ai-orchestrator/skill-bundles/prometheus-evidence-plan/SKILL.md`
-  - Prometheus / metrics planning 的 `evidence.plan` knowledge 样板
-- `tools/ai-orchestrator/skill-bundles/diagnosis-script-enrich/scripts/executor.py`
-  - `diagnosis.enrich` 的 script executor 固定 entrypoint 样板
-- 受控 tool-calling 仍只允许挂在 executor 上，当前 `evidence.plan` 的 prompt executor 和 script executor 都支持最多一次 `mcp.query_metrics` + 最多一次 `mcp.query_logs`，并让 `query_metrics` / `query_logs` 节点复用预热结果，但默认保持关闭
-- 本地统一 Skills smoke harness 入口：
-  - `scripts/run_skills_smoke_suite.sh`
-  - 默认会把 suite report / case report 导出到 workdir 之外；若需要保留完整 workdir 和 worker log，请设置 `SKILLS_SMOKE_KEEP_WORKDIR=1`
+### LLM Configuration (for prompt_first mode)
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SKILLS_EXECUTION_MODE` | `prompt_first` or `catalog` | `prompt_first` |
+| `AGENT_MODEL` | Model name (e.g., `gpt-4o`) | (required for prompt_first) |
+| `AGENT_BASE_URL` | OpenAI-compatible API URL | (required for prompt_first) |
+| `AGENT_API_KEY` | API key | (required for prompt_first) |
+| `AGENT_TIMEOUT_SECONDS` | Request timeout | `20.0` |
+
+### Optional
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `INSTANCE_ID` | Worker instance ID | `{hostname}-{pid}` |
+| `CONCURRENCY` | Max concurrent jobs | `1` |
+| `POLL_INTERVAL_MS` | Poll interval for job queue | `1000` |
+| `LONG_POLL_WAIT_SECONDS` | Long poll wait time | `20` |
+| `LEASE_HEARTBEAT_INTERVAL_SECONDS` | Lease heartbeat interval | `10` |
+| `RCA_API_SCOPES` | Scopes for MCP shim calls | (empty) |
+| `MCP_VERIFY_REMOTE_TOOLS` | Verify MCP tool registry | `0` |
+| `DEBUG` | Enable debug logging | `0` |
+| `HEALTH_PORT` | Health endpoint port | `8080` |
+| `HEALTH_HOST` | Health endpoint host | `0.0.0.0` |
+
+### Query Execution
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RUN_QUERY` | Execute real queries vs mock | `0` |
+| `DS_BASE_URL` | Datasource URL | (empty) |
+| `DS_TYPE` | Datasource type | `prometheus` |
+| `AUTO_CREATE_DATASOURCE` | Auto-create datasource | `1` |
+
+### Budget Controls
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `A3_MAX_CALLS` | Max tool calls per job | `6` |
+| `A3_MAX_TOTAL_BYTES` | Max response bytes | `2MB` |
+| `A3_MAX_TOTAL_LATENCY_MS` | Max total latency | `8000` |
+
+### Verification
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RUN_VERIFICATION` | Enable post-finalize verification | `0` |
+| `VERIFICATION_SOURCE` | Verification source | `ai_job` |
+| `VERIFICATION_MAX_STEPS` | Max verification steps | `20` |
+
+### Skill Paths
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SKILLS_CACHE_DIR` | Skill bundle cache | `/tmp/rca-ai-orchestrator/skills-cache` |
+| `SKILLS_LOCAL_PATHS` | Local skill override paths | (empty) |
+| `SKILLS_TOOL_CALLING_MODE` | Controlled tool calling | `disabled` |
+
+## Health Endpoints
+
+The orchestrator exposes health and metrics endpoints:
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# Prometheus metrics
+curl http://localhost:8080/metrics
+```
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ --cov=orchestrator --cov-report=html
+```
+
+## Skill Smoke Suite
+
+```bash
+# Run skill smoke tests
+./scripts/run_skills_smoke_suite.sh
+
+# Keep workdir for debugging
+SKILLS_SMOKE_KEEP_WORKDIR=1 ./scripts/run_skills_smoke_suite.sh
+```
+
+## See Also
+
+- [docs/concepts.md](docs/concepts.md) - Core concepts and data structures
+- [docs/runtime/dynamic-tool-execution-plan.md](docs/runtime/dynamic-tool-execution-plan.md) - Dynamic tool execution design

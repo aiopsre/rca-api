@@ -9,6 +9,7 @@ import (
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
+	"github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/errno"
@@ -25,6 +26,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	require.NoError(t, db.AutoMigrate(
 		&model.McpServerM{},
 		&model.McpServerConfigM{},
+		&model.ToolMetadataM{},
 	))
 	return db
 }
@@ -36,7 +38,8 @@ func TestMcpServerBiz_Create(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	t.Run("creates mcp server with required fields", func(t *testing.T) {
 		resp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
@@ -124,7 +127,8 @@ func TestMcpServerBiz_Get(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	// Create a test server
 	createResp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
@@ -163,7 +167,8 @@ func TestMcpServerBiz_List(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	// Create test servers
 	names := []string{"list-test-a", "list-test-b", "list-test-c", "list-test-d", "list-test-e"}
@@ -210,7 +215,8 @@ func TestMcpServerBiz_Update(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	// Create a test server
 	createResp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
@@ -265,7 +271,8 @@ func TestMcpServerBiz_Delete(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	// Create a test server
 	createResp, err := biz.Create(ctx, &v1.CreateMcpServerRequest{
@@ -304,7 +311,8 @@ func TestMcpServerBiz_ResolveMcpServerRefs(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	t.Run("returns empty for pipeline with no configs", func(t *testing.T) {
 		refs, err := biz.ResolveMcpServerRefs(ctx, "pipeline-without-configs")
@@ -372,6 +380,73 @@ func TestMcpServerBiz_ResolveMcpServerRefs(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, refs, 2)
 	})
+
+	t.Run("attaches tool metadata to refs", func(t *testing.T) {
+		// Create tool metadata
+		kind := "metrics"
+		domain := "observability"
+		tagsJSON := `["promql","query"]`
+		_, err := toolMetadataBiz.Create(ctx, &v1.CreateToolMetadataRequest{
+			ToolName:    "prometheus_query",
+			Kind:        &kind,
+			Domain:      &domain,
+			TagsJSON:    &tagsJSON,
+			Description: ptrString("Query Prometheus metrics"),
+		})
+		require.NoError(t, err)
+
+		_, err = toolMetadataBiz.Create(ctx, &v1.CreateToolMetadataRequest{
+			ToolName:    "loki_search",
+			Kind:        ptrString("logs"),
+			Domain:      ptrString("observability"),
+			Description: ptrString("Search Loki logs"),
+		})
+		require.NoError(t, err)
+
+		// Create McpServerConfig with refs that reference the tools
+		refsJSON := `[{"mcp_server_id":"ms-meta-001","name":"prometheus","base_url":"http://prometheus:8080","allowed_tools":["prometheus_query","unknown_tool"]},{"mcp_server_id":"ms-meta-002","name":"loki","base_url":"http://loki:8080","allowed_tools":["loki_search"]}]`
+		require.NoError(t, s.McpServerConfig().Create(ctx, &model.McpServerConfigM{
+			PipelineID:        "metadata_test_pipeline",
+			McpServerName:     "mixed",
+			McpServerRefsJSON: &refsJSON,
+			Enabled:           true,
+		}))
+
+		refs, err := biz.ResolveMcpServerRefs(ctx, "metadata_test_pipeline")
+		require.NoError(t, err)
+		require.Len(t, refs, 2)
+
+		// First ref should have metadata for prometheus_query (unknown_tool has no metadata)
+		require.Equal(t, "ms-meta-001", refs[0].McpServerID)
+		require.Len(t, refs[0].ToolMetadata, 1, "should have metadata for prometheus_query only")
+		require.Equal(t, "prometheus_query", refs[0].ToolMetadata[0].ToolName)
+		require.Equal(t, "metrics", refs[0].ToolMetadata[0].Kind)
+		require.Equal(t, "observability", refs[0].ToolMetadata[0].Domain)
+		require.Equal(t, []string{"promql", "query"}, refs[0].ToolMetadata[0].Tags)
+		require.Equal(t, "Query Prometheus metrics", refs[0].ToolMetadata[0].Description)
+
+		// Second ref should have metadata for loki_search
+		require.Equal(t, "ms-meta-002", refs[1].McpServerID)
+		require.Len(t, refs[1].ToolMetadata, 1)
+		require.Equal(t, "loki_search", refs[1].ToolMetadata[0].ToolName)
+		require.Equal(t, "logs", refs[1].ToolMetadata[0].Kind)
+	})
+
+	t.Run("handles missing tool metadata gracefully", func(t *testing.T) {
+		// Create config with tools that have no metadata
+		refsJSON := `[{"mcp_server_id":"ms-no-meta","name":"unknown","base_url":"http://unknown:8080","allowed_tools":["nonexistent_tool_1","nonexistent_tool_2"]}]`
+		require.NoError(t, s.McpServerConfig().Create(ctx, &model.McpServerConfigM{
+			PipelineID:        "no_metadata_pipeline",
+			McpServerName:     "unknown",
+			McpServerRefsJSON: &refsJSON,
+			Enabled:           true,
+		}))
+
+		refs, err := biz.ResolveMcpServerRefs(ctx, "no_metadata_pipeline")
+		require.NoError(t, err)
+		require.Len(t, refs, 1)
+		require.Empty(t, refs[0].ToolMetadata, "should have empty metadata when no tools are found")
+	})
 }
 
 func TestMcpServerRefJSONSerialization(t *testing.T) {
@@ -381,7 +456,8 @@ func TestMcpServerRefJSONSerialization(t *testing.T) {
 	db := setupTestDB(t)
 	s := store.NewStore(db)
 	ctx := context.Background()
-	biz := New(s)
+	toolMetadataBiz := toolmetadata.New(s)
+	biz := New(s, toolMetadataBiz)
 
 	t.Run("allowed_tools serialized as json array", func(t *testing.T) {
 		tools := []string{"query_metrics", "query_range", "query_logs"}
@@ -402,4 +478,8 @@ func TestMcpServerRefJSONSerialization(t *testing.T) {
 		require.Contains(t, *resp.McpServer.AllowedToolsJSON, "query_range")
 		require.Contains(t, *resp.McpServer.AllowedToolsJSON, "query_logs")
 	})
+}
+
+func ptrString(s string) *string {
+	return &s
 }
