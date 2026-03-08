@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .validation import (
+    ValidationError,
+    ValidationErrorKind,
+    ValidationResult,
+    validate_capability_output,
+)
+
 
 def _trim(value: Any) -> str:
     return str(value or "").strip()
@@ -296,11 +303,24 @@ def _build_diagnosis_stage_summary(input_payload: dict[str, Any]) -> dict[str, A
 
 
 def _sanitize_diagnosis_result(result: PromptSkillConsumeResult) -> tuple[PromptSkillConsumeResult, list[str]]:
+    """Sanitize diagnosis.enrich output with structured validation."""
     raw_payload = result.payload if isinstance(result.payload, dict) else {}
+
+    # Perform schema validation
+    validation = validate_capability_output("diagnosis.enrich", raw_payload)
+    # For diagnosis, we allow extra fields but still validate structure
+    # So we don't fail on validation errors, but log them as dropped
+
     diagnosis_patch, dropped = _sanitize_diagnosis_patch(raw_payload.get("diagnosis_patch"))
     payload = {"diagnosis_patch": diagnosis_patch} if diagnosis_patch else {}
     session_patch = _sanitize_session_patch(result.session_patch)
     observations = [item for item in result.observations if isinstance(item, dict)]
+
+    # Add any schema validation errors to dropped
+    if not validation.is_valid:
+        for error in validation.errors:
+            dropped.append(f"{error.path}: {error.message}")
+
     return PromptSkillConsumeResult(payload=payload, session_patch=session_patch, observations=observations), dropped
 
 
@@ -358,7 +378,13 @@ def _build_evidence_plan_stage_summary(input_payload: dict[str, Any]) -> dict[st
 
 
 def _sanitize_evidence_plan_result(result: PromptSkillConsumeResult) -> tuple[PromptSkillConsumeResult, list[str]]:
+    """Sanitize evidence.plan output with structured validation."""
     raw_payload = result.payload if isinstance(result.payload, dict) else {}
+
+    # Perform schema validation
+    validation = validate_capability_output("evidence.plan", raw_payload)
+    # For evidence.plan, we allow extra fields but still validate structure
+
     payload: dict[str, Any] = {}
     dropped: list[str] = []
 
@@ -411,6 +437,12 @@ def _sanitize_evidence_plan_result(result: PromptSkillConsumeResult) -> tuple[Pr
         "logs_branch_meta",
     }
     dropped.extend(sorted(forbidden_top_level))
+
+    # Add any schema validation errors to dropped
+    if not validation.is_valid:
+        for error in validation.errors:
+            dropped.append(f"{error.path}: {error.message}")
+
     return PromptSkillConsumeResult(payload=payload, session_patch={}, observations=observations), sorted(set(dropped))
 
 
@@ -570,7 +602,17 @@ def _sanitize_tool_plan_item(item: Any) -> tuple[dict[str, Any] | None, list[str
 
 
 def _sanitize_tool_plan_result(result: PromptSkillConsumeResult) -> tuple[PromptSkillConsumeResult, list[str]]:
+    """Sanitize tool.plan output with structured validation."""
     raw_payload = result.payload if isinstance(result.payload, dict) else {}
+
+    # First, perform schema validation
+    validation = validate_capability_output("tool.plan", raw_payload)
+    if not validation.is_valid:
+        # Return structured error info
+        dropped = [f"{e.path}: {e.message}" for e in validation.errors]
+        return PromptSkillConsumeResult(payload={}, session_patch={}, observations=[]), dropped
+
+    # Then apply additional sanitization logic for business rules
     payload: dict[str, Any] = {}
     dropped: list[str] = []
 
