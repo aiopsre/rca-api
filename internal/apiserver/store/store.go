@@ -50,6 +50,7 @@ type IStore interface {
 	Playbook() PlaybookStore
 	McpServer() McpServerStore
 	McpServerConfig() McpServerConfigStore
+	ToolMetadata() ToolMetadataStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -201,4 +202,8 @@ func (s *store) McpServer() McpServerStore {
 
 func (s *store) McpServerConfig() McpServerConfigStore {
 	return newMcpServerConfigStore(s)
+}
+
+func (s *store) ToolMetadata() ToolMetadataStore {
+	return newToolMetadataStore(s)
 }

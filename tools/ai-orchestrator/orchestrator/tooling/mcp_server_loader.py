@@ -14,6 +14,25 @@ from .toolset_config import ProviderConfig
 
 
 @dataclass(frozen=True)
+class ToolMetadataRef:
+    """Tool metadata from platform.
+
+    This is the Python equivalent of the Go model ToolMetadataRef.
+    Contains classification metadata for a tool passed from the platform.
+    """
+
+    tool_name: str
+    kind: str = "unknown"
+    domain: str = "general"
+    read_only: bool = True
+    risk_level: str = "low"
+    latency_tier: str = "fast"
+    cost_hint: str = "free"
+    tags: tuple[str, ...] = ()
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class McpServerRef:
     """Reference to an MCP server resolved from the platform.
 
@@ -28,6 +47,7 @@ class McpServerRef:
     timeout_sec: float
     scopes: str
     auth_type: str
+    tool_metadata: tuple[ToolMetadataRef, ...] = ()
 
 
 def parse_mcpserver_refs(mcpserver_refs_json: str) -> list[McpServerRef]:
@@ -83,6 +103,10 @@ def _parse_mcpserver_ref(payload: dict[str, Any]) -> McpServerRef | None:
     scopes = str(payload.get("scopes") or "").strip()
     auth_type = str(payload.get("auth_type") or payload.get("authType") or "none").strip().lower() or "none"
 
+    # Parse tool metadata from platform
+    tool_metadata_raw = payload.get("tool_metadata") or payload.get("toolMetadata") or []
+    tool_metadata = _parse_tool_metadata_list(tool_metadata_raw)
+
     return McpServerRef(
         mcp_server_id=mcp_server_id,
         name=name,
@@ -91,6 +115,7 @@ def _parse_mcpserver_ref(payload: dict[str, Any]) -> McpServerRef | None:
         timeout_sec=timeout_sec,
         scopes=scopes,
         auth_type=auth_type,
+        tool_metadata=tool_metadata,
     )
 
 
@@ -177,3 +202,48 @@ def _coerce_timeout(raw: Any, *, default: float) -> float:
     if value <= 0:
         return default
     return value
+
+
+def _parse_tool_metadata_list(raw: Any) -> tuple[ToolMetadataRef, ...]:
+    """Parse tool metadata from platform response.
+
+    Args:
+        raw: List of tool metadata dicts from platform.
+
+    Returns:
+        Tuple of ToolMetadataRef objects.
+    """
+    if not isinstance(raw, list):
+        return ()
+
+    result: list[ToolMetadataRef] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+
+        tool_name = str(item.get("tool_name") or "").strip()
+        if not tool_name:
+            continue
+
+        # Parse tags
+        tags_raw = item.get("tags") or []
+        if isinstance(tags_raw, list):
+            tags = tuple(str(t) for t in tags_raw if t)
+        elif isinstance(tags_raw, tuple):
+            tags = tags_raw
+        else:
+            tags = ()
+
+        result.append(ToolMetadataRef(
+            tool_name=tool_name,
+            kind=str(item.get("kind") or "unknown"),
+            domain=str(item.get("domain") or "general"),
+            read_only=bool(item.get("read_only", True)),
+            risk_level=str(item.get("risk_level") or "low"),
+            latency_tier=str(item.get("latency_tier") or "fast"),
+            cost_hint=str(item.get("cost_hint") or "free"),
+            tags=tags,
+            description=str(item.get("description") or ""),
+        ))
+
+    return tuple(result)

@@ -11,6 +11,7 @@ from orchestrator.tooling import (
 )
 from orchestrator.tooling.mcp_server_loader import (
     McpServerRef,
+    ToolMetadataRef,
     parse_mcpserver_refs,
     build_provider_configs_from_mcpserver_refs,
 )
@@ -272,3 +273,146 @@ class TestRuntimeMergeToolInvoker:
         assert "list_incidents" in tools
         assert "get_incident" in tools
         assert "query_metrics" in tools
+
+
+class TestToolMetadataParsing:
+    """Tests for parsing tool_metadata from McpServerRef."""
+
+    def test_parse_tool_metadata(self):
+        json_str = '''[{
+            "name": "prometheus",
+            "base_url": "http://prometheus:8080",
+            "allowed_tools": ["query_metrics", "query_range"],
+            "tool_metadata": [
+                {
+                    "tool_name": "query_metrics",
+                    "kind": "metrics",
+                    "domain": "observability",
+                    "read_only": true,
+                    "risk_level": "low",
+                    "latency_tier": "fast",
+                    "cost_hint": "free",
+                    "tags": ["metrics", "query"],
+                    "description": "Query Prometheus metrics"
+                },
+                {
+                    "tool_name": "query_range",
+                    "kind": "metrics",
+                    "domain": "observability",
+                    "tags": ["metrics", "query", "range"],
+                    "description": "Query Prometheus metrics over a time range"
+                }
+            ]
+        }]'''
+        refs = parse_mcpserver_refs(json_str)
+        assert len(refs) == 1
+        ref = refs[0]
+
+        assert len(ref.tool_metadata) == 2
+
+        meta1 = ref.tool_metadata[0]
+        assert meta1.tool_name == "query_metrics"
+        assert meta1.kind == "metrics"
+        assert meta1.domain == "observability"
+        assert meta1.read_only is True
+        assert meta1.risk_level == "low"
+        assert meta1.latency_tier == "fast"
+        assert meta1.cost_hint == "free"
+        assert meta1.tags == ("metrics", "query")
+        assert meta1.description == "Query Prometheus metrics"
+
+        meta2 = ref.tool_metadata[1]
+        assert meta2.tool_name == "query_range"
+        assert meta2.kind == "metrics"
+        assert meta2.tags == ("metrics", "query", "range")
+
+    def test_parse_empty_tool_metadata(self):
+        json_str = '''[{
+            "name": "prometheus",
+            "base_url": "http://prometheus:8080",
+            "allowed_tools": ["query_metrics"]
+        }]'''
+        refs = parse_mcpserver_refs(json_str)
+        assert len(refs) == 1
+        assert refs[0].tool_metadata == ()
+
+    def test_parse_tool_metadata_camel_case(self):
+        json_str = '''[{
+            "name": "prometheus",
+            "base_url": "http://prometheus:8080",
+            "allowed_tools": ["query_metrics"],
+            "toolMetadata": [
+                {
+                    "tool_name": "query_metrics",
+                    "kind": "metrics"
+                }
+            ]
+        }]'''
+        refs = parse_mcpserver_refs(json_str)
+        assert len(refs) == 1
+        assert len(refs[0].tool_metadata) == 1
+        assert refs[0].tool_metadata[0].tool_name == "query_metrics"
+
+    def test_parse_tool_metadata_default_values(self):
+        json_str = '''[{
+            "name": "prometheus",
+            "base_url": "http://prometheus:8080",
+            "allowed_tools": ["query_metrics"],
+            "tool_metadata": [
+                {"tool_name": "query_metrics"}
+            ]
+        }]'''
+        refs = parse_mcpserver_refs(json_str)
+        meta = refs[0].tool_metadata[0]
+
+        assert meta.tool_name == "query_metrics"
+        assert meta.kind == "unknown"
+        assert meta.domain == "general"
+        assert meta.read_only is True
+        assert meta.risk_level == "low"
+        assert meta.latency_tier == "fast"
+        assert meta.cost_hint == "free"
+        assert meta.tags == ()
+        assert meta.description == ""
+
+    def test_parse_tool_metadata_skips_invalid_entries(self):
+        json_str = '''[{
+            "name": "prometheus",
+            "base_url": "http://prometheus:8080",
+            "allowed_tools": ["query_metrics"],
+            "tool_metadata": [
+                {"tool_name": "valid_tool", "kind": "metrics"},
+                {"kind": "logs"},
+                "not a dict",
+                null,
+                {"tool_name": "", "kind": "traces"},
+                {"tool_name": "another_valid", "kind": "traces"}
+            ]
+        }]'''
+        refs = parse_mcpserver_refs(json_str)
+        assert len(refs[0].tool_metadata) == 2
+        assert refs[0].tool_metadata[0].tool_name == "valid_tool"
+        assert refs[0].tool_metadata[1].tool_name == "another_valid"
+
+    def test_tool_metadata_ref_dataclass(self):
+        """Test ToolMetadataRef dataclass directly."""
+        meta = ToolMetadataRef(
+            tool_name="test_tool",
+            kind="custom",
+            domain="test_domain",
+            read_only=False,
+            risk_level="high",
+            latency_tier="slow",
+            cost_hint="medium",
+            tags=("tag1", "tag2"),
+            description="Test description",
+        )
+        assert meta.tool_name == "test_tool"
+        assert meta.kind == "custom"
+        assert meta.domain == "test_domain"
+        assert meta.read_only is False
+        assert meta.risk_level == "high"
+        assert meta.latency_tier == "slow"
+        assert meta.cost_hint == "medium"
+        assert meta.tags == ("tag1", "tag2")
+        assert meta.description == "Test description"

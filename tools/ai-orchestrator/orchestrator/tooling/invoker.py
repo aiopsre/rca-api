@@ -339,6 +339,7 @@ def build_tool_invoker_from_mcpserver_refs_json(
     """Build a ToolInvoker from mcpserver_refs_json string.
 
     Convenience function that parses JSON and builds invoker.
+    Also registers tool metadata from the platform.
 
     Args:
         mcpserver_refs_json: JSON string from claim response.
@@ -350,4 +351,10 @@ def build_tool_invoker_from_mcpserver_refs_json(
     from .mcp_server_loader import parse_mcpserver_refs
 
     refs = parse_mcpserver_refs(mcpserver_refs_json)
+
+    # Register tool metadata from platform
+    if refs:
+        from ..runtime.tool_registry import register_tools_from_mcpserver_refs
+        register_tools_from_mcpserver_refs(refs)
+
     return build_tool_invoker_from_mcpserver_refs(refs, toolset_id=toolset_id)

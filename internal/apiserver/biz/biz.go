@@ -21,6 +21,7 @@ import (
 	rbacv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/rbac"
 	sessionv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
+	toolmetadatav1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	triggerv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/google/wire"
 
@@ -48,6 +49,7 @@ type IBiz interface {
 	RBACV1() rbacv1.RBACBiz
 	SessionV1() sessionv1.SessionBiz
 	SilenceV1() silencev1.SilenceBiz
+	ToolMetadataV1() toolmetadatav1.ToolMetadataBiz
 	TriggerV1() triggerv1.TriggerBiz
 	NoticeV1() noticev1.NoticeBiz
 	AlertingPolicyV1() alertingpolicyv1.AlertingPolicyBiz
@@ -87,6 +89,8 @@ type biz struct {
 	sessionBiz                 sessionv1.SessionBiz
 	silenceOnce                sync.Once
 	silenceBiz                 silencev1.SilenceBiz
+	toolMetadataOnce           sync.Once
+	toolMetadataBiz            toolmetadatav1.ToolMetadataBiz
 	triggerOnce                sync.Once
 	triggerBiz                 triggerv1.TriggerBiz
 	noticeOnce                 sync.Once
@@ -152,7 +156,7 @@ func (b *biz) KBEntryV1() kbv1.KBEntryBiz {
 
 func (b *biz) McpServerV1() mcpserverv1.McpServerBiz {
 	b.mcpServerOnce.Do(func() {
-		b.mcpServerBiz = mcpserverv1.New(b.store)
+		b.mcpServerBiz = mcpserverv1.New(b.store, b.ToolMetadataV1())
 	})
 	return b.mcpServerBiz
 }
@@ -204,6 +208,13 @@ func (b *biz) SilenceV1() silencev1.SilenceBiz {
 		b.silenceBiz = silencev1.New(b.store)
 	})
 	return b.silenceBiz
+}
+
+func (b *biz) ToolMetadataV1() toolmetadatav1.ToolMetadataBiz {
+	b.toolMetadataOnce.Do(func() {
+		b.toolMetadataBiz = toolmetadatav1.New(b.store)
+	})
+	return b.toolMetadataBiz
 }
 
 func (b *biz) TriggerV1() triggerv1.TriggerBiz {

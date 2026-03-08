@@ -5,12 +5,14 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -43,14 +45,15 @@ type McpServerBiz interface {
 type McpServerExpansion interface{}
 
 type mcpServerBiz struct {
-	store store.IStore
+	store           store.IStore
+	toolMetadataBiz toolmetadata.ToolMetadataBiz
 }
 
 var _ McpServerBiz = (*mcpServerBiz)(nil)
 
 // New creates MCP server biz.
-func New(store store.IStore) *mcpServerBiz {
-	return &mcpServerBiz{store: store}
+func New(store store.IStore, toolMetadataBiz toolmetadata.ToolMetadataBiz) *mcpServerBiz {
+	return &mcpServerBiz{store: store, toolMetadataBiz: toolMetadataBiz}
 }
 
 func (b *mcpServerBiz) Create(ctx context.Context, rq *v1.CreateMcpServerRequest) (*v1.CreateMcpServerResponse, error) {
@@ -242,6 +245,35 @@ func (b *mcpServerBiz) ResolveMcpServerRefs(ctx context.Context, pipelineID stri
 				refs = append(refs, configRefs...)
 			}
 		}
+	}
+
+	// Collect all tool names from refs
+	allTools := make(map[string]struct{})
+	for _, ref := range refs {
+		for _, tool := range ref.AllowedTools {
+			allTools[tool] = struct{}{}
+		}
+	}
+
+	// Batch get tool metadata
+	toolNames := make([]string, 0, len(allTools))
+	for tool := range allTools {
+		toolNames = append(toolNames, tool)
+	}
+
+	metadataMap := make(map[string]*model.ToolMetadataM)
+	if b.toolMetadataBiz != nil && len(toolNames) > 0 {
+		var err error
+		metadataMap, err = b.toolMetadataBiz.BatchGetMap(ctx, toolNames)
+		if err != nil {
+			// Log warning but continue - metadata is optional
+			slog.Warn("failed to get tool metadata", "error", err, "pipeline_id", pipelineID)
+		}
+	}
+
+	// Attach metadata to each ref
+	for i := range refs {
+		refs[i].ToolMetadata = toolmetadata.BuildToolMetadataRefs(refs[i].AllowedTools, metadataMap)
 	}
 
 	return refs, nil

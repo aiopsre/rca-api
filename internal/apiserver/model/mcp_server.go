@@ -56,11 +56,12 @@ func (*McpServerConfigM) TableName() string {
 // for calling external MCP servers. Auth secrets are not included;
 // the platform manages secrets separately.
 type McpServerRef struct {
-	McpServerID  string   `json:"mcp_server_id"`
-	Name         string   `json:"name"`
-	BaseURL      string   `json:"base_url"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	TimeoutSec   int      `json:"timeout_sec,omitempty"`
-	Scopes       string   `json:"scopes,omitempty"`
-	AuthType     string   `json:"auth_type,omitempty"`
+	McpServerID  string            `json:"mcp_server_id"`
+	Name         string            `json:"name"`
+	BaseURL      string            `json:"base_url"`
+	AllowedTools []string          `json:"allowed_tools,omitempty"`
+	ToolMetadata []ToolMetadataRef `json:"tool_metadata,omitempty"`
+	TimeoutSec   int               `json:"timeout_sec,omitempty"`
+	Scopes       string            `json:"scopes,omitempty"`
+	AuthType     string            `json:"auth_type,omitempty"`
 }
