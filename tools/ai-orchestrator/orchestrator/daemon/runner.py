@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import logging
+import sys
 import threading
 import time
 from typing import Any
@@ -38,7 +39,7 @@ from .metrics import (
     WORKER_JOB_DURATION_SECONDS,
     WORKER_POLL_ERRORS_TOTAL,
 )
-from .settings import Settings, load_settings
+from .settings import Settings, load_settings, validate_settings
 
 _logger = logging.getLogger("orchestrator.runner")
 
@@ -786,6 +787,16 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings = load_settings()
+
+    # Validate configuration
+    validation_errors = validate_settings(settings)
+    if validation_errors:
+        _log("ERROR: Configuration validation failed:")
+        for error in validation_errors:
+            _log(f"  - {error}")
+        _log("Exiting due to configuration errors.")
+        sys.exit(1)
+
     _log(f"orchestrator worker version={WORKER_VERSION}")
     pubsub_enabled, subscribe_ready = detect_pubsub_ready(settings.base_url, settings.scopes)
     redis_enabled = pubsub_enabled

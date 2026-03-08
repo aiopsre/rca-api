@@ -197,3 +197,39 @@ def load_settings() -> Settings:
         tool_execution_max_workers=max(1, min(20, _env_int("TOOL_EXECUTION_MAX_WORKERS", 5))),
         tool_execution_group_timeout_s=max(1.0, _env_float("TOOL_EXECUTION_GROUP_TIMEOUT_S", 30.0)),
     )
+
+
+def validate_settings(settings: Settings) -> list[str]:
+    """Validate settings and return a list of error messages.
+
+    Returns:
+        Empty list if all validations pass.
+        List of error messages if any validations fail.
+    """
+    errors: list[str] = []
+
+    # Layer 0: Required settings
+    if not settings.scopes.strip():
+        errors.append(
+            "SCOPES is required but not set. "
+            "Set the SCOPES environment variable."
+        )
+
+    # Layer 2: Conditional settings based on mode
+    if settings.skills_execution_mode == "prompt_first":
+        missing_agent_settings = []
+        if not settings.agent_model.strip():
+            missing_agent_settings.append("AGENT_MODEL")
+        if not settings.agent_base_url.strip():
+            missing_agent_settings.append("AGENT_BASE_URL")
+        if not settings.agent_api_key.strip():
+            missing_agent_settings.append("AGENT_API_KEY")
+
+        if missing_agent_settings:
+            missing_str = ", ".join(missing_agent_settings)
+            errors.append(
+                f"{missing_str} are required when SKILLS_EXECUTION_MODE=prompt_first. "
+                f"Set these environment variables to enable LLM-driven skill execution."
+            )
+
+    return errors
