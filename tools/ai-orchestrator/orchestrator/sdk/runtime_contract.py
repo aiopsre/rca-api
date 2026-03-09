@@ -177,6 +177,14 @@ class ToolCallReportRequest:
     error_message: str | None = None
     evidence_ids: list[str] | None = None
 
+    # Extended audit metadata
+    incident_id: str | None = None
+    skill_id: str | None = None
+    skill_version: str | None = None
+    capability: str | None = None
+    provider_id: str | None = None
+    toolset_id: str | None = None
+
     def path(self) -> str:
         return f"/v1/ai/jobs/{_trim_text(self.job_id)}/tool-calls"
 
@@ -198,6 +206,19 @@ class ToolCallReportRequest:
         evidence_ids = normalize_string_list(self.evidence_ids)
         if evidence_ids:
             body["evidenceIDs"] = evidence_ids
+        # Extended audit metadata
+        if self.incident_id:
+            body["incidentID"] = _trim_text(self.incident_id)
+        if self.skill_id:
+            body["skillID"] = _trim_text(self.skill_id)
+        if self.skill_version:
+            body["skillVersion"] = _trim_text(self.skill_version)
+        if self.capability:
+            body["capability"] = _trim_text(self.capability)
+        if self.provider_id:
+            body["providerID"] = _trim_text(self.provider_id)
+        if self.toolset_id:
+            body["toolsetID"] = _trim_text(self.toolset_id)
         return body
 
 

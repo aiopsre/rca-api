@@ -16,6 +16,7 @@ from ..skills.script_runner import ScriptExecutorError, ScriptExecutorResult, Sc
 from ..tooling.invoker import TOOLING_META_KEY, ToolInvokeError
 from ..tooling.toolset_config import normalize_tool_name
 from ..tools_rca_api import RCAApiClient
+from .audit import redact_sensitive, summarize_request, summarize_response
 from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
@@ -555,7 +556,8 @@ class OrchestratorRuntime:
                 params={
                     "tool": normalized_tool,
                     "idempotency_key": idempotency_key or "",
-                    "params": normalized_params,
+                    "params": redact_sensitive(normalized_params),
+                    "request_summary": summarize_request(normalized_tool, normalized_params),
                 },
                 response=observation,
             )
@@ -576,6 +578,7 @@ class OrchestratorRuntime:
                 params={
                     "tool": normalized_tool,
                     "idempotency_key": idempotency_key or "",
+                    "params": redact_sensitive(normalized_params),
                 },
                 response={
                     "status": "error",
@@ -605,6 +608,7 @@ class OrchestratorRuntime:
                 params={
                     "tool": normalized_tool,
                     "idempotency_key": idempotency_key or "",
+                    "params": redact_sensitive(normalized_params),
                 },
                 response={
                     "status": "error",
