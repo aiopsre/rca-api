@@ -21,6 +21,7 @@ from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
+from .tool_registry import get_tool_metadata
 from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
@@ -1860,17 +1861,13 @@ class OrchestratorRuntime:
         )
 
     def _available_evidence_plan_prompt_tools(self, selected_candidate: "SkillCandidate") -> list[str]:
+        """Generate available tools list dynamically from skill binding.
+
+        Returns tool names with mcp. prefix for use in prompt skill tool planning.
+        """
         effective_tools = self._effective_prompt_skill_tools(selected_candidate)
-        if self._skills_tool_calling_mode == "evidence_plan_single_hop":
-            return ["mcp.query_logs"] if "query_logs" in effective_tools else []
-        if self._skills_tool_calling_mode == "evidence_plan_dual_tool":
-            available: list[str] = []
-            if "query_logs" in effective_tools:
-                available.append("mcp.query_logs")
-            if "query_metrics" in effective_tools:
-                available.append("mcp.query_metrics")
-            return available
-        return []
+        # Dynamically generate available tools with mcp. prefix
+        return [f"mcp.{tool}" for tool in effective_tools if tool]
 
     def _plan_evidence_prompt_tool_sequence(
         self,
@@ -2056,12 +2053,15 @@ class OrchestratorRuntime:
             tool_name = str(getattr(tool_plan, "tool", "") or "").strip()
             input_payload = getattr(tool_plan, "input_payload", None)
             reason = str(getattr(tool_plan, "reason", "") or "").strip()
-        if tool_name not in {"mcp.query_logs", "mcp.query_metrics"}:
-            raise RuntimeError(f"unsupported prompt skill tool: {tool_name or '<empty>'}")
+
+        # Check if tool is in allowed_tools (both have mcp. prefix from _available_evidence_plan_prompt_tools)
         if tool_name not in allowed_tools:
             raise RuntimeError(f"prompt skill tool is not allowed: {tool_name}")
+
         if not isinstance(input_payload, dict):
             raise RuntimeError("prompt skill tool plan requires object input")
+
+        # Common required fields for all query tools
         datasource_id = str(input_payload.get("datasource_id") or "").strip()
         if not datasource_id:
             raise RuntimeError("prompt skill tool plan missing datasource_id")
@@ -2072,12 +2072,19 @@ class OrchestratorRuntime:
             raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
         if start_ts <= 0 or end_ts <= 0 or end_ts < start_ts:
             raise RuntimeError("prompt skill tool plan has invalid time range")
+
         validated_input: dict[str, Any] = {
             "datasource_id": datasource_id,
             "start_ts": start_ts,
             "end_ts": end_ts,
         }
-        if tool_name == "mcp.query_logs":
+
+        # Determine tool kind from registry for type-specific validation
+        tool_meta = get_tool_metadata(tool_name)
+        tool_kind = tool_meta.kind if tool_meta else "unknown"
+
+        if tool_kind == "logs":
+            # Logs-specific validation: require query and limit
             query = str(input_payload.get("query") or "").strip()
             if not query:
                 raise RuntimeError("prompt skill tool plan missing query")
@@ -2091,7 +2098,8 @@ class OrchestratorRuntime:
                 raise RuntimeError("prompt skill tool plan has invalid limit")
             validated_input["query"] = query
             validated_input["limit"] = limit
-        else:
+        elif tool_kind == "metrics":
+            # Metrics-specific validation: require promql and step_seconds
             promql = str(input_payload.get("promql") or "").strip()
             if not promql:
                 raise RuntimeError("prompt skill tool plan missing promql")
@@ -2103,6 +2111,12 @@ class OrchestratorRuntime:
                 raise RuntimeError("prompt skill tool plan has invalid step_seconds")
             validated_input["promql"] = promql
             validated_input["step_seconds"] = step_seconds
+        else:
+            # Unknown or other tool kinds: accept additional params as-is
+            for key in ("query", "promql", "limit", "step_seconds"):
+                if key in input_payload:
+                    validated_input[key] = input_payload[key]
+
         return {
             "tool": tool_name,
             "input_payload": validated_input,
@@ -2123,24 +2137,30 @@ class OrchestratorRuntime:
             raise RuntimeError("prompt skill tool request missing input payload")
         started_at = time.monotonic()
         try:
-            if tool_name == "mcp.query_logs":
-                result = self.query_logs(
-                    datasource_id=str(input_payload.get("datasource_id") or ""),
-                    query=str(input_payload.get("query") or ""),
-                    start_ts=int(input_payload.get("start_ts") or 0),
-                    end_ts=int(input_payload.get("end_ts") or 0),
-                    limit=int(input_payload.get("limit") or 0),
-                )
-            elif tool_name == "mcp.query_metrics":
-                result = self.query_metrics(
-                    datasource_id=str(input_payload.get("datasource_id") or ""),
-                    promql=str(input_payload.get("promql") or ""),
-                    start_ts=int(input_payload.get("start_ts") or 0),
-                    end_ts=int(input_payload.get("end_ts") or 0),
-                    step_s=int(input_payload.get("step_seconds") or 0),
-                )
-            else:
-                raise RuntimeError(f"unsupported prompt skill tool execution: {tool_name or '<empty>'}")
+            # Try call_tool for dynamic tool execution via MCP
+            try:
+                result = self.call_tool(tool=tool_name, params=input_payload)
+            except (AttributeError, RuntimeError) as call_exc:
+                # Fallback to direct method calls for backward compatibility
+                # when tool_invoker or mcp_client is not available
+                if tool_name == "mcp.query_logs":
+                    result = self.query_logs(
+                        datasource_id=str(input_payload.get("datasource_id") or ""),
+                        query=str(input_payload.get("query") or ""),
+                        start_ts=int(input_payload.get("start_ts") or 0),
+                        end_ts=int(input_payload.get("end_ts") or 0),
+                        limit=int(input_payload.get("limit") or 0),
+                    )
+                elif tool_name == "mcp.query_metrics":
+                    result = self.query_metrics(
+                        datasource_id=str(input_payload.get("datasource_id") or ""),
+                        promql=str(input_payload.get("promql") or ""),
+                        start_ts=int(input_payload.get("start_ts") or 0),
+                        end_ts=int(input_payload.get("end_ts") or 0),
+                        step_s=int(input_payload.get("step_seconds") or 0),
+                    )
+                else:
+                    raise RuntimeError(f"unsupported prompt skill tool execution: {tool_name or '<empty>'}") from call_exc
         except Exception as exc:
             latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
             self.report_tool_call(
