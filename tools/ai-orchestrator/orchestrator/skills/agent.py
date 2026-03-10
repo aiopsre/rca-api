@@ -387,6 +387,131 @@ class PromptSkillAgent:
             reason=_trim(response.get("reason")),
         )
 
+    def plan_tool_calls_fc(
+        self,
+        *,
+        capability: str,
+        skill_id: str,
+        skill_version: str,
+        skill_document: str,
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]] | None = None,
+        skill_resources: list[dict[str, Any]] | None = None,
+        openai_tools: list[dict[str, Any]],
+        max_tool_calls: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Plan tool calls using function calling instead of JSON parsing.
+
+        This method uses LangChain's bind_tools() mechanism to let the LLM
+        return structured tool calls instead of JSON that needs to be parsed.
+
+        Args:
+            capability: The capability being executed (e.g., "evidence.plan").
+            skill_id: The skill identifier.
+            skill_version: The skill version.
+            skill_document: The skill document content.
+            input_payload: The input payload for the skill.
+            knowledge_context: Optional knowledge context from knowledge skills.
+            skill_resources: Optional skill resources.
+            openai_tools: FunctionCallingToolAdapter.to_openai_tools() output.
+            max_tool_calls: Maximum number of tool calls to allow.
+
+        Returns:
+            List of tool call dicts with keys: tool, input_payload, reason.
+            Format is compatible with the existing plan_tool_calls() output.
+        """
+        if not self.configured:
+            raise RuntimeError("prompt skill agent is not configured")
+        if not openai_tools:
+            return []
+
+        llm = self._get_llm()
+        # Bind tools to LLM for function calling
+        llm_with_tools = llm.bind_tools(openai_tools)
+
+        system_prompt = (
+            "You are planning a bounded sequence of tool calls for a prompt-first RCA skill.\n"
+            "Use the provided tools to gather information.\n"
+            "If no tool call is needed, return without calling any tools.\n"
+            "Never call more than max_tool_calls tools.\n"
+            "Do not call the same tool twice.\n"
+        )
+        user_payload = {
+            "capability": capability,
+            "skill_id": skill_id,
+            "skill_version": skill_version,
+            "skill_document": skill_document,
+            "input": input_payload,
+            "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
+            "skill_resources": [item for item in (skill_resources or []) if isinstance(item, dict)],
+            "max_tool_calls": max(int(max_tool_calls), 1),
+        }
+
+        try:
+            from langchain_core.messages import HumanMessage, SystemMessage
+        except Exception as exc:
+            raise RuntimeError("langchain-core is required for prompt-first skills") from exc
+
+        response = llm_with_tools.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))),
+        ])
+
+        # Extract tool calls from response
+        tool_calls = getattr(response, "tool_calls", []) or []
+        return self._normalize_tool_calls_to_plans(tool_calls, max_tool_calls=max_tool_calls)
+
+    def _normalize_tool_calls_to_plans(
+        self,
+        tool_calls: list[Any],
+        max_tool_calls: int,
+    ) -> list[dict[str, Any]]:
+        """Convert LangChain tool calls to plan format.
+
+        Args:
+            tool_calls: List of tool calls from LLM response.
+            max_tool_calls: Maximum number of tool calls allowed.
+
+        Returns:
+            List of dicts with keys: tool, input_payload, reason.
+
+        Raises:
+            RuntimeError: If tool_calls exceeds max_tool_calls or contains duplicates.
+        """
+        # Reject overlong sequences upfront (same behavior as runtime validation)
+        if len(tool_calls) > max_tool_calls:
+            raise RuntimeError(f"FC tool_calls exceeds max_tool_calls: {len(tool_calls)} > {max_tool_calls}")
+
+        plans: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for tc in tool_calls:
+            if isinstance(tc, dict):
+                name = str(tc.get("name", ""))
+                args = tc.get("args", {})
+            else:
+                name = str(getattr(tc, "name", ""))
+                args = getattr(tc, "args", {}) or {}
+
+            if not name:
+                continue
+
+            # Normalize to canonical name (strip 'mcp.' prefix if present)
+            canonical_name = name[4:] if name.startswith("mcp.") else name
+
+            # Reject duplicates (same behavior as runtime validation)
+            if canonical_name in seen:
+                raise RuntimeError(f"FC tool_calls contains duplicate tool: {canonical_name}")
+            seen.add(canonical_name)
+
+            plans.append({
+                "tool": canonical_name,
+                "input_payload": args if isinstance(args, dict) else {},
+                "reason": f"Function calling request for {canonical_name}",
+            })
+
+        return plans
+
     def consume_after_tool(
         self,
         *,

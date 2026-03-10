@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Callable
@@ -22,6 +23,7 @@ from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
 from .tool_catalog import ToolCatalogSnapshot, ToolSpec, build_tool_catalog_snapshot
+from .fc_adapter import FunctionCallingToolAdapter, NormalizedToolCall
 from .tool_registry import get_tool_metadata, get_tool_name_by_kind
 from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
@@ -1771,16 +1773,37 @@ class OrchestratorRuntime:
                     ),
                     None,
                 )
-            initial_result = None
-            tool_requests = self._plan_evidence_prompt_tool_sequence(
-                selected_candidate=selected_candidate,
-                skill_document=skill_document,
-                input_payload=input_payload,
-                knowledge_context=knowledge_context,
-                skill_resources=skill_resources,
-                available_tools=available_tools,
-            )
+
+            # Check if FC path is enabled and snapshot is available
+            fc_enabled = self._is_fc_tool_calling_enabled() and self._tool_catalog_snapshot is not None
+
+            if fc_enabled:
+                # New path: function calling
+                adapter = FunctionCallingToolAdapter(self._tool_catalog_snapshot)
+                tool_requests, normalized_calls = self._plan_evidence_fc_tool_sequence(
+                    adapter=adapter,
+                    selected_candidate=selected_candidate,
+                    skill_document=skill_document,
+                    input_payload=input_payload,
+                    knowledge_context=knowledge_context,
+                    skill_resources=skill_resources,
+                )
+                # Store for later FC execution
+                self._fc_adapter = adapter
+                self._fc_normalized_calls = normalized_calls
+            else:
+                # Old path: JSON planning
+                initial_result = None
+                tool_requests = self._plan_evidence_prompt_tool_sequence(
+                    selected_candidate=selected_candidate,
+                    skill_document=skill_document,
+                    input_payload=input_payload,
+                    knowledge_context=knowledge_context,
+                    skill_resources=skill_resources,
+                    available_tools=available_tools,
+                )
         tool_plan_latency_ms = max(1, int((time.monotonic() - tool_plan_started) * 1000))
+        fc_mode = self._is_fc_tool_calling_enabled() and self._tool_catalog_snapshot is not None
         self._report_observation_best_effort(
             tool="skill.tool_plan",
             node_name=node_name,
@@ -1803,6 +1826,7 @@ class OrchestratorRuntime:
                     }
                     for item in tool_requests
                 ],
+                "fc_mode": fc_mode,
             },
             evidence_ids=evidence_ids,
         )
@@ -1826,15 +1850,33 @@ class OrchestratorRuntime:
             )
 
         tool_results: list[SkillToolCallResult] = []
-        for tool_request in tool_requests:
-            tool_results.append(
-                self._run_prompt_skill_tool(
-                    graph_state=graph_state,
-                    selected_candidate=selected_candidate,
-                    evidence_ids=evidence_ids,
-                    tool_request=tool_request,
-                )
+
+        # Check if FC execution is available (set during planning phase)
+        fc_normalized_calls = getattr(self, "_fc_normalized_calls", None)
+        fc_adapter = getattr(self, "_fc_adapter", None)
+
+        if fc_normalized_calls and fc_adapter:
+            # FC path: execute using the normalized calls
+            tool_results = self._execute_function_calls_for_skill(
+                graph_state=graph_state,
+                selected_candidate=selected_candidate,
+                evidence_ids=evidence_ids,
+                normalized_calls=fc_normalized_calls,
             )
+            # Clear the temporary FC state
+            self._fc_normalized_calls = None
+            self._fc_adapter = None
+        else:
+            # JSON path: execute using the traditional tool requests
+            for tool_request in tool_requests:
+                tool_results.append(
+                    self._run_prompt_skill_tool(
+                        graph_state=graph_state,
+                        selected_candidate=selected_candidate,
+                        evidence_ids=evidence_ids,
+                        tool_request=tool_request,
+                    )
+                )
         if selected_candidate.executor_mode == "script":
             raw_output = self._consume_script_skill_after_tools(
                 selected_candidate=selected_candidate,
@@ -1934,6 +1976,166 @@ class OrchestratorRuntime:
                 raise RuntimeError(f"prompt skill tool sequence repeats tool: {tool_name}")
             seen_tools.add(tool_name)
             validated.append(tool_request)
+        return validated
+
+    def _is_fc_tool_calling_enabled(self) -> bool:
+        """Check if function calling tool calling is enabled via feature flag.
+
+        Feature flag: RCA_FC_SKILL_TOOL_CALLING_ENABLED
+        Default: false (FC path is opt-in)
+
+        Returns:
+            True if FC tool calling is enabled.
+        """
+        return os.environ.get("RCA_FC_SKILL_TOOL_CALLING_ENABLED", "").lower() in ("true", "1", "yes")
+
+    def _plan_evidence_fc_tool_sequence(
+        self,
+        *,
+        adapter: FunctionCallingToolAdapter,
+        selected_candidate: "SkillCandidate",
+        skill_document: str,
+        input_payload: dict[str, Any],
+        knowledge_context: list[dict[str, Any]],
+        skill_resources: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[NormalizedToolCall]]:
+        """Plan tool sequence using function calling.
+
+        Uses the FunctionCallingToolAdapter to generate OpenAI tools format
+        and calls the agent's plan_tool_calls_fc() method.
+
+        Args:
+            adapter: The FC adapter with the tool catalog snapshot.
+            selected_candidate: The skill candidate planning the tools.
+            skill_document: The skill document content.
+            input_payload: The input payload for the skill.
+            knowledge_context: Optional knowledge context.
+            skill_resources: Optional skill resources.
+
+        Returns:
+            Tuple of (tool_requests, normalized_calls) where:
+            - tool_requests: List of dicts compatible with existing JSON path
+            - normalized_calls: List of NormalizedToolCall for FC execution
+        """
+        openai_tools = adapter.to_openai_tools()
+        if not openai_tools:
+            return [], []
+
+        if not hasattr(self._skill_agent, "plan_tool_calls_fc"):
+            raise RuntimeError("agent_missing_plan_tool_calls_fc")
+
+        max_tool_calls = 1 if self._skills_tool_calling_mode == "evidence_plan_single_hop" else 2
+
+        raw_plans = self._skill_agent.plan_tool_calls_fc(
+            capability="evidence.plan",
+            skill_id=selected_candidate.skill_id,
+            skill_version=selected_candidate.version,
+            skill_document=skill_document,
+            input_payload=input_payload,
+            knowledge_context=knowledge_context,
+            skill_resources=skill_resources,
+            openai_tools=openai_tools,
+            max_tool_calls=max_tool_calls,
+        )
+
+        # Convert plans to normalized tool calls for validation
+        normalized_calls: list[NormalizedToolCall] = []
+        for plan in raw_plans:
+            tool_name = str(plan.get("tool") or "")
+            input_args = plan.get("input_payload", {})
+            if not tool_name:
+                continue
+            normalized_calls.append(NormalizedToolCall(
+                tool_name=tool_name,
+                arguments=input_args if isinstance(input_args, dict) else {},
+            ))
+
+        # Validate tool calls against the snapshot and skill-level allowlist
+        validated_calls = self._validate_skill_tool_sequence_fc(
+            normalized_calls,
+            adapter,
+            selected_candidate=selected_candidate,
+            max_tool_calls=max_tool_calls,
+        )
+
+        # Run each tool plan through the same input validation as JSON path
+        tool_requests = []
+        validated_calls_with_input: list[NormalizedToolCall] = []
+        for call in validated_calls:
+            validated_input = self._validate_prompt_skill_tool_plan_fc(
+                call.tool_name,
+                call.arguments,
+            )
+            tool_requests.append({
+                "tool": call.tool_name,
+                "input_payload": validated_input,
+                "reason": f"FC request for {call.tool_name}",
+            })
+            # Create new NormalizedToolCall with validated input for execution
+            validated_calls_with_input.append(NormalizedToolCall(
+                tool_name=call.tool_name,
+                arguments=validated_input,
+                call_id=call.call_id,
+            ))
+
+        return tool_requests, validated_calls_with_input
+
+    def _validate_skill_tool_sequence_fc(
+        self,
+        calls: list[NormalizedToolCall],
+        adapter: FunctionCallingToolAdapter,
+        *,
+        selected_candidate: "SkillCandidate",
+        max_tool_calls: int,
+    ) -> list[NormalizedToolCall]:
+        """Validate FC tool calls against the snapshot and skill-level allowlist.
+
+        This enforces the same constraints as the JSON path:
+        - Tool must exist in the catalog
+        - Tool must be in the skill's allowed_tools (intersected with toolset)
+        - No duplicate tools
+        - Sequence length must not exceed max_tool_calls
+
+        Args:
+            calls: Normalized tool calls to validate.
+            adapter: The FC adapter for validation.
+            selected_candidate: The skill candidate (for allowed_tools).
+            max_tool_calls: Maximum allowed tool calls.
+
+        Returns:
+            Validated list of NormalizedToolCall.
+
+        Raises:
+            RuntimeError: If tool sequence is invalid.
+        """
+        # Reject overlong sequences upfront (same behavior as JSON path)
+        if len(calls) > max_tool_calls:
+            raise RuntimeError(f"FC tool sequence exceeds max_tool_calls: {len(calls)} > {max_tool_calls}")
+
+        # Get skill-level allowlist (intersection of binding allowed_tools and toolset allowed_tools)
+        skill_allowed_tools = self._effective_prompt_skill_tools(selected_candidate)
+        if not skill_allowed_tools:
+            # If skill has no allowed_tools, reject all tools (same as JSON path)
+            raise RuntimeError("FC skill has no allowed_tools configured")
+
+        validated: list[NormalizedToolCall] = []
+        seen_tools: set[str] = set()
+
+        for call in calls:
+            # Check catalog membership
+            if not adapter.has_tool(call.tool_name):
+                raise RuntimeError(f"FC tool not in catalog: {call.tool_name}")
+
+            # Check skill-level allowlist (P1 fix)
+            if call.tool_name not in skill_allowed_tools:
+                raise RuntimeError(f"FC tool not allowed for skill: {call.tool_name}")
+
+            # Reject duplicates (same behavior as JSON path)
+            if call.tool_name in seen_tools:
+                raise RuntimeError(f"FC tool sequence repeats tool: {call.tool_name}")
+            seen_tools.add(call.tool_name)
+            validated.append(call)
+
         return validated
 
     def _consume_prompt_skill_after_tools(
@@ -2129,6 +2331,87 @@ class OrchestratorRuntime:
             "reason": reason,
         }
 
+    def _validate_prompt_skill_tool_plan_fc(
+        self,
+        tool_name: str,
+        input_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate FC tool plan input (same logic as JSON path).
+
+        This ensures FC tool calls go through the same validation as
+        _validate_prompt_skill_tool_plan() for the JSON path.
+
+        Args:
+            tool_name: Name of the tool to call.
+            input_payload: Input arguments from the FC response.
+
+        Returns:
+            Validated and normalized input_payload dict.
+
+        Raises:
+            RuntimeError: If input is invalid.
+        """
+        if not isinstance(input_payload, dict):
+            raise RuntimeError("FC tool plan requires object input")
+
+        # Common required fields for all query tools
+        datasource_id = str(input_payload.get("datasource_id") or "").strip()
+        if not datasource_id:
+            raise RuntimeError("FC tool plan missing datasource_id")
+        try:
+            start_ts = _coerce_int(input_payload.get("start_ts"))
+            end_ts = _coerce_int(input_payload.get("end_ts"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("FC tool plan has invalid integer fields") from exc
+        if start_ts <= 0 or end_ts <= 0 or end_ts < start_ts:
+            raise RuntimeError("FC tool plan has invalid time range")
+
+        validated_input: dict[str, Any] = {
+            "datasource_id": datasource_id,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+        }
+
+        # Determine tool kind from registry for type-specific validation
+        tool_meta = get_tool_metadata(tool_name)
+        tool_kind = tool_meta.kind if tool_meta else "unknown"
+
+        if tool_kind == "logs":
+            # Logs-specific validation: require query and limit
+            query = str(input_payload.get("query") or "").strip()
+            if not query:
+                raise RuntimeError("FC tool plan missing query")
+            if query.lstrip().startswith("{"):
+                raise RuntimeError("FC tool plan must use queryText, not raw DSL")
+            try:
+                limit = _coerce_int(input_payload.get("limit"))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("FC tool plan has invalid integer fields") from exc
+            if limit <= 0:
+                raise RuntimeError("FC tool plan has invalid limit")
+            validated_input["query"] = query
+            validated_input["limit"] = limit
+        elif tool_kind == "metrics":
+            # Metrics-specific validation: require promql and step_seconds
+            promql = str(input_payload.get("promql") or "").strip()
+            if not promql:
+                raise RuntimeError("FC tool plan missing promql")
+            try:
+                step_seconds = _coerce_int(input_payload.get("step_seconds"))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("FC tool plan has invalid integer fields") from exc
+            if step_seconds <= 0:
+                raise RuntimeError("FC tool plan has invalid step_seconds")
+            validated_input["promql"] = promql
+            validated_input["step_seconds"] = step_seconds
+        else:
+            # Unknown or other tool kinds: accept additional params as-is
+            for key in ("query", "promql", "limit", "step_seconds"):
+                if key in input_payload:
+                    validated_input[key] = input_payload[key]
+
+        return validated_input
+
     def _run_prompt_skill_tool(
         self,
         *,
@@ -2178,6 +2461,80 @@ class OrchestratorRuntime:
             tool_result=result,
             latency_ms=latency_ms,
         )
+
+    def _execute_function_calls_for_skill(
+        self,
+        *,
+        graph_state: Any,
+        selected_candidate: "SkillCandidate",
+        evidence_ids: list[str],
+        normalized_calls: list[NormalizedToolCall],
+    ) -> list[SkillToolCallResult]:
+        """Execute function calling-planned tool calls.
+
+        This method executes tool calls that were planned via the function calling
+        mechanism (plan_tool_calls_fc). It validates each call against the catalog
+        and executes them sequentially via the runtime's tool gateway.
+
+        Args:
+            graph_state: The graph state for tool call tracking.
+            selected_candidate: The skill candidate that planned the calls.
+            evidence_ids: Evidence IDs to associate with tool calls.
+            normalized_calls: Normalized tool calls from FunctionCallingToolAdapter.
+
+        Returns:
+            List of SkillToolCallResult for each executed tool call.
+
+        Raises:
+            RuntimeError: If a tool is not found in the catalog.
+        """
+        results: list[SkillToolCallResult] = []
+
+        for call in normalized_calls:
+            tool_name = call.tool_name
+            input_payload = call.arguments
+
+            started_at = time.monotonic()
+            try:
+                # Execute tool via the runtime's tool gateway
+                result = self.call_tool(tool=tool_name, params=input_payload)
+            except Exception as exc:
+                latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+                self.report_tool_call(
+                    node_name="skill.evidence.plan.fc",
+                    tool_name=tool_name,
+                    request_json=input_payload,
+                    response_json={"status": "error"},
+                    latency_ms=latency_ms,
+                    status="error",
+                    error=_trim_text(exc),
+                    evidence_ids=evidence_ids,
+                )
+                if hasattr(graph_state, "tool_calls_written"):
+                    graph_state.tool_calls_written += 1
+                raise
+
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            self.report_tool_call(
+                node_name="skill.evidence.plan.fc",
+                tool_name=tool_name,
+                request_json=input_payload,
+                response_json=_query_toolcall_response(result),
+                latency_ms=latency_ms,
+                status="ok",
+                evidence_ids=evidence_ids,
+            )
+            if hasattr(graph_state, "tool_calls_written"):
+                graph_state.tool_calls_written += 1
+
+            results.append(SkillToolCallResult(
+                tool_name=tool_name,
+                tool_request=dict(input_payload),
+                tool_result=result,
+                latency_ms=latency_ms,
+            ))
+
+        return results
 
     def _warm_logs_query_state(
         self,

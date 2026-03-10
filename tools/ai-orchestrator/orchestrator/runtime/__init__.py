@@ -16,6 +16,10 @@ from .tool_catalog import (
     tool_descriptor_to_spec,
     tool_metadata_to_spec,
 )
+from .fc_adapter import (
+    FunctionCallingToolAdapter,
+    NormalizedToolCall,
+)
 from .audit import (
     AuditKind,
     AuditRecord,
@@ -44,6 +48,9 @@ __all__ = [
     "build_tool_catalog_snapshot",
     "tool_descriptor_to_spec",
     "tool_metadata_to_spec",
+    # Function Calling adapter (FC migration Phase 1)
+    "FunctionCallingToolAdapter",
+    "NormalizedToolCall",
     # Audit types
     "AuditKind",
     "AuditRecord",
