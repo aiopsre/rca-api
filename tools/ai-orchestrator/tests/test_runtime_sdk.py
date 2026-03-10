@@ -712,7 +712,7 @@ class RuntimeQueryToolsetResolutionTest(unittest.TestCase):
             )
         self.assertEqual(client.query_logs_calls, 0)
 
-    def test_query_logs_falls_back_to_client_without_tool_invoker(self) -> None:
+    def test_query_logs_raises_without_tool_invoker(self) -> None:
         class _FakeSession:
             def __init__(self) -> None:
                 self.headers: dict[str, str] = {}
@@ -721,24 +721,6 @@ class RuntimeQueryToolsetResolutionTest(unittest.TestCase):
             def __init__(self) -> None:
                 self.session = _FakeSession()
                 self.instance_id = ""
-                self.query_logs_calls = 0
-
-            def query_logs(
-                self,
-                *,
-                datasource_id: str,
-                query: str,
-                start_ts: int,
-                end_ts: int,
-                limit: int,
-            ) -> dict[str, Any]:
-                self.query_logs_calls += 1
-                return {
-                    "queryResultJSON": '{"rows":[{"line":"from-client"}]}',
-                    "resultSizeBytes": 32,
-                    "rowCount": 1,
-                    "isTruncated": False,
-                }
 
         client = _FakeClient()
         runtime = OrchestratorRuntime(
@@ -749,16 +731,15 @@ class RuntimeQueryToolsetResolutionTest(unittest.TestCase):
             retry_policy=RetryPolicy(max_attempts=1, base_delay_seconds=0.0, max_delay_seconds=0.0),
             tool_invoker=None,
         )
-        result = runtime.query_logs(
-            datasource_id="ds-1",
-            query="error",
-            start_ts=10,
-            end_ts=20,
-            limit=100,
-        )
-
-        self.assertEqual(client.query_logs_calls, 1)
-        self.assertEqual(result["queryResultJSON"], '{"rows":[{"line":"from-client"}]}')
+        with self.assertRaises(RuntimeError) as ctx:
+            runtime.query_logs(
+                datasource_id="ds-1",
+                query="error",
+                start_ts=10,
+                end_ts=20,
+                limit=100,
+            )
+        self.assertIn("tool_invoker is not configured", str(ctx.exception))
 
 
 class EvidencePublisherTest(unittest.TestCase):

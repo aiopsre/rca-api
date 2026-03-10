@@ -271,3 +271,19 @@ def get_global_registry() -> ToolRegistry:
         The global ToolRegistry instance.
     """
     return _global_registry
+
+
+def get_tool_name_by_kind(kind: str) -> str | None:
+    """Get the first registered tool name for a given kind.
+
+    This is useful for getting the canonical tool name for a kind
+    without hardcoding tool names.
+
+    Args:
+        kind: The kind to search for (e.g., "metrics", "logs").
+
+    Returns:
+        Tool name if found, None otherwise.
+    """
+    tools = _global_registry.find_by_kind(kind)
+    return tools[0].tool_name if tools else None

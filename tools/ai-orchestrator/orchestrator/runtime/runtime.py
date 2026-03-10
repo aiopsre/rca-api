@@ -21,7 +21,7 @@ from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
-from .tool_registry import get_tool_metadata
+from .tool_registry import get_tool_metadata, get_tool_name_by_kind
 from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
 
@@ -2029,14 +2029,17 @@ class OrchestratorRuntime:
             latency_ms = item.get("latency_ms")
             if not isinstance(tool_request, dict) or not isinstance(tool_result, dict):
                 continue
-            if tool_name == "mcp.query_logs":
+            # Use ToolMetadata.kind to determine warm logic
+            tool_meta = get_tool_metadata(tool_name)
+            tool_kind = tool_meta.kind if tool_meta else "unknown"
+            if tool_kind == "logs":
                 self._warm_logs_query_state(
                     graph_state=graph_state,
                     tool_request=tool_request,
                     tool_result=tool_result,
                     latency_ms=int(latency_ms or 0),
                 )
-            elif tool_name == "mcp.query_metrics":
+            elif tool_kind == "metrics":
                 self._warm_metrics_query_state(
                     graph_state=graph_state,
                     tool_request=tool_request,
@@ -2137,30 +2140,8 @@ class OrchestratorRuntime:
             raise RuntimeError("prompt skill tool request missing input payload")
         started_at = time.monotonic()
         try:
-            # Try call_tool for dynamic tool execution via MCP
-            try:
-                result = self.call_tool(tool=tool_name, params=input_payload)
-            except (AttributeError, RuntimeError) as call_exc:
-                # Fallback to direct method calls for backward compatibility
-                # when tool_invoker or mcp_client is not available
-                if tool_name == "mcp.query_logs":
-                    result = self.query_logs(
-                        datasource_id=str(input_payload.get("datasource_id") or ""),
-                        query=str(input_payload.get("query") or ""),
-                        start_ts=int(input_payload.get("start_ts") or 0),
-                        end_ts=int(input_payload.get("end_ts") or 0),
-                        limit=int(input_payload.get("limit") or 0),
-                    )
-                elif tool_name == "mcp.query_metrics":
-                    result = self.query_metrics(
-                        datasource_id=str(input_payload.get("datasource_id") or ""),
-                        promql=str(input_payload.get("promql") or ""),
-                        start_ts=int(input_payload.get("start_ts") or 0),
-                        end_ts=int(input_payload.get("end_ts") or 0),
-                        step_s=int(input_payload.get("step_seconds") or 0),
-                    )
-                else:
-                    raise RuntimeError(f"unsupported prompt skill tool execution: {tool_name or '<empty>'}") from call_exc
+            # Execute tool via MCP - no fallback, fail if MCP unavailable
+            result = self.call_tool(tool=tool_name, params=input_payload)
         except Exception as exc:
             latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
             self.report_tool_call(
@@ -2306,6 +2287,11 @@ class OrchestratorRuntime:
         end_ts: int,
         step_s: int,
     ) -> dict[str, Any]:
+        if self._tool_invoker is None:
+            raise RuntimeError("tool_invoker is not configured, cannot query metrics")
+        tool_name = get_tool_name_by_kind("metrics")
+        if not tool_name:
+            raise RuntimeError("no metrics tool registered in ToolRegistry")
         request = {
             "datasource_id": datasource_id,
             "expr": promql,
@@ -2313,21 +2299,10 @@ class OrchestratorRuntime:
             "time_range_end": {"seconds": int(end_ts), "nanos": 0},
             "step_seconds": int(step_s),
         }
-        if self._tool_invoker is not None:
-            return self._query_via_tool_invoker(
-                operation="query.metrics.tool",
-                tool="mcp.query_metrics",
-                input_payload=request,
-            )
-        return self._execute_with_retry(
-            "query.metrics",
-            lambda: self._client.query_metrics(
-                datasource_id=datasource_id,
-                promql=promql,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                step_s=step_s,
-            ),
+        return self._query_via_tool_invoker(
+            operation="query.metrics.tool",
+            tool=tool_name,
+            input_payload=request,
         )
 
     def query_logs(
@@ -2339,6 +2314,11 @@ class OrchestratorRuntime:
         end_ts: int,
         limit: int,
     ) -> dict[str, Any]:
+        if self._tool_invoker is None:
+            raise RuntimeError("tool_invoker is not configured, cannot query logs")
+        tool_name = get_tool_name_by_kind("logs")
+        if not tool_name:
+            raise RuntimeError("no logs tool registered in ToolRegistry")
         request = {
             "datasource_id": datasource_id,
             "query": query,
@@ -2347,21 +2327,10 @@ class OrchestratorRuntime:
             "time_range_end": {"seconds": int(end_ts), "nanos": 0},
             "limit": int(limit),
         }
-        if self._tool_invoker is not None:
-            return self._query_via_tool_invoker(
-                operation="query.logs.tool",
-                tool="mcp.query_logs",
-                input_payload=request,
-            )
-        return self._execute_with_retry(
-            "query.logs",
-            lambda: self._client.query_logs(
-                datasource_id=datasource_id,
-                query=query,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                limit=limit,
-            ),
+        return self._query_via_tool_invoker(
+            operation="query.logs.tool",
+            tool=tool_name,
+            input_payload=request,
         )
 
     def save_mock_evidence(

@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from ..evidence_plan import build_candidates, rank_candidates
 from ..runtime.runtime import OrchestratorRuntime
+from ..runtime.tool_registry import get_tool_name_by_kind
 from ..state import GraphState
 from .config import OrchestratorConfig
 from .diagnosis import (
@@ -420,7 +421,7 @@ def query_metrics_node(state: GraphState, runtime: OrchestratorRuntime) -> dict[
             state,
             runtime,
             node_name="query_metrics",
-            tool_name="mcp.query_metrics",
+            tool_name=get_tool_name_by_kind("metrics") or "unknown.metrics",
             request_json=request_payload,
             response_json={"status": "error"},
             started_ms=started_ms,
@@ -440,7 +441,7 @@ def query_metrics_node(state: GraphState, runtime: OrchestratorRuntime) -> dict[
         state,
         runtime,
         node_name="query_metrics",
-        tool_name="mcp.query_metrics",
+        tool_name=get_tool_name_by_kind("metrics") or "unknown.metrics",
         request_json=request_payload,
         response_json=query_toolcall_response(result),
         started_ms=started_ms,
@@ -562,7 +563,7 @@ def query_logs_node(state: GraphState, runtime: OrchestratorRuntime) -> dict[str
             state,
             runtime,
             node_name="query_logs",
-            tool_name="mcp.query_logs",
+            tool_name=get_tool_name_by_kind("logs") or "unknown.logs",
             request_json=request_payload,
             response_json={"status": "error"},
             started_ms=started_ms,
@@ -582,7 +583,7 @@ def query_logs_node(state: GraphState, runtime: OrchestratorRuntime) -> dict[str
         state,
         runtime,
         node_name="query_logs",
-        tool_name="mcp.query_logs",
+        tool_name=get_tool_name_by_kind("logs") or "unknown.logs",
         request_json=request_payload,
         response_json=query_toolcall_response(result),
         started_ms=started_ms,

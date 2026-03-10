@@ -16,6 +16,12 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from orchestrator.runtime.runtime import OrchestratorRuntime
+from orchestrator.runtime.tool_registry import (
+    get_tool_metadata,
+    get_tool_name_by_kind,
+    register_tool_metadata,
+    ToolMetadata,
+)
 from orchestrator.langgraph.nodes import (
     _merge_diagnosis_patch as merge_langgraph_diagnosis_patch,
     query_logs_node,
@@ -60,6 +66,63 @@ def _write_skill_dir(
         executor_path = root_dir / "scripts" / "executor.py"
         executor_path.parent.mkdir(parents=True, exist_ok=True)
         executor_path.write_text(script_body, encoding="utf-8")
+
+
+def _make_mock_call_tool(
+    logs_result: dict | None = None,
+    metrics_result: dict | None = None,
+):
+    """Create a mock call_tool function for testing.
+
+    Args:
+        logs_result: Result to return for logs tools (tool name contains 'logs').
+        metrics_result: Result to return for metrics tools (tool name contains 'metrics').
+
+    Returns:
+        A function that can be assigned to runtime.call_tool.
+    """
+    default_logs = {
+        "queryResultJSON": '{"data":{"result":[]}}',
+        "rowCount": 0,
+        "resultSizeBytes": 0,
+        "isTruncated": False,
+    }
+    default_metrics = {
+        "queryResultJSON": '{"data":{"result":[]}}',
+        "rowCount": 0,
+        "resultSizeBytes": 0,
+        "isTruncated": False,
+    }
+    logs = logs_result or default_logs
+    metrics = metrics_result or default_metrics
+
+    def _mock_call_tool(tool: str, params: dict | None, idempotency_key: str | None = None):
+        if "logs" in tool:
+            return dict(logs)
+        if "metrics" in tool:
+            return dict(metrics)
+        raise RuntimeError(f"unknown tool: {tool}")
+
+    return _mock_call_tool
+
+
+def _register_default_tool_metadata() -> None:
+    """Register default tool metadata for testing.
+
+    This should be called at the start of tests that need tool metadata.
+    """
+    register_tool_metadata(ToolMetadata(
+        tool_name="mcp.query_logs",
+        kind="logs",
+        domain="observability",
+        tags=("logs", "query"),
+    ))
+    register_tool_metadata(ToolMetadata(
+        tool_name="mcp.query_metrics",
+        kind="metrics",
+        domain="observability",
+        tags=("metrics", "query"),
+    ))
 
 
 def _zip_dir(root_dir: Path, zip_path: Path) -> str:
@@ -1979,12 +2042,12 @@ class SkillCatalogTest(unittest.TestCase):
 
             toolcalls: list[dict[str, object]] = []
             runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
-            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+            runtime.call_tool = _make_mock_call_tool(logs_result={  # type: ignore[method-assign]
                 "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
                 "rowCount": 1,
                 "resultSizeBytes": 88,
                 "isTruncated": False,
-            }
+            })
 
             state = GraphState(
                 job_id="job-1",
@@ -2209,18 +2272,20 @@ class SkillCatalogTest(unittest.TestCase):
 
             toolcalls: list[dict[str, object]] = []
             runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
-            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
-                "rowCount": 1,
-                "resultSizeBytes": 96,
-                "isTruncated": False,
-            }
-            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
-                "rowCount": 1,
-                "resultSizeBytes": 88,
-                "isTruncated": False,
-            }
+            runtime.call_tool = _make_mock_call_tool(  # type: ignore[method-assign]
+                metrics_result={
+                    "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                    "rowCount": 1,
+                    "resultSizeBytes": 96,
+                    "isTruncated": False,
+                },
+                logs_result={
+                    "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                    "rowCount": 1,
+                    "resultSizeBytes": 88,
+                    "isTruncated": False,
+                },
+            )
 
             state = GraphState(
                 job_id="job-1",
@@ -2468,7 +2533,7 @@ class SkillCatalogTest(unittest.TestCase):
                 skills_tool_calling_mode="evidence_plan_dual_tool",
                 skill_agent=_BrokenToolAgent(),
             )
-            runtime.query_metrics = lambda **kwargs: self.fail("query_metrics must not run for duplicate tool sequence")  # type: ignore[method-assign]
+            runtime.call_tool = lambda *args, **kwargs: self.fail("call_tool must not run for duplicate tool sequence")  # type: ignore[method-assign]
             state = GraphState(job_id="job-1", incident_id="inc-1", evidence_mode="query")
             result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
             self.assertIsNone(result)
@@ -2536,7 +2601,7 @@ class SkillCatalogTest(unittest.TestCase):
                 skill_agent=_BrokenToolAgent(),
             )
             runtime.report_tool_call = lambda **kwargs: 1  # type: ignore[method-assign]
-            runtime.query_logs = lambda **kwargs: self.fail("query_logs must not run for invalid tool plan")  # type: ignore[method-assign]
+            runtime.call_tool = lambda *args, **kwargs: self.fail("call_tool must not run for invalid tool plan")  # type: ignore[method-assign]
 
             state = GraphState(
                 job_id="job-1",
@@ -2626,7 +2691,7 @@ class SkillCatalogTest(unittest.TestCase):
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_PromptOnlyAgent(),
             )
-            runtime.query_logs = lambda **kwargs: self.fail("query_logs must not run when binding allow_tools is empty")  # type: ignore[method-assign]
+            runtime.call_tool = lambda *args, **kwargs: self.fail("call_tool must not run when binding allow_tools is empty")  # type: ignore[method-assign]
 
             state = GraphState(job_id="job-1", incident_id="inc-1", evidence_plan={"candidates": []}, evidence_mode="query")
             result = runtime.consume_prompt_skill(capability="evidence.plan", graph_state=state)
@@ -2849,18 +2914,20 @@ class SkillCatalogTest(unittest.TestCase):
 
             toolcalls: list[dict[str, object]] = []
             runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
-            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
-                "rowCount": 1,
-                "resultSizeBytes": 96,
-                "isTruncated": False,
-            }
-            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
-                "rowCount": 1,
-                "resultSizeBytes": 88,
-                "isTruncated": False,
-            }
+            runtime.call_tool = _make_mock_call_tool(  # type: ignore[method-assign]
+                metrics_result={
+                    "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                    "rowCount": 1,
+                    "resultSizeBytes": 96,
+                    "isTruncated": False,
+                },
+                logs_result={
+                    "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
+                    "rowCount": 1,
+                    "resultSizeBytes": 88,
+                    "isTruncated": False,
+                },
+            )
 
             state = GraphState(
                 job_id="job-1",
@@ -3010,12 +3077,14 @@ class SkillCatalogTest(unittest.TestCase):
                 skill_agent=_SelectingAgent(),
             )
 
-            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
-                "rowCount": 1,
-                "resultSizeBytes": 96,
-                "isTruncated": False,
-            }
+            runtime.call_tool = _make_mock_call_tool(  # type: ignore[method-assign]
+                metrics_result={
+                    "queryResultJSON": '{"data":{"result":[{"metric":{"service":"svc-a"},"values":[[1710000000,"0.12"]]}]}}',
+                    "rowCount": 1,
+                    "resultSizeBytes": 96,
+                    "isTruncated": False,
+                }
+            )
 
             state = GraphState(
                 job_id="job-1",
@@ -3235,12 +3304,12 @@ class SkillCatalogTest(unittest.TestCase):
 
             toolcalls: list[dict[str, object]] = []
             runtime.report_tool_call = lambda **kwargs: toolcalls.append(kwargs) or 1  # type: ignore[method-assign]
-            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
+            runtime.call_tool = _make_mock_call_tool(logs_result={  # type: ignore[method-assign]
                 "queryResultJSON": '{"data":{"result":[{"stream":{"service.name":"svc-a"},"values":[[1710000000,"boom"]]}]}}',
                 "rowCount": 1,
                 "resultSizeBytes": 88,
                 "isTruncated": False,
-            }
+            })
 
             state = GraphState(
                 job_id="job-1",
@@ -3762,12 +3831,14 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 skill_agent=_FakeAgent(),
             )
             runtime.report_tool_call = lambda **kwargs: 1  # type: ignore[method-assign]
-            runtime.query_logs = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[]}}',
-                "rowCount": 0,
-                "resultSizeBytes": 0,
-                "isTruncated": False,
-            }
+            runtime.call_tool = _make_mock_call_tool(  # type: ignore[method-assign]
+                logs_result={
+                    "queryResultJSON": '{"data":{"result":[]}}',
+                    "rowCount": 0,
+                    "resultSizeBytes": 0,
+                    "isTruncated": False,
+                }
+            )
 
             state = GraphState(
                 job_id="job-1",
@@ -3887,12 +3958,14 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 skill_agent=_FakeAgent(),
             )
             runtime.report_tool_call = lambda **kwargs: 1  # type: ignore[method-assign]
-            runtime.query_metrics = lambda **kwargs: {  # type: ignore[method-assign]
-                "queryResultJSON": '{"data":{"result":[]}}',
-                "rowCount": 0,
-                "resultSizeBytes": 0,
-                "isTruncated": False,
-            }
+            runtime.call_tool = _make_mock_call_tool(  # type: ignore[method-assign]
+                metrics_result={
+                    "queryResultJSON": '{"data":{"result":[]}}',
+                    "rowCount": 0,
+                    "resultSizeBytes": 0,
+                    "isTruncated": False,
+                }
+            )
 
             state = GraphState(
                 job_id="job-1",
@@ -4132,6 +4205,10 @@ class TestSkillsResolveAndBindingContract(unittest.TestCase):
         # Ensure contract set is not accidentally shrunk (core tools must remain)
         for required in ("skill.select", "skill.consume", "skill.execute", "skill.fallback", "skill.tool_reuse"):
             self.assertIn(required, ALLOWED_SKILL_OBSERVATION_TOOLS, msg=f"contract must include {required!r}")
+
+
+# Register default tool metadata for all tests
+_register_default_tool_metadata()
 
 
 if __name__ == "__main__":

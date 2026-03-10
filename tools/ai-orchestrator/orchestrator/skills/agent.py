@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..runtime.tool_registry import get_tool_metadata
 from .capabilities import PromptSkillConsumeResult
 
 
@@ -52,6 +53,42 @@ def _extract_json_payload(raw_text: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError("agent response must be a JSON object")
     return payload
+
+
+def _build_tool_input_contract(tool_name: str) -> dict[str, str]:
+    """Build input field descriptions for a tool based on its kind.
+
+    Args:
+        tool_name: The tool name to look up.
+
+    Returns:
+        Dictionary mapping field names to descriptions.
+    """
+    meta = get_tool_metadata(tool_name)
+    kind = meta.kind if meta else "unknown"
+
+    # Common fields for all query tools
+    contract = {
+        "datasource_id": "required string when tool is set",
+        "start_ts": "required integer when tool is set",
+        "end_ts": "required integer when tool is set",
+    }
+
+    # Kind-specific fields
+    if kind == "logs":
+        contract["query"] = f"required string for {tool_name}"
+        contract["limit"] = f"required integer for {tool_name}"
+    elif kind == "metrics":
+        contract["promql"] = f"required string for {tool_name}"
+        contract["step_seconds"] = f"required integer for {tool_name}"
+    else:
+        # Unknown kind - include both sets of fields
+        contract["query"] = f"string for logs-like tools"
+        contract["promql"] = f"string for metrics-like tools"
+        contract["limit"] = f"integer for logs-like tools"
+        contract["step_seconds"] = f"integer for metrics-like tools"
+
+    return contract
 
 
 class SkillSelectionResult:
@@ -334,15 +371,7 @@ class PromptSkillAgent:
                 "tool_calls": [
                     {
                         "tool": "string or empty",
-                        "input": {
-                            "datasource_id": "required string when tool is set",
-                            "query": "required string for mcp.query_logs",
-                            "promql": "required string for mcp.query_metrics",
-                            "start_ts": "required integer when tool is set",
-                            "end_ts": "required integer when tool is set",
-                            "limit": "required integer for mcp.query_logs",
-                            "step_seconds": "required integer for mcp.query_metrics",
-                        },
+                        "input": _build_tool_input_contract(available_tools[0]) if available_tools else {},
                         "reason": "short explanation",
                     }
                 ],
