@@ -21,6 +21,7 @@ from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
+from .tool_catalog import ToolCatalogSnapshot, ToolSpec, build_tool_catalog_snapshot
 from .tool_registry import get_tool_metadata, get_tool_name_by_kind
 from .toolcall_reporter import ToolCallReporter
 from .verification_runner import VerificationBudget, VerificationRunner, VerificationStepResult
@@ -291,6 +292,7 @@ class OrchestratorRuntime:
         skills_execution_mode: str = "catalog",
         skills_tool_calling_mode: str = "disabled",
         skill_agent: PromptSkillAgent | None = None,
+        tool_catalog_snapshot: ToolCatalogSnapshot | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
@@ -303,6 +305,7 @@ class OrchestratorRuntime:
         self._skill_agent = skill_agent
         self._script_executor_runner = ScriptExecutorRunner()
         self._started = False
+        self._tool_catalog_snapshot = tool_catalog_snapshot
         if not self._job_id:
             raise RuntimeError("job_id is required")
 
@@ -2406,6 +2409,112 @@ class OrchestratorRuntime:
         from ..tooling.invoker import ToolInvokerChain
 
         self._tool_invoker = ToolInvokerChain(toolset_invokers=[self._tool_invoker, invoker])
+
+    def get_tool_catalog_snapshot(self) -> ToolCatalogSnapshot | None:
+        """Get the current tool catalog snapshot.
+
+        Returns:
+            ToolCatalogSnapshot if set, None otherwise.
+        """
+        return self._tool_catalog_snapshot
+
+    def set_tool_catalog_snapshot(self, snapshot: ToolCatalogSnapshot) -> None:
+        """Set or update the tool catalog snapshot.
+
+        This should be called after merging MCP server invokers to update
+        the snapshot with the complete set of available tools.
+
+        Args:
+            snapshot: The new ToolCatalogSnapshot to use.
+        """
+        self._tool_catalog_snapshot = snapshot
+
+    def build_tool_catalog_snapshot_from_invoker(self) -> ToolCatalogSnapshot:
+        """Build a ToolCatalogSnapshot from the current tool invoker.
+
+        This method extracts tool information from the invoker and builds
+        an immutable snapshot for function calling.
+
+        Returns:
+            ToolCatalogSnapshot built from the invoker's tools.
+        """
+        toolset_ids = self._current_toolset_chain()
+        tool_specs: list[ToolSpec] = []
+
+        if self._tool_invoker is not None:
+            # Get allowed tools from invoker
+            try:
+                allowed = self._tool_invoker.allowed_tools()
+            except Exception:  # noqa: BLE001
+                allowed = []
+            if not isinstance(allowed, list):
+                allowed = []
+
+            # Get provider summaries for additional metadata
+            provider_summaries: list[dict[str, Any]] = []
+            try:
+                summaries = self._tool_invoker.provider_summaries()
+                if isinstance(summaries, list):
+                    provider_summaries = [s for s in summaries if isinstance(s, dict)]
+            except Exception:  # noqa: BLE001
+                pass
+
+            # Build a map of tool -> provider info
+            tool_to_provider: dict[str, dict[str, Any]] = {}
+            for summary in provider_summaries:
+                provider_id = str(summary.get("provider_id") or "").strip()
+                allow_tools = summary.get("allow_tools")
+                if isinstance(allow_tools, list):
+                    for tool in allow_tools:
+                        tool_name = normalize_tool_name(str(tool))
+                        if tool_name:
+                            tool_to_provider[tool_name] = {
+                                "provider_id": provider_id,
+                                "provider_type": str(summary.get("provider_type") or ""),
+                            }
+
+            # Create ToolSpec for each tool
+            for tool_name in allowed:
+                canonical_name = normalize_tool_name(tool_name)
+                if not canonical_name:
+                    continue
+
+                provider_info = tool_to_provider.get(canonical_name, {})
+                metadata = get_tool_metadata(canonical_name)
+
+                # Use metadata tags if available, otherwise infer from tool name
+                if metadata:
+                    tags = metadata.tags
+                    kind = metadata.kind
+                    description = metadata.description
+                    read_only = metadata.read_only
+                    risk_level = metadata.risk_level
+                else:
+                    # Import here to avoid circular dependency
+                    from .tool_discovery import infer_tags_from_tool_name
+                    tags = infer_tags_from_tool_name(canonical_name)
+                    kind = "unknown"
+                    description = ""
+                    read_only = True
+                    risk_level = "low"
+
+                spec = ToolSpec(
+                    name=canonical_name,
+                    description=description,
+                    input_schema={},
+                    output_schema={},
+                    kind=kind,
+                    tags=tags,
+                    provider_id=provider_info.get("provider_id", ""),
+                    read_only=read_only,
+                    risk_level=risk_level,
+                )
+                tool_specs.append(spec)
+
+        return build_tool_catalog_snapshot(
+            toolset_ids=toolset_ids,
+            tool_specs=tool_specs,
+        )
 
     def observe_post_finalize(
         self,

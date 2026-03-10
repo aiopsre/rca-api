@@ -685,6 +685,21 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 except Exception as mcp_exc:  # noqa: BLE001
                     _log(f"job={job_id} MCP server invoker build failed: {mcp_exc}")
 
+        # Build tool catalog snapshot after merging all invokers
+        # This provides an immutable snapshot for function calling
+        if settings.fc_runtime_snapshot_enabled:
+            try:
+                snapshot = runtime.build_tool_catalog_snapshot_from_invoker()
+                runtime.set_tool_catalog_snapshot(snapshot)
+                if debug:
+                    _log(
+                        f"[DEBUG] job={job_id} built tool catalog snapshot "
+                        f"toolset_ids={list(snapshot.toolset_ids)} "
+                        f"tool_count={len(snapshot.tools)}"
+                    )
+            except Exception as snapshot_exc:  # noqa: BLE001
+                _log(f"job={job_id} tool catalog snapshot build failed: {snapshot_exc}")
+
         if selection_error_message:
             try:
                 runtime.finalize(

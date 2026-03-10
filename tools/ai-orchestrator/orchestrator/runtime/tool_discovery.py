@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 import fnmatch
 
+from .tool_catalog import ToolCatalogSnapshot
 from .tool_registry import get_tool_metadata
 
 if TYPE_CHECKING:
@@ -102,10 +103,11 @@ class ToolDiscoveryResult:
         return bool(self.by_tag.get(tag))
 
 
-def _infer_tags_from_tool_name(tool_name: str) -> tuple[str, ...]:
+def infer_tags_from_tool_name(tool_name: str) -> tuple[str, ...]:
     """Infer classification tags from tool name.
 
     Analyzes the tool name for common patterns to determine its category.
+    This is a public utility used by both discovery and snapshot building.
 
     Args:
         tool_name: The name of the tool.
@@ -141,6 +143,10 @@ def _infer_tags_from_tool_name(tool_name: str) -> tuple[str, ...]:
         tags.append("search")
 
     return tuple(tags)
+
+
+# Keep the old private function for backward compatibility
+_infer_tags_from_tool_name = infer_tags_from_tool_name
 
 
 def _create_tool_descriptor(
@@ -194,11 +200,66 @@ def _create_tool_descriptor(
     )
 
 
+def discover_tools_from_snapshot(snapshot: ToolCatalogSnapshot) -> ToolDiscoveryResult:
+    """Discover tools from a ToolCatalogSnapshot.
+
+    This is the preferred method when the snapshot is available,
+    as it provides stable, job-scoped tool information.
+
+    Args:
+        snapshot: The ToolCatalogSnapshot to discover tools from.
+
+    Returns:
+        ToolDiscoveryResult containing all tools from the snapshot.
+    """
+    tools: list[ToolDescriptor] = []
+
+    for spec in snapshot.tools:
+        descriptor = ToolDescriptor(
+            tool_name=spec.name,
+            description=spec.description,
+            input_schema=spec.input_schema,
+            output_schema=spec.output_schema,
+            provider_id=spec.provider_id,
+            tags=spec.tags,
+        )
+        tools.append(descriptor)
+
+    # Build tag index
+    by_tag: dict[str, list[ToolDescriptor]] = {}
+    for tool in tools:
+        for tag in tool.tags:
+            by_tag.setdefault(tag, []).append(tool)
+
+    return ToolDiscoveryResult(tools=tuple(tools), by_tag=by_tag)
+
+
 def discover_tools(runtime: "OrchestratorRuntime") -> ToolDiscoveryResult:
     """Discover all tools available through the runtime.
 
-    Examines the tool invoker chain to find all allowed tools and creates
-    descriptors with inferred tags.
+    When the runtime has a ToolCatalogSnapshot (set via fc_runtime_snapshot_enabled),
+    discovery is based on the snapshot for stable, job-scoped tool information.
+    Otherwise, falls back to querying the tool invoker directly.
+
+    Args:
+        runtime: The orchestrator runtime instance.
+
+    Returns:
+        ToolDiscoveryResult containing all available tools.
+    """
+    # Check for snapshot-based discovery (FC migration path)
+    snapshot = getattr(runtime, "_tool_catalog_snapshot", None)
+    if snapshot is not None:
+        return discover_tools_from_snapshot(snapshot)
+
+    # Fallback to invoker-based discovery
+    return _discover_tools_from_invoker(runtime)
+
+
+def _discover_tools_from_invoker(runtime: "OrchestratorRuntime") -> ToolDiscoveryResult:
+    """Discover tools by querying the tool invoker directly.
+
+    This is the legacy discovery path, used as fallback when no snapshot is available.
 
     Args:
         runtime: The orchestrator runtime instance.
