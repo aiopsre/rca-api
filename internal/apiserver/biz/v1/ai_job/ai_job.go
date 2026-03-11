@@ -20,6 +20,7 @@ import (
 	skillsetbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_skillset"
 	toolmetadatabiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	verificationbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/verification"
+	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
@@ -459,6 +460,26 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 				mcpServersJSON := string(data)
 				resp.McpServersJSON = &mcpServersJSON
 			}
+		}
+
+		// Resolve structured tool providers from toolset_provider_bindings
+		// Resolve toolsetIDs from strategy config (correct path), NOT from skillsets
+		var toolsetIDs []string
+		configBiz := internalstrategyconfig.New(b.store)
+		toolsetItems, _, toolsetErr := configBiz.ResolveToolsetByPipeline(ctx, pipeline)
+		if toolsetErr == nil && len(toolsetItems) > 0 {
+			for _, item := range toolsetItems {
+				if item != nil && item.ToolsetName != "" {
+					toolsetIDs = append(toolsetIDs, item.ToolsetName)
+				}
+			}
+		}
+
+		// Use provider resolver to build resolvedToolProviders
+		providerResolver := NewProviderResolver(b.store)
+		providerSnapshot, resolveErr := providerResolver.Resolve(ctx, toolsetIDs, pipeline)
+		if resolveErr == nil && providerSnapshot != nil && len(providerSnapshot.Providers) > 0 {
+			resp.ResolvedToolProviders = providerSnapshot.ToProto()
 		}
 	}
 

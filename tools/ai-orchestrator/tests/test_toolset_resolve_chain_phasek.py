@@ -51,6 +51,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json="",
+            # Disable claim provider snapshot to test server resolve path
+            claim_provider_snapshot_enabled=False,
         )
 
     def test_server_toolsets_chain_routes_to_second_toolset(self) -> None:
@@ -99,7 +101,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
         self.assertEqual(source, "server_resolve")
         self.assertEqual(toolsets, ["ts_one", "ts_two"])
         self.assertEqual(result["output"]["from"], "two")
-        self.assertEqual(called_tools, ["two:query_logs"])
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(called_tools, ["two:logs.query"])
 
     def test_runner_toolset_select_observation_keeps_toolsets_list_for_server_source(self) -> None:
         class _FakeClient:
@@ -181,7 +184,8 @@ class ToolsetResolveChainPhaseKTest(unittest.TestCase):
         self.assertEqual(observed["tool"], "toolset.select")
         self.assertEqual(observed["response"]["source"], "server_resolve")
         self.assertEqual(observed["response"]["toolsets"], ["ts_one", "ts_two"])
-        self.assertEqual(observed["response"]["available_tools"], ["query_logs", "query_metrics"])
+        # Tools are normalized to canonical dotted names
+        self.assertEqual(observed["response"]["available_tools"], ["logs.query", "metrics.query"])
 
 
 if __name__ == "__main__":

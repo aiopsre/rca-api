@@ -52,6 +52,8 @@ class ToolsetRegistryRunnerTest(unittest.TestCase):
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json=toolset_config_json,
+            # Disable claim provider snapshot to test local override path
+            claim_provider_snapshot_enabled=False,
         )
 
     def test_pipeline_selects_toolset_and_builds_invoker(self) -> None:
@@ -116,8 +118,9 @@ class ToolsetRegistryRunnerTest(unittest.TestCase):
             self.assertIsNotNone(runtime.tool_invoker)
             result = runtime.tool_invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
 
-        self.assertEqual(result["output"]["echo_tool"], "query_logs")
-        self.assertEqual(called_tools, ["query_logs"])
+        self.assertEqual(result["output"]["echo_tool"], "logs.query")
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(called_tools, ["logs.query"])
 
     def test_unknown_toolset_fail_fast_no_graph_or_toolcall(self) -> None:
         graph_invoked = {"count": 0}
@@ -269,7 +272,8 @@ class VerificationRuntimeToolInvokerTest(unittest.TestCase):
         )
         self.assertEqual(len(results), 1)
         self.assertTrue(results[0].meets_expectation)
-        self.assertEqual(called_tools, ["query_logs"])
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(called_tools, ["logs.query"])
         self.assertEqual(len(published), 1)
 
 

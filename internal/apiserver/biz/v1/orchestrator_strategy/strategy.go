@@ -65,10 +65,11 @@ func (b *strategyBiz) Resolve(
 		return nil, errno.ErrOrchestratorStrategyNotFound
 	}
 	if b != nil && b.configBiz != nil {
-		items, _, resolveErr := b.configBiz.ResolveSkillsetByPipeline(ctx, strategy.GetPipeline())
-		if resolveErr == nil && len(items) > 0 {
-			skillsetIDs := make([]string, 0, len(items))
-			for _, item := range items {
+		// Resolve skillsetIDs for the pipeline
+		skillsetItems, _, skillsetErr := b.configBiz.ResolveSkillsetByPipeline(ctx, strategy.GetPipeline())
+		if skillsetErr == nil && len(skillsetItems) > 0 {
+			skillsetIDs := make([]string, 0, len(skillsetItems))
+			for _, item := range skillsetItems {
 				if item == nil {
 					continue
 				}
@@ -77,6 +78,21 @@ func (b *strategyBiz) Resolve(
 				}
 			}
 			strategy.SkillsetIDs = skillsetIDs
+		}
+
+		// Resolve toolsetIDs for the pipeline (new canonical field)
+		toolsetItems, _, toolsetErr := b.configBiz.ResolveToolsetByPipeline(ctx, strategy.GetPipeline())
+		if toolsetErr == nil && len(toolsetItems) > 0 {
+			toolsetIDs := make([]string, 0, len(toolsetItems))
+			for _, item := range toolsetItems {
+				if item == nil {
+					continue
+				}
+				if toolsetID := strings.TrimSpace(item.ToolsetName); toolsetID != "" {
+					toolsetIDs = append(toolsetIDs, toolsetID)
+				}
+			}
+			strategy.ToolsetIDs = toolsetIDs
 		}
 	}
 

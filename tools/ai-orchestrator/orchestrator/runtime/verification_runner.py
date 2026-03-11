@@ -35,10 +35,10 @@ class VerificationBudget:
 
 
 def _normalize_tool_name(tool: str) -> str:
-    normalized = str(tool).strip()
-    if normalized.startswith("mcp."):
-        return normalized[4:]
-    return normalized
+    """Normalize a tool name to canonical dotted form."""
+    from ..tooling.canonical_names import normalize_tool_name
+
+    return normalize_tool_name(tool)
 
 
 def _parse_json_object(raw: Any) -> dict[str, Any] | None:

@@ -20,6 +20,7 @@ from orchestrator.runtime.evidence_publisher import EvidencePublisher
 from orchestrator.runtime.post_finalize import PostFinalizeObserver
 from orchestrator.runtime.retry import RetryExecutor, RetryPolicy
 from orchestrator.runtime.runtime import OrchestratorRuntime
+from orchestrator.runtime.tool_registry import ToolMetadata, register_tool_metadata
 from orchestrator.runtime.toolcall_reporter import ToolCallReporter
 from orchestrator.runtime.verification_runner import VerificationBudget, VerificationRunner
 from orchestrator.sdk.errors import OrchestratorErrorCategory, RCAApiError
@@ -27,6 +28,39 @@ from orchestrator.sdk.runtime_contract import EvidencePublishRequest, ToolCallRe
 from orchestrator.tooling import ToolInvokeError
 from orchestrator.tooling.invoker import TOOLING_META_KEY
 from orchestrator.tools_rca_api import RCAApiClient
+
+
+def _register_default_tool_metadata() -> None:
+    """Register default tool metadata for testing.
+
+    Tool names use canonical dotted format (domain.action) with underscore aliases.
+    This enables get_tool_name_by_kind() to work correctly.
+    """
+    register_tool_metadata(ToolMetadata(
+        tool_name="logs.query",
+        kind="logs",
+        domain="observability",
+        tags=("logs", "query"),
+        aliases=("query_logs", "mcp.query_logs"),
+    ))
+    register_tool_metadata(ToolMetadata(
+        tool_name="metrics.query",
+        kind="metrics",
+        domain="observability",
+        tags=("metrics", "query"),
+        aliases=("query_metrics", "mcp.query_metrics"),
+    ))
+    register_tool_metadata(ToolMetadata(
+        tool_name="metrics.query_range",
+        kind="metrics",
+        domain="observability",
+        tags=("metrics", "query"),
+        aliases=("query_range", "mcp.query_range"),
+    ))
+
+
+# Register tool metadata at module load time
+_register_default_tool_metadata()
 
 
 class _FakeResponse:
@@ -653,7 +687,8 @@ class RuntimeQueryToolsetResolutionTest(unittest.TestCase):
 
         self.assertEqual(client.query_logs_calls, 0)
         self.assertEqual(len(invoker.calls), 1)
-        self.assertEqual(invoker.calls[0]["tool"], "mcp.query_logs")
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(invoker.calls[0]["tool"], "logs.query")
         self.assertEqual(result["queryResultJSON"], '{"rows":[{"line":"from-invoker"}]}')
         self.assertEqual(result["rowCount"], 1)
 
@@ -890,9 +925,10 @@ class VerificationRunnerTest(unittest.TestCase):
         class _FakeMCPClient:
             def call(self, *, tool: str, input_payload: dict[str, Any], idempotency_key: str | None = None) -> dict[str, Any]:
                 called_tools.append(tool)
-                if tool == "query_metrics":
+                # Check for canonical dotted names (metrics.query, logs.query)
+                if tool == "metrics.query" or "metrics" in tool:
                     return {"output": {"queryResultJSON": '{"data":{"result":[{"value":[1,"2"]}]}}'}}
-                if tool == "query_logs":
+                if tool == "logs.query" or "logs" in tool:
                     return {"output": {"queryResultJSON": '{"rows":[{"line":"error timeout"}]}'}}
                 return {"output": {"queryResultJSON": '{"data":{"result":[]}}'}}
 
@@ -948,7 +984,8 @@ class VerificationRunnerTest(unittest.TestCase):
             source="ai_job",
             actor="ai:job-55",
         )
-        self.assertEqual(called_tools, ["query_metrics", "query_logs", "query_metrics"])
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(called_tools, ["metrics.query", "logs.query", "metrics.query"])
         self.assertEqual([item.meets_expectation for item in results], [True, True, False])
         third_observed = json.loads(results[2].observed)
         self.assertEqual(third_observed["reason"], "threshold_check")
@@ -1014,7 +1051,8 @@ class VerificationRunnerTest(unittest.TestCase):
         }
         results = runner.run(incident_id="inc-66", verification_plan=plan, source="ai_job", actor="ai:job-66")
         self.assertEqual(len(results), 2)
-        self.assertEqual(called_tools, ["query_logs"])
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(called_tools, ["logs.query"])
         self.assertEqual(len(published), 1)
         self.assertEqual(published[0]["step_index"], 2)
         first_observed = json.loads(results[0].observed)

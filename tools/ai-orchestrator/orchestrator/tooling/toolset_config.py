@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .canonical_names import normalize_tool_name as _canonical_normalize_tool_name
+
 
 def normalize_pipeline_key(pipeline: str | None) -> str:
     normalized = str(pipeline or "").strip().lower()
@@ -24,10 +26,19 @@ def normalize_pipeline_key(pipeline: str | None) -> str:
 
 
 def normalize_tool_name(tool: str | None) -> str:
-    normalized = str(tool or "").strip().lower()
-    if normalized.startswith("mcp."):
-        return normalized[4:]
-    return normalized
+    """Normalize a tool name to its canonical dotted form.
+
+    This function wraps the canonical naming module for backward compatibility.
+    It converts underscore names (e.g., 'get_incident') to dotted canonical names
+    (e.g., 'incident.get') and strips the 'mcp.' prefix if present.
+
+    Args:
+        tool: The raw tool name
+
+    Returns:
+        The canonical dotted tool name
+    """
+    return _canonical_normalize_tool_name(tool)
 
 
 @dataclass(frozen=True)

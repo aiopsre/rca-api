@@ -27,6 +27,7 @@ from ..tooling import (
     build_tool_invoker,
     build_tool_invoker_chain,
     build_tool_invoker_from_mcpserver_refs_json,
+    build_tool_invoker_from_resolved_providers,
     load_toolset_config,
     load_toolset_config_from_env,
 )
@@ -588,6 +589,11 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     job_start_time = time.time()
     WORKER_JOBS_IN_PROGRESS.inc()
 
+    # Phase 10C: When claim_provider_snapshot_enabled, strategy toolsets are used
+    # only for observation/governance, NOT for execution.
+    # ToolInvoker is built solely from claim response.
+    claim_provider_snapshot_mode = settings.claim_provider_snapshot_enabled
+
     try:
         prefetched_job = client.get_job(job_id)
         selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
@@ -597,12 +603,27 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             if not selected_template_id:
                 raise RuntimeError("resolve_strategy payload missing template_id")
             template_builder = get_template_builder(selected_template_id)
-            tool_invoker, selected_toolsets, selected_toolset_source = _build_tool_invoker_from_strategy(
-                settings,
-                client,
-                pipeline=selected_pipeline,
-                strategy_payload=strategy_payload,
-            )
+
+            # Phase 10C: Only build invoker from strategy if NOT in claim_provider_snapshot mode
+            if not claim_provider_snapshot_mode:
+                tool_invoker, selected_toolsets, selected_toolset_source = _build_tool_invoker_from_strategy(
+                    settings,
+                    client,
+                    pipeline=selected_pipeline,
+                    strategy_payload=strategy_payload,
+                )
+            else:
+                # In claim_provider_snapshot mode, toolset_ids are extracted for observation only
+                # The actual invoker will be built from claim response later
+                toolsets_payload = strategy_payload.get("toolsets")
+                if isinstance(toolsets_payload, list):
+                    for item in toolsets_payload:
+                        if isinstance(item, dict):
+                            tid = _extract_toolset_id(item)
+                            if tid:
+                                selected_toolsets.append(tid)
+                selected_toolset_source = "claim_snapshot_pending"
+
             skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
                 settings=settings,
                 client=client,
@@ -612,9 +633,15 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         else:
             selected_template_id = normalize_pipeline(selected_pipeline)
             template_builder = get_template_builder(selected_template_id)
-            tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
-                settings, client, selected_pipeline
-            )
+
+            # Phase 10C: Only build invoker from strategy if NOT in claim_provider_snapshot mode
+            if not claim_provider_snapshot_mode:
+                tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
+                    settings, client, selected_pipeline
+                )
+            else:
+                selected_toolset_source = "claim_snapshot_pending"
+
             skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
                 settings=settings,
                 client=client,
@@ -669,18 +696,57 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         # Use getattr to handle test fakes that don't have these methods
         get_claim_response = getattr(runtime, "get_claim_response", None)
         merge_tool_invoker = getattr(runtime, "merge_tool_invoker", None)
-        if callable(get_claim_response) and callable(merge_tool_invoker):
+        set_tool_invoker = getattr(runtime, "set_tool_invoker", None)
+        if callable(get_claim_response) and (callable(merge_tool_invoker) or callable(set_tool_invoker)):
             claim_response = get_claim_response()
-            if claim_response is not None and claim_response.has_mcp_servers():
+
+            # Prefer resolved_tool_providers (new canonical path)
+            if claim_response is not None and claim_response.has_resolved_tool_providers():
+                try:
+                    provider_invoker = build_tool_invoker_from_resolved_providers(
+                        claim_response.resolved_tool_providers,
+                        platform_base_url=settings.base_url,
+                    )
+                    if provider_invoker is not None:
+                        # Phase 10C: In claim_provider_snapshot mode, set directly (not merge)
+                        if claim_provider_snapshot_mode:
+                            if callable(set_tool_invoker):
+                                set_tool_invoker(provider_invoker)
+                            else:
+                                # Fallback: merge_tool_invoker will set if current is None
+                                merge_tool_invoker(provider_invoker)
+                        else:
+                            merge_tool_invoker(provider_invoker)
+                        selected_toolset_source = "claim_resolved_providers"
+                        if debug:
+                            provider_tools = provider_invoker.allowed_tools()
+                            _log(
+                                f"[DEBUG] job={job_id} {'set' if claim_provider_snapshot_mode else 'merged'} "
+                                f"resolved tool providers tools={provider_tools[:8]}... count={len(provider_tools)}"
+                            )
+                except Exception as provider_exc:  # noqa: BLE001
+                    _log(f"job={job_id} resolved tool providers invoker build failed: {provider_exc}")
+
+            # Fallback to legacy mcpServersJSON if no resolved_tool_providers
+            elif claim_response is not None and claim_response.has_mcp_servers():
                 try:
                     mcp_invoker = build_tool_invoker_from_mcpserver_refs_json(claim_response.mcp_servers_json)
                     if mcp_invoker is not None:
-                        merge_tool_invoker(mcp_invoker)
+                        # Phase 10C: In claim_provider_snapshot mode, set directly (not merge)
+                        if claim_provider_snapshot_mode:
+                            if callable(set_tool_invoker):
+                                set_tool_invoker(mcp_invoker)
+                            else:
+                                # Fallback: merge_tool_invoker will set if current is None
+                                merge_tool_invoker(mcp_invoker)
+                        else:
+                            merge_tool_invoker(mcp_invoker)
+                        selected_toolset_source = "claim_mcp_servers_json"
                         if debug:
                             mcp_tools = mcp_invoker.allowed_tools()
                             _log(
-                                f"[DEBUG] job={job_id} merged MCP server toolset tools={mcp_tools[:8]}... "
-                                f"count={len(mcp_tools)}"
+                                f"[DEBUG] job={job_id} {'set' if claim_provider_snapshot_mode else 'merged'} "
+                                f"MCP server toolset tools={mcp_tools[:8]}... count={len(mcp_tools)}"
                             )
                 except Exception as mcp_exc:  # noqa: BLE001
                     _log(f"job={job_id} MCP server invoker build failed: {mcp_exc}")

@@ -5,7 +5,7 @@ to OpenAI/LangChain function calling format and normalizing tool calls
 returned by LLMs.
 
 Key principles:
-- All tool names use canonical form (no 'mcp.' prefix)
+- All tool names use canonical dotted form (e.g., 'incident.get', 'logs.query')
 - Adapter works with ToolCatalogSnapshot for tool discovery
 - NormalizedToolCall provides a consistent interface for tool execution
 """
@@ -16,6 +16,28 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .tool_catalog import ToolCatalogSnapshot
+
+
+def _normalize_tool_name(name: str | None) -> str:
+    """Normalize a tool name to canonical dotted form.
+
+    This function handles:
+    1. Stripping 'mcp.' prefix
+    2. Converting underscore names to dotted canonical names
+
+    Args:
+        name: The raw tool name
+
+    Returns:
+        The canonical dotted tool name
+    """
+    value = str(name or "").strip().lower()
+    if value.startswith("mcp."):
+        value = value[4:]
+    # Import here to avoid circular dependency
+    from ..tooling.canonical_names import normalize_tool_name
+
+    return normalize_tool_name(value)
 
 
 @dataclass(frozen=True)
@@ -34,9 +56,10 @@ class NormalizedToolCall:
     call_id: str = ""
 
     def __post_init__(self) -> None:
-        # Ensure tool_name is canonical (no 'mcp.' prefix)
-        if self.tool_name.startswith("mcp."):
-            object.__setattr__(self, "tool_name", self.tool_name[4:])
+        # Ensure tool_name is canonical (no 'mcp.' prefix, dotted form)
+        normalized = _normalize_tool_name(self.tool_name)
+        if normalized != self.tool_name:
+            object.__setattr__(self, "tool_name", normalized)
 
 
 class FunctionCallingToolAdapter:
@@ -81,7 +104,7 @@ class FunctionCallingToolAdapter:
             tool_calls: List of tool calls from LLM response.
 
         Returns:
-            List of NormalizedToolCall instances with canonical names.
+            List of NormalizedToolCall instances with canonical dotted names.
         """
         normalized: list[NormalizedToolCall] = []
         for tc in tool_calls or []:
@@ -99,8 +122,8 @@ class FunctionCallingToolAdapter:
             if not name:
                 continue
 
-            # Normalize to canonical name (strip 'mcp.' prefix if present)
-            canonical_name = name[4:] if name.startswith("mcp.") else name
+            # Normalize to canonical dotted name
+            canonical_name = _normalize_tool_name(name)
 
             normalized.append(NormalizedToolCall(
                 tool_name=canonical_name,

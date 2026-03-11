@@ -528,7 +528,7 @@ class TestFCValidationFixes:
             toolset_ids=["ts1"],
             tool_specs=[
                 ToolSpec(
-                    name="query_logs",
+                    name="logs.query",
                     description="Query logs",
                     input_schema={"type": "object"},
                 ),
@@ -537,12 +537,12 @@ class TestFCValidationFixes:
         adapter = FunctionCallingToolAdapter(snapshot)
 
         tool_calls = [
-            {"name": "mcp.query_logs", "args": {"query": "error"}, "id": "call_1"},
+            {"name": "mcp.logs.query", "args": {"query": "error"}, "id": "call_1"},
         ]
 
         normalized = adapter.normalize_tool_calls(tool_calls)
         assert len(normalized) == 1
-        assert normalized[0].tool_name == "query_logs"
+        assert normalized[0].tool_name == "logs.query"
 
     def test_normalize_handles_empty_name(self) -> None:
         """Verify that normalize_tool_calls skips tools with empty names."""

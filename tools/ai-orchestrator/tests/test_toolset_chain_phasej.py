@@ -113,7 +113,7 @@ class ToolInvokerChainRoutingTest(unittest.TestCase):
             result = invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
 
         self.assertEqual(result["output"]["from"], "two")
-        self.assertEqual(calls, ["two:query_logs"])
+        self.assertEqual(calls, ["two:logs.query"])
         self.assertEqual(result[TOOLING_META_KEY]["resolved_from_toolset_id"], "ts_2")
 
     def test_chain_conflict_prefers_first_toolset(self) -> None:
@@ -148,7 +148,7 @@ class ToolInvokerChainRoutingTest(unittest.TestCase):
             result = invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
 
         self.assertEqual(result["output"]["from"], "one")
-        self.assertEqual(calls, ["one:query_logs"])
+        self.assertEqual(calls, ["one:logs.query"])
         self.assertEqual(result[TOOLING_META_KEY]["resolved_from_toolset_id"], "ts_1")
 
 
@@ -187,6 +187,8 @@ class RunnerChainObservationTest(unittest.TestCase):
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json=toolset_config_json,
+            # Disable claim provider snapshot to test local override path
+            claim_provider_snapshot_enabled=False,
         )
 
     def test_runner_toolset_select_observation_contains_toolsets(self) -> None:
@@ -262,7 +264,8 @@ class RunnerChainObservationTest(unittest.TestCase):
         self.assertEqual(observed["tool"], "toolset.select")
         self.assertEqual(observed["response"]["toolsets"], ["ts_a", "ts_b"])
         self.assertEqual(observed["response"]["source"], "local_override")
-        self.assertEqual(observed["response"]["available_tools"], ["query_logs", "query_metrics"])
+        # Tools are normalized to canonical dotted names
+        self.assertEqual(observed["response"]["available_tools"], ["logs.query", "metrics.query"])
 
     def test_runner_missing_toolset_id_fail_fast_before_graph(self) -> None:
         self._assert_runner_fail_fast(

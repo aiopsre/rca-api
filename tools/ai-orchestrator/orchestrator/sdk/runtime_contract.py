@@ -55,6 +55,7 @@ class ClaimStartResponse:
 
     skillsets_json: str | None = None
     mcp_servers_json: str | None = None
+    resolved_tool_providers: list[dict[str, Any]] | None = None
 
     @classmethod
     def from_api_response(cls, payload: dict[str, Any]) -> "ClaimStartResponse":
@@ -69,9 +70,17 @@ class ClaimStartResponse:
         raw_mcp_servers = data.get("mcpServersJSON")
         if isinstance(raw_mcp_servers, str) and raw_mcp_servers.strip():
             mcp_servers_json = raw_mcp_servers.strip()
+        # Parse resolved_tool_providers (new canonical field)
+        resolved_tool_providers = None
+        raw_providers = data.get("resolvedToolProviders")
+        if isinstance(raw_providers, list) and raw_providers:
+            resolved_tool_providers = [
+                p for p in raw_providers if isinstance(p, dict)
+            ]
         return cls(
             skillsets_json=skillsets_json,
             mcp_servers_json=mcp_servers_json,
+            resolved_tool_providers=resolved_tool_providers,
         )
 
     def has_skillsets(self) -> bool:
@@ -79,6 +88,9 @@ class ClaimStartResponse:
 
     def has_mcp_servers(self) -> bool:
         return isinstance(self.mcp_servers_json, str) and self.mcp_servers_json != ""
+
+    def has_resolved_tool_providers(self) -> bool:
+        return isinstance(self.resolved_tool_providers, list) and len(self.resolved_tool_providers) > 0
 
     def parse_skillsets(self) -> dict[str, Any] | None:
         if not self.has_skillsets():

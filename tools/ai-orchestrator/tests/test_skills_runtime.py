@@ -110,18 +110,28 @@ def _register_default_tool_metadata() -> None:
     """Register default tool metadata for testing.
 
     This should be called at the start of tests that need tool metadata.
+    Tool names use canonical dotted format (domain.action) with underscore aliases.
     """
     register_tool_metadata(ToolMetadata(
-        tool_name="mcp.query_logs",
+        tool_name="logs.query",
         kind="logs",
         domain="observability",
         tags=("logs", "query"),
+        aliases=("query_logs", "mcp.query_logs"),
     ))
     register_tool_metadata(ToolMetadata(
-        tool_name="mcp.query_metrics",
+        tool_name="metrics.query",
         kind="metrics",
         domain="observability",
         tags=("metrics", "query"),
+        aliases=("query_metrics", "mcp.query_metrics"),
+    ))
+    register_tool_metadata(ToolMetadata(
+        tool_name="metrics.query_range",
+        kind="metrics",
+        domain="observability",
+        tags=("metrics", "query"),
+        aliases=("query_range", "mcp.query_range"),
     ))
 
 

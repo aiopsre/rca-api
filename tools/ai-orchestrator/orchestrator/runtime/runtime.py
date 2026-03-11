@@ -318,7 +318,9 @@ def _validate_tool_input_payload(
     }
 
     # Determine tool kind from registry for type-specific validation
-    tool_meta = get_tool_metadata(tool_name)
+    # Normalize tool name to canonical form for registry lookup
+    normalized_tool_name = normalize_tool_name(tool_name)
+    tool_meta = get_tool_metadata(normalized_tool_name)
     tool_kind = tool_meta.kind if tool_meta else "unknown"
 
     if tool_kind == "logs":
@@ -2335,7 +2337,9 @@ class OrchestratorRuntime:
             if not isinstance(tool_request, dict) or not isinstance(tool_result, dict):
                 continue
             # Use ToolMetadata.kind to determine warm logic
-            tool_meta = get_tool_metadata(tool_name)
+            # Normalize tool name to canonical form for registry lookup
+            normalized_tool_name = normalize_tool_name(tool_name)
+            tool_meta = get_tool_metadata(normalized_tool_name)
             tool_kind = tool_meta.kind if tool_meta else "unknown"
             if tool_kind == "logs":
                 self._warm_logs_query_state(
@@ -2362,8 +2366,13 @@ class OrchestratorRuntime:
             input_payload = getattr(tool_plan, "input_payload", None)
             reason = str(getattr(tool_plan, "reason", "") or "").strip()
 
-        # Check if tool is in allowed_tools (both have mcp. prefix from _available_evidence_plan_prompt_tools)
-        if tool_name not in allowed_tools:
+        # Normalize tool name to canonical form for comparison
+        # Both allowed_tools and tool_name have mcp. prefix, so we normalize both
+        normalized_tool_name = normalize_tool_name(tool_name)
+        normalized_allowed = {normalize_tool_name(t) for t in allowed_tools}
+
+        # Check if normalized tool is in normalized allowed_tools
+        if normalized_tool_name not in normalized_allowed:
             raise RuntimeError(f"prompt skill tool is not allowed: {tool_name}")
 
         # FC3D: Use unified validation helper
@@ -2739,6 +2748,19 @@ class OrchestratorRuntime:
         """
         return self._lease_manager.get_claim_response()
 
+    def set_tool_invoker(self, invoker: "ToolInvoker | ToolInvokerChain") -> None:
+        """Set the tool invoker directly, replacing any existing one.
+
+        This is used in claim_provider_snapshot mode where the invoker is built
+        solely from claim response resolved_tool_providers, not from strategy toolsets.
+
+        Args:
+            invoker: The tool invoker to set.
+        """
+        if invoker is None:
+            return
+        self._tool_invoker = invoker
+
     def merge_tool_invoker(self, invoker: "ToolInvoker | ToolInvokerChain") -> None:
         """Merge a secondary tool invoker with the existing one.
 
@@ -2839,7 +2861,7 @@ class OrchestratorRuntime:
             RuntimeError: If tool execution fails.
         """
         started_at = time.monotonic()
-        canonical_name = tool_name[4:] if tool_name.startswith("mcp.") else tool_name
+        canonical_name = normalize_tool_name(tool_name)
 
         # Validate tool exists in snapshot
         if self._tool_catalog_snapshot is not None:

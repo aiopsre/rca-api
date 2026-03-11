@@ -358,3 +358,83 @@ def build_tool_invoker_from_mcpserver_refs_json(
         register_tools_from_mcpserver_refs(refs)
 
     return build_tool_invoker_from_mcpserver_refs(refs, toolset_id=toolset_id)
+
+
+def build_tool_invoker_from_resolved_providers(
+    resolved_providers: list[dict[str, Any]],
+    *,
+    toolset_id: str = "resolved_providers",
+    platform_base_url: str | None = None,
+) -> ToolInvoker | None:
+    """Build a ToolInvoker from resolved_tool_providers list.
+
+    This is the new canonical path for claim provider snapshot.
+    Prefers structured resolved_tool_providers over legacy mcpServersJSON.
+
+    Args:
+        resolved_providers: List of ResolvedToolProvider dicts from claim response.
+        toolset_id: Toolset ID to use for this invoker.
+        platform_base_url: Base URL for builtin providers (RCA API base URL).
+            Required for builtin providers that have empty base_url.
+
+    Returns:
+        ToolInvoker if valid providers, None otherwise.
+    """
+    from .mcp_server_loader import (
+        build_provider_configs_from_resolved_providers,
+        parse_resolved_tool_providers,
+    )
+
+    providers = parse_resolved_tool_providers(resolved_providers)
+    if not providers:
+        return None
+
+    # Register tool metadata from platform
+    from ..runtime.tool_registry import register_tools_from_resolved_providers
+    register_tools_from_resolved_providers(providers)
+
+    # Process providers - builtin providers use platform_base_url
+    provider_bindings: list[_ProviderBinding] = []
+    for provider in providers:
+        # Determine base_url for this provider
+        if provider.server_kind == "builtin":
+            # Builtin providers are served by the platform itself
+            base_url = provider.base_url
+            if not base_url:
+                # Use platform base URL if builtin provider has empty base_url
+                if not platform_base_url:
+                    _LOGGER.warning(
+                        "builtin provider %s has no base_url and platform_base_url not provided, skipping",
+                        provider.name,
+                    )
+                    continue
+                base_url = platform_base_url
+        else:
+            # External providers must have base_url
+            base_url = provider.base_url
+            if not base_url:
+                _LOGGER.warning(
+                    "external provider %s has no base_url, skipping",
+                    provider.name,
+                )
+                continue
+
+        # Create MCP HTTP provider
+        provider_client = MCPHttpProvider(
+            base_url=base_url,
+            scopes=provider.scopes,
+            timeout_s=provider.timeout_sec,
+        )
+        provider_bindings.append(
+            _ProviderBinding(
+                name=provider.name,
+                provider_type=provider.provider_type,
+                allow_tools=frozenset(provider.allowed_tools),
+                provider=provider_client,
+            )
+        )
+
+    if not provider_bindings:
+        return None
+
+    return ToolInvoker(toolset_id=toolset_id, providers=provider_bindings)

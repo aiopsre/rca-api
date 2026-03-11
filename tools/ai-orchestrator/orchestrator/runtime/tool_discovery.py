@@ -12,6 +12,7 @@ import fnmatch
 
 from .tool_catalog import ToolCatalogSnapshot
 from .tool_registry import get_tool_metadata
+from ..tooling.canonical_names import normalize_tool_name
 
 if TYPE_CHECKING:
     from .runtime import OrchestratorRuntime
@@ -180,8 +181,9 @@ def _create_tool_descriptor(
     if tags:
         final_tags = tags
     else:
-        # 2. Look up in registry
-        metadata = get_tool_metadata(tool_name)
+        # 2. Look up in registry (normalize tool name for lookup)
+        normalized_name = normalize_tool_name(tool_name)
+        metadata = get_tool_metadata(normalized_name)
         if metadata:
             final_tags = metadata.tags
             if not description and metadata.description:

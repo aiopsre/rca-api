@@ -51,6 +51,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json="",
+            # Disable claim provider snapshot to test strategy resolve path
+            claim_provider_snapshot_enabled=False,
         )
 
     @staticmethod
@@ -287,7 +289,8 @@ class StrategyResolvePhaseL1RunnerTest(unittest.TestCase):
         self.assertEqual(runtime.start_calls, 1)
         self.assertEqual(runtime.shutdown_calls, 1)
         self.assertEqual(runtime.finalize_calls, [])
-        self.assertEqual(called_tools, ["two:query_metrics"])
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(called_tools, ["two:metrics.query"])
         self.assertIsNotNone(runtime.last_tool_result)
         meta = runtime.last_tool_result.get("_tooling_meta", {}) if runtime.last_tool_result else {}
         self.assertEqual(meta.get("resolved_from_toolset_id"), "metrics")

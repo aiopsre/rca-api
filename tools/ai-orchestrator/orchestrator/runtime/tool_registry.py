@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import threading
 
 if TYPE_CHECKING:
-    from ..tooling.mcp_server_loader import McpServerRef
+    from ..tooling.mcp_server_loader import McpServerRef, ResolvedToolProvider
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,8 @@ class ToolMetadata:
         cost_hint: Cost indication (free, low, medium, high).
         tags: Additional classification tags.
         description: Human-readable description.
+        tool_class: A/B class (fc_selectable | runtime_owned).
+        aliases: Alternative names for this tool.
     """
     tool_name: str
     kind: str = "unknown"
@@ -41,6 +43,8 @@ class ToolMetadata:
     cost_hint: str = "free"
     tags: tuple[str, ...] = ()
     description: str = ""
+    tool_class: str = "fc_selectable"
+    aliases: tuple[str, ...] = ()
 
 
 class ToolRegistry:
@@ -111,6 +115,44 @@ class ToolRegistry:
                     cost_hint=meta.cost_hint,
                     tags=meta.tags,
                     description=meta.description,
+                    tool_class=meta.tool_class,
+                    aliases=meta.aliases,
+                )
+                self._metadata[meta.tool_name] = tool_meta
+                count += 1
+        return count
+
+    def register_from_resolved_provider(self, provider: "ResolvedToolProvider") -> int:
+        """Register tool metadata from ResolvedToolProvider.
+
+        This is the new canonical path for registering tool metadata from
+        the platform. Used with the resolved_tool_providers field from claim response.
+
+        Args:
+            provider: ResolvedToolProvider containing tool_metadata from platform.
+
+        Returns:
+            Number of tools registered.
+        """
+        if not provider.tool_metadata:
+            return 0
+
+        count = 0
+        with self._lock:
+            for meta in provider.tool_metadata:
+                # Convert ToolMetadataRef to ToolMetadata
+                tool_meta = ToolMetadata(
+                    tool_name=meta.tool_name,
+                    kind=meta.kind,
+                    domain=meta.domain,
+                    read_only=meta.read_only,
+                    risk_level=meta.risk_level,
+                    latency_tier=meta.latency_tier,
+                    cost_hint=meta.cost_hint,
+                    tags=meta.tags,
+                    description=meta.description,
+                    tool_class=meta.tool_class,
+                    aliases=meta.aliases,
                 )
                 self._metadata[meta.tool_name] = tool_meta
                 count += 1
@@ -192,6 +234,25 @@ def register_tools_from_mcpserver_refs(refs: list[McpServerRef]) -> int:
     total = 0
     for ref in refs:
         total += registry.register_from_mcpserver_ref(ref)
+    return total
+
+
+def register_tools_from_resolved_providers(providers: list["ResolvedToolProvider"]) -> int:
+    """Register all tool metadata from ResolvedToolProvider list.
+
+    This is the new canonical path for registering tool metadata from
+    the platform. Used with the resolved_tool_providers field from claim response.
+
+    Args:
+        providers: List of ResolvedToolProvider objects from platform.
+
+    Returns:
+        Total number of tools registered.
+    """
+    registry = get_global_registry()
+    total = 0
+    for provider in providers:
+        total += registry.register_from_resolved_provider(provider)
     return total
 
 

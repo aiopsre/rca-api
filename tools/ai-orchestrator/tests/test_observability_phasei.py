@@ -55,6 +55,8 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json=toolset_config_json,
+            # Disable claim provider snapshot to test local override path
+            claim_provider_snapshot_enabled=False,
         )
 
     def test_runner_reports_toolset_select_before_graph(self) -> None:

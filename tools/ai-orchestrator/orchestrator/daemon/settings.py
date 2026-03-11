@@ -61,6 +61,10 @@ class Settings:
     fc_graph_agent_enabled: bool = True
     fc_compat_json_toolcalls_enabled: bool = False
     fc_compat_dynamic_tool_nodes_enabled: bool = False
+    # Phase 10C: Claim provider snapshot is the canonical tool invoker source (2026-03-19)
+    # When enabled, ToolInvoker is built solely from claim response resolved_tool_providers
+    # Strategy toolsets[] are used only for observation/governance, not execution
+    claim_provider_snapshot_enabled: bool = True
 
     def safe_summary(self) -> dict[str, Any]:
         """Return a safe summary of settings for logging (excludes sensitive values)."""
@@ -96,6 +100,8 @@ class Settings:
             "fc_graph_agent_enabled": self.fc_graph_agent_enabled,
             "fc_compat_json_toolcalls_enabled": self.fc_compat_json_toolcalls_enabled,
             "fc_compat_dynamic_tool_nodes_enabled": self.fc_compat_dynamic_tool_nodes_enabled,
+            # Phase 10C: Claim provider snapshot mode
+            "claim_provider_snapshot_enabled": self.claim_provider_snapshot_enabled,
         }
 
 
@@ -216,6 +222,8 @@ def load_settings() -> Settings:
         fc_graph_agent_enabled=_env_bool("RCA_FC_GRAPH_AGENT_ENABLED", True),
         fc_compat_json_toolcalls_enabled=_env_bool("RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED", False),
         fc_compat_dynamic_tool_nodes_enabled=_env_bool("RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED", False),
+        # Phase 10C: Claim provider snapshot is now the default (2026-03-19)
+        claim_provider_snapshot_enabled=_env_bool("RCA_CLAIM_PROVIDER_SNAPSHOT_ENABLED", True),
     )
 
 

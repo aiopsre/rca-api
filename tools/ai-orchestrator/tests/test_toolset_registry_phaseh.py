@@ -51,6 +51,8 @@ class ToolsetRegistryPhaseHRunnerTest(unittest.TestCase):
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json="",
+            # Disable claim provider snapshot to test server resolve path
+            claim_provider_snapshot_enabled=False,
         )
 
     def test_no_local_config_uses_server_resolve_and_builds_invoker(self) -> None:
@@ -129,8 +131,9 @@ class ToolsetRegistryPhaseHRunnerTest(unittest.TestCase):
             self.assertIsNotNone(runtime.tool_invoker)
             result = runtime.tool_invoker.call(tool="mcp.query_logs", input_payload={"query": "error"})
 
-        self.assertEqual(result["output"]["tool"], "query_logs")
-        self.assertEqual(called_tools, ["query_logs"])
+        # Tool names are normalized to canonical dotted form
+        self.assertEqual(result["output"]["tool"], "logs.query")
+        self.assertEqual(called_tools, ["logs.query"])
 
     def test_server_resolve_404_fail_fast_without_graph_invoke(self) -> None:
         graph_invoked = {"count": 0}

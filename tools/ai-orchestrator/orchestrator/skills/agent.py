@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from ..runtime.tool_registry import get_tool_metadata
+from ..tooling.canonical_names import normalize_tool_name
 from .capabilities import PromptSkillConsumeResult
 
 
@@ -64,7 +65,9 @@ def _build_tool_input_contract(tool_name: str) -> dict[str, str]:
     Returns:
         Dictionary mapping field names to descriptions.
     """
-    meta = get_tool_metadata(tool_name)
+    # Normalize tool name to canonical form for registry lookup
+    normalized_name = normalize_tool_name(tool_name)
+    meta = get_tool_metadata(normalized_name)
     kind = meta.kind if meta else "unknown"
 
     # Common fields for all query tools

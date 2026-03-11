@@ -10,7 +10,7 @@ Key principles:
 - RuntimeToolGateway is the only way to execute tools
 - ExecutedToolCall is the unified result model for all tool executions
 
-All tool names are canonical (no 'mcp.' prefix).
+All tool names use canonical dotted naming (e.g., 'incident.get', 'logs.query').
 """
 from __future__ import annotations
 
@@ -19,6 +19,28 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from .runtime import OrchestratorRuntime
+
+
+def _normalize_to_canonical(name: str | None) -> str:
+    """Normalize a tool name to canonical dotted form.
+
+    This function handles:
+    1. Stripping 'mcp.' prefix
+    2. Converting underscore names to dotted canonical names
+
+    Args:
+        name: The raw tool name
+
+    Returns:
+        The canonical dotted tool name
+    """
+    value = str(name or "").strip().lower()
+    if value.startswith("mcp."):
+        value = value[4:]
+    # Import here to avoid circular dependency
+    from ..tooling.canonical_names import normalize_tool_name
+
+    return normalize_tool_name(value)
 
 
 @dataclass(frozen=True)
@@ -52,9 +74,10 @@ class ToolSpec:
     allowed_for_prompt_skill: bool = True
 
     def __post_init__(self) -> None:
-        # Ensure name is canonical (no 'mcp.' prefix)
-        if self.name.startswith("mcp."):
-            object.__setattr__(self, "name", self.name[4:])
+        # Ensure name is canonical (no 'mcp.' prefix, dotted form)
+        normalized = _normalize_to_canonical(self.name)
+        if normalized != self.name:
+            object.__setattr__(self, "name", normalized)
 
     def to_openai_tool(self) -> dict[str, Any]:
         """Convert to OpenAI function calling format.
@@ -92,24 +115,24 @@ class ToolCatalogSnapshot:
         """Check if a tool is available in the catalog.
 
         Args:
-            name: Canonical tool name to check.
+            name: Tool name (canonical dotted form or underscore alias).
 
         Returns:
             True if the tool exists in the catalog.
         """
-        canonical = name[4:] if name.startswith("mcp.") else name
+        canonical = _normalize_to_canonical(name)
         return canonical in self.by_name
 
     def get_tool(self, name: str) -> ToolSpec | None:
-        """Get a tool by its canonical name.
+        """Get a tool by its name.
 
         Args:
-            name: Canonical tool name to look up.
+            name: Tool name (canonical dotted form or underscore alias).
 
         Returns:
             ToolSpec if found, None otherwise.
         """
-        canonical = name[4:] if name.startswith("mcp.") else name
+        canonical = _normalize_to_canonical(name)
         return self.by_name.get(canonical)
 
     def tool_names(self) -> list[str]:
@@ -236,9 +259,10 @@ class ExecutedToolCall:
     item_idx: int = -1
 
     def __post_init__(self) -> None:
-        # Ensure tool_name is canonical (no 'mcp.' prefix)
-        if self.tool_name.startswith("mcp."):
-            object.__setattr__(self, "tool_name", self.tool_name[4:])
+        # Ensure tool_name is canonical (no 'mcp.' prefix, dotted form)
+        normalized = _normalize_to_canonical(self.tool_name)
+        if normalized != self.tool_name:
+            object.__setattr__(self, "tool_name", normalized)
 
     def to_skill_tool_result(self) -> dict[str, Any]:
         """Convert to skill tool result format.
@@ -355,7 +379,7 @@ def build_tool_catalog_snapshot(
     seen: set[str] = set()
     unique_specs: list[ToolSpec] = []
     for spec in tool_specs:
-        canonical = spec.name[4:] if spec.name.startswith("mcp.") else spec.name
+        canonical = _normalize_to_canonical(spec.name)
         if canonical not in seen:
             seen.add(canonical)
             unique_specs.append(spec)

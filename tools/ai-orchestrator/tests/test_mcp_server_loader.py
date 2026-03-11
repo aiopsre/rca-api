@@ -13,6 +13,7 @@ from orchestrator.tooling.mcp_server_loader import (
     McpServerRef,
     ToolMetadataRef,
     parse_mcpserver_refs,
+    parse_resolved_tool_providers,
     build_provider_configs_from_mcpserver_refs,
 )
 
@@ -48,7 +49,8 @@ class TestMcpServerRefParsing:
         assert ref.mcp_server_id == "ms-001"
         assert ref.name == "prometheus"
         assert ref.base_url == "http://prometheus.mcp:8080"
-        assert ref.allowed_tools == ("query_metrics", "query_range")
+        # Tools are normalized to canonical dotted names
+        assert ref.allowed_tools == ("metrics.query", "metrics.query_range")
         assert ref.timeout_sec == 30.0
         assert ref.scopes == "read:metrics"
         assert ref.auth_type == "bearer"
@@ -70,7 +72,8 @@ class TestMcpServerRefParsing:
             "allowed_tools": ["mcp.query_metrics", "mcp.query_range", "other_tool"]
         }]'''
         refs = parse_mcpserver_refs(json_str)
-        assert refs[0].allowed_tools == ("query_metrics", "query_range", "other_tool")
+        # Tools are normalized to canonical dotted names
+        assert refs[0].allowed_tools == ("metrics.query", "metrics.query_range", "other_tool")
 
     def test_parse_skips_ref_missing_name(self):
         json_str = '''[{"base_url": "http://test", "allowed_tools": ["tool1"]}]'''
@@ -165,8 +168,9 @@ class TestBuildToolInvokerFromMcpServerRefsJson:
         assert isinstance(invoker, ToolInvoker)
         assert invoker.toolset_id == "mcp_servers"
         tools = invoker.allowed_tools()
-        assert "query_metrics" in tools
-        assert "query_range" in tools
+        # Tools are normalized to canonical dotted names
+        assert "metrics.query" in tools
+        assert "metrics.query_range" in tools
 
     def test_custom_toolset_id(self):
         json_str = '''[{
@@ -269,10 +273,11 @@ class TestRuntimeMergeToolInvoker:
         assert runtime._tool_invoker.toolset_ids == ["primary", "mcp_servers"]
 
         # All tools are available through the chain
+        # Tools are normalized to canonical dotted names
         tools = runtime._tool_invoker.allowed_tools()
-        assert "list_incidents" in tools
-        assert "get_incident" in tools
-        assert "query_metrics" in tools
+        assert "incident.list" in tools
+        assert "incident.get" in tools
+        assert "metrics.query" in tools
 
 
 class TestToolMetadataParsing:
@@ -310,8 +315,9 @@ class TestToolMetadataParsing:
 
         assert len(ref.tool_metadata) == 2
 
+        # tool_name is normalized to canonical dotted form
         meta1 = ref.tool_metadata[0]
-        assert meta1.tool_name == "query_metrics"
+        assert meta1.tool_name == "metrics.query"
         assert meta1.kind == "metrics"
         assert meta1.domain == "observability"
         assert meta1.read_only is True
@@ -322,7 +328,7 @@ class TestToolMetadataParsing:
         assert meta1.description == "Query Prometheus metrics"
 
         meta2 = ref.tool_metadata[1]
-        assert meta2.tool_name == "query_range"
+        assert meta2.tool_name == "metrics.query_range"
         assert meta2.kind == "metrics"
         assert meta2.tags == ("metrics", "query", "range")
 
@@ -351,7 +357,8 @@ class TestToolMetadataParsing:
         refs = parse_mcpserver_refs(json_str)
         assert len(refs) == 1
         assert len(refs[0].tool_metadata) == 1
-        assert refs[0].tool_metadata[0].tool_name == "query_metrics"
+        # tool_name is normalized to canonical dotted form
+        assert refs[0].tool_metadata[0].tool_name == "metrics.query"
 
     def test_parse_tool_metadata_default_values(self):
         json_str = '''[{
@@ -365,7 +372,8 @@ class TestToolMetadataParsing:
         refs = parse_mcpserver_refs(json_str)
         meta = refs[0].tool_metadata[0]
 
-        assert meta.tool_name == "query_metrics"
+        # tool_name is normalized to canonical dotted form
+        assert meta.tool_name == "metrics.query"
         assert meta.kind == "unknown"
         assert meta.domain == "general"
         assert meta.read_only is True
@@ -416,3 +424,219 @@ class TestToolMetadataParsing:
         assert meta.cost_hint == "medium"
         assert meta.tags == ("tag1", "tag2")
         assert meta.description == "Test description"
+
+
+class TestResolvedToolProviderParsing:
+    """Tests for parse_resolved_tool_providers function."""
+
+    def test_parse_empty_list_returns_empty(self):
+        """Empty list returns empty list."""
+        result = parse_resolved_tool_providers([])
+        assert result == []
+
+    def test_parse_non_list_returns_empty(self):
+        """Non-list input returns empty list."""
+        result = parse_resolved_tool_providers("not a list")
+        assert result == []
+        result = parse_resolved_tool_providers({"key": "value"})
+        assert result == []
+
+    def test_parse_external_provider_with_base_url(self):
+        """External provider with base_url is parsed correctly."""
+        providers = [{
+            "providerID": "prometheus-1",
+            "mcpServerID": "prometheus-server",
+            "name": "Prometheus",
+            "providerType": "mcp_http",
+            "serverKind": "external",
+            "baseURL": "https://prometheus.example.com",
+            "allowedTools": ["metrics.query", "metrics.query_range"],
+            "priority": 10,
+        }]
+        result = parse_resolved_tool_providers(providers)
+        assert len(result) == 1
+        assert result[0].provider_id == "prometheus-1"
+        assert result[0].server_kind == "external"
+        assert result[0].base_url == "https://prometheus.example.com"
+        assert result[0].allowed_tools == ("metrics.query", "metrics.query_range")
+
+    def test_parse_builtin_provider_without_base_url(self):
+        """Builtin provider can have empty base_url."""
+        providers = [{
+            "providerID": "builtin-readonly",
+            "mcpServerID": "rca-api-builtin-readonly",
+            "name": "RCA API Builtin Readonly",
+            "providerType": "builtin",
+            "serverKind": "builtin",
+            "baseURL": "",  # Empty for builtin
+            "allowedTools": ["incident.get", "evidence.search"],
+            "priority": 0,
+        }]
+        result = parse_resolved_tool_providers(providers)
+        assert len(result) == 1
+        assert result[0].provider_id == "builtin-readonly"
+        assert result[0].server_kind == "builtin"
+        assert result[0].base_url == ""
+        assert result[0].provider_type == "builtin"
+
+    def test_parse_external_provider_without_base_url_is_skipped(self):
+        """External provider without base_url is skipped."""
+        providers = [{
+            "providerID": "broken-provider",
+            "name": "Broken Provider",
+            "providerType": "mcp_http",
+            "serverKind": "external",
+            "baseURL": "",  # Missing for external
+            "allowedTools": ["some.tool"],
+        }]
+        result = parse_resolved_tool_providers(providers)
+        assert len(result) == 0
+
+    def test_parse_mixed_builtin_and_external(self):
+        """Parse both builtin and external providers."""
+        providers = [
+            {
+                "providerID": "builtin-readonly",
+                "name": "Builtin",
+                "providerType": "builtin",
+                "serverKind": "builtin",
+                "baseURL": "",
+                "allowedTools": ["incident.get"],
+                "priority": 0,
+            },
+            {
+                "providerID": "prometheus-1",
+                "name": "Prometheus",
+                "providerType": "mcp_http",
+                "serverKind": "external",
+                "baseURL": "https://prometheus.example.com",
+                "allowedTools": ["metrics.query"],
+                "priority": 10,
+            },
+        ]
+        result = parse_resolved_tool_providers(providers)
+        assert len(result) == 2
+        # Verify both are parsed correctly
+        assert result[0].server_kind == "builtin"
+        assert result[1].server_kind == "external"
+
+
+class TestBuildToolInvokerFromResolvedProviders:
+    """Tests for build_tool_invoker_from_resolved_providers in invoker.py.
+
+    These tests verify that builtin providers use platform_base_url when
+    they have empty base_url.
+    """
+
+    def test_only_external_providers_creates_invoker(self):
+        """External providers result in a valid ToolInvoker."""
+        from orchestrator.tooling.invoker import build_tool_invoker_from_resolved_providers
+
+        providers = [{
+            "providerID": "prometheus-1",
+            "name": "Prometheus",
+            "providerType": "mcp_http",
+            "serverKind": "external",
+            "baseURL": "https://prometheus.example.com",
+            "allowedTools": ["metrics.query"],
+            "priority": 10,
+        }]
+        invoker = build_tool_invoker_from_resolved_providers(providers)
+        assert invoker is not None
+        assert "metrics.query" in invoker.allowed_tools()
+
+    def test_only_builtin_providers_with_platform_url_creates_invoker(self):
+        """Builtin providers with platform_base_url create valid invoker."""
+        from orchestrator.tooling.invoker import build_tool_invoker_from_resolved_providers
+
+        providers = [{
+            "providerID": "builtin-readonly",
+            "name": "Builtin Readonly",
+            "providerType": "builtin",
+            "serverKind": "builtin",
+            "baseURL": "",  # Empty for builtin, will use platform_base_url
+            "allowedTools": ["incident.get", "evidence.search"],
+            "priority": 0,
+        }]
+        # With platform_base_url, builtin providers should be included
+        invoker = build_tool_invoker_from_resolved_providers(
+            providers,
+            platform_base_url="https://rca-api.example.com",
+        )
+        assert invoker is not None
+        assert "incident.get" in invoker.allowed_tools()
+        assert "evidence.search" in invoker.allowed_tools()
+
+    def test_only_builtin_providers_without_platform_url_returns_none(self):
+        """Builtin providers without platform_base_url return None."""
+        from orchestrator.tooling.invoker import build_tool_invoker_from_resolved_providers
+
+        providers = [{
+            "providerID": "builtin-readonly",
+            "name": "Builtin Readonly",
+            "providerType": "builtin",
+            "serverKind": "builtin",
+            "baseURL": "",  # Empty and no platform_base_url
+            "allowedTools": ["incident.get"],
+            "priority": 0,
+        }]
+        # Without platform_base_url, builtin providers with empty base_url are skipped
+        invoker = build_tool_invoker_from_resolved_providers(providers)
+        assert invoker is None
+
+    def test_mixed_providers_with_platform_url_includes_both(self):
+        """Mixed providers with platform_base_url include both builtin and external."""
+        from orchestrator.tooling.invoker import build_tool_invoker_from_resolved_providers
+
+        providers = [
+            {
+                "providerID": "builtin-readonly",
+                "name": "Builtin Readonly",
+                "providerType": "builtin",
+                "serverKind": "builtin",
+                "baseURL": "",  # Will use platform_base_url
+                "allowedTools": ["incident.get"],
+                "priority": 0,
+            },
+            {
+                "providerID": "prometheus-1",
+                "name": "Prometheus",
+                "providerType": "mcp_http",
+                "serverKind": "external",
+                "baseURL": "https://prometheus.example.com",
+                "allowedTools": ["metrics.query"],
+                "priority": 10,
+            },
+        ]
+        invoker = build_tool_invoker_from_resolved_providers(
+            providers,
+            platform_base_url="https://rca-api.example.com",
+        )
+        assert invoker is not None
+        # Both builtin and external tools should be present
+        assert "incident.get" in invoker.allowed_tools()
+        assert "metrics.query" in invoker.allowed_tools()
+
+    def test_builtin_provider_with_own_base_url_uses_it(self):
+        """Builtin provider with non-empty base_url uses its own URL."""
+        from orchestrator.tooling.invoker import build_tool_invoker_from_resolved_providers
+
+        providers = [{
+            "providerID": "builtin-readonly",
+            "name": "Builtin Readonly",
+            "providerType": "builtin",
+            "serverKind": "builtin",
+            "baseURL": "https://custom-rca-api.example.com",  # Has its own URL
+            "allowedTools": ["incident.get"],
+            "priority": 0,
+        }]
+        invoker = build_tool_invoker_from_resolved_providers(providers)
+        assert invoker is not None
+        assert "incident.get" in invoker.allowed_tools()
+
+    def test_empty_providers_returns_none(self):
+        """Empty providers list returns None."""
+        from orchestrator.tooling.invoker import build_tool_invoker_from_resolved_providers
+
+        invoker = build_tool_invoker_from_resolved_providers([])
+        assert invoker is None

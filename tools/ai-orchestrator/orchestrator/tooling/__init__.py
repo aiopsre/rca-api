@@ -5,6 +5,7 @@ from .invoker import (
     build_tool_invoker,
     build_tool_invoker_chain,
     build_tool_invoker_from_mcpserver_refs_json,
+    build_tool_invoker_from_resolved_providers,
 )
 from .toolset_config import (
     ProviderConfig,
@@ -24,6 +25,7 @@ __all__ = [
     "build_tool_invoker",
     "build_tool_invoker_chain",
     "build_tool_invoker_from_mcpserver_refs_json",
+    "build_tool_invoker_from_resolved_providers",
     "load_toolset_config",
     "load_toolset_config_from_env",
 ]

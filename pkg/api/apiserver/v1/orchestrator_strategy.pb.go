@@ -27,8 +27,9 @@ type OrchestratorStrategy struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pipeline      string                 `protobuf:"bytes,1,opt,name=pipeline,proto3" json:"pipeline,omitempty"`
 	TemplateID    string                 `protobuf:"bytes,2,opt,name=templateID,proto3" json:"templateID,omitempty"`
-	Toolsets      []*OrchestratorToolset `protobuf:"bytes,3,rep,name=toolsets,proto3" json:"toolsets,omitempty"`
+	Toolsets      []*OrchestratorToolset `protobuf:"bytes,3,rep,name=toolsets,proto3" json:"toolsets,omitempty"` // legacy compatibility
 	SkillsetIDs   []string               `protobuf:"bytes,4,rep,name=skillsetIDs,proto3" json:"skillsetIDs,omitempty"`
+	ToolsetIDs    []string               `protobuf:"bytes,5,rep,name=toolsetIDs,proto3" json:"toolsetIDs,omitempty"` // new canonical field
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -87,6 +88,13 @@ func (x *OrchestratorStrategy) GetToolsets() []*OrchestratorToolset {
 func (x *OrchestratorStrategy) GetSkillsetIDs() []string {
 	if x != nil {
 		return x.SkillsetIDs
+	}
+	return nil
+}
+
+func (x *OrchestratorStrategy) GetToolsetIDs() []string {
+	if x != nil {
+		return x.ToolsetIDs
 	}
 	return nil
 }
@@ -184,14 +192,17 @@ var File_apiserver_v1_orchestrator_strategy_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_orchestrator_strategy_proto_rawDesc = "" +
 	"\n" +
-	"(apiserver/v1/orchestrator_strategy.proto\x12\fapiserver.v1\x1a'apiserver/v1/orchestrator_toolset.proto\"\xb3\x01\n" +
+	"(apiserver/v1/orchestrator_strategy.proto\x12\fapiserver.v1\x1a'apiserver/v1/orchestrator_toolset.proto\"\xd3\x01\n" +
 	"\x14OrchestratorStrategy\x12\x1a\n" +
 	"\bpipeline\x18\x01 \x01(\tR\bpipeline\x12\x1e\n" +
 	"\n" +
 	"templateID\x18\x02 \x01(\tR\n" +
 	"templateID\x12=\n" +
 	"\btoolsets\x18\x03 \x03(\v2!.apiserver.v1.OrchestratorToolsetR\btoolsets\x12 \n" +
-	"\vskillsetIDs\x18\x04 \x03(\tR\vskillsetIDs\"R\n" +
+	"\vskillsetIDs\x18\x04 \x03(\tR\vskillsetIDs\x12\x1e\n" +
+	"\n" +
+	"toolsetIDs\x18\x05 \x03(\tR\n" +
+	"toolsetIDs\"R\n" +
 	"\"ResolveOrchestratorStrategyRequest\x12\x1f\n" +
 	"\bpipeline\x18\x01 \x01(\tH\x00R\bpipeline\x88\x01\x01B\v\n" +
 	"\t_pipeline\"e\n" +
