@@ -1802,6 +1802,9 @@ class OrchestratorRuntime:
     ) -> tuple[PromptSkillConsumeResult, dict[str, Any] | None]:
         available_tools = self._available_evidence_plan_prompt_tools(selected_candidate)
         tool_plan_started = time.monotonic()
+        # FC4A: Initialize fc_skill_enabled early to avoid UnboundLocalError in script path.
+        # Script executors don't go through the FC planning branch below.
+        fc_skill_enabled = False
         if selected_candidate.executor_mode == "script":
             initial_result = self._run_script_skill_phase(
                 capability="evidence.plan",
@@ -1858,11 +1861,12 @@ class OrchestratorRuntime:
                     None,
                 )
 
-            # Check if FC path is enabled and snapshot is available
-            fc_enabled = self._is_fc_tool_calling_enabled() and self._tool_catalog_snapshot is not None
+            # FC4A: Check feature flag for rollback capability.
+            # Default is true (FC enabled), but flag allows operators to force JSON path.
+            fc_skill_enabled = self._is_fc_skill_tool_calling_enabled()
 
-            if fc_enabled:
-                # New path: function calling
+            if fc_skill_enabled and self._tool_catalog_snapshot is not None:
+                # Primary path: function calling
                 adapter = FunctionCallingToolAdapter(self._tool_catalog_snapshot)
                 tool_requests, normalized_calls = self._plan_evidence_fc_tool_sequence(
                     adapter=adapter,
@@ -1876,7 +1880,7 @@ class OrchestratorRuntime:
                 self._fc_adapter = adapter
                 self._fc_normalized_calls = normalized_calls
             else:
-                # Old path: JSON planning
+                # Fallback: JSON planning (when FC disabled or snapshot unavailable)
                 initial_result = None
                 tool_requests = self._plan_evidence_prompt_tool_sequence(
                     selected_candidate=selected_candidate,
@@ -1887,7 +1891,8 @@ class OrchestratorRuntime:
                     available_tools=available_tools,
                 )
         tool_plan_latency_ms = max(1, int((time.monotonic() - tool_plan_started) * 1000))
-        fc_mode = self._is_fc_tool_calling_enabled() and self._tool_catalog_snapshot is not None
+        # FC4A: fc_mode reflects whether FC path was actually used
+        fc_mode = fc_skill_enabled and self._tool_catalog_snapshot is not None
         self._report_observation_best_effort(
             tool="skill.tool_plan",
             node_name=node_name,
@@ -2062,16 +2067,38 @@ class OrchestratorRuntime:
             validated.append(tool_request)
         return validated
 
-    def _is_fc_tool_calling_enabled(self) -> bool:
-        """Check if function calling tool calling is enabled via feature flag.
+    def _is_fc_skill_tool_calling_enabled(self) -> bool:
+        """Check if function calling tool calling is enabled for skills.
 
-        Feature flag: RCA_FC_SKILL_TOOL_CALLING_ENABLED
-        Default: false (FC path is opt-in)
+        FC4A: Default is true (from settings), but respects env var override
+        for rollback scenarios. Set RCA_FC_SKILL_TOOL_CALLING_ENABLED=false
+        or RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED=true to force the legacy
+        JSON planner path.
 
         Returns:
             True if FC tool calling is enabled.
         """
-        return os.environ.get("RCA_FC_SKILL_TOOL_CALLING_ENABLED", "").lower() in ("true", "1", "yes")
+        # P2: Check compat flag first - if set, force legacy JSON path
+        compat_env = os.environ.get("RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED", "").strip().lower()
+        if compat_env in ("true", "1", "yes", "on"):
+            return False
+
+        # Check main env var (allows runtime override)
+        env_val = os.environ.get("RCA_FC_SKILL_TOOL_CALLING_ENABLED", "").strip().lower()
+        if env_val in ("false", "0", "no", "off"):
+            return False
+        if env_val in ("true", "1", "yes", "on"):
+            return True
+
+        # Check settings flags (compat takes precedence)
+        settings = getattr(self, "_settings", None)
+        if settings is not None:
+            if getattr(settings, "fc_compat_json_toolcalls_enabled", False):
+                return False
+            return getattr(settings, "fc_skill_tool_calling_enabled", True)
+
+        # No settings available, use default (FC enabled)
+        return True
 
     def _plan_evidence_fc_tool_sequence(
         self,

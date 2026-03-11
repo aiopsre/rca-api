@@ -55,11 +55,12 @@ class Settings:
     tool_execution_max_workers: int = 5
     tool_execution_group_timeout_s: float = 30.0
     # Function Calling migration feature flags
-    fc_runtime_snapshot_enabled: bool = False
-    fc_skill_tool_calling_enabled: bool = False
-    fc_graph_agent_enabled: bool = False
-    fc_compat_json_toolcalls_enabled: bool = True
-    fc_compat_dynamic_tool_nodes_enabled: bool = True
+    # Phase 4: FC path is now the default (2026-03-18)
+    fc_runtime_snapshot_enabled: bool = True
+    fc_skill_tool_calling_enabled: bool = True
+    fc_graph_agent_enabled: bool = True
+    fc_compat_json_toolcalls_enabled: bool = False
+    fc_compat_dynamic_tool_nodes_enabled: bool = False
 
     def safe_summary(self) -> dict[str, Any]:
         """Return a safe summary of settings for logging (excludes sensitive values)."""
@@ -209,11 +210,12 @@ def load_settings() -> Settings:
         tool_execution_max_workers=max(1, min(20, _env_int("TOOL_EXECUTION_MAX_WORKERS", 5))),
         tool_execution_group_timeout_s=max(1.0, _env_float("TOOL_EXECUTION_GROUP_TIMEOUT_S", 30.0)),
         # Function Calling migration feature flags
-        fc_runtime_snapshot_enabled=_env_bool("RCA_FC_RUNTIME_SNAPSHOT_ENABLED", False),
-        fc_skill_tool_calling_enabled=_env_bool("RCA_FC_SKILL_TOOL_CALLING_ENABLED", False),
-        fc_graph_agent_enabled=_env_bool("RCA_FC_GRAPH_AGENT_ENABLED", False),
-        fc_compat_json_toolcalls_enabled=_env_bool("RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED", True),
-        fc_compat_dynamic_tool_nodes_enabled=_env_bool("RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED", True),
+        # Phase 4: FC path is now the default (2026-03-18)
+        fc_runtime_snapshot_enabled=_env_bool("RCA_FC_RUNTIME_SNAPSHOT_ENABLED", True),
+        fc_skill_tool_calling_enabled=_env_bool("RCA_FC_SKILL_TOOL_CALLING_ENABLED", True),
+        fc_graph_agent_enabled=_env_bool("RCA_FC_GRAPH_AGENT_ENABLED", True),
+        fc_compat_json_toolcalls_enabled=_env_bool("RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED", False),
+        fc_compat_dynamic_tool_nodes_enabled=_env_bool("RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED", False),
     )
 
 

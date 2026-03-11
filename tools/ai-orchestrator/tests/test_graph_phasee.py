@@ -15,6 +15,8 @@ if str(PROJECT_DIR) not in sys.path:
 
 from orchestrator.graph import OrchestratorConfig, build_graph
 from orchestrator.runtime.tool_discovery import ToolDescriptor, ToolDiscoveryResult
+from orchestrator.runtime.tool_catalog import ToolSpec, ToolCatalogSnapshot, ExecutedToolCall
+from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
 from orchestrator.state import GraphState
 
 
@@ -301,6 +303,50 @@ class _FakeRuntime:
             evidence_ids=evidence_ids,
         )
 
+    def get_tool_catalog_snapshot(self) -> ToolCatalogSnapshot | None:
+        """Get tool catalog snapshot for FC path."""
+        # Build snapshot from discover_tools
+        discovery = self.discover_tools()
+        if not discovery.tools:
+            return None
+
+        tools = []
+        by_name = {}
+        for tool in discovery.tools:
+            spec = ToolSpec(
+                name=tool.tool_name,
+                description=tool.description or f"Tool {tool.tool_name}",
+                input_schema=tool.input_schema or {"type": "object"},
+                tags=tool.tags,
+            )
+            tools.append(spec)
+            by_name[tool.tool_name] = spec
+
+        return ToolCatalogSnapshot(
+            toolset_ids=("fake_toolset",),
+            tools=tuple(tools),
+            by_name=by_name,
+        )
+
+    def get_fc_adapter(self) -> FunctionCallingToolAdapter | None:
+        """Get FC adapter for FC graph path."""
+        snapshot = self.get_tool_catalog_snapshot()
+        if snapshot is None:
+            return None
+        return FunctionCallingToolAdapter(snapshot)
+
+    def execute_tool(self, tool_name: str, args: dict, *, source: str = "graph") -> ExecutedToolCall:
+        """Execute a tool call for FC path."""
+        result = self.call_tool(tool=tool_name, params=args)
+        return ExecutedToolCall(
+            tool_name=tool_name,
+            request_json=args,
+            response_json=result,
+            latency_ms=10,
+            source=source,
+            status="ok",
+        )
+
 
 class GraphPhaseETest(unittest.TestCase):
     def _invoke(self, cfg: OrchestratorConfig) -> tuple[GraphState, _FakeRuntime]:
@@ -327,9 +373,9 @@ class GraphPhaseETest(unittest.TestCase):
         self.assertEqual(runtime.verification_calls, 1)
 
         node_names = {item["node_name"] for item in runtime.tool_calls}
-        # New graph uses plan_tool_calls and execute_tool_calls instead of query_metrics/query_logs
-        self.assertIn("plan_tool_calls", node_names)
-        self.assertIn("execute_tool_calls", node_names)
+        # FC4D: New graph uses run_tool_agent (FC path) instead of plan_tool_calls + execute_tool_calls
+        # The dual-node path is still available via RCA_FC_GRAPH_AGENT_ENABLED=false
+        self.assertIn("run_tool_agent", node_names)
         self.assertIn("post_finalize_observe", node_names)
         self.assertIn("run_verification", node_names)
 
@@ -341,31 +387,41 @@ class GraphPhaseETest(unittest.TestCase):
         self.assertIn("executed", response["evidence_plan"])
 
     def test_phasee_query_mode_fanout_merges_two_evidence_and_keeps_executed(self) -> None:
-        final_state, runtime = self._invoke(
-            OrchestratorConfig(
-                run_query=True,
-                ds_base_url="http://prometheus:9090",
-                auto_create_datasource=True,
-                run_verification=False,
-                post_finalize_observe=False,
+        import os
+        # Use dual-node path for this test (no LLM mock available for FC path)
+        old_val = os.environ.get("RCA_FC_GRAPH_AGENT_ENABLED")
+        os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = "false"
+        try:
+            final_state, runtime = self._invoke(
+                OrchestratorConfig(
+                    run_query=True,
+                    ds_base_url="http://prometheus:9090",
+                    auto_create_datasource=True,
+                    run_verification=False,
+                    post_finalize_observe=False,
+                )
             )
-        )
 
-        self.assertTrue(final_state.finalized)
-        # In the new graph, tools are called via call_tool, not query_metrics/query_logs directly
-        # Check that tool calls were made via call_tool or check tool_call_plan was executed
-        self.assertGreaterEqual(len(runtime.call_tool_calls), 1, "Expected at least one tool call")
-        # Verify we have evidence collected (fallback evidence is created if no real evidence)
-        self.assertGreaterEqual(len(final_state.evidence_ids), 1, "Expected at least one evidence ID")
+            self.assertTrue(final_state.finalized)
+            # In the new graph, tools are called via call_tool, not query_metrics/query_logs directly
+            # Check that tool calls were made via call_tool or check tool_call_plan was executed
+            self.assertGreaterEqual(len(runtime.call_tool_calls), 1, "Expected at least one tool call")
+            # Verify we have evidence collected (fallback evidence is created if no real evidence)
+            self.assertGreaterEqual(len(final_state.evidence_ids), 1, "Expected at least one evidence ID")
 
-        diag_call = next(item for item in runtime.tool_calls if item["tool_name"] == "diagnosis.generate")
-        response = diag_call["response_json"]
-        self.assertIsInstance(response, dict)
-        self.assertIn("evidence_plan", response)
-        # Check that evidence_plan exists and has expected structure
-        # Note: executed list may be empty in new architecture if evidence was saved via execute_tool_calls
-        executed = response["evidence_plan"].get("executed")
-        self.assertIsInstance(executed, list)
+            diag_call = next(item for item in runtime.tool_calls if item["tool_name"] == "diagnosis.generate")
+            response = diag_call["response_json"]
+            self.assertIsInstance(response, dict)
+            self.assertIn("evidence_plan", response)
+            # Check that evidence_plan exists and has expected structure
+            # Note: executed list may be empty in new architecture if evidence was saved via execute_tool_calls
+            executed = response["evidence_plan"].get("executed")
+            self.assertIsInstance(executed, list)
+        finally:
+            if old_val is None:
+                os.environ.pop("RCA_FC_GRAPH_AGENT_ENABLED", None)
+            else:
+                os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = old_val
 
     def test_phasee_prompt_first_diagnosis_enrich_updates_state_and_finalize(self) -> None:
         class _PromptSkillRuntime(_FakeRuntime):
