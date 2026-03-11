@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+# Import ExecutedToolCall at runtime for:
+# 1. Pydantic v2 model validation
+# 2. LangGraph's get_type_hints() resolution
+# This is safe because tool_catalog.py only imports OrchestratorRuntime under TYPE_CHECKING.
+from ..runtime.tool_catalog import ExecutedToolCall
 
 
 class GraphState(BaseModel):
@@ -31,7 +37,8 @@ class GraphState(BaseModel):
 
     # Dynamic tool call plan (replaces fixed metrics/logs branch)
     tool_call_plan: Dict[str, Any] = Field(default_factory=dict)
-    tool_call_results: List[Dict[str, Any]] = Field(default_factory=list)
+    # FC3B: Unified tool execution result model
+    tool_call_results: List[ExecutedToolCall] = Field(default_factory=list)
 
     metrics_query_request: Dict[str, Any] = Field(default_factory=dict)
     metrics_query_output: Dict[str, Any] = Field(default_factory=dict)

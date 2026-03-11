@@ -2,6 +2,9 @@
 
 This module provides utilities for executing multiple tool calls concurrently
 within parallel groups, using ThreadPoolExecutor for I/O-bound operations.
+
+Phase FC2D: ToolExecutionResult serves as the execution envelope for tool calls,
+with a source field to track the caller context.
 """
 from __future__ import annotations
 
@@ -17,7 +20,10 @@ if TYPE_CHECKING:
 
 @dataclass
 class ToolExecutionResult:
-    """Result of a single tool execution.
+    """Result of a single tool execution (execution envelope).
+
+    This is the execution envelope for tool calls, tracking the tool name,
+    parameters, result, and execution metadata.
 
     Attributes:
         tool: The name of the tool that was executed.
@@ -30,6 +36,7 @@ class ToolExecutionResult:
         latency_ms: Execution time in milliseconds.
         group_idx: Index of the parallel group this execution belongs to.
         item_idx: Index of the item within the plan.
+        source: Caller context (e.g., "graph", "skill", "fc_agent").
     """
     tool: str
     params: dict[str, Any]
@@ -41,6 +48,7 @@ class ToolExecutionResult:
     latency_ms: int
     group_idx: int
     item_idx: int
+    source: str = "graph"  # New: caller context
 
 
 def execute_group_concurrent(

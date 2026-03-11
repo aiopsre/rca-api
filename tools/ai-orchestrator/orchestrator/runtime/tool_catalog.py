@@ -212,18 +212,28 @@ class ExecutedToolCall:
         response_json: The output returned by the tool.
         latency_ms: Execution time in milliseconds.
         source: Identifier for the caller (e.g., "skill.plan", "graph.node").
+        status: Execution status ("ok" or "error").
+        error: Error message if status is "error".
         provider_id: Identifier for the provider that executed the tool.
         provider_type: Type of the provider (e.g., "mcp_http", "mcp_api").
         resolved_from_toolset_id: Toolset ID from which the tool was resolved.
+        round_idx: Round index for FC agent iterations (optional).
+        group_idx: Group index for parallel execution (optional).
+        item_idx: Item index within a group (optional).
     """
     tool_name: str
     request_json: dict[str, Any]
     response_json: dict[str, Any]
     latency_ms: int
     source: str
+    status: str = "ok"
+    error: str = ""
     provider_id: str = ""
     provider_type: str = ""
     resolved_from_toolset_id: str = ""
+    round_idx: int = -1  # -1 indicates not set
+    group_idx: int = -1
+    item_idx: int = -1
 
     def __post_init__(self) -> None:
         # Ensure tool_name is canonical (no 'mcp.' prefix)
@@ -236,17 +246,21 @@ class ExecutedToolCall:
         Returns:
             Dictionary suitable for after-tools consumption.
         """
-        return {
+        result = {
             "tool": self.tool_name,
             "tool_name": self.tool_name,
             "tool_request": self.request_json,
             "tool_result": self.response_json,
             "latency_ms": self.latency_ms,
+            "status": self.status,
             "provider_id": self.provider_id,
             "provider_type": self.provider_type,
             "resolved_from_toolset_id": self.resolved_from_toolset_id,
             "source": self.source,
         }
+        if self.error:
+            result["error"] = self.error
+        return result
 
     def to_audit_record(self) -> dict[str, Any]:
         """Convert to audit record format.
@@ -254,16 +268,20 @@ class ExecutedToolCall:
         Returns:
             Dictionary suitable for audit logging.
         """
-        return {
+        record = {
             "tool_name": self.tool_name,
             "source": self.source,
             "latency_ms": self.latency_ms,
+            "status": self.status,
             "provider_id": self.provider_id,
             "provider_type": self.provider_type,
             "resolved_from_toolset_id": self.resolved_from_toolset_id,
             "request_summary": _summarize_request(self.tool_name, self.request_json),
             "response_summary": _summarize_response(self.response_json),
         }
+        if self.error:
+            record["error"] = self.error
+        return record
 
 
 def _summarize_request(tool_name: str, request: dict[str, Any]) -> dict[str, Any]:

@@ -397,13 +397,13 @@ class PromptSkillAgent:
         input_payload: dict[str, Any],
         knowledge_context: list[dict[str, Any]] | None = None,
         skill_resources: list[dict[str, Any]] | None = None,
-        openai_tools: list[dict[str, Any]],
+        adapter: Any,  # FunctionCallingToolAdapter - avoid circular import
         max_tool_calls: int = 2,
-    ) -> list[dict[str, Any]]:
+    ) -> list[Any]:  # list[NormalizedToolCall]
         """Plan tool calls using function calling instead of JSON parsing.
 
-        This method uses LangChain's bind_tools() mechanism to let the LLM
-        return structured tool calls instead of JSON that needs to be parsed.
+        FC3A: This method now receives the FunctionCallingToolAdapter directly
+        and uses its normalize_tool_calls() method, removing duplicate logic.
 
         Args:
             capability: The capability being executed (e.g., "evidence.plan").
@@ -413,15 +413,17 @@ class PromptSkillAgent:
             input_payload: The input payload for the skill.
             knowledge_context: Optional knowledge context from knowledge skills.
             skill_resources: Optional skill resources.
-            openai_tools: FunctionCallingToolAdapter.to_openai_tools() output.
+            adapter: FunctionCallingToolAdapter instance (FC3A unified adapter).
             max_tool_calls: Maximum number of tool calls to allow.
 
         Returns:
-            List of tool call dicts with keys: tool, input_payload, reason.
-            Format is compatible with the existing plan_tool_calls() output.
+            List of NormalizedToolCall instances from adapter.normalize_tool_calls().
         """
         if not self.configured:
             raise RuntimeError("prompt skill agent is not configured")
+
+        # FC3A: Get OpenAI tools from the adapter (single source of truth)
+        openai_tools = adapter.to_openai_tools()
         if not openai_tools:
             return []
 
@@ -457,60 +459,24 @@ class PromptSkillAgent:
             HumanMessage(content=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))),
         ])
 
-        # Extract tool calls from response
+        # FC3A: Use adapter's normalize_tool_calls() - single source of truth
         tool_calls = getattr(response, "tool_calls", []) or []
-        return self._normalize_tool_calls_to_plans(tool_calls, max_tool_calls=max_tool_calls)
 
-    def _normalize_tool_calls_to_plans(
-        self,
-        tool_calls: list[Any],
-        max_tool_calls: int,
-    ) -> list[dict[str, Any]]:
-        """Convert LangChain tool calls to plan format.
-
-        Args:
-            tool_calls: List of tool calls from LLM response.
-            max_tool_calls: Maximum number of tool calls allowed.
-
-        Returns:
-            List of dicts with keys: tool, input_payload, reason.
-
-        Raises:
-            RuntimeError: If tool_calls exceeds max_tool_calls or contains duplicates.
-        """
-        # Reject overlong sequences upfront (same behavior as runtime validation)
+        # Early validation: reject overlong sequences
         if len(tool_calls) > max_tool_calls:
             raise RuntimeError(f"FC tool_calls exceeds max_tool_calls: {len(tool_calls)} > {max_tool_calls}")
 
-        plans: list[dict[str, Any]] = []
+        # Normalize using the adapter (FC3A unified normalization)
+        normalized = adapter.normalize_tool_calls(tool_calls)
+
+        # Check for duplicates (validation not in adapter.normalize_tool_calls)
         seen: set[str] = set()
+        for call in normalized:
+            if call.tool_name in seen:
+                raise RuntimeError(f"FC tool_calls contains duplicate tool: {call.tool_name}")
+            seen.add(call.tool_name)
 
-        for tc in tool_calls:
-            if isinstance(tc, dict):
-                name = str(tc.get("name", ""))
-                args = tc.get("args", {})
-            else:
-                name = str(getattr(tc, "name", ""))
-                args = getattr(tc, "args", {}) or {}
-
-            if not name:
-                continue
-
-            # Normalize to canonical name (strip 'mcp.' prefix if present)
-            canonical_name = name[4:] if name.startswith("mcp.") else name
-
-            # Reject duplicates (same behavior as runtime validation)
-            if canonical_name in seen:
-                raise RuntimeError(f"FC tool_calls contains duplicate tool: {canonical_name}")
-            seen.add(canonical_name)
-
-            plans.append({
-                "tool": canonical_name,
-                "input_payload": args if isinstance(args, dict) else {},
-                "reason": f"Function calling request for {canonical_name}",
-            })
-
-        return plans
+        return normalized
 
     def consume_after_tool(
         self,

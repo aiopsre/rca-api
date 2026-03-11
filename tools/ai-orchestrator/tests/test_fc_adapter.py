@@ -491,64 +491,241 @@ class TestFCValidationFixes:
     - P2: Duplicates are rejected (not silently skipped)
     """
 
-    def test_rejects_overlong_tool_calls_in_normalize(self) -> None:
-        """Verify that _normalize_tool_calls_to_plans rejects overlong sequences."""
-        from orchestrator.skills.agent import PromptSkillAgent
+    def test_normalize_returns_normalized_tool_calls(self) -> None:
+        """Verify that normalize_tool_calls returns NormalizedToolCall objects."""
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[
+                ToolSpec(
+                    name="tool1",
+                    description="Tool 1",
+                    input_schema={"type": "object"},
+                ),
+                ToolSpec(
+                    name="tool2",
+                    description="Tool 2",
+                    input_schema={"type": "object"},
+                ),
+            ],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
 
-        # Create a mock agent with minimal setup
-        agent = PromptSkillAgent.__new__(PromptSkillAgent)
-
-        # Create 3 tool calls when max is 2
         tool_calls = [
-            {"name": "tool1", "args": {}, "id": "call_1"},
-            {"name": "tool2", "args": {}, "id": "call_2"},
-            {"name": "tool3", "args": {}, "id": "call_3"},
+            {"name": "tool1", "args": {"a": 1}, "id": "call_1"},
+            {"name": "tool2", "args": {"b": 2}, "id": "call_2"},
         ]
 
-        with pytest.raises(RuntimeError, match="exceeds max_tool_calls"):
-            agent._normalize_tool_calls_to_plans(tool_calls, max_tool_calls=2)
+        normalized = adapter.normalize_tool_calls(tool_calls)
+        assert len(normalized) == 2
+        assert normalized[0].tool_name == "tool1"
+        assert normalized[0].arguments == {"a": 1}
+        assert normalized[1].tool_name == "tool2"
+        assert normalized[1].arguments == {"b": 2}
 
-    def test_rejects_duplicate_tool_calls_in_normalize(self) -> None:
-        """Verify that _normalize_tool_calls_to_plans rejects duplicate tools."""
-        from orchestrator.skills.agent import PromptSkillAgent
+    def test_normalize_strips_mcp_prefix(self) -> None:
+        """Verify that normalize_tool_calls strips mcp. prefix."""
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[
+                ToolSpec(
+                    name="query_logs",
+                    description="Query logs",
+                    input_schema={"type": "object"},
+                ),
+            ],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
 
-        agent = PromptSkillAgent.__new__(PromptSkillAgent)
-
-        # Create tool calls with duplicate tool name
         tool_calls = [
-            {"name": "prometheus_query", "args": {"query": "up"}, "id": "call_1"},
-            {"name": "prometheus_query", "args": {"query": "down"}, "id": "call_2"},
+            {"name": "mcp.query_logs", "args": {"query": "error"}, "id": "call_1"},
         ]
 
-        with pytest.raises(RuntimeError, match="duplicate tool"):
-            agent._normalize_tool_calls_to_plans(tool_calls, max_tool_calls=2)
+        normalized = adapter.normalize_tool_calls(tool_calls)
+        assert len(normalized) == 1
+        assert normalized[0].tool_name == "query_logs"
 
-    def test_accepts_valid_tool_call_count(self) -> None:
-        """Verify that valid tool call counts are accepted."""
-        from orchestrator.skills.agent import PromptSkillAgent
+    def test_normalize_handles_empty_name(self) -> None:
+        """Verify that normalize_tool_calls skips tools with empty names."""
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
 
-        agent = PromptSkillAgent.__new__(PromptSkillAgent)
-
-        # Create exactly max_tool_calls tool calls
         tool_calls = [
-            {"name": "tool1", "args": {}, "id": "call_1"},
-            {"name": "tool2", "args": {}, "id": "call_2"},
+            {"name": "", "args": {}, "id": "call_1"},
+            {"name": "tool1", "args": {}, "id": "call_2"},
         ]
 
-        plans = agent._normalize_tool_calls_to_plans(tool_calls, max_tool_calls=2)
-        assert len(plans) == 2
+        normalized = adapter.normalize_tool_calls(tool_calls)
+        assert len(normalized) == 1
+        assert normalized[0].tool_name == "tool1"
 
-    def test_mcp_prefix_duplicate_detection(self) -> None:
-        """Verify duplicates are detected after mcp. prefix normalization."""
-        from orchestrator.skills.agent import PromptSkillAgent
+    def test_normalize_handles_object_format(self) -> None:
+        """Verify that normalize_tool_calls handles ToolCall objects."""
 
-        agent = PromptSkillAgent.__new__(PromptSkillAgent)
+        class MockToolCall:
+            def __init__(self, name: str, args: dict, id: str):
+                self.name = name
+                self.args = args
+                self.id = id
 
-        # Same tool, one with mcp. prefix, one without
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[
+                ToolSpec(
+                    name="tool1",
+                    description="Tool 1",
+                    input_schema={"type": "object"},
+                ),
+            ],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
+
         tool_calls = [
-            {"name": "mcp.loki_search", "args": {"query": "error"}, "id": "call_1"},
-            {"name": "loki_search", "args": {"query": "warn"}, "id": "call_2"},
+            MockToolCall("tool1", {"a": 1}, "call_1"),
         ]
 
-        with pytest.raises(RuntimeError, match="duplicate tool"):
-            agent._normalize_tool_calls_to_plans(tool_calls, max_tool_calls=2)
+        normalized = adapter.normalize_tool_calls(tool_calls)
+        assert len(normalized) == 1
+        assert normalized[0].tool_name == "tool1"
+        assert normalized[0].arguments == {"a": 1}
+        assert normalized[0].call_id == "call_1"
+
+    def test_plan_tool_calls_fc_rejects_overlong(self) -> None:
+        """Verify that plan_tool_calls_fc rejects overlong sequences via adapter."""
+        from unittest.mock import MagicMock, patch
+        from orchestrator.skills.agent import PromptSkillAgent
+
+        # Create agent with minimal setup
+        agent = PromptSkillAgent(
+            model="test-model",
+            base_url="http://test",
+            api_key="test-key",
+            timeout_seconds=30,
+        )
+
+        # Create mock adapter
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[
+                ToolSpec(name="tool1", description="T1", input_schema={}),
+                ToolSpec(name="tool2", description="T2", input_schema={}),
+                ToolSpec(name="tool3", description="T3", input_schema={}),
+            ],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Mock LLM to return 3 tool calls
+        mock_response = MagicMock()
+        mock_response.tool_calls = [
+            {"name": "tool1", "args": {}, "id": "1"},
+            {"name": "tool2", "args": {}, "id": "2"},
+            {"name": "tool3", "args": {}, "id": "3"},
+        ]
+
+        with patch.object(agent, "_get_llm") as mock_get_llm:
+            mock_llm = MagicMock()
+            mock_llm.bind_tools.return_value.invoke.return_value = mock_response
+            mock_get_llm.return_value = mock_llm
+
+            with pytest.raises(RuntimeError, match="exceeds max_tool_calls"):
+                agent.plan_tool_calls_fc(
+                    capability="test",
+                    skill_id="test-skill",
+                    skill_version="1.0",
+                    skill_document="test doc",
+                    input_payload={},
+                    adapter=adapter,
+                    max_tool_calls=2,
+                )
+
+    def test_plan_tool_calls_fc_rejects_duplicates(self) -> None:
+        """Verify that plan_tool_calls_fc rejects duplicate tool names."""
+        from unittest.mock import MagicMock, patch
+        from orchestrator.skills.agent import PromptSkillAgent
+
+        agent = PromptSkillAgent(
+            model="test-model",
+            base_url="http://test",
+            api_key="test-key",
+            timeout_seconds=30,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[
+                ToolSpec(name="query_logs", description="QL", input_schema={}),
+            ],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Mock LLM to return duplicate tool calls (one with mcp. prefix)
+        mock_response = MagicMock()
+        mock_response.tool_calls = [
+            {"name": "mcp.query_logs", "args": {"q": "a"}, "id": "1"},
+            {"name": "query_logs", "args": {"q": "b"}, "id": "2"},
+        ]
+
+        with patch.object(agent, "_get_llm") as mock_get_llm:
+            mock_llm = MagicMock()
+            mock_llm.bind_tools.return_value.invoke.return_value = mock_response
+            mock_get_llm.return_value = mock_llm
+
+            with pytest.raises(RuntimeError, match="duplicate tool"):
+                agent.plan_tool_calls_fc(
+                    capability="test",
+                    skill_id="test-skill",
+                    skill_version="1.0",
+                    skill_document="test doc",
+                    input_payload={},
+                    adapter=adapter,
+                    max_tool_calls=2,
+                )
+
+    def test_plan_tool_calls_fc_accepts_valid_count(self) -> None:
+        """Verify that plan_tool_calls_fc accepts valid tool call counts."""
+        from unittest.mock import MagicMock, patch
+        from orchestrator.skills.agent import PromptSkillAgent
+
+        agent = PromptSkillAgent(
+            model="test-model",
+            base_url="http://test",
+            api_key="test-key",
+            timeout_seconds=30,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[
+                ToolSpec(name="tool1", description="T1", input_schema={}),
+                ToolSpec(name="tool2", description="T2", input_schema={}),
+            ],
+        )
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Mock LLM to return exactly 2 tool calls (the max)
+        mock_response = MagicMock()
+        mock_response.tool_calls = [
+            {"name": "tool1", "args": {"a": 1}, "id": "1"},
+            {"name": "tool2", "args": {"b": 2}, "id": "2"},
+        ]
+
+        with patch.object(agent, "_get_llm") as mock_get_llm:
+            mock_llm = MagicMock()
+            mock_llm.bind_tools.return_value.invoke.return_value = mock_response
+            mock_get_llm.return_value = mock_llm
+
+            result = agent.plan_tool_calls_fc(
+                capability="test",
+                skill_id="test-skill",
+                skill_version="1.0",
+                skill_document="test doc",
+                input_payload={},
+                adapter=adapter,
+                max_tool_calls=2,
+            )
+
+            assert len(result) == 2
+            assert result[0].tool_name == "tool1"
+            assert result[1].tool_name == "tool2"

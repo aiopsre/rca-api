@@ -22,7 +22,7 @@ from .evidence_publisher import EvidencePublishResult, EvidencePublisher
 from .lease_manager import LeaseManager
 from .post_finalize import PostFinalizeObserver, PostFinalizeSnapshot
 from .retry import RetryExecutor, RetryPolicy
-from .tool_catalog import ToolCatalogSnapshot, ToolSpec, build_tool_catalog_snapshot
+from .tool_catalog import ExecutedToolCall, ToolCatalogSnapshot, ToolSpec, build_tool_catalog_snapshot
 from .fc_adapter import FunctionCallingToolAdapter, NormalizedToolCall
 from .tool_registry import get_tool_metadata, get_tool_name_by_kind
 from .toolcall_reporter import ToolCallReporter
@@ -275,6 +275,89 @@ def _normalize_query_tool_output(tool: str, payload: dict[str, Any]) -> dict[str
     raise RuntimeError(f"invalid {tool} tool result payload: missing queryResultJSON")
 
 
+def _validate_tool_input_payload(
+    tool_name: str,
+    input_payload: dict[str, Any],
+    error_prefix: str = "tool plan",
+) -> dict[str, Any]:
+    """Validate common tool input payload fields.
+
+    This is the unified validation logic for tool input payloads,
+    used by both JSON and FC tool plan validation paths (FC3D).
+
+    Args:
+        tool_name: Name of the tool.
+        input_payload: Input arguments to validate.
+        error_prefix: Prefix for error messages.
+
+    Returns:
+        Validated and normalized input_payload dict.
+
+    Raises:
+        RuntimeError: If input is invalid.
+    """
+    if not isinstance(input_payload, dict):
+        raise RuntimeError(f"{error_prefix} requires object input")
+
+    # Common required fields for all query tools
+    datasource_id = str(input_payload.get("datasource_id") or "").strip()
+    if not datasource_id:
+        raise RuntimeError(f"{error_prefix} missing datasource_id")
+    try:
+        start_ts = _coerce_int(input_payload.get("start_ts"))
+        end_ts = _coerce_int(input_payload.get("end_ts"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{error_prefix} has invalid integer fields") from exc
+    if start_ts <= 0 or end_ts <= 0 or end_ts < start_ts:
+        raise RuntimeError(f"{error_prefix} has invalid time range")
+
+    validated_input: dict[str, Any] = {
+        "datasource_id": datasource_id,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+    }
+
+    # Determine tool kind from registry for type-specific validation
+    tool_meta = get_tool_metadata(tool_name)
+    tool_kind = tool_meta.kind if tool_meta else "unknown"
+
+    if tool_kind == "logs":
+        # Logs-specific validation: require query and limit
+        query = str(input_payload.get("query") or "").strip()
+        if not query:
+            raise RuntimeError(f"{error_prefix} missing query")
+        if query.lstrip().startswith("{"):
+            raise RuntimeError(f"{error_prefix} must use queryText, not raw DSL")
+        try:
+            limit = _coerce_int(input_payload.get("limit"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{error_prefix} has invalid integer fields") from exc
+        if limit <= 0:
+            raise RuntimeError(f"{error_prefix} has invalid limit")
+        validated_input["query"] = query
+        validated_input["limit"] = limit
+    elif tool_kind == "metrics":
+        # Metrics-specific validation: require promql and step_seconds
+        promql = str(input_payload.get("promql") or "").strip()
+        if not promql:
+            raise RuntimeError(f"{error_prefix} missing promql")
+        try:
+            step_seconds = _coerce_int(input_payload.get("step_seconds"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{error_prefix} has invalid integer fields") from exc
+        if step_seconds <= 0:
+            raise RuntimeError(f"{error_prefix} has invalid step_seconds")
+        validated_input["promql"] = promql
+        validated_input["step_seconds"] = step_seconds
+    else:
+        # Unknown or other tool kinds: accept additional params as-is
+        for key in ("query", "promql", "limit", "step_seconds"):
+            if key in input_payload:
+                validated_input[key] = input_payload[key]
+
+    return validated_input
+
+
 class OrchestratorRuntime:
     def __init__(
         self,
@@ -308,6 +391,7 @@ class OrchestratorRuntime:
         self._script_executor_runner = ScriptExecutorRunner()
         self._started = False
         self._tool_catalog_snapshot = tool_catalog_snapshot
+        self._fc_adapter_cache: FunctionCallingToolAdapter | None = None  # Cached FC adapter for FC3A unification
         if not self._job_id:
             raise RuntimeError("job_id is required")
 
@@ -2001,8 +2085,9 @@ class OrchestratorRuntime:
     ) -> tuple[list[dict[str, Any]], list[NormalizedToolCall]]:
         """Plan tool sequence using function calling.
 
-        Uses the FunctionCallingToolAdapter to generate OpenAI tools format
-        and calls the agent's plan_tool_calls_fc() method.
+        FC3A: Uses the unified adapter from runtime.get_fc_adapter().
+        The agent's plan_tool_calls_fc() now receives the adapter directly
+        and returns NormalizedToolCall objects.
 
         Args:
             adapter: The FC adapter with the tool catalog snapshot.
@@ -2017,8 +2102,7 @@ class OrchestratorRuntime:
             - tool_requests: List of dicts compatible with existing JSON path
             - normalized_calls: List of NormalizedToolCall for FC execution
         """
-        openai_tools = adapter.to_openai_tools()
-        if not openai_tools:
+        if not adapter.to_openai_tools():
             return [], []
 
         if not hasattr(self._skill_agent, "plan_tool_calls_fc"):
@@ -2026,7 +2110,8 @@ class OrchestratorRuntime:
 
         max_tool_calls = 1 if self._skills_tool_calling_mode == "evidence_plan_single_hop" else 2
 
-        raw_plans = self._skill_agent.plan_tool_calls_fc(
+        # FC3A: Pass the adapter directly, receive NormalizedToolCall objects
+        normalized_calls = self._skill_agent.plan_tool_calls_fc(
             capability="evidence.plan",
             skill_id=selected_candidate.skill_id,
             skill_version=selected_candidate.version,
@@ -2034,21 +2119,9 @@ class OrchestratorRuntime:
             input_payload=input_payload,
             knowledge_context=knowledge_context,
             skill_resources=skill_resources,
-            openai_tools=openai_tools,
+            adapter=adapter,  # FC3A: unified adapter
             max_tool_calls=max_tool_calls,
         )
-
-        # Convert plans to normalized tool calls for validation
-        normalized_calls: list[NormalizedToolCall] = []
-        for plan in raw_plans:
-            tool_name = str(plan.get("tool") or "")
-            input_args = plan.get("input_payload", {})
-            if not tool_name:
-                continue
-            normalized_calls.append(NormalizedToolCall(
-                tool_name=tool_name,
-                arguments=input_args if isinstance(input_args, dict) else {},
-            ))
 
         # Validate tool calls against the snapshot and skill-level allowlist
         validated_calls = self._validate_skill_tool_sequence_fc(
@@ -2266,64 +2339,12 @@ class OrchestratorRuntime:
         if tool_name not in allowed_tools:
             raise RuntimeError(f"prompt skill tool is not allowed: {tool_name}")
 
-        if not isinstance(input_payload, dict):
-            raise RuntimeError("prompt skill tool plan requires object input")
-
-        # Common required fields for all query tools
-        datasource_id = str(input_payload.get("datasource_id") or "").strip()
-        if not datasource_id:
-            raise RuntimeError("prompt skill tool plan missing datasource_id")
-        try:
-            start_ts = _coerce_int(input_payload.get("start_ts"))
-            end_ts = _coerce_int(input_payload.get("end_ts"))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
-        if start_ts <= 0 or end_ts <= 0 or end_ts < start_ts:
-            raise RuntimeError("prompt skill tool plan has invalid time range")
-
-        validated_input: dict[str, Any] = {
-            "datasource_id": datasource_id,
-            "start_ts": start_ts,
-            "end_ts": end_ts,
-        }
-
-        # Determine tool kind from registry for type-specific validation
-        tool_meta = get_tool_metadata(tool_name)
-        tool_kind = tool_meta.kind if tool_meta else "unknown"
-
-        if tool_kind == "logs":
-            # Logs-specific validation: require query and limit
-            query = str(input_payload.get("query") or "").strip()
-            if not query:
-                raise RuntimeError("prompt skill tool plan missing query")
-            if query.lstrip().startswith("{"):
-                raise RuntimeError("prompt skill tool plan must use queryText, not raw DSL")
-            try:
-                limit = _coerce_int(input_payload.get("limit"))
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
-            if limit <= 0:
-                raise RuntimeError("prompt skill tool plan has invalid limit")
-            validated_input["query"] = query
-            validated_input["limit"] = limit
-        elif tool_kind == "metrics":
-            # Metrics-specific validation: require promql and step_seconds
-            promql = str(input_payload.get("promql") or "").strip()
-            if not promql:
-                raise RuntimeError("prompt skill tool plan missing promql")
-            try:
-                step_seconds = _coerce_int(input_payload.get("step_seconds"))
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError("prompt skill tool plan has invalid integer fields") from exc
-            if step_seconds <= 0:
-                raise RuntimeError("prompt skill tool plan has invalid step_seconds")
-            validated_input["promql"] = promql
-            validated_input["step_seconds"] = step_seconds
-        else:
-            # Unknown or other tool kinds: accept additional params as-is
-            for key in ("query", "promql", "limit", "step_seconds"):
-                if key in input_payload:
-                    validated_input[key] = input_payload[key]
+        # FC3D: Use unified validation helper
+        validated_input = _validate_tool_input_payload(
+            tool_name,
+            input_payload if isinstance(input_payload, dict) else {},
+            error_prefix="prompt skill tool plan",
+        )
 
         return {
             "tool": tool_name,
@@ -2351,66 +2372,12 @@ class OrchestratorRuntime:
         Raises:
             RuntimeError: If input is invalid.
         """
-        if not isinstance(input_payload, dict):
-            raise RuntimeError("FC tool plan requires object input")
-
-        # Common required fields for all query tools
-        datasource_id = str(input_payload.get("datasource_id") or "").strip()
-        if not datasource_id:
-            raise RuntimeError("FC tool plan missing datasource_id")
-        try:
-            start_ts = _coerce_int(input_payload.get("start_ts"))
-            end_ts = _coerce_int(input_payload.get("end_ts"))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("FC tool plan has invalid integer fields") from exc
-        if start_ts <= 0 or end_ts <= 0 or end_ts < start_ts:
-            raise RuntimeError("FC tool plan has invalid time range")
-
-        validated_input: dict[str, Any] = {
-            "datasource_id": datasource_id,
-            "start_ts": start_ts,
-            "end_ts": end_ts,
-        }
-
-        # Determine tool kind from registry for type-specific validation
-        tool_meta = get_tool_metadata(tool_name)
-        tool_kind = tool_meta.kind if tool_meta else "unknown"
-
-        if tool_kind == "logs":
-            # Logs-specific validation: require query and limit
-            query = str(input_payload.get("query") or "").strip()
-            if not query:
-                raise RuntimeError("FC tool plan missing query")
-            if query.lstrip().startswith("{"):
-                raise RuntimeError("FC tool plan must use queryText, not raw DSL")
-            try:
-                limit = _coerce_int(input_payload.get("limit"))
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError("FC tool plan has invalid integer fields") from exc
-            if limit <= 0:
-                raise RuntimeError("FC tool plan has invalid limit")
-            validated_input["query"] = query
-            validated_input["limit"] = limit
-        elif tool_kind == "metrics":
-            # Metrics-specific validation: require promql and step_seconds
-            promql = str(input_payload.get("promql") or "").strip()
-            if not promql:
-                raise RuntimeError("FC tool plan missing promql")
-            try:
-                step_seconds = _coerce_int(input_payload.get("step_seconds"))
-            except (TypeError, ValueError) as exc:
-                raise RuntimeError("FC tool plan has invalid integer fields") from exc
-            if step_seconds <= 0:
-                raise RuntimeError("FC tool plan has invalid step_seconds")
-            validated_input["promql"] = promql
-            validated_input["step_seconds"] = step_seconds
-        else:
-            # Unknown or other tool kinds: accept additional params as-is
-            for key in ("query", "promql", "limit", "step_seconds"):
-                if key in input_payload:
-                    validated_input[key] = input_payload[key]
-
-        return validated_input
+        # FC3D: Use unified validation helper
+        return _validate_tool_input_payload(
+            tool_name,
+            input_payload,
+            error_prefix="FC tool plan",
+        )
 
     def _run_prompt_skill_tool(
         self,
@@ -2785,6 +2752,119 @@ class OrchestratorRuntime:
             snapshot: The new ToolCatalogSnapshot to use.
         """
         self._tool_catalog_snapshot = snapshot
+        # Invalidate adapter cache when snapshot changes (FC3A)
+        self._fc_adapter_cache = None
+
+    def get_fc_adapter(self) -> FunctionCallingToolAdapter | None:
+        """Get the cached FunctionCallingToolAdapter for this job.
+
+        This is the unified adapter for both graph and skills tool binding.
+        The adapter is cached to ensure consistent tool access throughout the job.
+
+        FC3A: graph and skills should use this method instead of creating
+        their own FunctionCallingToolAdapter instances.
+
+        Returns:
+            FunctionCallingToolAdapter if snapshot is available, None otherwise.
+        """
+        if self._tool_catalog_snapshot is None:
+            return None
+        if self._fc_adapter_cache is None:
+            self._fc_adapter_cache = FunctionCallingToolAdapter(self._tool_catalog_snapshot)
+        return self._fc_adapter_cache
+
+    # FC3C: RuntimeToolGateway protocol implementation
+    def list_tools(self) -> list[ToolSpec]:
+        """List all available tools from the catalog snapshot.
+
+        This is the unified entry point for tool discovery.
+        Both graph nodes and skills should use this method.
+
+        Returns:
+            List of ToolSpec instances for all available tools.
+            Returns empty list if snapshot is not available.
+        """
+        if self._tool_catalog_snapshot is None:
+            return []
+        return list(self._tool_catalog_snapshot.tools)
+
+    def execute_tool(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        *,
+        source: str = "runtime",
+    ) -> ExecutedToolCall:
+        """Execute a tool and return unified result model.
+
+        This is the unified entry point for tool execution.
+        Both graph nodes and skills should use this method.
+
+        Args:
+            tool_name: Canonical name of the tool to execute.
+            args: Input arguments for the tool.
+            source: Identifier for the caller (e.g., "skill.plan", "graph.node", "fc_agent").
+
+        Returns:
+            ExecutedToolCall with execution details and result.
+
+        Raises:
+            RuntimeError: If tool execution fails.
+        """
+        started_at = time.monotonic()
+        canonical_name = tool_name[4:] if tool_name.startswith("mcp.") else tool_name
+
+        # Validate tool exists in snapshot
+        if self._tool_catalog_snapshot is not None:
+            if not self._tool_catalog_snapshot.has_tool(canonical_name):
+                latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+                return ExecutedToolCall(
+                    tool_name=canonical_name,
+                    request_json=args,
+                    response_json={},
+                    latency_ms=latency_ms,
+                    source=source,
+                    status="error",
+                    error=f"tool not found in catalog: {canonical_name}",
+                )
+
+        try:
+            result = self.call_tool(tool=canonical_name, params=args)
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+
+            # Extract metadata from result if available
+            provider_id = ""
+            provider_type = ""
+            resolved_from_toolset_id = ""
+            if isinstance(result, dict):
+                meta = result.pop(TOOLING_META_KEY, None) if TOOLING_META_KEY in result else None
+                if isinstance(meta, dict):
+                    provider_id = str(meta.get("provider_id") or "")
+                    provider_type = str(meta.get("provider_type") or "")
+                    resolved_from_toolset_id = str(meta.get("resolved_from_toolset_id") or "")
+
+            return ExecutedToolCall(
+                tool_name=canonical_name,
+                request_json=args,
+                response_json=result,
+                latency_ms=latency_ms,
+                source=source,
+                status="ok",
+                provider_id=provider_id,
+                provider_type=provider_type,
+                resolved_from_toolset_id=resolved_from_toolset_id,
+            )
+        except Exception as exc:
+            latency_ms = max(1, int((time.monotonic() - started_at) * 1000))
+            return ExecutedToolCall(
+                tool_name=canonical_name,
+                request_json=args,
+                response_json={},
+                latency_ms=latency_ms,
+                source=source,
+                status="error",
+                error=_trim_text(str(exc)),
+            )
 
     def build_tool_catalog_snapshot_from_invoker(self) -> ToolCatalogSnapshot:
         """Build a ToolCatalogSnapshot from the current tool invoker.

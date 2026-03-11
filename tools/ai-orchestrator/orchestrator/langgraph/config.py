@@ -24,3 +24,9 @@ class OrchestratorConfig:
     post_finalize_wait_max_interval_ms: int = 2000
     tool_execution_max_workers: int = 5
     tool_execution_group_timeout_s: float = 30.0
+
+    # Tool agent budget controls (Phase FC2B)
+    tool_agent_max_rounds: int = 5  # Maximum iteration rounds
+    tool_agent_max_calls_per_round: int = 3  # Maximum calls per round
+    tool_agent_round_timeout_s: float = 60.0  # Timeout per round
+    tool_agent_stop_on_error: bool = False  # Stop on error
