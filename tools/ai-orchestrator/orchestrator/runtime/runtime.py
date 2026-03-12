@@ -2190,13 +2190,16 @@ class OrchestratorRuntime:
         selected_candidate: "SkillCandidate",
         max_tool_calls: int,
     ) -> list[NormalizedToolCall]:
-        """Validate FC tool calls against the snapshot and skill-level allowlist.
+        """Validate FC tool calls against the FC surface and skill-level allowlist.
 
         This enforces the same constraints as the JSON path:
-        - Tool must exist in the catalog
+        - Tool must be on the FC surface (A-class, fc_selectable)
         - Tool must be in the skill's allowed_tools (intersected with toolset)
         - No duplicate tools
         - Sequence length must not exceed max_tool_calls
+
+        P1 fix: Uses has_fc_tool() to reject runtime_owned tools that were
+        never exposed in to_openai_tools(), enforcing the A/B split.
 
         Args:
             calls: Normalized tool calls to validate.
@@ -2224,9 +2227,10 @@ class OrchestratorRuntime:
         seen_tools: set[str] = set()
 
         for call in calls:
-            # Check catalog membership
-            if not adapter.has_tool(call.tool_name):
-                raise RuntimeError(f"FC tool not in catalog: {call.tool_name}")
+            # P1 fix: Use has_fc_tool() to reject runtime-owned tools that
+            # were never exposed in the FC surface (to_openai_tools filters them)
+            if not adapter.has_fc_tool(call.tool_name):
+                raise RuntimeError(f"FC tool not on FC surface (runtime_owned): {call.tool_name}")
 
             # Check skill-level allowlist (P1 fix)
             if call.tool_name not in skill_allowed_tools:
@@ -2975,6 +2979,7 @@ class OrchestratorRuntime:
                     description = metadata.description
                     read_only = metadata.read_only
                     risk_level = metadata.risk_level
+                    tool_class = metadata.tool_class
                 else:
                     # Import here to avoid circular dependency
                     from .tool_discovery import infer_tags_from_tool_name
@@ -2983,6 +2988,7 @@ class OrchestratorRuntime:
                     description = ""
                     read_only = True
                     risk_level = "low"
+                    tool_class = "fc_selectable"
 
                 spec = ToolSpec(
                     name=canonical_name,
@@ -2994,6 +3000,7 @@ class OrchestratorRuntime:
                     provider_id=provider_info.get("provider_id", ""),
                     read_only=read_only,
                     risk_level=risk_level,
+                    tool_class=tool_class,
                 )
                 tool_specs.append(spec)
 

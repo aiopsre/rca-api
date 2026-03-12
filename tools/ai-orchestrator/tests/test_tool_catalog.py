@@ -666,6 +666,72 @@ class TestSnapshotFromInvoker:
         assert loki_tool is not None
         assert "logs" in loki_tool.tags
 
+    def test_tool_class_propagation_from_metadata(self) -> None:
+        """Test that tool_class is correctly propagated when building from invoker.
+
+        This is a regression test for P1 bug: when building snapshot from invoker
+        (legacy fallback path), tool_class must be propagated from ToolMetadata
+        to ensure B-class tools (runtime_owned) are filtered from FC surface.
+        """
+        # Simulate building specs with different tool_class values
+        # (as runtime.build_tool_catalog_snapshot_from_invoker would do)
+        fc_tool = ToolSpec(
+            name="incident.get",
+            description="Get incident details",
+            kind="incident",
+            tool_class="fc_selectable",  # A-class
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session context",
+            kind="session",
+            tool_class="runtime_owned",  # B-class
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        # Verify both tools are in the snapshot
+        assert snapshot.has_tool("incident.get")
+        assert snapshot.has_tool("session.patch")
+
+        # Verify tool_class is preserved
+        fc_spec = snapshot.get_tool("incident.get")
+        assert fc_spec is not None
+        assert fc_spec.tool_class == "fc_selectable"
+
+        runtime_spec = snapshot.get_tool("session.patch")
+        assert runtime_spec is not None
+        assert runtime_spec.tool_class == "runtime_owned"
+
+        # Verify fc_tool_surface() correctly filters
+        fc_surface = snapshot.fc_tool_surface()
+        assert fc_surface.has_tool("incident.get"), "A-class tool should be in FC surface"
+        assert not fc_surface.has_tool("session.patch"), "B-class tool should NOT be in FC surface"
+
+    def test_tool_class_default_is_fc_selectable(self) -> None:
+        """Test that tools without explicit tool_class default to fc_selectable."""
+        # ToolSpec without tool_class specified
+        tool = ToolSpec(
+            name="unknown.tool",
+            description="Unknown tool",
+            kind="unknown",
+        )
+
+        # Default should be fc_selectable
+        assert tool.tool_class == "fc_selectable"
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[tool],
+        )
+
+        # Should appear in FC surface by default
+        fc_surface = snapshot.fc_tool_surface()
+        assert fc_surface.has_tool("unknown.tool")
+
 
 class TestDiscoveryFromSnapshot:
     """Tests for snapshot-based tool discovery."""
@@ -935,3 +1001,280 @@ class TestRequestResponseSummary:
 
         record = call.to_audit_record()
         assert record["response_summary"]["has_error"] is True
+
+
+class TestToolClassFiltering:
+    """Tests for tool_class filtering and FC tool surface."""
+
+    def test_filter_by_tool_class(self) -> None:
+        """Test filtering tools by tool_class."""
+        fc_tool = ToolSpec(
+            name="incident.get",
+            description="Get incident",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        fc_tools = snapshot.filter_by_tool_class("fc_selectable")
+        assert len(fc_tools) == 1
+        assert fc_tools[0].name == "incident.get"
+
+        runtime_tools = snapshot.filter_by_tool_class("runtime_owned")
+        assert len(runtime_tools) == 1
+        assert runtime_tools[0].name == "session.patch"
+
+    def test_fc_tool_surface(self) -> None:
+        """Test that fc_tool_surface returns only A-class tools."""
+        fc_tool1 = ToolSpec(
+            name="incident.get",
+            description="Get incident",
+            tool_class="fc_selectable",
+        )
+        fc_tool2 = ToolSpec(
+            name="logs.query",
+            description="Query logs",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool1, fc_tool2, runtime_tool],
+        )
+
+        fc_surface = snapshot.fc_tool_surface()
+        assert len(fc_surface.tools) == 2
+        assert fc_surface.has_tool("incident.get")
+        assert fc_surface.has_tool("logs.query")
+        assert not fc_surface.has_tool("session.patch")
+
+    def test_fc_tool_surface_to_openai_tools(self) -> None:
+        """Test that fc_tool_surface works with to_openai_tools."""
+        fc_tool = ToolSpec(
+            name="incident.get",
+            description="Get incident",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        # Full snapshot should have 2 tools
+        assert len(snapshot.to_openai_tools()) == 2
+
+        # FC surface should only have 1 tool
+        fc_surface = snapshot.fc_tool_surface()
+        openai_tools = fc_surface.to_openai_tools()
+        assert len(openai_tools) == 1
+        assert openai_tools[0]["function"]["name"] == "incident.get"
+
+    def test_tool_spec_default_tool_class(self) -> None:
+        """Test that ToolSpec defaults to fc_selectable."""
+        spec = ToolSpec(name="test.tool", description="Test")
+        assert spec.tool_class == "fc_selectable"
+        assert spec.allowed_for_prompt_skill is True
+        assert spec.allowed_for_graph_agent is True
+
+    def test_tool_spec_custom_tool_class(self) -> None:
+        """Test ToolSpec with custom tool_class."""
+        spec = ToolSpec(
+            name="internal.action",
+            description="Internal action",
+            tool_class="runtime_owned",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=False,
+        )
+        assert spec.tool_class == "runtime_owned"
+        assert spec.allowed_for_prompt_skill is False
+        assert spec.allowed_for_graph_agent is False
+
+    def test_fc_tool_surface_preserves_toolset_ids(self) -> None:
+        """Test that fc_tool_surface preserves original toolset_ids."""
+        fc_tool = ToolSpec(name="tool.a", tool_class="fc_selectable")
+        runtime_tool = ToolSpec(name="tool.b", tool_class="runtime_owned")
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1", "ts2"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        fc_surface = snapshot.fc_tool_surface()
+        assert fc_surface.toolset_ids == ("ts1", "ts2")
+
+    def test_fc_tool_surface_empty_result(self) -> None:
+        """Test fc_tool_surface when no A-class tools exist."""
+        runtime_tool = ToolSpec(
+            name="internal.action",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[runtime_tool],
+        )
+
+        fc_surface = snapshot.fc_tool_surface()
+        assert len(fc_surface.tools) == 0
+        assert len(fc_surface.by_name) == 0
+
+
+class TestFunctionCallingToolAdapterFcSurface:
+    """Tests for FunctionCallingToolAdapter has_fc_tool and fc_tool_names methods."""
+
+    def test_has_fc_tool_returns_true_for_fc_selectable(self) -> None:
+        """Test that has_fc_tool returns True for A-class (fc_selectable) tools."""
+        from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
+
+        fc_tool = ToolSpec(
+            name="incident.get",
+            description="Get incident",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # A-class tool should be on FC surface
+        assert adapter.has_fc_tool("incident.get") is True
+
+        # B-class tool should NOT be on FC surface
+        assert adapter.has_fc_tool("session.patch") is False
+
+        # Unknown tool should NOT be on FC surface
+        assert adapter.has_fc_tool("unknown.tool") is False
+
+    def test_has_fc_tool_vs_has_tool_difference(self) -> None:
+        """Test that has_fc_tool is stricter than has_tool."""
+        from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
+
+        fc_tool = ToolSpec(
+            name="logs.query",
+            description="Query logs",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="finalize",
+            description="Finalize job",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # has_tool returns True for both (checks existence)
+        assert adapter.has_tool("logs.query") is True
+        assert adapter.has_tool("finalize") is True
+
+        # has_fc_tool only returns True for A-class
+        assert adapter.has_fc_tool("logs.query") is True
+        assert adapter.has_fc_tool("finalize") is False
+
+    def test_fc_tool_names_returns_only_a_class(self) -> None:
+        """Test that fc_tool_names returns only A-class tool names."""
+        from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
+
+        fc_tool1 = ToolSpec(name="incident.get", tool_class="fc_selectable")
+        fc_tool2 = ToolSpec(name="logs.query", tool_class="fc_selectable")
+        runtime_tool1 = ToolSpec(name="session.patch", tool_class="runtime_owned")
+        runtime_tool2 = ToolSpec(name="finalize", tool_class="runtime_owned")
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool1, fc_tool2, runtime_tool1, runtime_tool2],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+        fc_names = adapter.fc_tool_names()
+
+        # Should only contain A-class tools, sorted
+        assert fc_names == ["incident.get", "logs.query"]
+
+    def test_has_fc_tool_with_alias(self) -> None:
+        """Test that has_fc_tool works with underscore aliases."""
+        from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
+
+        # ToolSpec normalizes name to dotted canonical form
+        fc_tool = ToolSpec(
+            name="incident.get",
+            description="Get incident",
+            tool_class="fc_selectable",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Should find by canonical dotted name
+        assert adapter.has_fc_tool("incident.get") is True
+
+    def test_has_fc_tool_empty_snapshot(self) -> None:
+        """Test has_fc_tool with empty snapshot."""
+        from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+        assert adapter.has_fc_tool("any.tool") is False
+        assert adapter.fc_tool_names() == []
+
+    def test_has_fc_tool_all_runtime_owned(self) -> None:
+        """Test has_fc_tool when all tools are B-class."""
+        from orchestrator.runtime.fc_adapter import FunctionCallingToolAdapter
+
+        runtime_tool1 = ToolSpec(name="session.patch", tool_class="runtime_owned")
+        runtime_tool2 = ToolSpec(name="finalize", tool_class="runtime_owned")
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[runtime_tool1, runtime_tool2],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # No tools on FC surface
+        assert adapter.has_fc_tool("session.patch") is False
+        assert adapter.has_fc_tool("finalize") is False
+        assert adapter.fc_tool_names() == []
+
+        # But has_tool still works
+        assert adapter.has_tool("session.patch") is True
+        assert adapter.has_tool("finalize") is True

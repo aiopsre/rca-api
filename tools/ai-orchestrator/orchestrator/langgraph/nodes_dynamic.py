@@ -601,8 +601,10 @@ def run_tool_agent(
         # Validate tool calls
         validated: list[Any] = []
         for call in normalized:
-            if not adapter.has_tool(call.tool_name):
-                state.add_degrade_reason(f"unknown_tool:{call.tool_name}")
+            # P1 fix: Use has_fc_tool() to reject runtime-owned tools that
+            # were never exposed in the FC surface (to_openai_tools filters them)
+            if not adapter.has_fc_tool(call.tool_name):
+                state.add_degrade_reason(f"tool_not_on_fc_surface:{call.tool_name}")
                 continue
             validated.append(call)
 

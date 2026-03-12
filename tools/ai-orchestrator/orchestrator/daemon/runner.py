@@ -5,6 +5,7 @@ import logging
 import sys
 import threading
 import time
+import warnings
 from typing import Any
 
 from .. import WORKER_VERSION
@@ -151,6 +152,15 @@ def _select_tool_invoker_via_server(
     client: RCAApiClient,
     pipeline: str,
 ) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
+    # DEPRECATED: Phase 10E - This legacy path uses resolve_toolset API.
+    # Use claim provider snapshot (resolved_tool_providers) instead.
+    # This function is kept for backward compatibility when claim_provider_snapshot_enabled=False.
+    warnings.warn(
+        "_select_tool_invoker_via_server is deprecated. "
+        "Use claim provider snapshot (resolved_tool_providers) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     client_base_url = str(getattr(client, "base_url", "") or "").strip()
     resolved = client.resolve_toolset(pipeline)
     if not isinstance(resolved, dict):
@@ -263,6 +273,15 @@ def _build_tool_invoker_from_strategy(
     pipeline: str,
     strategy_payload: dict[str, Any],
 ) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
+    # DEPRECATED: Phase 10E - This legacy path builds invoker from strategy toolsets[].
+    # Use claim provider snapshot (resolved_tool_providers) instead.
+    # This function is kept for backward compatibility when claim_provider_snapshot_enabled=False.
+    warnings.warn(
+        "_build_tool_invoker_from_strategy is deprecated. "
+        "Use claim provider snapshot (resolved_tool_providers) instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     # Keep local override semantics from Phase H/J for toolsets only.
     if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
         return _select_tool_invoker(settings, client, pipeline)

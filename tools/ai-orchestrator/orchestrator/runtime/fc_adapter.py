@@ -66,11 +66,14 @@ class FunctionCallingToolAdapter:
     """Adapter for function calling tool conversion and normalization.
 
     Provides unified interface for:
-    - Generating OpenAI/LangChain compatible tools format
+    - Generating OpenAI/LangChain compatible tools format (A-class only)
     - Normalizing LLM-returned tool calls to canonical form
     - Validating tool calls against available tools
 
     All tool names use canonical form (no 'mcp.' prefix).
+
+    Note: Only A-class (fc_selectable) tools are exposed to LLM function calling.
+    B-class (runtime_owned) tools are excluded from the FC surface.
     """
 
     def __init__(self, snapshot: "ToolCatalogSnapshot") -> None:
@@ -89,10 +92,14 @@ class FunctionCallingToolAdapter:
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """Generate OpenAI function calling format tools list.
 
+        Only A-class (fc_selectable) tools are included in the FC surface.
+        B-class (runtime_owned) tools are excluded as they are managed
+        internally by the runtime.
+
         Returns:
-            List of dicts in OpenAI tools format, one per available tool.
+            List of dicts in OpenAI tools format, one per A-class tool.
         """
-        return self._snapshot.to_openai_tools()
+        return self._snapshot.fc_tool_surface().to_openai_tools()
 
     def normalize_tool_calls(self, tool_calls: list[Any]) -> list[NormalizedToolCall]:
         """Normalize LLM-returned tool calls to canonical form.
@@ -181,3 +188,28 @@ class FunctionCallingToolAdapter:
             Sorted list of canonical tool names.
         """
         return self._snapshot.tool_names()
+
+    def has_fc_tool(self, tool_name: str) -> bool:
+        """Check if a tool is available on the FC surface (A-class only).
+
+        This is stricter than has_tool() - it only returns True for tools
+        that are fc_selectable (A-class), not runtime_owned (B-class).
+
+        Args:
+            tool_name: Tool name to check (canonical or with 'mcp.' prefix).
+
+        Returns:
+            True if the tool is available and is fc_selectable (A-class).
+        """
+        tool = self._snapshot.get_tool(tool_name)
+        if tool is None:
+            return False
+        return tool.tool_class == "fc_selectable"
+
+    def fc_tool_names(self) -> list[str]:
+        """Get all A-class (fc_selectable) tool names on the FC surface.
+
+        Returns:
+            Sorted list of canonical tool names that are fc_selectable.
+        """
+        return self._snapshot.fc_tool_surface().tool_names()

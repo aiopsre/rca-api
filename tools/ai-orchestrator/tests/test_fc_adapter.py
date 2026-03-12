@@ -729,3 +729,178 @@ class TestFCValidationFixes:
             assert len(result) == 2
             assert result[0].tool_name == "tool1"
             assert result[1].tool_name == "tool2"
+
+
+class TestToolClassFiltering:
+    """Tests for tool_class filtering in FC adapter.
+
+    A-class (fc_selectable) tools should be exposed to LLM function calling.
+    B-class (runtime_owned) tools should be excluded from FC surface.
+    """
+
+    def test_to_openai_tools_excludes_runtime_owned(self) -> None:
+        """Verify to_openai_tools excludes B-class (runtime_owned) tools."""
+        fc_tool = ToolSpec(
+            name="incident.get",
+            description="Get incident by ID",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session context",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+        openai_tools = adapter.to_openai_tools()
+
+        # Only A-class tool should be in FC surface
+        assert len(openai_tools) == 1
+        assert openai_tools[0]["function"]["name"] == "incident.get"
+
+    def test_to_openai_tools_only_runtime_owned_returns_empty(self) -> None:
+        """Verify empty result when only B-class tools exist."""
+        runtime_tool1 = ToolSpec(
+            name="session.patch",
+            description="Patch session context",
+            tool_class="runtime_owned",
+        )
+        runtime_tool2 = ToolSpec(
+            name="knowledge.save",
+            description="Save knowledge entry",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[runtime_tool1, runtime_tool2],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+        openai_tools = adapter.to_openai_tools()
+
+        # No tools should be in FC surface
+        assert len(openai_tools) == 0
+
+    def test_mixed_tool_classes_only_a_class_in_fc_surface(self) -> None:
+        """Verify mixed toolset correctly filters for FC surface."""
+        tools = [
+            # A-class tools
+            ToolSpec(name="incident.get", tool_class="fc_selectable"),
+            ToolSpec(name="incident.list", tool_class="fc_selectable"),
+            ToolSpec(name="logs.query", tool_class="fc_selectable"),
+            # B-class tools
+            ToolSpec(name="session.patch", tool_class="runtime_owned"),
+            ToolSpec(name="knowledge.save", tool_class="runtime_owned"),
+            ToolSpec(name="evidence.publish", tool_class="runtime_owned"),
+        ]
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1", "ts2"],
+            tool_specs=tools,
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+        openai_tools = adapter.to_openai_tools()
+
+        # Only 3 A-class tools should appear
+        assert len(openai_tools) == 3
+        tool_names = [t["function"]["name"] for t in openai_tools]
+        assert "incident.get" in tool_names
+        assert "incident.list" in tool_names
+        assert "logs.query" in tool_names
+        # B-class tools should not appear
+        assert "session.patch" not in tool_names
+        assert "knowledge.save" not in tool_names
+        assert "evidence.publish" not in tool_names
+
+    def test_runtime_owned_still_lookupable(self) -> None:
+        """Verify B-class tools can still be looked up in snapshot.
+
+        B-class tools are excluded from FC surface but remain in the catalog
+        for runtime execution and lookup.
+        """
+        fc_tool = ToolSpec(
+            name="incident.get",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Both tools should be lookupable
+        assert adapter.has_tool("incident.get")
+        assert adapter.has_tool("session.patch")
+
+        # Both tools should be retrievable
+        assert adapter.get_tool("incident.get") is not None
+        assert adapter.get_tool("session.patch") is not None
+
+        # But only A-class in FC surface
+        assert len(adapter.to_openai_tools()) == 1
+
+    def test_validate_accepts_b_class_tool_calls(self) -> None:
+        """Verify validate_tool_calls accepts B-class tool calls.
+
+        validate_tool_calls validates against the full catalog, not just
+        the FC surface, since B-class tools can still be called by runtime.
+        """
+        fc_tool = ToolSpec(
+            name="incident.get",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Both A and B class tool calls should validate
+        fc_call = NormalizedToolCall(tool_name="incident.get", arguments={})
+        runtime_call = NormalizedToolCall(tool_name="session.patch", arguments={})
+
+        valid_calls = adapter.validate_tool_calls([fc_call, runtime_call])
+        assert len(valid_calls) == 2
+
+    def test_tool_names_includes_all_classes(self) -> None:
+        """Verify tool_names returns all tools regardless of class."""
+        fc_tool = ToolSpec(
+            name="incident.get",
+            tool_class="fc_selectable",
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # tool_names should return all tools
+        names = adapter.tool_names()
+        assert len(names) == 2
+        assert "incident.get" in names
+        assert "session.patch" in names

@@ -60,7 +60,9 @@ class ToolSpec:
         provider_id: Identifier for the provider that exposes this tool.
         read_only: Whether the tool only reads data (no side effects).
         risk_level: Risk level for execution (low, medium, high).
+        tool_class: A/B class (fc_selectable | runtime_owned).
         allowed_for_prompt_skill: Whether this tool can be used by prompt-first skills.
+        allowed_for_graph_agent: Whether this tool can be used by LangGraph FC agent.
     """
     name: str
     description: str = ""
@@ -71,7 +73,9 @@ class ToolSpec:
     provider_id: str = ""
     read_only: bool = True
     risk_level: str = "low"
+    tool_class: str = "fc_selectable"
     allowed_for_prompt_skill: bool = True
+    allowed_for_graph_agent: bool = True
 
     def __post_init__(self) -> None:
         # Ensure name is canonical (no 'mcp.' prefix, dotted form)
@@ -164,6 +168,34 @@ class ToolCatalogSnapshot:
             List of matching ToolSpec instances.
         """
         return [t for t in self.tools if tag in t.tags]
+
+    def filter_by_tool_class(self, tool_class: str) -> list[ToolSpec]:
+        """Get all tools of a specific tool class.
+
+        Args:
+            tool_class: The tool class to filter by (e.g., "fc_selectable", "runtime_owned").
+
+        Returns:
+            List of matching ToolSpec instances.
+        """
+        return [t for t in self.tools if t.tool_class == tool_class]
+
+    def fc_tool_surface(self) -> "ToolCatalogSnapshot":
+        """Get a snapshot containing only A-class (fc_selectable) tools.
+
+        A-class tools are those that can be directly exposed to LLM function calling.
+        B-class (runtime_owned) tools are excluded from FC surface.
+
+        Returns:
+            New ToolCatalogSnapshot with only fc_selectable tools.
+        """
+        fc_tools = [t for t in self.tools if t.tool_class == "fc_selectable"]
+        fc_by_name = {t.name: t for t in fc_tools}
+        return ToolCatalogSnapshot(
+            toolset_ids=self.toolset_ids,
+            tools=tuple(fc_tools),
+            by_name=fc_by_name,
+        )
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """Convert all tools to OpenAI function calling format.
@@ -466,4 +498,7 @@ def tool_metadata_to_spec(
         provider_id=provider_id,
         read_only=metadata.read_only,
         risk_level=metadata.risk_level,
+        tool_class=metadata.tool_class,
+        allowed_for_prompt_skill=True,  # Default, can be overridden
+        allowed_for_graph_agent=True,  # Default, can be overridden
     )
