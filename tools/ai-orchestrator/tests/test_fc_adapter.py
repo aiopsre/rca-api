@@ -904,3 +904,331 @@ class TestToolClassFiltering:
         assert len(names) == 2
         assert "incident.get" in names
         assert "session.patch" in names
+
+
+class TestPerSurfaceAdapterMethods:
+    """Tests for per-surface visibility in FunctionCallingToolAdapter.
+
+    These tests verify that the adapter's to_openai_tools_for_skills()
+    and to_openai_tools_for_graph() methods correctly enforce the
+    end-to-end visibility contract using per-surface flags.
+    """
+
+    def test_to_openai_tools_for_skills_filters_by_visibility(self) -> None:
+        """Verify to_openai_tools_for_skills respects allowed_for_prompt_skill."""
+        # Tool visible to skills
+        skills_tool = ToolSpec(
+            name="skills.query",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=False,
+        )
+        # Tool NOT visible to skills (graph-only)
+        graph_only_tool = ToolSpec(
+            name="graph.action",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=True,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[skills_tool, graph_only_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Skills surface should only see skills.query
+        skills_openai = adapter.to_openai_tools_for_skills()
+        assert len(skills_openai) == 1
+        assert skills_openai[0]["function"]["name"] == "skills.query"
+
+        # Graph surface should only see graph.action
+        graph_openai = adapter.to_openai_tools_for_graph()
+        assert len(graph_openai) == 1
+        assert graph_openai[0]["function"]["name"] == "graph.action"
+
+    def test_to_openai_tools_for_graph_filters_by_visibility(self) -> None:
+        """Verify to_openai_tools_for_graph respects allowed_for_graph_agent."""
+        common_tool = ToolSpec(
+            name="common.get",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=True,
+        )
+        skills_only = ToolSpec(
+            name="skills.internal",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=False,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[common_tool, skills_only],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Graph surface should only see common.get
+        graph_openai = adapter.to_openai_tools_for_graph()
+        assert len(graph_openai) == 1
+        assert graph_openai[0]["function"]["name"] == "common.get"
+
+    def test_per_surface_methods_exclude_runtime_owned(self) -> None:
+        """Verify per-surface methods still exclude B-class tools."""
+        fc_tool = ToolSpec(
+            name="incident.get",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=True,
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            tool_class="runtime_owned",
+            allowed_for_prompt_skill=True,  # Even if marked visible
+            allowed_for_graph_agent=True,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[fc_tool, runtime_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Both per-surface methods should only see the A-class tool
+        skills_openai = adapter.to_openai_tools_for_skills()
+        assert len(skills_openai) == 1
+        assert skills_openai[0]["function"]["name"] == "incident.get"
+
+        graph_openai = adapter.to_openai_tools_for_graph()
+        assert len(graph_openai) == 1
+        assert graph_openai[0]["function"]["name"] == "incident.get"
+
+    def test_per_surface_empty_when_no_visible_tools(self) -> None:
+        """Verify empty list when no tools are visible to the surface."""
+        # All tools are hidden from skills
+        hidden_tool = ToolSpec(
+            name="hidden.action",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=False,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[hidden_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Both surfaces should return empty
+        assert adapter.to_openai_tools_for_skills() == []
+        assert adapter.to_openai_tools_for_graph() == []
+
+    def test_per_surface_vs_generic_to_openai_tools(self) -> None:
+        """Verify generic to_openai_tools ignores per-surface flags.
+
+        The generic to_openai_tools() should return all A-class tools
+        regardless of per-surface visibility, while the per-surface
+        methods apply the additional filtering.
+        """
+        skills_only = ToolSpec(
+            name="skills.internal",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=False,
+        )
+        graph_only = ToolSpec(
+            name="graph.internal",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=True,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[skills_only, graph_only],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Generic method returns all A-class tools
+        generic_openai = adapter.to_openai_tools()
+        assert len(generic_openai) == 2
+
+        # Per-surface methods filter appropriately
+        skills_openai = adapter.to_openai_tools_for_skills()
+        assert len(skills_openai) == 1
+        assert skills_openai[0]["function"]["name"] == "skills.internal"
+
+        graph_openai = adapter.to_openai_tools_for_graph()
+        assert len(graph_openai) == 1
+        assert graph_openai[0]["function"]["name"] == "graph.internal"
+
+
+class TestPerSurfaceValidation:
+    """Tests for has_fc_tool_for_skills() and has_fc_tool_for_graph()."""
+
+    def test_has_fc_tool_for_skills_accepts_visible_tool(self) -> None:
+        """Verify has_fc_tool_for_skills returns True for Skills-visible tools."""
+        tool = ToolSpec(
+            name="incident.get",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=False,  # Graph-only
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Should be visible to Skills
+        assert adapter.has_fc_tool_for_skills("incident.get") is True
+        # Should NOT be visible to Graph
+        assert adapter.has_fc_tool_for_graph("incident.get") is False
+
+    def test_has_fc_tool_for_graph_accepts_visible_tool(self) -> None:
+        """Verify has_fc_tool_for_graph returns True for Graph-visible tools."""
+        tool = ToolSpec(
+            name="logs.query",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,  # Skills-hidden
+            allowed_for_graph_agent=True,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Should NOT be visible to Skills
+        assert adapter.has_fc_tool_for_skills("logs.query") is False
+        # Should be visible to Graph
+        assert adapter.has_fc_tool_for_graph("logs.query") is True
+
+    def test_surface_validation_rejects_runtime_owned(self) -> None:
+        """Verify both surface methods reject runtime_owned tools."""
+        b_class_tool = ToolSpec(
+            name="session.patch",
+            tool_class="runtime_owned",
+            allowed_for_prompt_skill=True,  # Even if flagged visible
+            allowed_for_graph_agent=True,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[b_class_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Generic has_fc_tool should reject runtime_owned
+        assert adapter.has_fc_tool("session.patch") is False
+        # Both surface methods should also reject it
+        assert adapter.has_fc_tool_for_skills("session.patch") is False
+        assert adapter.has_fc_tool_for_graph("session.patch") is False
+
+    def test_surface_validation_rejects_hidden_tools(self) -> None:
+        """Verify surface methods reject tools hidden from that surface."""
+        # A tool that is A-class but hidden from both surfaces
+        hidden_tool = ToolSpec(
+            name="internal.debug",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=False,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[hidden_tool],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Generic has_fc_tool should accept it (it's A-class)
+        assert adapter.has_fc_tool("internal.debug") is True
+        # But both surface methods should reject it
+        assert adapter.has_fc_tool_for_skills("internal.debug") is False
+        assert adapter.has_fc_tool_for_graph("internal.debug") is False
+
+    def test_surface_validation_rejects_unknown_tools(self) -> None:
+        """Verify surface methods return False for unknown tools."""
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[],
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # All methods should reject unknown tools
+        assert adapter.has_fc_tool("unknown.tool") is False
+        assert adapter.has_fc_tool_for_skills("unknown.tool") is False
+        assert adapter.has_fc_tool_for_graph("unknown.tool") is False
+
+    def test_mixed_visibility_tools(self) -> None:
+        """Verify correct behavior with a mix of visibility settings."""
+        tools = [
+            # Visible to both surfaces
+            ToolSpec(
+                name="common.action",
+                tool_class="fc_selectable",
+                allowed_for_prompt_skill=True,
+                allowed_for_graph_agent=True,
+            ),
+            # Skills-only
+            ToolSpec(
+                name="skills.only",
+                tool_class="fc_selectable",
+                allowed_for_prompt_skill=True,
+                allowed_for_graph_agent=False,
+            ),
+            # Graph-only
+            ToolSpec(
+                name="graph.only",
+                tool_class="fc_selectable",
+                allowed_for_prompt_skill=False,
+                allowed_for_graph_agent=True,
+            ),
+            # Hidden from both
+            ToolSpec(
+                name="hidden.tool",
+                tool_class="fc_selectable",
+                allowed_for_prompt_skill=False,
+                allowed_for_graph_agent=False,
+            ),
+            # B-class
+            ToolSpec(
+                name="runtime.control",
+                tool_class="runtime_owned",
+                allowed_for_prompt_skill=True,
+                allowed_for_graph_agent=True,
+            ),
+        ]
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=tools,
+        )
+
+        adapter = FunctionCallingToolAdapter(snapshot)
+
+        # Skills validation: accepts common + skills.only
+        assert adapter.has_fc_tool_for_skills("common.action") is True
+        assert adapter.has_fc_tool_for_skills("skills.only") is True
+        assert adapter.has_fc_tool_for_skills("graph.only") is False
+        assert adapter.has_fc_tool_for_skills("hidden.tool") is False
+        assert adapter.has_fc_tool_for_skills("runtime.control") is False
+
+        # Graph validation: accepts common + graph.only
+        assert adapter.has_fc_tool_for_graph("common.action") is True
+        assert adapter.has_fc_tool_for_graph("skills.only") is False
+        assert adapter.has_fc_tool_for_graph("graph.only") is True
+        assert adapter.has_fc_tool_for_graph("hidden.tool") is False
+        assert adapter.has_fc_tool_for_graph("runtime.control") is False

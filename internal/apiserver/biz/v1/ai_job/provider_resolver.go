@@ -242,7 +242,10 @@ func (r *ProviderResolver) Resolve(
 }
 
 // resolveFromMcpServerConfigs resolves providers from the legacy mcp_server_configs table.
-// This is a fallback for backward compatibility.
+//
+// DEPRECATED: Phase 10E - This is a fallback for backward compatibility.
+// New pipelines should use toolset_provider_bindings instead.
+// This function will be removed in a future version.
 func (r *ProviderResolver) resolveFromMcpServerConfigs(
 	ctx context.Context,
 	pipeline string,
@@ -287,6 +290,9 @@ func (r *ProviderResolver) resolveFromMcpServerConfigs(
 }
 
 // resolveMcpServerRefsLegacy is the legacy resolution logic from mcp_server_configs.
+//
+// DEPRECATED: Phase 10E - This is a fallback for backward compatibility.
+// New pipelines should use toolset_provider_bindings instead.
 func (r *ProviderResolver) resolveMcpServerRefsLegacy(
 	ctx context.Context,
 	pipelineID string,
@@ -377,13 +383,15 @@ func (s *ResolvedProviderSnapshot) ToProto() []*v1.ResolvedToolProvider {
 				continue
 			}
 			toolMetadata = append(toolMetadata, &v1.ToolMetadataRef{
-				ToolName: m.ToolName,
-				Kind:     m.Kind,
-				Domain:   m.Domain,
-				ReadOnly: m.ReadOnly,
-				RiskLevel: m.RiskLevel,
-				ToolClass: m.ToolClass,
-				Aliases:   m.Aliases,
+				ToolName:              m.ToolName,
+				Kind:                  m.Kind,
+				Domain:                m.Domain,
+				ReadOnly:              m.ReadOnly,
+				RiskLevel:             m.RiskLevel,
+				ToolClass:             m.ToolClass,
+				Aliases:               m.Aliases,
+				AllowedForPromptSkill: wrapBool(m.AllowedForPromptSkill),
+				AllowedForGraphAgent:  wrapBool(m.AllowedForGraphAgent),
 			})
 		}
 
@@ -499,5 +507,9 @@ func ptrString(s *string) string {
 }
 
 func wrapInt32(v int32) *int32 {
+	return &v
+}
+
+func wrapBool(v bool) *bool {
 	return &v
 }

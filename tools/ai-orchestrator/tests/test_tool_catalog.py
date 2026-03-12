@@ -1278,3 +1278,160 @@ class TestFunctionCallingToolAdapterFcSurface:
         # But has_tool still works
         assert adapter.has_tool("session.patch") is True
         assert adapter.has_tool("finalize") is True
+
+
+class TestPerSurfaceVisibility:
+    """Tests for per-surface visibility flags (allowed_for_prompt_skill, allowed_for_graph_agent)."""
+
+    def test_skills_only_tool_not_visible_to_graph(self) -> None:
+        """Tool with allowed_for_prompt_skill=True but allowed_for_graph_agent=False.
+
+        Skills can see it, Graph cannot.
+        """
+        # Tool visible to Skills but not Graph
+        skills_only_tool = ToolSpec(
+            name="internal.query",
+            description="Internal query",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=False,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[skills_only_tool],
+        )
+
+        # Skills surface should include it
+        skills_surface = snapshot.fc_tool_surface_for_skills()
+        assert len(skills_surface.tools) == 1
+        assert skills_surface.has_tool("internal.query")
+
+        # Graph surface should NOT include it
+        graph_surface = snapshot.fc_tool_surface_for_graph()
+        assert len(graph_surface.tools) == 0
+
+    def test_graph_only_tool_not_visible_to_skills(self) -> None:
+        """Tool with allowed_for_graph_agent=True but allowed_for_prompt_skill=False.
+
+        Graph can see it, Skills cannot.
+        """
+        # Tool visible to Graph but not Skills
+        graph_only_tool = ToolSpec(
+            name="graph.action",
+            description="Graph action",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=True,
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[graph_only_tool],
+        )
+
+        # Skills surface should NOT include it
+        skills_surface = snapshot.fc_tool_surface_for_skills()
+        assert len(skills_surface.tools) == 0
+
+        # Graph surface should include it
+        graph_surface = snapshot.fc_tool_surface_for_graph()
+        assert len(graph_surface.tools) == 1
+        assert graph_surface.has_tool("graph.action")
+
+    def test_both_surfaces_can_see_default_tool(self) -> None:
+        """Tool with default visibility (both True) is visible to both surfaces."""
+        tool = ToolSpec(
+            name="common.tool",
+            description="Common tool",
+            tool_class="fc_selectable",
+            # Default values are True for both
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[tool],
+        )
+
+        # Both surfaces should include it
+        skills_surface = snapshot.fc_tool_surface_for_skills()
+        graph_surface = snapshot.fc_tool_surface_for_graph()
+
+        assert len(skills_surface.tools) == 1
+        assert len(graph_surface.tools) == 1
+        assert skills_surface.has_tool("common.tool")
+        assert graph_surface.has_tool("common.tool")
+
+    def test_runtime_owned_tool_excluded_from_both_surfaces(self) -> None:
+        """Runtime-owned tools are excluded from both surfaces regardless of flags."""
+        # Runtime tool with visibility flags set (should be ignored)
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            description="Patch session",
+            tool_class="runtime_owned",
+            allowed_for_prompt_skill=True,  # Should be ignored
+            allowed_for_graph_agent=True,   # Should be ignored
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[runtime_tool],
+        )
+
+        # Both surfaces should be empty (tool_class filter first)
+        skills_surface = snapshot.fc_tool_surface_for_skills()
+        graph_surface = snapshot.fc_tool_surface_for_graph()
+
+        assert len(skills_surface.tools) == 0
+        assert len(graph_surface.tools) == 0
+
+    def test_mixed_visibility_tools(self) -> None:
+        """Test snapshot with tools of mixed visibility settings."""
+        common_tool = ToolSpec(
+            name="common.get",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=True,
+        )
+        skills_only = ToolSpec(
+            name="skills.query",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=True,
+            allowed_for_graph_agent=False,
+        )
+        graph_only = ToolSpec(
+            name="graph.action",
+            tool_class="fc_selectable",
+            allowed_for_prompt_skill=False,
+            allowed_for_graph_agent=True,
+        )
+        runtime_tool = ToolSpec(
+            name="session.patch",
+            tool_class="runtime_owned",
+        )
+
+        snapshot = build_tool_catalog_snapshot(
+            toolset_ids=["ts1"],
+            tool_specs=[common_tool, skills_only, graph_only, runtime_tool],
+        )
+
+        # Full snapshot has 4 tools
+        assert len(snapshot.tools) == 4
+
+        # fc_tool_surface() has 3 tools (all fc_selectable)
+        fc_surface = snapshot.fc_tool_surface()
+        assert len(fc_surface.tools) == 3
+
+        # Skills surface has 2 tools (common + skills_only)
+        skills_surface = snapshot.fc_tool_surface_for_skills()
+        assert len(skills_surface.tools) == 2
+        assert skills_surface.has_tool("common.get")
+        assert skills_surface.has_tool("skills.query")
+        assert not skills_surface.has_tool("graph.action")
+
+        # Graph surface has 2 tools (common + graph_only)
+        graph_surface = snapshot.fc_tool_surface_for_graph()
+        assert len(graph_surface.tools) == 2
+        assert graph_surface.has_tool("common.get")
+        assert graph_surface.has_tool("graph.action")
+        assert not graph_surface.has_tool("skills.query")

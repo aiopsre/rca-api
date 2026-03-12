@@ -96,10 +96,47 @@ class FunctionCallingToolAdapter:
         B-class (runtime_owned) tools are excluded as they are managed
         internally by the runtime.
 
+        NOTE: This method uses the generic FC surface without per-surface
+        filtering. For per-surface visibility, use:
+        - to_openai_tools_for_skills() for prompt-first Skills
+        - to_openai_tools_for_graph() for LangGraph FC agent
+
         Returns:
             List of dicts in OpenAI tools format, one per A-class tool.
         """
         return self._snapshot.fc_tool_surface().to_openai_tools()
+
+    def to_openai_tools_for_skills(self) -> list[dict[str, Any]]:
+        """Generate OpenAI tools for prompt-first Skills surface.
+
+        Applies both tool_class and per-surface visibility filters:
+        - tool_class == "fc_selectable" (A-class)
+        - allowed_for_prompt_skill == True
+
+        This enforces the end-to-end visibility contract for Skills,
+        ensuring that tools marked as Skills-only or Graph-only are
+        only exposed to the appropriate caller.
+
+        Returns:
+            List of dicts in OpenAI tools format for Skills-visible tools.
+        """
+        return self._snapshot.fc_tool_surface_for_skills().to_openai_tools()
+
+    def to_openai_tools_for_graph(self) -> list[dict[str, Any]]:
+        """Generate OpenAI tools for LangGraph FC agent surface.
+
+        Applies both tool_class and per-surface visibility filters:
+        - tool_class == "fc_selectable" (A-class)
+        - allowed_for_graph_agent == True
+
+        This enforces the end-to-end visibility contract for LangGraph,
+        ensuring that tools marked as Skills-only or Graph-only are
+        only exposed to the appropriate caller.
+
+        Returns:
+            List of dicts in OpenAI tools format for Graph-visible tools.
+        """
+        return self._snapshot.fc_tool_surface_for_graph().to_openai_tools()
 
     def normalize_tool_calls(self, tool_calls: list[Any]) -> list[NormalizedToolCall]:
         """Normalize LLM-returned tool calls to canonical form.
@@ -205,6 +242,54 @@ class FunctionCallingToolAdapter:
         if tool is None:
             return False
         return tool.tool_class == "fc_selectable"
+
+    def has_fc_tool_for_skills(self, tool_name: str) -> bool:
+        """Check if a tool is available on the Skills FC surface.
+
+        This enforces both tool_class and per-surface visibility:
+        - tool_class == "fc_selectable" (A-class)
+        - allowed_for_prompt_skill == True
+
+        This prevents Skills from invoking graph-only tools even if
+        the model emits the hidden tool name directly.
+
+        Args:
+            tool_name: Tool name to check (canonical or with 'mcp.' prefix).
+
+        Returns:
+            True if the tool is available and visible to Skills.
+        """
+        tool = self._snapshot.get_tool(tool_name)
+        if tool is None:
+            return False
+        return (
+            tool.tool_class == "fc_selectable"
+            and tool.allowed_for_prompt_skill
+        )
+
+    def has_fc_tool_for_graph(self, tool_name: str) -> bool:
+        """Check if a tool is available on the LangGraph FC surface.
+
+        This enforces both tool_class and per-surface visibility:
+        - tool_class == "fc_selectable" (A-class)
+        - allowed_for_graph_agent == True
+
+        This prevents LangGraph from invoking skills-only tools even if
+        the model emits the hidden tool name directly.
+
+        Args:
+            tool_name: Tool name to check (canonical or with 'mcp.' prefix).
+
+        Returns:
+            True if the tool is available and visible to LangGraph.
+        """
+        tool = self._snapshot.get_tool(tool_name)
+        if tool is None:
+            return False
+        return (
+            tool.tool_class == "fc_selectable"
+            and tool.allowed_for_graph_agent
+        )
 
     def fc_tool_names(self) -> list[str]:
         """Get all A-class (fc_selectable) tool names on the FC surface.

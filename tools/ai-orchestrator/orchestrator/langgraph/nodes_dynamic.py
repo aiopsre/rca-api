@@ -521,7 +521,8 @@ def run_tool_agent(
         return state
 
     # 2. Get OpenAI tools format from adapter
-    openai_tools = adapter.to_openai_tools()
+    # Use per-surface filtering for LangGraph FC agent visibility
+    openai_tools = adapter.to_openai_tools_for_graph()
     if not openai_tools:
         state.add_degrade_reason("no_tools_available")
         report_node_action(
@@ -601,10 +602,12 @@ def run_tool_agent(
         # Validate tool calls
         validated: list[Any] = []
         for call in normalized:
-            # P1 fix: Use has_fc_tool() to reject runtime-owned tools that
-            # were never exposed in the FC surface (to_openai_tools filters them)
-            if not adapter.has_fc_tool(call.tool_name):
-                state.add_degrade_reason(f"tool_not_on_fc_surface:{call.tool_name}")
+            # P1 fix: Use has_fc_tool_for_graph() to reject:
+            # 1. runtime-owned tools (B-class) that were never exposed
+            # 2. skills-only tools that are not visible to LangGraph
+            # This enforces the per-surface visibility contract.
+            if not adapter.has_fc_tool_for_graph(call.tool_name):
+                state.add_degrade_reason(f"tool_not_on_graph_fc_surface:{call.tool_name}")
                 continue
             validated.append(call)
 

@@ -227,6 +227,12 @@ func (x *ResolveToolsetRequest) GetPipeline() string {
 }
 
 // ResolveToolsetResponse returns normalized pipeline and resolved toolset.
+//
+// DEPRECATED FOR EXECUTION (Phase 10E):
+// - For worker execution, use StartAIJobResponse.resolved_tool_providers instead.
+// - This API is retained for governance/observation queries (e.g., admin UI).
+// - The providers[] field in toolset should NOT be used to build ToolInvoker.
+// - New pipelines should use toolset_provider_bindings table for provider resolution.
 type ResolveToolsetResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Pipeline      string                 `protobuf:"bytes,1,opt,name=pipeline,proto3" json:"pipeline,omitempty"`

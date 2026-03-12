@@ -640,3 +640,153 @@ class TestBuildToolInvokerFromResolvedProviders:
 
         invoker = build_tool_invoker_from_resolved_providers([])
         assert invoker is None
+
+
+class TestToolMetadataSurfaceFields:
+    """Tests for preserving surface-specific metadata in fallback path."""
+
+    def test_parse_tool_metadata_preserves_tool_class(self):
+        """Tool class is correctly parsed from metadata."""
+        from orchestrator.tooling.mcp_server_loader import _parse_tool_metadata_list
+
+        raw = [
+            {
+                "tool_name": "incident.get",
+                "kind": "incident",
+                "tool_class": "fc_selectable",
+            },
+            {
+                "tool_name": "session.patch",
+                "kind": "session",
+                "tool_class": "runtime_owned",
+            },
+        ]
+
+        result = _parse_tool_metadata_list(raw)
+        assert len(result) == 2
+        assert result[0].tool_class == "fc_selectable"
+        assert result[1].tool_class == "runtime_owned"
+
+    def test_parse_tool_metadata_preserves_surface_visibility(self):
+        """Surface visibility flags are correctly parsed from metadata."""
+        from orchestrator.tooling.mcp_server_loader import _parse_tool_metadata_list
+
+        raw = [
+            {
+                "tool_name": "skills.only",
+                "tool_class": "fc_selectable",
+                "allowed_for_prompt_skill": True,
+                "allowed_for_graph_agent": False,
+            },
+            {
+                "tool_name": "graph.only",
+                "tool_class": "fc_selectable",
+                "allowed_for_prompt_skill": False,
+                "allowed_for_graph_agent": True,
+            },
+            {
+                "tool_name": "hidden.tool",
+                "tool_class": "fc_selectable",
+                "allowed_for_prompt_skill": False,
+                "allowed_for_graph_agent": False,
+            },
+        ]
+
+        result = _parse_tool_metadata_list(raw)
+        assert len(result) == 3
+
+        # skills.only
+        assert result[0].allowed_for_prompt_skill is True
+        assert result[0].allowed_for_graph_agent is False
+
+        # graph.only
+        assert result[1].allowed_for_prompt_skill is False
+        assert result[1].allowed_for_graph_agent is True
+
+        # hidden.tool
+        assert result[2].allowed_for_prompt_skill is False
+        assert result[2].allowed_for_graph_agent is False
+
+    def test_parse_tool_metadata_defaults_missing_fields(self):
+        """Missing fields default to fc_selectable/True for backward compatibility."""
+        from orchestrator.tooling.mcp_server_loader import _parse_tool_metadata_list
+
+        raw = [
+            {
+                "tool_name": "legacy.tool",
+                "kind": "unknown",
+                # No tool_class or surface fields
+            },
+        ]
+
+        result = _parse_tool_metadata_list(raw)
+        assert len(result) == 1
+        assert result[0].tool_class == "fc_selectable"
+        assert result[0].allowed_for_prompt_skill is True
+        assert result[0].allowed_for_graph_agent is True
+
+    def test_parse_tool_metadata_with_camel_case(self):
+        """Camel case field names (from Go JSON) are correctly parsed."""
+        from orchestrator.tooling.mcp_server_loader import _parse_tool_metadata_list
+
+        raw = [
+            {
+                "toolName": "incident.get",
+                "toolClass": "fc_selectable",
+                "allowedForPromptSkill": False,
+                "allowedForGraphAgent": True,
+            },
+        ]
+
+        result = _parse_tool_metadata_list(raw)
+        assert len(result) == 1
+        assert result[0].tool_class == "fc_selectable"
+        assert result[0].allowed_for_prompt_skill is False
+        assert result[0].allowed_for_graph_agent is True
+
+    def test_resolved_providers_metadata_preserves_surface_fields(self):
+        """Tool metadata from resolved providers preserves surface fields."""
+        providers = [
+            {
+                "providerID": "builtin-readonly",
+                "mcpServerID": "rca-api-builtin-readonly",
+                "name": "Builtin Readonly",
+                "providerType": "builtin",
+                "serverKind": "builtin",
+                "baseURL": "",
+                "allowedTools": ["incident.get", "session.patch"],
+                "toolMetadata": [
+                    {
+                        "tool_name": "incident.get",
+                        "tool_class": "fc_selectable",
+                        "allowed_for_prompt_skill": True,
+                        "allowed_for_graph_agent": True,
+                    },
+                    {
+                        "tool_name": "session.patch",
+                        "tool_class": "runtime_owned",
+                        "allowed_for_prompt_skill": False,
+                        "allowed_for_graph_agent": False,
+                    },
+                ],
+                "priority": 0,
+            },
+        ]
+
+        result = parse_resolved_tool_providers(providers)
+        assert len(result) == 1
+        assert len(result[0].tool_metadata) == 2
+
+        # incident.get should be fc_selectable
+        incident_meta = result[0].tool_metadata[0]
+        assert incident_meta.tool_name == "incident.get"
+        assert incident_meta.tool_class == "fc_selectable"
+        assert incident_meta.allowed_for_prompt_skill is True
+        assert incident_meta.allowed_for_graph_agent is True
+
+        # session.patch should be runtime_owned
+        session_meta = result[0].tool_metadata[1]
+        assert session_meta.tool_name == "session.patch"
+        assert session_meta.tool_class == "runtime_owned"
+        assert session_meta.allowed_for_prompt_skill is False
+        assert session_meta.allowed_for_graph_agent is False

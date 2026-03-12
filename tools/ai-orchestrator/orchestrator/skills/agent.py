@@ -426,7 +426,8 @@ class PromptSkillAgent:
             raise RuntimeError("prompt skill agent is not configured")
 
         # FC3A: Get OpenAI tools from the adapter (single source of truth)
-        openai_tools = adapter.to_openai_tools()
+        # Use per-surface filtering for Skills visibility
+        openai_tools = adapter.to_openai_tools_for_skills()
         if not openai_tools:
             return []
 

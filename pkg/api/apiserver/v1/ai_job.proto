@@ -179,6 +179,12 @@ message ToolMetadataRef {
   string toolClass = 6;
   // aliases contains legacy underscore names for backward compatibility.
   repeated string aliases = 7;
+  // allowedForPromptSkill indicates visibility to prompt-first Skills.
+  // Optional to preserve explicit false values in JSON serialization.
+  optional bool allowedForPromptSkill = 8;
+  // allowedForGraphAgent indicates visibility to LangGraph FC agent.
+  // Optional to preserve explicit false values in JSON serialization.
+  optional bool allowedForGraphAgent = 9;
 }
 
 // CancelAIJobRequest transitions job to canceled.

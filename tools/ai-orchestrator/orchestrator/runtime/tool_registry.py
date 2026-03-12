@@ -33,6 +33,8 @@ class ToolMetadata:
         description: Human-readable description.
         tool_class: A/B class (fc_selectable | runtime_owned).
         aliases: Alternative names for this tool.
+        allowed_for_prompt_skill: Whether this tool can be used by prompt-first skills.
+        allowed_for_graph_agent: Whether this tool can be used by LangGraph FC agent.
     """
     tool_name: str
     kind: str = "unknown"
@@ -45,6 +47,8 @@ class ToolMetadata:
     description: str = ""
     tool_class: str = "fc_selectable"
     aliases: tuple[str, ...] = ()
+    allowed_for_prompt_skill: bool = True
+    allowed_for_graph_agent: bool = True
 
 
 class ToolRegistry:
@@ -117,6 +121,8 @@ class ToolRegistry:
                     description=meta.description,
                     tool_class=meta.tool_class,
                     aliases=meta.aliases,
+                    allowed_for_prompt_skill=meta.allowed_for_prompt_skill,
+                    allowed_for_graph_agent=meta.allowed_for_graph_agent,
                 )
                 self._metadata[meta.tool_name] = tool_meta
                 count += 1
@@ -153,6 +159,8 @@ class ToolRegistry:
                     description=meta.description,
                     tool_class=meta.tool_class,
                     aliases=meta.aliases,
+                    allowed_for_prompt_skill=meta.allowed_for_prompt_skill,
+                    allowed_for_graph_agent=meta.allowed_for_graph_agent,
                 )
                 self._metadata[meta.tool_name] = tool_meta
                 count += 1

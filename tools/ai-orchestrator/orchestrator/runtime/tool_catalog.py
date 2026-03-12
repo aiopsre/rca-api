@@ -186,6 +186,9 @@ class ToolCatalogSnapshot:
         A-class tools are those that can be directly exposed to LLM function calling.
         B-class (runtime_owned) tools are excluded from FC surface.
 
+        Note: This method filters by tool_class only. For per-surface visibility,
+        use fc_tool_surface_for_skills() or fc_tool_surface_for_graph().
+
         Returns:
             New ToolCatalogSnapshot with only fc_selectable tools.
         """
@@ -197,8 +200,56 @@ class ToolCatalogSnapshot:
             by_name=fc_by_name,
         )
 
+    def fc_tool_surface_for_skills(self) -> "ToolCatalogSnapshot":
+        """Get a snapshot containing tools visible to prompt-first Skills.
+
+        Filters by:
+        - tool_class == "fc_selectable" (A-class)
+        - allowed_for_prompt_skill == True
+
+        Returns:
+            New ToolCatalogSnapshot with tools visible to Skills.
+        """
+        fc_tools = [
+            t for t in self.tools
+            if t.tool_class == "fc_selectable" and t.allowed_for_prompt_skill
+        ]
+        fc_by_name = {t.name: t for t in fc_tools}
+        return ToolCatalogSnapshot(
+            toolset_ids=self.toolset_ids,
+            tools=tuple(fc_tools),
+            by_name=fc_by_name,
+        )
+
+    def fc_tool_surface_for_graph(self) -> "ToolCatalogSnapshot":
+        """Get a snapshot containing tools visible to LangGraph FC agent.
+
+        Filters by:
+        - tool_class == "fc_selectable" (A-class)
+        - allowed_for_graph_agent == True
+
+        Returns:
+            New ToolCatalogSnapshot with tools visible to Graph agent.
+        """
+        fc_tools = [
+            t for t in self.tools
+            if t.tool_class == "fc_selectable" and t.allowed_for_graph_agent
+        ]
+        fc_by_name = {t.name: t for t in fc_tools}
+        return ToolCatalogSnapshot(
+            toolset_ids=self.toolset_ids,
+            tools=tuple(fc_tools),
+            by_name=fc_by_name,
+        )
+
     def to_openai_tools(self) -> list[dict[str, Any]]:
         """Convert all tools to OpenAI function calling format.
+
+        This is a general-purpose conversion function that returns ALL tools
+        in the snapshot, regardless of tool_class. For FC scenarios where only
+        A-class (fc_selectable) tools should be exposed, use:
+            - snapshot.fc_tool_surface().to_openai_tools()
+            - FunctionCallingToolAdapter.to_openai_tools()
 
         Returns:
             List of dictionaries in OpenAI tools format.

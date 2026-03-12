@@ -258,21 +258,30 @@ func BuildToolMetadataRefs(tools []string, metadataMap map[string]*model.ToolMet
 				_ = json.Unmarshal([]byte(*meta.TagsJSON), &tags)
 			}
 
+			var aliases []string
+			if meta.AliasesJSON != nil && *meta.AliasesJSON != "" {
+				_ = json.Unmarshal([]byte(*meta.AliasesJSON), &aliases)
+			}
+
 			description := ""
 			if meta.Description != nil {
 				description = *meta.Description
 			}
 
 			result = append(result, model.ToolMetadataRef{
-				ToolName:    meta.ToolName,
-				Kind:        meta.Kind,
-				Domain:      meta.Domain,
-				ReadOnly:    meta.ReadOnly,
-				RiskLevel:   meta.RiskLevel,
-				LatencyTier: meta.LatencyTier,
-				CostHint:    meta.CostHint,
-				Tags:        tags,
-				Description: description,
+				ToolName:              meta.ToolName,
+				Kind:                  meta.Kind,
+				Domain:                meta.Domain,
+				ReadOnly:              meta.ReadOnly,
+				RiskLevel:             meta.RiskLevel,
+				ToolClass:             meta.ToolClass,
+				AllowedForPromptSkill: meta.AllowedForPromptSkill,
+				AllowedForGraphAgent:  meta.AllowedForGraphAgent,
+				LatencyTier:           meta.LatencyTier,
+				CostHint:              meta.CostHint,
+				Tags:                  tags,
+				Aliases:               aliases,
+				Description:           description,
 			})
 		}
 	}

@@ -42,9 +42,9 @@ type ToolMetadataRef struct {
 	Domain                string   `json:"domain,omitempty"`
 	ReadOnly              bool     `json:"read_only,omitempty"`
 	RiskLevel             string   `json:"risk_level,omitempty"`
-	ToolClass             string   `json:"tool_class,omitempty"`
-	AllowedForPromptSkill bool     `json:"allowed_for_prompt_skill,omitempty"`
-	AllowedForGraphAgent  bool     `json:"allowed_for_graph_agent,omitempty"`
+	ToolClass             string   `json:"tool_class"`                        // No omitempty - must preserve "fc_selectable" vs "runtime_owned"
+	AllowedForPromptSkill bool     `json:"allowed_for_prompt_skill"`         // No omitempty - false values must be preserved
+	AllowedForGraphAgent  bool     `json:"allowed_for_graph_agent"`          // No omitempty - false values must be preserved
 	LatencyTier           string   `json:"latency_tier,omitempty"`
 	CostHint              string   `json:"cost_hint,omitempty"`
 	Tags                  []string `json:"tags,omitempty"`

@@ -2131,7 +2131,7 @@ class OrchestratorRuntime:
             - tool_requests: List of dicts compatible with existing JSON path
             - normalized_calls: List of NormalizedToolCall for FC execution
         """
-        if not adapter.to_openai_tools():
+        if not adapter.to_openai_tools_for_skills():
             return [], []
 
         if not hasattr(self._skill_agent, "plan_tool_calls_fc"):
@@ -2227,10 +2227,12 @@ class OrchestratorRuntime:
         seen_tools: set[str] = set()
 
         for call in calls:
-            # P1 fix: Use has_fc_tool() to reject runtime-owned tools that
-            # were never exposed in the FC surface (to_openai_tools filters them)
-            if not adapter.has_fc_tool(call.tool_name):
-                raise RuntimeError(f"FC tool not on FC surface (runtime_owned): {call.tool_name}")
+            # P1 fix: Use has_fc_tool_for_skills() to reject:
+            # 1. runtime-owned tools (B-class) that were never exposed
+            # 2. graph-only tools that are not visible to Skills
+            # This enforces the per-surface visibility contract.
+            if not adapter.has_fc_tool_for_skills(call.tool_name):
+                raise RuntimeError(f"FC tool not on Skills FC surface: {call.tool_name}")
 
             # Check skill-level allowlist (P1 fix)
             if call.tool_name not in skill_allowed_tools:
@@ -2980,6 +2982,8 @@ class OrchestratorRuntime:
                     read_only = metadata.read_only
                     risk_level = metadata.risk_level
                     tool_class = metadata.tool_class
+                    allowed_for_prompt_skill = metadata.allowed_for_prompt_skill
+                    allowed_for_graph_agent = metadata.allowed_for_graph_agent
                 else:
                     # Import here to avoid circular dependency
                     from .tool_discovery import infer_tags_from_tool_name
@@ -2989,6 +2993,8 @@ class OrchestratorRuntime:
                     read_only = True
                     risk_level = "low"
                     tool_class = "fc_selectable"
+                    allowed_for_prompt_skill = True
+                    allowed_for_graph_agent = True
 
                 spec = ToolSpec(
                     name=canonical_name,
@@ -3001,6 +3007,8 @@ class OrchestratorRuntime:
                     read_only=read_only,
                     risk_level=risk_level,
                     tool_class=tool_class,
+                    allowed_for_prompt_skill=allowed_for_prompt_skill,
+                    allowed_for_graph_agent=allowed_for_graph_agent,
                 )
                 tool_specs.append(spec)
 

@@ -34,6 +34,9 @@ class ToolMetadataRef:
     # New fields for A/B class tools
     tool_class: str = "fc_selectable"
     aliases: tuple[str, ...] = ()
+    # Per-surface visibility flags
+    allowed_for_prompt_skill: bool = True
+    allowed_for_graph_agent: bool = True
 
 
 @dataclass(frozen=True)
@@ -359,6 +362,42 @@ def _coerce_timeout(raw: Any, *, default: float) -> float:
     return value
 
 
+def _parse_bool_with_default(
+    item: dict[str, Any],
+    snake_key: str,
+    camel_key: str,
+    *,
+    default: bool,
+) -> bool:
+    """Parse a boolean value with proper handling of explicit false values.
+
+    This function correctly handles the case where a boolean field is explicitly
+    set to false. Unlike `item.get(key) or default`, which would treat False as
+    "missing" and return the default, this function preserves explicit false values.
+
+    Args:
+        item: The dictionary containing the value.
+        snake_key: The snake_case key name.
+        camel_key: The camelCase key name.
+        default: The default value if neither key is present.
+
+    Returns:
+        The boolean value, preserving explicit false.
+    """
+    # Check snake_case key first
+    if snake_key in item:
+        val = item[snake_key]
+        if val is not None:
+            return bool(val)
+    # Fall back to camelCase key
+    if camel_key in item:
+        val = item[camel_key]
+        if val is not None:
+            return bool(val)
+    # Neither key present, use default
+    return default
+
+
 def _parse_tool_metadata_list(raw: Any) -> tuple[ToolMetadataRef, ...]:
     """Parse tool metadata from platform response.
 
@@ -413,6 +452,15 @@ def _parse_tool_metadata_list(raw: Any) -> tuple[ToolMetadataRef, ...]:
             description=str(item.get("description") or ""),
             tool_class=str(item.get("tool_class") or item.get("toolClass") or "fc_selectable"),
             aliases=aliases,
+            # Per-surface visibility flags
+            # Note: Must check for None explicitly to preserve explicit false values
+            # Using "or" pattern loses false because False or X evaluates to X
+            allowed_for_prompt_skill=_parse_bool_with_default(
+                item, "allowed_for_prompt_skill", "allowedForPromptSkill", default=True
+            ),
+            allowed_for_graph_agent=_parse_bool_with_default(
+                item, "allowed_for_graph_agent", "allowedForGraphAgent", default=True
+            ),
         ))
 
     return tuple(result)

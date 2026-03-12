@@ -963,9 +963,15 @@ type ToolMetadataRef struct {
 	// toolClass is fc_selectable (A-class) or runtime_owned (B-class).
 	ToolClass string `protobuf:"bytes,6,opt,name=toolClass,proto3" json:"toolClass,omitempty"`
 	// aliases contains legacy underscore names for backward compatibility.
-	Aliases       []string `protobuf:"bytes,7,rep,name=aliases,proto3" json:"aliases,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Aliases []string `protobuf:"bytes,7,rep,name=aliases,proto3" json:"aliases,omitempty"`
+	// allowedForPromptSkill indicates visibility to prompt-first Skills.
+	// Optional to preserve explicit false values in JSON serialization.
+	AllowedForPromptSkill *bool `protobuf:"varint,8,opt,name=allowedForPromptSkill,proto3,oneof" json:"allowedForPromptSkill,omitempty"`
+	// allowedForGraphAgent indicates visibility to LangGraph FC agent.
+	// Optional to preserve explicit false values in JSON serialization.
+	AllowedForGraphAgent *bool `protobuf:"varint,9,opt,name=allowedForGraphAgent,proto3,oneof" json:"allowedForGraphAgent,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *ToolMetadataRef) Reset() {
@@ -1045,6 +1051,20 @@ func (x *ToolMetadataRef) GetAliases() []string {
 		return x.Aliases
 	}
 	return nil
+}
+
+func (x *ToolMetadataRef) GetAllowedForPromptSkill() bool {
+	if x != nil && x.AllowedForPromptSkill != nil {
+		return *x.AllowedForPromptSkill
+	}
+	return false
+}
+
+func (x *ToolMetadataRef) GetAllowedForGraphAgent() bool {
+	if x != nil && x.AllowedForGraphAgent != nil {
+		return *x.AllowedForGraphAgent
+	}
+	return false
 }
 
 // CancelAIJobRequest transitions job to canceled.
@@ -1839,7 +1859,7 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"timeoutSec\x18\v \x01(\x05H\x01R\n" +
 	"timeoutSec\x88\x01\x01B\t\n" +
 	"\a_scopesB\r\n" +
-	"\v_timeoutSec\"\xcb\x01\n" +
+	"\v_timeoutSec\"\xf2\x02\n" +
 	"\x0fToolMetadataRef\x12\x1a\n" +
 	"\btoolName\x18\x01 \x01(\tR\btoolName\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x16\n" +
@@ -1847,7 +1867,11 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"\breadOnly\x18\x04 \x01(\bR\breadOnly\x12\x1c\n" +
 	"\triskLevel\x18\x05 \x01(\tR\triskLevel\x12\x1c\n" +
 	"\ttoolClass\x18\x06 \x01(\tR\ttoolClass\x12\x18\n" +
-	"\aaliases\x18\a \x03(\tR\aaliases\"R\n" +
+	"\aaliases\x18\a \x03(\tR\aaliases\x129\n" +
+	"\x15allowedForPromptSkill\x18\b \x01(\bH\x00R\x15allowedForPromptSkill\x88\x01\x01\x127\n" +
+	"\x14allowedForGraphAgent\x18\t \x01(\bH\x01R\x14allowedForGraphAgent\x88\x01\x01B\x18\n" +
+	"\x16_allowedForPromptSkillB\x17\n" +
+	"\x15_allowedForGraphAgent\"R\n" +
 	"\x12CancelAIJobRequest\x12\x14\n" +
 	"\x05jobID\x18\x01 \x01(\tR\x05jobID\x12\x1b\n" +
 	"\x06reason\x18\x02 \x01(\tH\x00R\x06reason\x88\x01\x01B\t\n" +
@@ -1988,6 +2012,7 @@ func file_apiserver_v1_ai_job_proto_init() {
 	file_apiserver_v1_ai_job_proto_msgTypes[1].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[10].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[11].OneofWrappers = []any{}
+	file_apiserver_v1_ai_job_proto_msgTypes[12].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[13].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[15].OneofWrappers = []any{}
 	file_apiserver_v1_ai_job_proto_msgTypes[17].OneofWrappers = []any{}

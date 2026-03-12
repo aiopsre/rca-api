@@ -2,6 +2,7 @@ package toolmetadata
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -488,8 +489,252 @@ func TestBuildToolMetadataRefs(t *testing.T) {
 		refs = BuildToolMetadataRefs(nil, map[string]*model.ToolMetadataM{})
 		require.Nil(t, refs)
 	})
+
+	t.Run("preserves tool_class and surface visibility fields", func(t *testing.T) {
+		aliasesJSON := ptrString(`["session.update","session.modify"]`)
+
+		metadataMap := map[string]*model.ToolMetadataM{
+			"fc_selectable_tool": {
+				ToolName:              "fc_selectable_tool",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: true,
+				AllowedForGraphAgent:  true,
+			},
+			"runtime_owned_tool": {
+				ToolName:              "runtime_owned_tool",
+				ToolClass:             "runtime_owned",
+				AllowedForPromptSkill: false,
+				AllowedForGraphAgent:  false,
+			},
+			"skills_only_tool": {
+				ToolName:              "skills_only_tool",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: true,
+				AllowedForGraphAgent:  false,
+			},
+			"graph_only_tool": {
+				ToolName:              "graph_only_tool",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: false,
+				AllowedForGraphAgent:  true,
+				AliasesJSON:           aliasesJSON,
+			},
+		}
+
+		refs := BuildToolMetadataRefs(
+			[]string{"fc_selectable_tool", "runtime_owned_tool", "skills_only_tool", "graph_only_tool"},
+			metadataMap,
+		)
+		require.Len(t, refs, 4)
+
+		// fc_selectable_tool - visible to both
+		require.Equal(t, "fc_selectable_tool", refs[0].ToolName)
+		require.Equal(t, "fc_selectable", refs[0].ToolClass)
+		require.Equal(t, true, refs[0].AllowedForPromptSkill)
+		require.Equal(t, true, refs[0].AllowedForGraphAgent)
+
+		// runtime_owned_tool - B-class, hidden from both
+		require.Equal(t, "runtime_owned_tool", refs[1].ToolName)
+		require.Equal(t, "runtime_owned", refs[1].ToolClass)
+		require.Equal(t, false, refs[1].AllowedForPromptSkill)
+		require.Equal(t, false, refs[1].AllowedForGraphAgent)
+
+		// skills_only_tool - Skills only
+		require.Equal(t, "skills_only_tool", refs[2].ToolName)
+		require.Equal(t, "fc_selectable", refs[2].ToolClass)
+		require.Equal(t, true, refs[2].AllowedForPromptSkill)
+		require.Equal(t, false, refs[2].AllowedForGraphAgent)
+
+		// graph_only_tool - Graph only, with aliases
+		require.Equal(t, "graph_only_tool", refs[3].ToolName)
+		require.Equal(t, "fc_selectable", refs[3].ToolClass)
+		require.Equal(t, false, refs[3].AllowedForPromptSkill)
+		require.Equal(t, true, refs[3].AllowedForGraphAgent)
+		require.Equal(t, []string{"session.update", "session.modify"}, refs[3].Aliases)
+	})
+}
+
+func TestToolMetadataRef_JSONPreservesFalseValues(t *testing.T) {
+	t.Run("serializes false visibility values without dropping them", func(t *testing.T) {
+		ref := model.ToolMetadataRef{
+			ToolName:              "hidden.tool",
+			ToolClass:             "fc_selectable",
+			AllowedForPromptSkill: false,
+			AllowedForGraphAgent:  false,
+		}
+
+		data, err := json.Marshal(ref)
+		require.NoError(t, err)
+
+		// The JSON should contain the false values explicitly
+		jsonStr := string(data)
+		require.Contains(t, jsonStr, `"tool_class":"fc_selectable"`)
+		require.Contains(t, jsonStr, `"allowed_for_prompt_skill":false`)
+		require.Contains(t, jsonStr, `"allowed_for_graph_agent":false`)
+
+		// Unmarshal and verify values are preserved
+		var parsed model.ToolMetadataRef
+		err = json.Unmarshal(data, &parsed)
+		require.NoError(t, err)
+		require.Equal(t, "fc_selectable", parsed.ToolClass)
+		require.Equal(t, false, parsed.AllowedForPromptSkill)
+		require.Equal(t, false, parsed.AllowedForGraphAgent)
+	})
+
+	t.Run("round-trips mixed visibility values", func(t *testing.T) {
+		refs := []model.ToolMetadataRef{
+			{
+				ToolName:              "both.visible",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: true,
+				AllowedForGraphAgent:  true,
+			},
+			{
+				ToolName:              "skills.only",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: true,
+				AllowedForGraphAgent:  false,
+			},
+			{
+				ToolName:              "graph.only",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: false,
+				AllowedForGraphAgent:  true,
+			},
+			{
+				ToolName:              "runtime.control",
+				ToolClass:             "runtime_owned",
+				AllowedForPromptSkill: false,
+				AllowedForGraphAgent:  false,
+			},
+		}
+
+		data, err := json.Marshal(refs)
+		require.NoError(t, err)
+
+		var parsed []model.ToolMetadataRef
+		err = json.Unmarshal(data, &parsed)
+		require.NoError(t, err)
+		require.Len(t, parsed, 4)
+
+		// Verify all values are preserved exactly
+		require.Equal(t, true, parsed[0].AllowedForPromptSkill)
+		require.Equal(t, true, parsed[0].AllowedForGraphAgent)
+
+		require.Equal(t, true, parsed[1].AllowedForPromptSkill)
+		require.Equal(t, false, parsed[1].AllowedForGraphAgent)
+
+		require.Equal(t, false, parsed[2].AllowedForPromptSkill)
+		require.Equal(t, true, parsed[2].AllowedForGraphAgent)
+
+		require.Equal(t, "runtime_owned", parsed[3].ToolClass)
+		require.Equal(t, false, parsed[3].AllowedForPromptSkill)
+		require.Equal(t, false, parsed[3].AllowedForGraphAgent)
+	})
 }
 
 func ptrString(s string) *string {
 	return &s
+}
+
+func ptrBool(v bool) *bool {
+	return &v
+}
+
+func TestProtoToolMetadataRef_JSONPreservesFalseValues(t *testing.T) {
+	t.Run("proto type serializes optional bool false values", func(t *testing.T) {
+		ref := v1.ToolMetadataRef{
+			ToolName:              "hidden.tool",
+			ToolClass:             "fc_selectable",
+			AllowedForPromptSkill: ptrBool(false),
+			AllowedForGraphAgent:  ptrBool(false),
+		}
+
+		data, err := json.Marshal(ref)
+		require.NoError(t, err)
+
+		// The JSON should contain the false values explicitly
+		jsonStr := string(data)
+		require.Contains(t, jsonStr, `"toolClass":"fc_selectable"`)
+		require.Contains(t, jsonStr, `"allowedForPromptSkill":false`)
+		require.Contains(t, jsonStr, `"allowedForGraphAgent":false`)
+
+		// Unmarshal and verify values are preserved
+		var parsed v1.ToolMetadataRef
+		err = json.Unmarshal(data, &parsed)
+		require.NoError(t, err)
+		require.Equal(t, "fc_selectable", parsed.ToolClass)
+		require.NotNil(t, parsed.AllowedForPromptSkill)
+		require.Equal(t, false, *parsed.AllowedForPromptSkill)
+		require.NotNil(t, parsed.AllowedForGraphAgent)
+		require.Equal(t, false, *parsed.AllowedForGraphAgent)
+	})
+
+	t.Run("proto type omits nil optional bool fields", func(t *testing.T) {
+		ref := v1.ToolMetadataRef{
+			ToolName:  "default.tool",
+			ToolClass: "fc_selectable",
+			// AllowedForPromptSkill and AllowedForGraphAgent are nil
+		}
+
+		data, err := json.Marshal(ref)
+		require.NoError(t, err)
+
+		// The JSON should NOT contain the nil optional fields
+		jsonStr := string(data)
+		require.Contains(t, jsonStr, `"toolName":"default.tool"`)
+		require.NotContains(t, jsonStr, `"allowedForPromptSkill"`)
+		require.NotContains(t, jsonStr, `"allowedForGraphAgent"`)
+	})
+
+	t.Run("proto type round-trips mixed visibility values", func(t *testing.T) {
+		refs := []*v1.ToolMetadataRef{
+			{
+				ToolName:              "both.visible",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: ptrBool(true),
+				AllowedForGraphAgent:  ptrBool(true),
+			},
+			{
+				ToolName:              "skills.only",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: ptrBool(true),
+				AllowedForGraphAgent:  ptrBool(false),
+			},
+			{
+				ToolName:              "graph.only",
+				ToolClass:             "fc_selectable",
+				AllowedForPromptSkill: ptrBool(false),
+				AllowedForGraphAgent:  ptrBool(true),
+			},
+			{
+				ToolName:              "runtime.control",
+				ToolClass:             "runtime_owned",
+				AllowedForPromptSkill: ptrBool(false),
+				AllowedForGraphAgent:  ptrBool(false),
+			},
+		}
+
+		data, err := json.Marshal(refs)
+		require.NoError(t, err)
+
+		var parsed []*v1.ToolMetadataRef
+		err = json.Unmarshal(data, &parsed)
+		require.NoError(t, err)
+		require.Len(t, parsed, 4)
+
+		// Verify all values are preserved exactly
+		require.Equal(t, true, *parsed[0].AllowedForPromptSkill)
+		require.Equal(t, true, *parsed[0].AllowedForGraphAgent)
+
+		require.Equal(t, true, *parsed[1].AllowedForPromptSkill)
+		require.Equal(t, false, *parsed[1].AllowedForGraphAgent)
+
+		require.Equal(t, false, *parsed[2].AllowedForPromptSkill)
+		require.Equal(t, true, *parsed[2].AllowedForGraphAgent)
+
+		require.Equal(t, "runtime_owned", parsed[3].ToolClass)
+		require.Equal(t, false, *parsed[3].AllowedForPromptSkill)
+		require.Equal(t, false, *parsed[3].AllowedForGraphAgent)
+	})
 }
