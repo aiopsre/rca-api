@@ -955,6 +955,264 @@ class TestClaimStartResponseContract(unittest.TestCase):
         self.assertEqual(resp.skillsets_json, '{"skillsets": []}')
 
 
+class TestResolvedAgentContextContract(unittest.TestCase):
+    """Contract tests for ResolvedAgentContext - HM1 regression tests."""
+
+    def test_from_json_with_go_tools_schema(self) -> None:
+        """Go side sends tool_surface.tools, Python should parse it correctly."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        go_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "tool_surface": {
+                "toolset_ids": ["ts-1"],
+                "tools": [
+                    {"name": "incident.get", "kind": "incident", "domain": "platform", "tool_class": "fc_selectable"},
+                    {"name": "metrics.query", "kind": "metrics", "domain": "observability", "tool_class": "fc_selectable"}
+                ]
+            },
+            "skill_surface": {"skill_ids": [], "capability_map": {}}
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(go_json)
+        self.assertEqual(ctx.job_id, "test-job")
+        self.assertEqual(ctx.pipeline, "basic_rca")
+        # Critical: tool_catalog_snapshot should NOT be empty
+        tools = ctx.tool_surface.tool_catalog_snapshot.get("tools", [])
+        self.assertEqual(len(tools), 2, "tools should have 2 entries from Go schema")
+        self.assertEqual(tools[0]["name"], "incident.get")
+        self.assertEqual(tools[1]["name"], "metrics.query")
+
+    def test_from_json_with_python_catalog_schema(self) -> None:
+        """Python schema with tool_catalog_snapshot should still work."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        python_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "tool_surface": {
+                "tool_catalog_snapshot": {
+                    "tools": [{"name": "logs.query", "kind": "logs"}]
+                }
+            },
+            "skill_surface": {}
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(python_json)
+        tools = ctx.tool_surface.tool_catalog_snapshot.get("tools", [])
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0]["name"], "logs.query")
+
+    def test_from_json_empty_tool_surface(self) -> None:
+        """Empty tool_surface should result in empty tool_catalog_snapshot."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        empty_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "tool_surface": {},
+            "skill_surface": {}
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(empty_json)
+        self.assertEqual(ctx.tool_surface.tool_catalog_snapshot, {})
+
+    def test_claim_response_with_agent_context(self) -> None:
+        """ClaimStartResponse should parse agentContextJSON correctly."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        payload = {
+            "data": {
+                "agentContextJSON": '''
+                {
+                    "job_id": "job-123",
+                    "pipeline": "basic_rca",
+                    "template_id": "",
+                    "tool_surface": {"tools": [{"name": "incident.get"}]},
+                    "skill_surface": {}
+                }
+                '''
+            }
+        }
+        resp = ClaimStartResponse.from_api_response(payload)
+        self.assertTrue(resp.has_agent_context())
+        ctx = ResolvedAgentContext.from_json(resp.agent_context_json)
+        self.assertEqual(ctx.job_id, "job-123")
+
+    def test_template_id_not_disguised_as_pipeline(self) -> None:
+        """HM1 regression: agentContextJSON.template_id must not contain pipeline values."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        # Go side should leave template_id empty if unknown
+        go_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "tool_surface": {},
+            "skill_surface": {}
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(go_json)
+        # template_id should be empty, NOT "basic_rca"
+        self.assertEqual(ctx.template_id, "", "template_id should be empty, not pipeline")
+
+    def test_tool_surface_preserves_per_surface_flags(self) -> None:
+        """Tool surface should preserve allowed_for_prompt_skill and allowed_for_graph_agent."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        go_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "tool_surface": {
+                "tools": [
+                    {
+                        "name": "incident.get",
+                        "kind": "incident",
+                        "domain": "platform",
+                        "tool_class": "fc_selectable",
+                        "allowed_for_prompt_skill": true,
+                        "allowed_for_graph_agent": true
+                    },
+                    {
+                        "name": "platform.write_kb",
+                        "kind": "kb",
+                        "domain": "platform",
+                        "tool_class": "runtime_owned",
+                        "allowed_for_prompt_skill": false,
+                        "allowed_for_graph_agent": false
+                    }
+                ]
+            },
+            "skill_surface": {}
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(go_json)
+        tools = ctx.tool_surface.tool_catalog_snapshot.get("tools", [])
+        self.assertEqual(len(tools), 2)
+        # First tool should have per-surface flags
+        self.assertEqual(tools[0]["name"], "incident.get")
+        self.assertTrue(tools[0].get("allowed_for_prompt_skill", True))
+        self.assertTrue(tools[0].get("allowed_for_graph_agent", True))
+        # Second tool should have false flags
+        self.assertEqual(tools[1]["name"], "platform.write_kb")
+        self.assertFalse(tools[1].get("allowed_for_prompt_skill", True))
+        self.assertFalse(tools[1].get("allowed_for_graph_agent", True))
+
+
+class TestResolvedAgentContextMergeContract(unittest.TestCase):
+    """HM1 regression tests for worker merging template_id and session_snapshot."""
+
+    def test_template_id_worker_value_overrides_empty_platform(self) -> None:
+        """Worker's template_id should override empty platform value."""
+        from orchestrator.daemon.runner import _build_resolved_agent_context
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        # Platform sends empty template_id
+        platform_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "tool_surface": {},
+            "skill_surface": {}
+        }
+        '''
+        claim_response = ClaimStartResponse(
+            agent_context_json=platform_json,
+        )
+
+        ctx = _build_resolved_agent_context(
+            claim_response=claim_response,
+            job_id="test-job",
+            pipeline="basic_rca",
+            template_id="real_template_id",  # Worker has real value
+            session_snapshot={},
+            skill_catalog=None,
+        )
+
+        # Worker's template_id should be used
+        self.assertEqual(ctx.template_id, "real_template_id")
+
+    def test_session_snapshot_worker_value_overrides_empty_platform(self) -> None:
+        """Worker's session_snapshot should override empty platform value."""
+        from orchestrator.daemon.runner import _build_resolved_agent_context
+
+        # Platform sends empty session_snapshot
+        platform_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "session_snapshot": {},
+            "tool_surface": {},
+            "skill_surface": {}
+        }
+        '''
+        claim_response = ClaimStartResponse(
+            agent_context_json=platform_json,
+        )
+
+        worker_session = {
+            "session_revision": "rev-123",
+            "latest_summary": {"summary": "test summary"},
+            "pinned_evidence_refs": ["ev-1", "ev-2"],
+        }
+
+        ctx = _build_resolved_agent_context(
+            claim_response=claim_response,
+            job_id="test-job",
+            pipeline="basic_rca",
+            template_id="",
+            session_snapshot=worker_session,
+            skill_catalog=None,
+        )
+
+        # Worker's session_snapshot should be preserved
+        self.assertEqual(ctx.session_snapshot.get("session_revision"), "rev-123")
+        self.assertIn("pinned_evidence_refs", ctx.session_snapshot)
+
+    def test_platform_session_preserved_if_not_empty(self) -> None:
+        """Platform's session_snapshot should be used if not empty."""
+        from orchestrator.daemon.runner import _build_resolved_agent_context
+
+        # Platform sends non-empty session_snapshot
+        platform_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "",
+            "session_snapshot": {"session_revision": "platform-rev"},
+            "tool_surface": {},
+            "skill_surface": {}
+        }
+        '''
+        claim_response = ClaimStartResponse(
+            agent_context_json=platform_json,
+        )
+
+        ctx = _build_resolved_agent_context(
+            claim_response=claim_response,
+            job_id="test-job",
+            pipeline="basic_rca",
+            template_id="",
+            session_snapshot={"session_revision": "worker-rev"},
+            skill_catalog=None,
+        )
+
+        # Platform's session should be used (not empty)
+        self.assertEqual(ctx.session_snapshot.get("session_revision"), "platform-rev")
+
+
 class TestRenewHeartbeatRequestContract(unittest.TestCase):
     """Contract tests for RenewHeartbeatRequest."""
 

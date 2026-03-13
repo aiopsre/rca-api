@@ -57,3 +57,9 @@ OBSERVATION_TYPE_SKILL_SELECT = "skill.select"
 OBSERVATION_TYPE_SKILL_EXECUTE = "skill.execute"
 OBSERVATION_TYPE_SKILL_FALLBACK = "skill.fallback"
 OBSERVATION_TYPE_SKILL_TOOL_REUSE = "skill.tool_reuse"
+
+# Trace event names for hybrid multi-agent
+TRACE_EVENT_ROUTER_ROUTE = "router.route"
+TRACE_EVENT_DOMAIN_EXECUTE = "domain.execute"
+TRACE_EVENT_DOMAIN_MERGE = "domain.merge"
+TRACE_EVENT_PLATFORM_SPECIAL_SUMMARIZE = "platform_special.summarize"

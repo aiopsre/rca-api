@@ -129,6 +129,10 @@ message StartAIJobResponse {
   // resolvedToolProviders is the canonical field containing structured provider snapshot.
   // This is materialized at claim time from toolset_provider_bindings + mcp_servers + tool_metadata.
   repeated ResolvedToolProvider resolvedToolProviders = 2;
+  // agentContextJSON is the unified agent context snapshot for hybrid multi-agent.
+  // Contains job_id, pipeline, template_id, session_snapshot, tool_surface, skill_surface,
+  // platform_hints, and run_policies.
+  optional string agentContextJSON = 3;
 }
 
 // ResolvedToolProvider represents a fully resolved tool provider with all metadata.

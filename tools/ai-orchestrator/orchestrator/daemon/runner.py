@@ -15,8 +15,10 @@ from ..langgraph.registry import (
     list_template_ids,
     normalize_pipeline,
 )
+from ..runtime.resolved_context import ResolvedAgentContext, SkillSurface, ToolSurface
 from ..runtime.runtime import OrchestratorRuntime
 from ..sdk.errors import RCAApiError
+from ..sdk.runtime_contract import ClaimStartResponse
 from ..skills import SkillCatalog, apply_session_patch_to_state, load_session_snapshot_into_state
 from ..skills.agent import PromptSkillAgent
 from ..state import GraphState
@@ -336,6 +338,103 @@ def _build_skill_catalog(
         source = "strategy_resolve"
     selected_skillsets = skill_catalog.skillset_ids() or strategy_skillsets
     return skill_catalog, selected_skillsets, source
+
+
+def _build_resolved_agent_context(
+    claim_response: ClaimStartResponse,
+    *,
+    job_id: str,
+    pipeline: str,
+    template_id: str,
+    session_snapshot: dict[str, Any],
+    skill_catalog: SkillCatalog | None,
+) -> ResolvedAgentContext | None:
+    """Build ResolvedAgentContext from claim response and local context.
+
+    This function builds the unified agent context for hybrid multi-agent.
+    It prefers the platform-provided agent_context_json when available,
+    otherwise falls back to building locally from claim response fields.
+
+    Key principle: worker-loaded values (template_id, session_snapshot) take
+    precedence over platform values if platform values are empty.
+
+    Args:
+        claim_response: The claim/start API response.
+        job_id: The job ID.
+        pipeline: The pipeline name.
+        template_id: The template ID (resolved on worker side).
+        session_snapshot: The session snapshot (loaded on worker side).
+        skill_catalog: The skill catalog (may be None).
+
+    Returns:
+        ResolvedAgentContext instance, or None if feature is disabled.
+    """
+    # Try to parse platform-provided agent_context_json
+    platform_context: ResolvedAgentContext | None = None
+    if claim_response.has_agent_context():
+        try:
+            platform_context = ResolvedAgentContext.from_json(claim_response.agent_context_json)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"job={job_id} failed to parse agent_context_json: {exc}")
+
+    # If we have platform context, merge with worker values
+    if platform_context is not None:
+        # Worker values take precedence if platform values are empty
+        final_template_id = platform_context.template_id.strip() if platform_context.template_id else ""
+        if not final_template_id:
+            final_template_id = template_id.strip() if template_id else ""
+
+        # Merge session_snapshot: use worker's if platform's is empty
+        final_session_snapshot = dict(platform_context.session_snapshot or {})
+        if not final_session_snapshot:
+            final_session_snapshot = dict(session_snapshot or {})
+
+        return ResolvedAgentContext(
+            job_id=platform_context.job_id or job_id,
+            pipeline=platform_context.pipeline or pipeline,
+            template_id=final_template_id,
+            session_snapshot=final_session_snapshot,
+            tool_surface=platform_context.tool_surface,
+            skill_surface=platform_context.skill_surface,
+            platform_hints=platform_context.platform_hints,
+            run_policies=platform_context.run_policies,
+        )
+
+    # Fallback: build locally from claim response fields
+    tool_surface = ToolSurface(tool_catalog_snapshot={})
+    if claim_response.has_resolved_tool_providers():
+        # Build tool catalog snapshot from resolved providers
+        tools: list[dict[str, Any]] = []
+        for provider in claim_response.resolved_tool_providers or []:
+            for tool_meta in provider.get("toolMetadata") or []:
+                if isinstance(tool_meta, dict):
+                    tools.append({
+                        "name": tool_meta.get("toolName", ""),
+                        "kind": tool_meta.get("kind", ""),
+                        "domain": tool_meta.get("domain", ""),
+                        "tool_class": tool_meta.get("toolClass", "fc_selectable"),
+                        "allowed_for_prompt_skill": tool_meta.get("allowedForPromptSkill", True),
+                        "allowed_for_graph_agent": tool_meta.get("allowedForGraphAgent", True),
+                    })
+        tool_surface = ToolSurface(tool_catalog_snapshot={"tools": tools})
+
+    skill_surface = SkillSurface(skill_ids=[], capability_map={})
+    if skill_catalog is not None:
+        skill_surface = SkillSurface(
+            skill_ids=skill_catalog.skill_ids(),
+            capability_map=skill_catalog.capability_map(),
+        )
+
+    return ResolvedAgentContext(
+        job_id=job_id,
+        pipeline=pipeline,
+        template_id=template_id,
+        session_snapshot=dict(session_snapshot or {}),
+        tool_surface=tool_surface,
+        skill_surface=skill_surface,
+        platform_hints={},
+        run_policies={},
+    )
 
 
 def _build_prompt_skill_agent(settings: Settings) -> PromptSkillAgent | None:
@@ -703,6 +802,31 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             except Exception as exc:  # noqa: BLE001
                 if debug:
                     _log(f"[DEBUG] job={job_id} session snapshot load skipped: {exc}")
+
+            # Build ResolvedAgentContext for hybrid multi-agent (Phase HM1)
+            # Must be built AFTER session_snapshot is loaded into state
+            if settings.rca_agent_context_enabled:
+                try:
+                    resolved_agent_context = _build_resolved_agent_context(
+                        claim_response=claim_response,
+                        job_id=job_id,
+                        pipeline=selected_pipeline,
+                        template_id=selected_template_id,
+                        session_snapshot=state.session_snapshot,
+                        skill_catalog=skill_catalog,
+                    )
+                    if resolved_agent_context is not None:
+                        state.agent_context = resolved_agent_context.to_dict()
+                        if debug:
+                            _log(
+                                f"[DEBUG] job={job_id} built resolved agent context "
+                                f"pipeline={resolved_agent_context.pipeline} "
+                                f"template_id={resolved_agent_context.template_id} "
+                                f"skill_count={len(resolved_agent_context.skill_surface.skill_ids)}"
+                            )
+                except Exception as context_exc:  # noqa: BLE001
+                    _log(f"job={job_id} resolved agent context build failed: {context_exc}")
+
             compiled_graph = template_builder(runtime, graph_cfg)
             final_state = compiled_graph.invoke(state)
         finally:

@@ -55,6 +55,7 @@ class ClaimStartResponse:
 
     skillsets_json: str | None = None
     resolved_tool_providers: list[dict[str, Any]] | None = None
+    agent_context_json: str | None = None
 
     @classmethod
     def from_api_response(cls, payload: dict[str, Any]) -> "ClaimStartResponse":
@@ -72,9 +73,15 @@ class ClaimStartResponse:
             resolved_tool_providers = [
                 p for p in raw_providers if isinstance(p, dict)
             ]
+        # Parse agent_context_json (hybrid multi-agent)
+        agent_context_json = None
+        raw_agent_context = data.get("agentContextJSON")
+        if isinstance(raw_agent_context, str) and raw_agent_context.strip():
+            agent_context_json = raw_agent_context.strip()
         return cls(
             skillsets_json=skillsets_json,
             resolved_tool_providers=resolved_tool_providers,
+            agent_context_json=agent_context_json,
         )
 
     def has_skillsets(self) -> bool:
@@ -82,6 +89,9 @@ class ClaimStartResponse:
 
     def has_resolved_tool_providers(self) -> bool:
         return isinstance(self.resolved_tool_providers, list) and len(self.resolved_tool_providers) > 0
+
+    def has_agent_context(self) -> bool:
+        return isinstance(self.agent_context_json, str) and self.agent_context_json != ""
 
     def parse_skillsets(self) -> dict[str, Any] | None:
         if not self.has_skillsets():

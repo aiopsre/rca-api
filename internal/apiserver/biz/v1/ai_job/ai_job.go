@@ -473,6 +473,21 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 		if resolveErr == nil && providerSnapshot != nil && len(providerSnapshot.Providers) > 0 {
 			resp.ResolvedToolProviders = providerSnapshot.ToProto()
 		}
+
+		// Build agent context JSON for hybrid multi-agent
+		// Note: template_id is resolved on worker side via strategy resolve
+		// so we pass empty string here - worker will fill it in
+		if agentContextJSON := b.buildAgentContextJSON(
+			ctx,
+			jobID,
+			pipeline,
+			"", // template_id resolved on worker side
+			toolsetIDs,
+			providerSnapshot,
+			skillsetsResp,
+		); agentContextJSON != "" {
+			resp.AgentContextJSON = &agentContextJSON
+		}
 	}
 
 	return resp, nil
@@ -2489,6 +2504,123 @@ func buildEvidenceRefsJSON(jobID string, evidenceIDs []string) string {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return `{"job_id":"","evidence_ids":[]}`
+	}
+	return string(raw)
+}
+
+// AgentContext represents the unified agent context for hybrid multi-agent.
+type AgentContext struct {
+	JobID            string         `json:"job_id"`
+	Pipeline         string         `json:"pipeline"`
+	TemplateID       string         `json:"template_id"`
+	SessionSnapshot  map[string]any `json:"session_snapshot,omitempty"`
+	ToolSurface      map[string]any `json:"tool_surface,omitempty"`
+	SkillSurface     map[string]any `json:"skill_surface,omitempty"`
+	PlatformHints    map[string]any `json:"platform_hints,omitempty"`
+	RunPolicies      map[string]any `json:"run_policies,omitempty"`
+}
+
+// buildAgentContextJSON builds the unified agent context JSON for hybrid multi-agent.
+func (b *aiJobBiz) buildAgentContextJSON(
+	ctx context.Context,
+	jobID string,
+	pipeline string,
+	templateID string,
+	toolsetIDs []string,
+	providerSnapshot *ResolvedProviderSnapshot,
+	skillsetsResp *v1.ResolveOrchestratorSkillsetsResponse,
+) string {
+	// template_id is resolved on worker side via strategy resolve.
+	// Go side should NOT fallback to pipeline - leave empty if unknown.
+	actualTemplateID := strings.TrimSpace(templateID)
+
+	// Build tool surface from provider snapshot
+	toolSurface := map[string]any{
+		"toolset_ids": toolsetIDs,
+		"tools":       []map[string]any{},
+	}
+	if providerSnapshot != nil && len(providerSnapshot.ToolCatalog) > 0 {
+		tools := make([]map[string]any, 0, len(providerSnapshot.ToolCatalog))
+		for _, meta := range providerSnapshot.ToolCatalog {
+			if meta == nil {
+				continue
+			}
+			tools = append(tools, map[string]any{
+				"name":                    meta.ToolName,
+				"kind":                    meta.Kind,
+				"domain":                  meta.Domain,
+				"read_only":               meta.ReadOnly,
+				"risk_level":              meta.RiskLevel,
+				"tool_class":              meta.ToolClass,
+				"allowed_for_prompt_skill": meta.AllowedForPromptSkill,
+				"allowed_for_graph_agent":  meta.AllowedForGraphAgent,
+				"aliases":                 meta.Aliases,
+			})
+		}
+		toolSurface["tools"] = tools
+	}
+
+	// Build skill surface from skillsets response
+	skillSurface := map[string]any{
+		"skill_ids":      []string{},
+		"capability_map": map[string][]string{},
+	}
+	if skillsetsResp != nil && len(skillsetsResp.Skillsets) > 0 {
+		skillIDs := make([]string, 0, len(skillsetsResp.Skillsets))
+		capabilityMap := make(map[string][]string)
+		for _, skillset := range skillsetsResp.Skillsets {
+			if skillset == nil {
+				continue
+			}
+			if skillset.SkillsetID != "" {
+				skillIDs = append(skillIDs, skillset.SkillsetID)
+			}
+			for _, skill := range skillset.Skills {
+				if skill == nil || skill.SkillID == "" {
+					continue
+				}
+				skillID := skill.SkillID
+				// capability is a single string field, not a list
+				if skill.Capability != "" {
+					capName := skill.Capability
+					capabilityMap[capName] = append(capabilityMap[capName], skillID)
+				}
+			}
+		}
+		skillSurface["skill_ids"] = skillIDs
+		skillSurface["capability_map"] = capabilityMap
+	}
+
+	// Platform hints (currently minimal, will be extended in future phases)
+	platformHints := map[string]any{
+		"incident_id": "", // Will be populated from job context in future phases
+	}
+
+	// Run policies (currently minimal, will be extended in future phases)
+	runPolicies := map[string]any{
+		"verification_enabled": true,
+		"quality_gate_enabled": true,
+	}
+
+	agentContext := AgentContext{
+		JobID:           strings.TrimSpace(jobID),
+		Pipeline:        strings.TrimSpace(pipeline),
+		TemplateID:      actualTemplateID, // Use actualTemplateID, not templateID
+		SessionSnapshot: map[string]any{},
+		ToolSurface:     toolSurface,
+		SkillSurface:    skillSurface,
+		PlatformHints:   platformHints,
+		RunPolicies:     runPolicies,
+	}
+
+	raw, err := json.Marshal(agentContext)
+	if err != nil {
+		slog.WarnContext(ctx, "failed to marshal agent context JSON",
+			"job_id", jobID,
+			"pipeline", pipeline,
+			"error", err,
+		)
+		return ""
 	}
 	return string(raw)
 }

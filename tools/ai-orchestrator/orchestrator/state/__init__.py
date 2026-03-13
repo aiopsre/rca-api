@@ -79,6 +79,14 @@ class GraphState(BaseModel):
     # Degradation tracking
     degrade_reasons: List[str] = Field(default_factory=list)
 
+    # Hybrid multi-agent fields (Phase HM1-HM5)
+    agent_context: Optional[Dict[str, Any]] = None
+    route_context: Dict[str, Any] = Field(default_factory=dict)
+    domain_tasks: List[Dict[str, Any]] = Field(default_factory=list)
+    domain_findings: List[Dict[str, Any]] = Field(default_factory=list)
+    merged_findings: Dict[str, Any] = Field(default_factory=dict)
+    platform_special_patch: Dict[str, Any] = Field(default_factory=dict)
+
     def add_degrade_reason(self, reason: str, context: str = "") -> None:
         """Add a degrade reason with optional context.
 
