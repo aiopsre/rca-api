@@ -3,9 +3,9 @@ package ai_job
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
@@ -74,6 +74,15 @@ func NewProviderResolver(store store.IStore) *ProviderResolver {
 // 3. Join with tool_metadata to get A-class tool metadata
 // 4. Inject rca-api-builtin-readonly if not already present
 // 5. Sort by priority ASC, mcp_server_id ASC
+// Resolve resolves all providers for the given toolset IDs.
+// It returns a structured snapshot containing all providers and their tool metadata.
+//
+// Resolution order:
+// 1. Query toolset_provider_bindings for the given toolset IDs
+// 2. Join with mcp_servers to get provider details
+// 3. Join with tool_metadata to get A-class tool metadata
+// 4. Inject rca-api-builtin-readonly if not already present
+// 5. Sort by priority ASC, mcp_server_id ASC
 func (r *ProviderResolver) Resolve(
 	ctx context.Context,
 	toolsetIDs []string,
@@ -82,17 +91,16 @@ func (r *ProviderResolver) Resolve(
 	// Step 1: Query toolset_provider_bindings
 	bindings, err := r.store.ToolsetProviderBinding().ListByToolsetNames(ctx, toolsetIDs)
 	if err != nil {
-		slog.Warn("failed to list toolset_provider_bindings, falling back to mcp_server_configs",
-			"error", err, "toolset_ids", toolsetIDs)
-		// Fallback to legacy mcp_server_configs
-		return r.resolveFromMcpServerConfigs(ctx, pipeline)
+		slog.Error("failed to list toolset_provider_bindings",
+			"error", err, "toolset_ids", toolsetIDs, "pipeline", pipeline)
+		return nil, fmt.Errorf("toolset_provider_bindings query failed: %w", err)
 	}
 
-	// If no bindings found, try legacy fallback
+	// If no bindings found, return empty snapshot
 	if len(bindings) == 0 {
-		slog.Debug("no toolset_provider_bindings found, falling back to mcp_server_configs",
+		slog.Debug("no toolset_provider_bindings found",
 			"toolset_ids", toolsetIDs, "pipeline", pipeline)
-		return r.resolveFromMcpServerConfigs(ctx, pipeline)
+		return &ResolvedProviderSnapshot{}, nil
 	}
 
 	// Step 2: Collect unique mcp_server_ids and build allowed tools map
@@ -241,89 +249,6 @@ func (r *ProviderResolver) Resolve(
 	}, nil
 }
 
-// resolveFromMcpServerConfigs resolves providers from the legacy mcp_server_configs table.
-//
-// DEPRECATED: Phase 10E - This is a fallback for backward compatibility.
-// New pipelines should use toolset_provider_bindings instead.
-// This function will be removed in a future version.
-func (r *ProviderResolver) resolveFromMcpServerConfigs(
-	ctx context.Context,
-	pipeline string,
-) (*ResolvedProviderSnapshot, error) {
-	if strings.TrimSpace(pipeline) == "" {
-		return &ResolvedProviderSnapshot{}, nil
-	}
-
-	// Use existing ResolveMcpServerRefs logic
-	refs, err := r.resolveMcpServerRefsLegacy(ctx, pipeline)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(refs) == 0 {
-		return &ResolvedProviderSnapshot{}, nil
-	}
-
-	providers := make([]*ResolvedProvider, 0, len(refs))
-	for _, ref := range refs {
-		providers = append(providers, &ResolvedProvider{
-			ProviderID:    ref.McpServerID,
-			McpServerID:   ref.McpServerID,
-			Name:          ref.Name,
-			ProviderType:  providerTypeMCPHTTP,
-			ServerKind:    ref.ServerKind,
-			BaseURL:       ref.BaseURL,
-			AllowedTools:  ref.AllowedTools,
-			ToolMetadata:  convertToolMetadataRef(ref.ToolMetadata),
-			Priority:      ref.Priority,
-			Scopes:        ref.Scopes,
-			TimeoutSec:    ref.TimeoutSec,
-		})
-	}
-
-	toolCatalog := buildToolCatalog(providers)
-
-	return &ResolvedProviderSnapshot{
-		Providers:   providers,
-		ToolCatalog: toolCatalog,
-	}, nil
-}
-
-// resolveMcpServerRefsLegacy is the legacy resolution logic from mcp_server_configs.
-//
-// DEPRECATED: Phase 10E - This is a fallback for backward compatibility.
-// New pipelines should use toolset_provider_bindings instead.
-func (r *ProviderResolver) resolveMcpServerRefsLegacy(
-	ctx context.Context,
-	pipelineID string,
-) ([]model.McpServerRef, error) {
-	if strings.TrimSpace(pipelineID) == "" {
-		return nil, nil
-	}
-
-	total, configs, err := r.store.McpServerConfig().List(ctx, nil)
-	_ = total // We need to filter
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter by pipeline_id and enabled
-	var refs []model.McpServerRef
-	for _, config := range configs {
-		if config.PipelineID != pipelineID || !config.Enabled {
-			continue
-		}
-		if config.McpServerRefsJSON != nil && *config.McpServerRefsJSON != "" {
-			var configRefs []model.McpServerRef
-			if err := json.Unmarshal([]byte(*config.McpServerRefsJSON), &configRefs); err == nil {
-				refs = append(refs, configRefs...)
-			}
-		}
-	}
-
-	return refs, nil
-}
-
 // buildBuiltinReadonlyProvider creates the builtin readonly provider.
 func (r *ProviderResolver) buildBuiltinReadonlyProvider(
 	ctx context.Context,
@@ -461,42 +386,6 @@ func buildToolCatalog(providers []*ResolvedProvider) map[string]*ToolMetadataInf
 		}
 	}
 	return catalog
-}
-
-func convertToolMetadataRef(refs []model.ToolMetadataRef) []*ToolMetadataInfo {
-	if len(refs) == 0 {
-		return nil
-	}
-	result := make([]*ToolMetadataInfo, 0, len(refs))
-	for _, ref := range refs {
-		result = append(result, &ToolMetadataInfo{
-			ToolName:              ref.ToolName,
-			Kind:                  ref.Kind,
-			Domain:                ref.Domain,
-			ReadOnly:              ref.ReadOnly,
-			RiskLevel:             ref.RiskLevel,
-			ToolClass:             ref.ToolClass,
-			AllowedForPromptSkill: ref.AllowedForPromptSkill,
-			AllowedForGraphAgent:  ref.AllowedForGraphAgent,
-			Aliases:               ref.Aliases,
-		})
-	}
-	return result
-}
-
-func mergeUnique(a, b []string) []string {
-	seen := make(map[string]struct{})
-	for _, s := range a {
-		seen[s] = struct{}{}
-	}
-	for _, s := range b {
-		seen[s] = struct{}{}
-	}
-	result := make([]string, 0, len(seen))
-	for s := range seen {
-		result = append(result, s)
-	}
-	return result
 }
 
 func ptrString(s *string) string {

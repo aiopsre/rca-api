@@ -10,10 +10,10 @@ from orchestrator.runtime.tool_registry import (
     register_tool_metadata,
     get_global_registry,
     register_tools_from_mcp,
-    register_tools_from_mcpserver_refs,
+    register_tools_from_resolved_providers,
 )
 from orchestrator.tooling.mcp_server_loader import (
-    McpServerRef,
+    ResolvedToolProvider,
     ToolMetadataRef,
 )
 from orchestrator.runtime.tool_discovery import (
@@ -160,20 +160,21 @@ class TestToolRegistry:
         assert result.kind == "logs"
 
 
-class TestRegisterFromMcpServerRef:
-    """Tests for register_from_mcpserver_ref method."""
+class TestRegisterFromResolvedProvider:
+    """Tests for register_from_resolved_provider method."""
 
-    def test_register_from_ref(self) -> None:
-        """Should register tools from McpServerRef."""
+    def test_register_from_provider(self) -> None:
+        """Should register tools from ResolvedToolProvider."""
         registry = ToolRegistry()
-        ref = McpServerRef(
+        provider = ResolvedToolProvider(
+            provider_id="test-server",
             mcp_server_id="test-server",
             name="test-server",
+            provider_type="mcp_http",
+            server_kind="external",
             base_url="http://localhost:8080",
             allowed_tools=("tool1", "tool2"),
-            timeout_sec=10.0,
-            scopes="",
-            auth_type="none",
+            priority=10,
             tool_metadata=(
                 ToolMetadataRef(
                     tool_name="tool1",
@@ -192,7 +193,7 @@ class TestRegisterFromMcpServerRef:
             ),
         )
 
-        count = registry.register_from_mcpserver_ref(ref)
+        count = registry.register_from_resolved_provider(provider)
         assert count == 2
 
         tool1 = registry.get("tool1")
@@ -204,42 +205,44 @@ class TestRegisterFromMcpServerRef:
         assert tool2 is not None
         assert tool2.kind == "logs"
 
-    def test_register_from_ref_empty_metadata(self) -> None:
+    def test_register_from_provider_empty_metadata(self) -> None:
         """Should handle empty tool_metadata."""
         registry = ToolRegistry()
-        ref = McpServerRef(
+        provider = ResolvedToolProvider(
+            provider_id="test-server",
             mcp_server_id="test-server",
             name="test-server",
+            provider_type="mcp_http",
+            server_kind="external",
             base_url="http://localhost:8080",
             allowed_tools=("tool1",),
-            timeout_sec=10.0,
-            scopes="",
-            auth_type="none",
+            priority=10,
             tool_metadata=(),
         )
 
-        count = registry.register_from_mcpserver_ref(ref)
+        count = registry.register_from_resolved_provider(provider)
         assert count == 0
         assert registry.get("tool1") is None
 
 
-class TestRegisterToolsFromMcpServerRefs:
-    """Tests for register_tools_from_mcpserver_refs function."""
+class TestRegisterToolsFromResolvedProviders:
+    """Tests for register_tools_from_resolved_providers function."""
 
-    def test_register_from_refs(self) -> None:
-        """Should register tools from list of McpServerRef."""
+    def test_register_from_providers(self) -> None:
+        """Should register tools from list of ResolvedToolProvider."""
         # Create a fresh registry for testing
         registry = ToolRegistry()
 
-        refs = [
-            McpServerRef(
+        providers = [
+            ResolvedToolProvider(
+                provider_id="server1",
                 mcp_server_id="server1",
                 name="server1",
+                provider_type="mcp_http",
+                server_kind="external",
                 base_url="http://localhost:8080",
                 allowed_tools=("prometheus_query",),
-                timeout_sec=10.0,
-                scopes="",
-                auth_type="none",
+                priority=10,
                 tool_metadata=(
                     ToolMetadataRef(
                         tool_name="prometheus_query",
@@ -250,14 +253,15 @@ class TestRegisterToolsFromMcpServerRefs:
                     ),
                 ),
             ),
-            McpServerRef(
+            ResolvedToolProvider(
+                provider_id="server2",
                 mcp_server_id="server2",
                 name="server2",
+                provider_type="mcp_http",
+                server_kind="external",
                 base_url="http://localhost:8081",
                 allowed_tools=("loki_search",),
-                timeout_sec=10.0,
-                scopes="",
-                auth_type="none",
+                priority=10,
                 tool_metadata=(
                     ToolMetadataRef(
                         tool_name="loki_search",
@@ -270,8 +274,8 @@ class TestRegisterToolsFromMcpServerRefs:
             ),
         ]
 
-        total = registry.register_from_mcpserver_ref(refs[0])
-        total += registry.register_from_mcpserver_ref(refs[1])
+        total = registry.register_from_resolved_provider(providers[0])
+        total += registry.register_from_resolved_provider(providers[1])
         assert total == 2
 
         prom = registry.get("prometheus_query")
@@ -289,7 +293,7 @@ class TestGlobalRegistry:
     def test_global_registry_starts_empty(self) -> None:
         """Global registry should start empty (no static defaults)."""
         # Note: This test may fail if other tests registered tools
-        # The global registry is now filled by platform via McpServerRef
+        # The global registry is now filled by platform via ResolvedToolProvider
         registry = get_global_registry()
         assert isinstance(registry, ToolRegistry)
 
@@ -383,15 +387,16 @@ class TestToolDiscoveryWithRegistry:
 
     def test_create_descriptor_with_registry_metadata(self) -> None:
         """Should use registry metadata when available."""
-        # First register a tool via McpServerRef
-        ref = McpServerRef(
+        # First register a tool via ResolvedToolProvider
+        provider = ResolvedToolProvider(
+            provider_id="test-server",
             mcp_server_id="test-server",
             name="test-server",
+            provider_type="mcp_http",
+            server_kind="external",
             base_url="http://localhost:8080",
             allowed_tools=("registered_tool",),
-            timeout_sec=10.0,
-            scopes="",
-            auth_type="none",
+            priority=10,
             tool_metadata=(
                 ToolMetadataRef(
                     tool_name="registered_tool",
@@ -402,7 +407,7 @@ class TestToolDiscoveryWithRegistry:
                 ),
             ),
         )
-        register_tools_from_mcpserver_refs([ref])
+        register_tools_from_resolved_providers([provider])
 
         desc = _create_tool_descriptor(
             tool_name="registered_tool",

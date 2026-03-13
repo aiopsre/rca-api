@@ -2754,6 +2754,11 @@ class OrchestratorRuntime:
         """
         return self._lease_manager.get_claim_response()
 
+    @property
+    def tool_invoker(self) -> "ToolInvoker | ToolInvokerChain | None":
+        """Get the current tool invoker, or None if not set."""
+        return self._tool_invoker
+
     def set_tool_invoker(self, invoker: "ToolInvoker | ToolInvokerChain") -> None:
         """Set the tool invoker directly, replacing any existing one.
 

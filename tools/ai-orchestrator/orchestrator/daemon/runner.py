@@ -5,7 +5,6 @@ import logging
 import sys
 import threading
 import time
-import warnings
 from typing import Any
 
 from .. import WORKER_VERSION
@@ -27,7 +26,6 @@ from ..tooling import (
     ToolsetConfig,
     build_tool_invoker,
     build_tool_invoker_chain,
-    build_tool_invoker_from_mcpserver_refs_json,
     build_tool_invoker_from_resolved_providers,
     load_toolset_config,
     load_toolset_config_from_env,
@@ -145,67 +143,7 @@ def _select_tool_invoker(
         toolset_ids = config.get_toolset_chain(pipeline)
         invoker = build_tool_invoker_chain(config, toolset_ids)
         return invoker, toolset_ids, "local_override"
-    return _select_tool_invoker_via_server(client, pipeline)
-
-
-def _select_tool_invoker_via_server(
-    client: RCAApiClient,
-    pipeline: str,
-) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
-    # DEPRECATED: Phase 10E - This legacy path uses resolve_toolset API.
-    # Use claim provider snapshot (resolved_tool_providers) instead.
-    # This function is kept for backward compatibility when claim_provider_snapshot_enabled=False.
-    warnings.warn(
-        "_select_tool_invoker_via_server is deprecated. "
-        "Use claim provider snapshot (resolved_tool_providers) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    client_base_url = str(getattr(client, "base_url", "") or "").strip()
-    resolved = client.resolve_toolset(pipeline)
-    if not isinstance(resolved, dict):
-        raise RuntimeError("resolve_toolset returned invalid payload")
-
-    normalized_pipeline = normalize_pipeline(pipeline)
-    toolsets_payload = resolved.get("toolsets")
-    if isinstance(toolsets_payload, list) and toolsets_payload:
-        invoker, toolset_ids = _build_tool_invoker_chain_from_toolsets_payload(
-            normalized_pipeline=normalized_pipeline,
-            toolsets_payload=toolsets_payload,
-            payload_name="resolve_toolset",
-            default_base_url=client_base_url,
-        )
-        return invoker, toolset_ids, "server_resolve"
-
-    toolset_payload = resolved.get("toolset")
-    if not isinstance(toolset_payload, dict):
-        toolset_payload = resolved
-    if not isinstance(toolset_payload, dict):
-        raise RuntimeError("resolve_toolset payload missing toolset object")
-
-    toolset_id = _extract_toolset_id(toolset_payload)
-    if not toolset_id:
-        raise RuntimeError("resolve_toolset payload missing toolset_id")
-
-    providers = toolset_payload.get("providers")
-    if not isinstance(providers, list) or not providers:
-        raise RuntimeError(f"resolve_toolset payload has empty providers: toolset={toolset_id}")
-    normalized_providers = [
-        _normalize_server_provider_payload(provider, default_base_url=client_base_url) for provider in providers
-    ]
-
-    config = load_toolset_config(
-        {
-            "pipelines": {normalized_pipeline: toolset_id},
-            "toolsets": {
-                toolset_id: {
-                    "providers": normalized_providers,
-                }
-            },
-        }
-    )
-    invoker = build_tool_invoker(config, toolset_id)
-    return invoker, [toolset_id], "server_resolve"
+    raise RuntimeError("resolve_toolset API is deprecated; use claim provider snapshot (resolved_tool_providers) instead")
 
 
 def _supports_strategy_resolve(client: RCAApiClient) -> bool:
@@ -264,40 +202,6 @@ def _extract_template_id(strategy_payload: dict[str, Any]) -> str:
         if value:
             return value
     return ""
-
-
-def _build_tool_invoker_from_strategy(
-    settings: Settings,
-    client: RCAApiClient,
-    *,
-    pipeline: str,
-    strategy_payload: dict[str, Any],
-) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
-    # DEPRECATED: Phase 10E - This legacy path builds invoker from strategy toolsets[].
-    # Use claim provider snapshot (resolved_tool_providers) instead.
-    # This function is kept for backward compatibility when claim_provider_snapshot_enabled=False.
-    warnings.warn(
-        "_build_tool_invoker_from_strategy is deprecated. "
-        "Use claim provider snapshot (resolved_tool_providers) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    # Keep local override semantics from Phase H/J for toolsets only.
-    if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
-        return _select_tool_invoker(settings, client, pipeline)
-
-    normalized_pipeline = normalize_pipeline(pipeline)
-    toolsets_payload = strategy_payload.get("toolsets")
-    if not isinstance(toolsets_payload, list) or not toolsets_payload:
-        raise RuntimeError("resolve_strategy payload missing non-empty toolsets")
-    client_base_url = str(getattr(client, "base_url", "") or "").strip()
-    invoker, toolset_ids = _build_tool_invoker_chain_from_toolsets_payload(
-        normalized_pipeline=normalized_pipeline,
-        toolsets_payload=toolsets_payload,
-        payload_name="resolve_strategy",
-        default_base_url=client_base_url,
-    )
-    return invoker, toolset_ids, "strategy_resolve"
 
 
 def _normalize_server_provider_payload(provider_payload: Any, *, default_base_url: str) -> dict[str, Any]:
@@ -608,11 +512,6 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
     job_start_time = time.time()
     WORKER_JOBS_IN_PROGRESS.inc()
 
-    # Phase 10C: When claim_provider_snapshot_enabled, strategy toolsets are used
-    # only for observation/governance, NOT for execution.
-    # ToolInvoker is built solely from claim response.
-    claim_provider_snapshot_mode = settings.claim_provider_snapshot_enabled
-
     try:
         prefetched_job = client.get_job(job_id)
         selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
@@ -623,25 +522,16 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 raise RuntimeError("resolve_strategy payload missing template_id")
             template_builder = get_template_builder(selected_template_id)
 
-            # Phase 10C: Only build invoker from strategy if NOT in claim_provider_snapshot mode
-            if not claim_provider_snapshot_mode:
-                tool_invoker, selected_toolsets, selected_toolset_source = _build_tool_invoker_from_strategy(
-                    settings,
-                    client,
-                    pipeline=selected_pipeline,
-                    strategy_payload=strategy_payload,
-                )
-            else:
-                # In claim_provider_snapshot mode, toolset_ids are extracted for observation only
-                # The actual invoker will be built from claim response later
-                toolsets_payload = strategy_payload.get("toolsets")
-                if isinstance(toolsets_payload, list):
-                    for item in toolsets_payload:
-                        if isinstance(item, dict):
-                            tid = _extract_toolset_id(item)
-                            if tid:
-                                selected_toolsets.append(tid)
-                selected_toolset_source = "claim_snapshot_pending"
+            # Toolset IDs are extracted for observation only
+            # The actual invoker will be built from claim response
+            toolsets_payload = strategy_payload.get("toolsets")
+            if isinstance(toolsets_payload, list):
+                for item in toolsets_payload:
+                    if isinstance(item, dict):
+                        tid = _extract_toolset_id(item)
+                        if tid:
+                            selected_toolsets.append(tid)
+            selected_toolset_source = "claim_snapshot_pending"
 
             skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
                 settings=settings,
@@ -652,14 +542,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
         else:
             selected_template_id = normalize_pipeline(selected_pipeline)
             template_builder = get_template_builder(selected_template_id)
-
-            # Phase 10C: Only build invoker from strategy if NOT in claim_provider_snapshot mode
-            if not claim_provider_snapshot_mode:
-                tool_invoker, selected_toolsets, selected_toolset_source = _select_tool_invoker(
-                    settings, client, selected_pipeline
-                )
-            else:
-                selected_toolset_source = "claim_snapshot_pending"
+            selected_toolset_source = "claim_snapshot_pending"
 
             skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
                 settings=settings,
@@ -711,15 +594,14 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
             return
 
-        # Merge MCP server invoker from claim response after successful claim
+        # Set tool invoker from claim response after successful claim
         # Use getattr to handle test fakes that don't have these methods
         get_claim_response = getattr(runtime, "get_claim_response", None)
-        merge_tool_invoker = getattr(runtime, "merge_tool_invoker", None)
         set_tool_invoker = getattr(runtime, "set_tool_invoker", None)
-        if callable(get_claim_response) and (callable(merge_tool_invoker) or callable(set_tool_invoker)):
+        if callable(get_claim_response) and callable(set_tool_invoker):
             claim_response = get_claim_response()
 
-            # Prefer resolved_tool_providers (new canonical path)
+            # Use resolved_tool_providers (canonical path)
             if claim_response is not None and claim_response.has_resolved_tool_providers():
                 try:
                     provider_invoker = build_tool_invoker_from_resolved_providers(
@@ -727,50 +609,18 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                         platform_base_url=settings.base_url,
                     )
                     if provider_invoker is not None:
-                        # Phase 10C: In claim_provider_snapshot mode, set directly (not merge)
-                        if claim_provider_snapshot_mode:
-                            if callable(set_tool_invoker):
-                                set_tool_invoker(provider_invoker)
-                            else:
-                                # Fallback: merge_tool_invoker will set if current is None
-                                merge_tool_invoker(provider_invoker)
-                        else:
-                            merge_tool_invoker(provider_invoker)
+                        set_tool_invoker(provider_invoker)
                         selected_toolset_source = "claim_resolved_providers"
                         if debug:
                             provider_tools = provider_invoker.allowed_tools()
                             _log(
-                                f"[DEBUG] job={job_id} {'set' if claim_provider_snapshot_mode else 'merged'} "
-                                f"resolved tool providers tools={provider_tools[:8]}... count={len(provider_tools)}"
+                                f"[DEBUG] job={job_id} set resolved tool providers "
+                                f"tools={provider_tools[:8]}... count={len(provider_tools)}"
                             )
                 except Exception as provider_exc:  # noqa: BLE001
                     _log(f"job={job_id} resolved tool providers invoker build failed: {provider_exc}")
 
-            # Fallback to legacy mcpServersJSON if no resolved_tool_providers
-            elif claim_response is not None and claim_response.has_mcp_servers():
-                try:
-                    mcp_invoker = build_tool_invoker_from_mcpserver_refs_json(claim_response.mcp_servers_json)
-                    if mcp_invoker is not None:
-                        # Phase 10C: In claim_provider_snapshot mode, set directly (not merge)
-                        if claim_provider_snapshot_mode:
-                            if callable(set_tool_invoker):
-                                set_tool_invoker(mcp_invoker)
-                            else:
-                                # Fallback: merge_tool_invoker will set if current is None
-                                merge_tool_invoker(mcp_invoker)
-                        else:
-                            merge_tool_invoker(mcp_invoker)
-                        selected_toolset_source = "claim_mcp_servers_json"
-                        if debug:
-                            mcp_tools = mcp_invoker.allowed_tools()
-                            _log(
-                                f"[DEBUG] job={job_id} {'set' if claim_provider_snapshot_mode else 'merged'} "
-                                f"MCP server toolset tools={mcp_tools[:8]}... count={len(mcp_tools)}"
-                            )
-                except Exception as mcp_exc:  # noqa: BLE001
-                    _log(f"job={job_id} MCP server invoker build failed: {mcp_exc}")
-
-        # Build tool catalog snapshot after merging all invokers
+        # Build tool catalog snapshot after setting invoker
         # This provides an immutable snapshot for function calling
         if settings.fc_runtime_snapshot_enabled:
             try:
@@ -820,7 +670,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             template_builder=template_builder,
             toolsets=selected_toolsets,
             toolset_source=selected_toolset_source,
-            tool_invoker=tool_invoker,
+            tool_invoker=runtime.tool_invoker,  # P2 FIX: Use runtime's invoker, not stale local variable
         )
         _report_skillset_selection_observation(
             runtime=runtime,

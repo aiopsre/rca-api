@@ -50,11 +50,10 @@ class ClaimStartRequest:
 class ClaimStartResponse:
     """Canonical response model for worker claim/start.
 
-    Contains resolved skillsets and MCP server references for the job's pipeline.
+    Contains resolved skillsets and resolved tool providers for the job's pipeline.
     """
 
     skillsets_json: str | None = None
-    mcp_servers_json: str | None = None
     resolved_tool_providers: list[dict[str, Any]] | None = None
 
     @classmethod
@@ -66,11 +65,7 @@ class ClaimStartResponse:
         raw_skillsets = data.get("skillsetsJSON")
         if isinstance(raw_skillsets, str) and raw_skillsets.strip():
             skillsets_json = raw_skillsets.strip()
-        mcp_servers_json = None
-        raw_mcp_servers = data.get("mcpServersJSON")
-        if isinstance(raw_mcp_servers, str) and raw_mcp_servers.strip():
-            mcp_servers_json = raw_mcp_servers.strip()
-        # Parse resolved_tool_providers (new canonical field)
+        # Parse resolved_tool_providers (canonical field)
         resolved_tool_providers = None
         raw_providers = data.get("resolvedToolProviders")
         if isinstance(raw_providers, list) and raw_providers:
@@ -79,15 +74,11 @@ class ClaimStartResponse:
             ]
         return cls(
             skillsets_json=skillsets_json,
-            mcp_servers_json=mcp_servers_json,
             resolved_tool_providers=resolved_tool_providers,
         )
 
     def has_skillsets(self) -> bool:
         return isinstance(self.skillsets_json, str) and self.skillsets_json != ""
-
-    def has_mcp_servers(self) -> bool:
-        return isinstance(self.mcp_servers_json, str) and self.mcp_servers_json != ""
 
     def has_resolved_tool_providers(self) -> bool:
         return isinstance(self.resolved_tool_providers, list) and len(self.resolved_tool_providers) > 0
@@ -98,15 +89,6 @@ class ClaimStartResponse:
         try:
             parsed = json.loads(self.skillsets_json)
             return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
-
-    def parse_mcp_servers(self) -> list[dict[str, Any]] | None:
-        if not self.has_mcp_servers():
-            return None
-        try:
-            parsed = json.loads(self.mcp_servers_json)
-            return parsed if isinstance(parsed, list) else None
         except json.JSONDecodeError:
             return None
 

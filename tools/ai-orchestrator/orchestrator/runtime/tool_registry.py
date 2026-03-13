@@ -4,7 +4,7 @@ This module provides a registry for tool metadata, allowing tools to be
 classified without relying on name-based inference.
 
 Tool metadata is now managed by the platform (Go side) and synced to the
-orchestrator via McpServerRef.tool_metadata field. The static definitions
+orchestrator via ResolvedToolProvider.tool_metadata field. The static definitions
 have been removed in favor of platform-managed metadata.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 import threading
 
 if TYPE_CHECKING:
-    from ..tooling.mcp_server_loader import McpServerRef, ResolvedToolProvider
+    from ..tooling.mcp_server_loader import ResolvedToolProvider
 
 
 @dataclass(frozen=True)
@@ -89,49 +89,10 @@ class ToolRegistry:
             for metadata in metadata_list:
                 self._metadata[metadata.tool_name] = metadata
 
-    def register_from_mcpserver_ref(self, ref: McpServerRef) -> int:
-        """Register tool metadata from McpServerRef.
-
-        This is the primary method for registering tool metadata from
-        the platform. The platform manages tool metadata in the database
-        and syncs it to the orchestrator via McpServerRef.tool_metadata.
-
-        Args:
-            ref: McpServerRef containing tool_metadata from platform.
-
-        Returns:
-            Number of tools registered.
-        """
-        if not ref.tool_metadata:
-            return 0
-
-        count = 0
-        with self._lock:
-            for meta in ref.tool_metadata:
-                # Convert ToolMetadataRef to ToolMetadata
-                tool_meta = ToolMetadata(
-                    tool_name=meta.tool_name,
-                    kind=meta.kind,
-                    domain=meta.domain,
-                    read_only=meta.read_only,
-                    risk_level=meta.risk_level,
-                    latency_tier=meta.latency_tier,
-                    cost_hint=meta.cost_hint,
-                    tags=meta.tags,
-                    description=meta.description,
-                    tool_class=meta.tool_class,
-                    aliases=meta.aliases,
-                    allowed_for_prompt_skill=meta.allowed_for_prompt_skill,
-                    allowed_for_graph_agent=meta.allowed_for_graph_agent,
-                )
-                self._metadata[meta.tool_name] = tool_meta
-                count += 1
-        return count
-
     def register_from_resolved_provider(self, provider: "ResolvedToolProvider") -> int:
         """Register tool metadata from ResolvedToolProvider.
 
-        This is the new canonical path for registering tool metadata from
+        This is the canonical path for registering tool metadata from
         the platform. Used with the resolved_tool_providers field from claim response.
 
         Args:
@@ -200,7 +161,7 @@ class ToolRegistry:
             return [m for m in self._metadata.values() if tag in m.tags]
 
 
-# Global registry instance - starts empty, filled by platform via McpServerRef
+# Global registry instance - starts empty, filled by platform via ResolvedToolProvider
 _global_registry = ToolRegistry()
 
 
@@ -225,31 +186,12 @@ def register_tool_metadata(metadata: ToolMetadata) -> None:
     _global_registry.register(metadata)
 
 
-def register_tools_from_mcpserver_refs(refs: list[McpServerRef]) -> int:
-    """Register all tool metadata from McpServerRef list.
-
-    This is the primary entry point for registering tool metadata from
-    the platform. Call this during orchestrator initialization with the
-    McpServerRef list from the platform.
-
-    Args:
-        refs: List of McpServerRef objects from platform.
-
-    Returns:
-        Total number of tools registered.
-    """
-    registry = get_global_registry()
-    total = 0
-    for ref in refs:
-        total += registry.register_from_mcpserver_ref(ref)
-    return total
-
-
 def register_tools_from_resolved_providers(providers: list["ResolvedToolProvider"]) -> int:
     """Register all tool metadata from ResolvedToolProvider list.
 
-    This is the new canonical path for registering tool metadata from
-    the platform. Used with the resolved_tool_providers field from claim response.
+    This is the canonical entry point for registering tool metadata from
+    the platform. Call this during orchestrator initialization with the
+    ResolvedToolProvider list from the platform claim response.
 
     Args:
         providers: List of ResolvedToolProvider objects from platform.

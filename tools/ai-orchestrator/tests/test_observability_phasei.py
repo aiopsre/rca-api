@@ -16,13 +16,16 @@ from orchestrator.daemon.settings import Settings
 from orchestrator.graph import OrchestratorConfig
 from orchestrator.runtime.retry import RetryPolicy
 from orchestrator.runtime.runtime import OrchestratorRuntime
+from orchestrator.sdk.runtime_contract import ClaimStartResponse
 from orchestrator.tooling import ToolInvokeError
 from orchestrator.tooling.invoker import TOOLING_META_KEY
 
 
 class RunnerToolsetSelectObservationTest(unittest.TestCase):
+    """Tests for toolset selection observation with resolved_tool_providers path."""
+
     @staticmethod
-    def _settings(toolset_config_json: str) -> Settings:
+    def _settings() -> Settings:
         return Settings(
             base_url="http://127.0.0.1:5555",
             scopes="*",
@@ -54,12 +57,11 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
             post_finalize_wait_interval_ms=500,
             post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
-            toolset_config_json=toolset_config_json,
-            # Disable claim provider snapshot to test local override path
-            claim_provider_snapshot_enabled=False,
+            toolset_config_json="",
         )
 
-    def test_runner_reports_toolset_select_before_graph(self) -> None:
+    def test_runner_reports_toolset_select_with_resolved_providers(self) -> None:
+        """Test that runner reports observation when using resolved_tool_providers."""
         graph_invoked = {"count": 0}
 
         class _FakeClient:
@@ -75,11 +77,34 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
                 self.report_observation_calls: list[dict[str, object]] = []
                 self.start_calls = 0
                 self.shutdown_calls = 0
+                self._claim_response: ClaimStartResponse | None = None
                 _FakeRuntime.instances.append(self)
 
             def start(self) -> bool:
                 self.start_calls += 1
+                # Return claim response with resolved_tool_providers
+                self._claim_response = ClaimStartResponse(
+                    skillsets_json=None,
+                    resolved_tool_providers=[
+                        {
+                            "providerID": "builtin-readonly",
+                            "mcpServerID": "builtin-readonly",
+                            "name": "Builtin Readonly",
+                            "providerType": "builtin",
+                            "serverKind": "builtin",
+                            "baseURL": "",
+                            "allowedTools": ["incident.get", "logs.query"],
+                            "priority": 0,
+                        }
+                    ],
+                )
                 return True
+
+            def get_claim_response(self) -> ClaimStartResponse | None:
+                return self._claim_response
+
+            def set_tool_invoker(self, invoker: object) -> None:
+                self.tool_invoker = invoker
 
             def report_observation(self, **kwargs: object) -> int:
                 self.report_observation_calls.append(kwargs)
@@ -96,13 +121,7 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         def _fake_builder(_runtime: _FakeRuntime, _cfg: OrchestratorConfig) -> _FakeGraph:
             return _FakeGraph()
 
-        settings = self._settings(
-            toolset_config_json=(
-                '{"pipelines":{"basic_rca":"skills_obs"},'
-                '"toolsets":{"skills_obs":{"providers":[{"type":"mcp_http","base_url":"http://127.0.0.1:5555",'
-                '"allow_tools":["query_logs"]}]}}}'
-            )
-        )
+        settings = self._settings()
 
         with mock.patch.object(runner_module, "_new_client", return_value=_FakeClient()), mock.patch.object(
             runner_module, "OrchestratorRuntime", _FakeRuntime
@@ -126,10 +145,8 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         self.assertEqual(params["pipeline"], "basic_rca")
         self.assertEqual(params["template"], "_fake_builder")
         response = observed["response"]
-        self.assertEqual(response["toolsets"], ["skills_obs"])
-        self.assertEqual(response["source"], "local_override")
-        self.assertEqual(len(response["providers"]), 1)
-        self.assertEqual(response["providers"][0]["provider_type"], "mcp_http")
+        # New path uses claim_resolved_providers source
+        self.assertEqual(response["source"], "claim_resolved_providers")
 
 
 class RuntimeToolInvokeObservationTest(unittest.TestCase):

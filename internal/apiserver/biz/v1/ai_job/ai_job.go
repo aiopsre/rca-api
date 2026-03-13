@@ -454,14 +454,6 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 			}
 		}
 
-		mcpServerRefs, mcpErr := b.mcpServerBiz.ResolveMcpServerRefs(ctx, pipeline)
-		if mcpErr == nil && len(mcpServerRefs) > 0 {
-			if data, marshalErr := json.Marshal(mcpServerRefs); marshalErr == nil {
-				mcpServersJSON := string(data)
-				resp.McpServersJSON = &mcpServersJSON
-			}
-		}
-
 		// Resolve structured tool providers from toolset_provider_bindings
 		// Resolve toolsetIDs from strategy config (correct path), NOT from skillsets
 		var toolsetIDs []string

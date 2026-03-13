@@ -126,13 +126,9 @@ message StartAIJobResponse {
   // skillsetsJSON contains resolved skillset configuration for the job's pipeline.
   // Follows the ResolveOrchestratorSkillsetsResponse format.
   optional string skillsetsJSON = 1;
-  // mcpServersJSON contains resolved MCP server references for the job's pipeline.
-  // Follows the McpServerRef array format.
-  // Deprecated: Use resolvedToolProviders instead.
-  optional string mcpServersJSON = 2;
-  // resolvedToolProviders is the new canonical field containing structured provider snapshot.
+  // resolvedToolProviders is the canonical field containing structured provider snapshot.
   // This is materialized at claim time from toolset_provider_bindings + mcp_servers + tool_metadata.
-  repeated ResolvedToolProvider resolvedToolProviders = 3;
+  repeated ResolvedToolProvider resolvedToolProviders = 2;
 }
 
 // ResolvedToolProvider represents a fully resolved tool provider with all metadata.

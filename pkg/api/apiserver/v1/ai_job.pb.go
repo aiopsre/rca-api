@@ -747,13 +747,9 @@ type StartAIJobResponse struct {
 	// skillsetsJSON contains resolved skillset configuration for the job's pipeline.
 	// Follows the ResolveOrchestratorSkillsetsResponse format.
 	SkillsetsJSON *string `protobuf:"bytes,1,opt,name=skillsetsJSON,proto3,oneof" json:"skillsetsJSON,omitempty"`
-	// mcpServersJSON contains resolved MCP server references for the job's pipeline.
-	// Follows the McpServerRef array format.
-	// Deprecated: Use resolvedToolProviders instead.
-	McpServersJSON *string `protobuf:"bytes,2,opt,name=mcpServersJSON,proto3,oneof" json:"mcpServersJSON,omitempty"`
-	// resolvedToolProviders is the new canonical field containing structured provider snapshot.
+	// resolvedToolProviders is the canonical field containing structured provider snapshot.
 	// This is materialized at claim time from toolset_provider_bindings + mcp_servers + tool_metadata.
-	ResolvedToolProviders []*ResolvedToolProvider `protobuf:"bytes,3,rep,name=resolvedToolProviders,proto3" json:"resolvedToolProviders,omitempty"`
+	ResolvedToolProviders []*ResolvedToolProvider `protobuf:"bytes,2,rep,name=resolvedToolProviders,proto3" json:"resolvedToolProviders,omitempty"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
 }
@@ -791,13 +787,6 @@ func (*StartAIJobResponse) Descriptor() ([]byte, []int) {
 func (x *StartAIJobResponse) GetSkillsetsJSON() string {
 	if x != nil && x.SkillsetsJSON != nil {
 		return *x.SkillsetsJSON
-	}
-	return ""
-}
-
-func (x *StartAIJobResponse) GetMcpServersJSON() string {
-	if x != nil && x.McpServersJSON != nil {
-		return *x.McpServersJSON
 	}
 	return ""
 }
@@ -1832,13 +1821,11 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"totalCount\x12'\n" +
 	"\x04jobs\x18\x02 \x03(\v2\x13.apiserver.v1.AIJobR\x04jobs\")\n" +
 	"\x11StartAIJobRequest\x12\x14\n" +
-	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"\xeb\x01\n" +
+	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"\xab\x01\n" +
 	"\x12StartAIJobResponse\x12)\n" +
-	"\rskillsetsJSON\x18\x01 \x01(\tH\x00R\rskillsetsJSON\x88\x01\x01\x12+\n" +
-	"\x0emcpServersJSON\x18\x02 \x01(\tH\x01R\x0emcpServersJSON\x88\x01\x01\x12X\n" +
-	"\x15resolvedToolProviders\x18\x03 \x03(\v2\".apiserver.v1.ResolvedToolProviderR\x15resolvedToolProvidersB\x10\n" +
-	"\x0e_skillsetsJSONB\x11\n" +
-	"\x0f_mcpServersJSON\"\xa9\x03\n" +
+	"\rskillsetsJSON\x18\x01 \x01(\tH\x00R\rskillsetsJSON\x88\x01\x01\x12X\n" +
+	"\x15resolvedToolProviders\x18\x02 \x03(\v2\".apiserver.v1.ResolvedToolProviderR\x15resolvedToolProvidersB\x10\n" +
+	"\x0e_skillsetsJSON\"\xa9\x03\n" +
 	"\x14ResolvedToolProvider\x12\x1e\n" +
 	"\n" +
 	"providerID\x18\x01 \x01(\tR\n" +

@@ -129,7 +129,7 @@ class TestRunToolAgent:
 
         # Mock adapter that returns empty tools
         mock_adapter = MagicMock()
-        mock_adapter.to_openai_tools.return_value = []
+        mock_adapter.to_openai_tools_for_graph.return_value = []
 
         # Mock runtime
         runtime = MagicMock()
@@ -162,7 +162,7 @@ class TestRunToolAgent:
 
         # Mock adapter with tools
         mock_adapter = MagicMock()
-        mock_adapter.to_openai_tools.return_value = [
+        mock_adapter.to_openai_tools_for_graph.return_value = [
             {"type": "function", "function": {"name": "test_tool"}}
         ]
 
