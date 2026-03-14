@@ -602,6 +602,42 @@ class SkillCatalog:
             size_bytes=size_bytes,
         )
 
+    def describe_skill_surface(self) -> dict[str, Any]:
+        """Build SkillSurface summary for ResolvedAgentContext.
+
+        Returns:
+            Dictionary with skill_ids and capability_map.
+
+        Example:
+            {
+                "skill_ids": ["skill-1", "skill-2"],
+                "capability_map": {
+                    "evidence_plan": ["skill-1@v1:executor"],
+                    "diagnosis": ["skill-2@v1:executor", "skill-2@v1:knowledge"]
+                }
+            }
+        """
+        skill_ids: list[str] = []
+        capability_map: dict[str, list[str]] = {}
+
+        for binding_key, item in self._skills.items():
+            skill_id = str(item.summary.skill_id or "").strip()
+            if skill_id and skill_id not in skill_ids:
+                skill_ids.append(skill_id)
+
+            capability = str(item.binding.capability or "").strip()
+            if capability:
+                if capability not in capability_map:
+                    capability_map[capability] = []
+                binding_ref = f"{item.summary.skill_id}@{item.summary.version}:{item.binding.role}"
+                if binding_ref not in capability_map[capability]:
+                    capability_map[capability].append(binding_ref)
+
+        return {
+            "skill_ids": skill_ids,
+            "capability_map": capability_map,
+        }
+
 
 def _binding_key(skill_id: str, version: str, capability: str, role: str) -> str:
     return f"{_trim(skill_id)}\x00{_trim(version)}\x00{_trim(capability)}\x00{_trim(role).lower() or 'executor'}"

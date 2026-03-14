@@ -11,6 +11,8 @@ import time
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..middleware.chain import MiddlewareChain
+    from ..runtime.resolved_context import ResolvedAgentContext
     from ..runtime.runtime import OrchestratorRuntime
     from ..state import GraphState
 
@@ -498,6 +500,45 @@ def run_tool_agent(
         Updated graph state with tool_call_results and evidence.
     """
     started_ms = int(time.time() * 1000)
+
+    # Phase HM2: Apply middleware chain if enabled
+    # This integrates the middleware into the production execution path.
+    middleware_chain: "MiddlewareChain | None" = getattr(cfg, "middleware_chain", None)
+    middleware_enabled: bool = getattr(cfg, "middleware_enabled", False)
+    if middleware_enabled and middleware_chain is not None:
+        # Build minimal context for middleware
+        from ..middleware.base import AgentRequest
+        from ..runtime.resolved_context import ResolvedAgentContext
+
+        context: "ResolvedAgentContext | None" = None
+        if state.agent_context:
+            try:
+                context = ResolvedAgentContext.from_json(
+                    json.dumps(state.agent_context)
+                )
+            except (json.JSONDecodeError, TypeError):
+                context = None
+
+        if context is not None:
+            request = AgentRequest(
+                system_prompt="",
+                user_prompt="",
+                metadata={"node": "run_tool_agent", "surface": "graph"},
+            )
+            # Prepare request through middleware chain
+            # This allows middleware to inject context, record observations, etc.
+            prepared = middleware_chain.prepare(
+                state=state,
+                context=context,
+                request=request,
+                config={"mode": "fc_surface", "surface": "graph"},
+            )
+            # The prepared request can be used for logging/observation
+            # The actual tool filtering is handled by the adapter below
+            if prepared.metadata:
+                state.degrade_reasons.append(
+                    f"middleware_applied:{','.join(prepared.metadata.keys())}"
+                )
 
     # 1. Get FunctionCallingToolAdapter from runtime (FC3A: unified adapter)
     adapter = runtime.get_fc_adapter()

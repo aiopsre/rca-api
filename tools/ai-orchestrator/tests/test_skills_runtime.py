@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from hashlib import sha256
 from pathlib import Path
 import shutil
@@ -4215,6 +4216,199 @@ class TestSkillsResolveAndBindingContract(unittest.TestCase):
         # Ensure contract set is not accidentally shrunk (core tools must remain)
         for required in ("skill.select", "skill.consume", "skill.execute", "skill.fallback", "skill.tool_reuse"):
             self.assertIn(required, ALLOWED_SKILL_OBSERVATION_TOOLS, msg=f"contract must include {required!r}")
+
+
+class TestDescribeSkillSurface(unittest.TestCase):
+    """Tests for SkillCatalog.describe_skill_surface() method (Phase HM2)."""
+
+    def _make_skill_dir(
+        self, base: Path, skill_id: str, version: str, name: str, description: str
+    ) -> tuple[Path, str]:
+        skill_dir = base / skill_id
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(f"---\nname: {name}\ndescription: {description}\n---\nContent\n", encoding="utf-8")
+        bundle_path = base / f"{skill_id}.zip"
+        bundle_digest = _zip_dir(skill_dir, bundle_path)
+        return skill_dir, bundle_path, bundle_digest
+
+    def _make_catalog_payload(
+        self, skills: list[dict], skillset_id: str = "set1"
+    ) -> list[dict]:
+        return [{
+            "skillsetID": skillset_id,
+            "skills": skills,
+        }]
+
+    def test_describe_skill_surface_returns_empty_for_empty_catalog(self) -> None:
+        """Test returns empty dict when catalog has no skills."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            cache_dir = base / "cache"
+
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=[],
+                cache_dir=str(cache_dir),
+            )
+
+            result = catalog.describe_skill_surface()
+            self.assertEqual(result, {"skill_ids": [], "capability_map": {}})
+
+    def test_describe_skill_surface_returns_skill_ids(self) -> None:
+        """Test returns unique skill IDs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            cache_dir = base / "cache"
+
+            skill_dir1, bundle_path1, digest1 = self._make_skill_dir(
+                base, "skill-1", "1.0.0", "Skill One", "Description one"
+            )
+            skill_dir2, bundle_path2, digest2 = self._make_skill_dir(
+                base, "skill-2", "1.0.0", "Skill Two", "Description two"
+            )
+
+            payload = self._make_catalog_payload([
+                {
+                    "skillID": "skill-1",
+                    "version": "1.0.0",
+                    "manifestJSON": json.dumps({
+                        "bundle_format": "claude_skill_v1",
+                        "instruction_file": "SKILL.md",
+                        "name": "Skill One",
+                        "description": "Description one",
+                    }),
+                    "capability": "evidence_plan",
+                    "role": "executor",
+                    "artifactURL": f"file://{bundle_path1}",
+                    "bundleDigest": digest1,
+                },
+                {
+                    "skillID": "skill-2",
+                    "version": "1.0.0",
+                    "manifestJSON": json.dumps({
+                        "bundle_format": "claude_skill_v1",
+                        "instruction_file": "SKILL.md",
+                        "name": "Skill Two",
+                        "description": "Description two",
+                    }),
+                    "capability": "diagnosis",
+                    "role": "executor",
+                    "artifactURL": f"file://{bundle_path2}",
+                    "bundleDigest": digest2,
+                },
+            ])
+
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=payload,
+                cache_dir=str(cache_dir),
+            )
+
+            result = catalog.describe_skill_surface()
+            self.assertIn("skill-1", result["skill_ids"])
+            self.assertIn("skill-2", result["skill_ids"])
+
+    def test_describe_skill_surface_builds_capability_map(self) -> None:
+        """Test builds capability map with binding references."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            cache_dir = base / "cache"
+
+            skill_dir, bundle_path, digest = self._make_skill_dir(
+                base, "skill-1", "1.0.0", "Skill One", "Description one"
+            )
+
+            payload = self._make_catalog_payload([
+                {
+                    "skillID": "skill-1",
+                    "version": "1.0.0",
+                    "manifestJSON": json.dumps({
+                        "bundle_format": "claude_skill_v1",
+                        "instruction_file": "SKILL.md",
+                        "name": "Skill One",
+                        "description": "Description one",
+                    }),
+                    "capability": "evidence_plan",
+                    "role": "executor",
+                    "artifactURL": f"file://{bundle_path}",
+                    "bundleDigest": digest,
+                },
+                {
+                    "skillID": "skill-1",
+                    "version": "1.0.0",
+                    "manifestJSON": json.dumps({
+                        "bundle_format": "claude_skill_v1",
+                        "instruction_file": "SKILL.md",
+                        "name": "Skill One",
+                        "description": "Description one",
+                    }),
+                    "capability": "evidence_plan",
+                    "role": "knowledge",
+                    "artifactURL": f"file://{bundle_path}",
+                    "bundleDigest": digest,
+                },
+            ])
+
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=payload,
+                cache_dir=str(cache_dir),
+            )
+
+            result = catalog.describe_skill_surface()
+            self.assertIn("evidence_plan", result["capability_map"])
+            bindings = result["capability_map"]["evidence_plan"]
+            self.assertEqual(len(bindings), 2)
+            self.assertIn("skill-1@1.0.0:executor", bindings)
+            self.assertIn("skill-1@1.0.0:knowledge", bindings)
+
+    def test_describe_skill_surface_deduplicates_skill_ids(self) -> None:
+        """Test deduplicates skill IDs when same skill has multiple bindings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            cache_dir = base / "cache"
+
+            skill_dir, bundle_path, digest = self._make_skill_dir(
+                base, "skill-1", "1.0.0", "Skill One", "Description one"
+            )
+
+            payload = self._make_catalog_payload([
+                {
+                    "skillID": "skill-1",
+                    "version": "1.0.0",
+                    "manifestJSON": json.dumps({
+                        "bundle_format": "claude_skill_v1",
+                        "instruction_file": "SKILL.md",
+                        "name": "Skill One",
+                        "description": "Description one",
+                    }),
+                    "capability": "evidence_plan",
+                    "role": "executor",
+                    "artifactURL": f"file://{bundle_path}",
+                    "bundleDigest": digest,
+                },
+                {
+                    "skillID": "skill-1",
+                    "version": "1.0.0",
+                    "manifestJSON": json.dumps({
+                        "bundle_format": "claude_skill_v1",
+                        "instruction_file": "SKILL.md",
+                        "name": "Skill One",
+                        "description": "Description one",
+                    }),
+                    "capability": "diagnosis",
+                    "role": "executor",
+                    "artifactURL": f"file://{bundle_path}",
+                    "bundleDigest": digest,
+                },
+            ])
+
+            catalog = SkillCatalog.from_resolved_skillsets(
+                skillsets_payload=payload,
+                cache_dir=str(cache_dir),
+            )
+
+            result = catalog.describe_skill_surface()
+            # Only one skill_id even with two bindings
+            self.assertEqual(result["skill_ids"], ["skill-1"])
 
 
 # Register default tool metadata for all tests

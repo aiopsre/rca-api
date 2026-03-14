@@ -15,6 +15,11 @@ from ..langgraph.registry import (
     list_template_ids,
     normalize_pipeline,
 )
+from ..middleware.chain import MiddlewareChain
+from ..middleware.observation import ObservationMiddleware
+from ..middleware.session import SessionMiddleware
+from ..middleware.skills import SkillsMiddleware
+from ..middleware.tool_surface import ToolSurfaceMiddleware
 from ..runtime.resolved_context import ResolvedAgentContext, SkillSurface, ToolSurface
 from ..runtime.runtime import OrchestratorRuntime
 from ..sdk.errors import RCAApiError
@@ -594,6 +599,37 @@ def _register_templates_if_due(
         _log(f"template registry refresh failed: {exc}")
 
 
+def _build_middleware_chain(
+    *,
+    settings: Settings,
+    context: ResolvedAgentContext | None = None,
+) -> MiddlewareChain | None:
+    """Build middleware chain for hybrid multi-agent (Phase HM2).
+
+    The middleware chain is built per-job and includes:
+    - SessionMiddleware: Injects session and incident context
+    - SkillsMiddleware: Injects skill IDs and capability map
+    - ToolSurfaceMiddleware: Controls visible tools per-surface
+    - ObservationMiddleware: Records agent interactions
+
+    Args:
+        settings: Worker settings.
+        context: Resolved agent context for the job (optional).
+
+    Returns:
+        MiddlewareChain instance, or None if middleware is disabled.
+    """
+    if not settings.rca_hybrid_middleware_enabled:
+        return None
+
+    chain = MiddlewareChain()
+    chain.add(SessionMiddleware())
+    chain.add(SkillsMiddleware())
+    chain.add(ToolSurfaceMiddleware())
+    chain.add(ObservationMiddleware())
+    return chain
+
+
 def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
     client = _new_client(settings)
     selected_pipeline = ""
@@ -805,6 +841,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
             # Build ResolvedAgentContext for hybrid multi-agent (Phase HM1)
             # Must be built AFTER session_snapshot is loaded into state
+            resolved_agent_context: ResolvedAgentContext | None = None
             if settings.rca_agent_context_enabled:
                 try:
                     resolved_agent_context = _build_resolved_agent_context(
@@ -826,6 +863,19 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                             )
                 except Exception as context_exc:  # noqa: BLE001
                     _log(f"job={job_id} resolved agent context build failed: {context_exc}")
+
+            # Build MiddlewareChain for hybrid multi-agent (Phase HM2)
+            middleware_chain = _build_middleware_chain(
+                settings=settings,
+                context=resolved_agent_context,
+            )
+            if middleware_chain is not None:
+                graph_cfg.middleware_chain = middleware_chain
+                graph_cfg.middleware_enabled = True
+                if debug:
+                    _log(f"[DEBUG] job={job_id} built middleware chain enabled=True")
+            else:
+                graph_cfg.middleware_enabled = False
 
             compiled_graph = template_builder(runtime, graph_cfg)
             final_state = compiled_graph.invoke(state)

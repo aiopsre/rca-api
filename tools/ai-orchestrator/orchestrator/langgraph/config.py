@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -30,3 +31,9 @@ class OrchestratorConfig:
     tool_agent_max_calls_per_round: int = 3  # Maximum calls per round
     tool_agent_round_timeout_s: float = 60.0  # Timeout per round
     tool_agent_stop_on_error: bool = False  # Stop on error
+
+    # Hybrid Multi-Agent middleware (Phase HM2)
+    # middleware_chain is set at job processing time, not at config creation time.
+    # It's built per-job using job-specific context (session, skills, tools).
+    middleware_chain: Any = None  # MiddlewareChain | None
+    middleware_enabled: bool = True  # Controlled by RCA_HYBRID_MIDDLEWARE_ENABLED
