@@ -358,38 +358,50 @@ class GraphPhaseETest(unittest.TestCase):
         return out, runtime
 
     def test_phasee_mock_mode_runs_post_finalize_and_verification_in_graph(self) -> None:
-        final_state, runtime = self._invoke(
-            OrchestratorConfig(
-                run_query=False,
-                run_verification=True,
-                post_finalize_observe=True,
-                verification_source="ai_job",
+        import os
+        # HM3: Use legacy path for this test (tests plan_evidence + run_tool_agent flow)
+        old_route_val = os.environ.get("RCA_ROUTE_AGENT_ENABLED")
+        os.environ["RCA_ROUTE_AGENT_ENABLED"] = "false"
+        try:
+            final_state, runtime = self._invoke(
+                OrchestratorConfig(
+                    run_query=False,
+                    run_verification=True,
+                    post_finalize_observe=True,
+                    verification_source="ai_job",
+                )
             )
-        )
 
-        self.assertTrue(final_state.finalized)
-        self.assertTrue(final_state.verification_done)
-        self.assertEqual(runtime.observe_calls, 1)
-        self.assertEqual(runtime.verification_calls, 1)
+            self.assertTrue(final_state.finalized)
+            self.assertTrue(final_state.verification_done)
+            self.assertEqual(runtime.observe_calls, 1)
+            self.assertEqual(runtime.verification_calls, 1)
 
-        node_names = {item["node_name"] for item in runtime.tool_calls}
-        # FC4D: New graph uses run_tool_agent (FC path) instead of plan_tool_calls + execute_tool_calls
-        # The dual-node path is still available via RCA_FC_GRAPH_AGENT_ENABLED=false
-        self.assertIn("run_tool_agent", node_names)
-        self.assertIn("post_finalize_observe", node_names)
-        self.assertIn("run_verification", node_names)
+            node_names = {item["node_name"] for item in runtime.tool_calls}
+            # FC4D: New graph uses run_tool_agent (FC path) instead of plan_tool_calls + execute_tool_calls
+            # The dual-node path is still available via RCA_FC_GRAPH_AGENT_ENABLED=false
+            self.assertIn("run_tool_agent", node_names)
+            self.assertIn("post_finalize_observe", node_names)
+            self.assertIn("run_verification", node_names)
 
-        diag_call = next(item for item in runtime.tool_calls if item["tool_name"] == "diagnosis.generate")
-        response = diag_call["response_json"]
-        self.assertIsInstance(response, dict)
-        self.assertIn("quality_gate", response)
-        self.assertIn("evidence_plan", response)
-        self.assertIn("executed", response["evidence_plan"])
+            diag_call = next(item for item in runtime.tool_calls if item["tool_name"] == "diagnosis.generate")
+            response = diag_call["response_json"]
+            self.assertIsInstance(response, dict)
+            self.assertIn("quality_gate", response)
+            self.assertIn("evidence_plan", response)
+            self.assertIn("executed", response["evidence_plan"])
+        finally:
+            if old_route_val is None:
+                os.environ.pop("RCA_ROUTE_AGENT_ENABLED", None)
+            else:
+                os.environ["RCA_ROUTE_AGENT_ENABLED"] = old_route_val
 
     def test_phasee_query_mode_fanout_merges_two_evidence_and_keeps_executed(self) -> None:
         import os
-        # Use dual-node path for this test (no LLM mock available for FC path)
-        old_val = os.environ.get("RCA_FC_GRAPH_AGENT_ENABLED")
+        # HM3: Use legacy path for this test (tests dual-node flow, no LLM mock for FC path)
+        old_route_val = os.environ.get("RCA_ROUTE_AGENT_ENABLED")
+        old_fc_val = os.environ.get("RCA_FC_GRAPH_AGENT_ENABLED")
+        os.environ["RCA_ROUTE_AGENT_ENABLED"] = "false"
         os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = "false"
         try:
             final_state, runtime = self._invoke(
@@ -418,10 +430,14 @@ class GraphPhaseETest(unittest.TestCase):
             executed = response["evidence_plan"].get("executed")
             self.assertIsInstance(executed, list)
         finally:
-            if old_val is None:
+            if old_route_val is None:
+                os.environ.pop("RCA_ROUTE_AGENT_ENABLED", None)
+            else:
+                os.environ["RCA_ROUTE_AGENT_ENABLED"] = old_route_val
+            if old_fc_val is None:
                 os.environ.pop("RCA_FC_GRAPH_AGENT_ENABLED", None)
             else:
-                os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = old_val
+                os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = old_fc_val
 
     def test_phasee_prompt_first_diagnosis_enrich_updates_state_and_finalize(self) -> None:
         class _PromptSkillRuntime(_FakeRuntime):
@@ -486,114 +502,134 @@ class GraphPhaseETest(unittest.TestCase):
         self.assertEqual(runtime.finalize_calls[-1]["diagnosis_json"]["summary"], "Enriched summary")
 
     def test_phasee_prompt_first_evidence_plan_updates_state_before_queries(self) -> None:
-        class _PromptEvidenceRuntime(_FakeRuntime):
-            def consume_prompt_skill(
-                self,
-                *,
-                capability: str,
-                graph_state: GraphState,
-            ) -> dict[str, object] | None:
-                if capability != "evidence.plan":
-                    return None
-                graph_state.evidence_plan["budget"]["max_calls"] = 2
-                graph_state.evidence_candidates = [{"type": "logs", "name": "error_budget"}]
-                graph_state.evidence_plan["candidates"] = graph_state.evidence_candidates
-                graph_state.logs_branch_meta = {"mode": "query", "query_type": "logs"}
-                return {
-                    "selected_binding_key": "skill.binding",
-                    "skill_id": "claude.evidence.plan",
-                    "version": "1.0.0",
-                    "payload": {
-                        "evidence_plan_patch": {"budget": {"max_calls": 2}},
-                        "evidence_candidates": [{"type": "logs", "name": "error_budget"}],
-                        "logs_branch_meta": {"mode": "query", "query_type": "logs"},
-                    },
-                    "session_patch": {},
-                    "observations": [{"kind": "note", "message": "applied"}],
-                }
+        import os
+        # HM3: Use legacy path for this test (tests plan_evidence skill integration)
+        old_route_val = os.environ.get("RCA_ROUTE_AGENT_ENABLED")
+        os.environ["RCA_ROUTE_AGENT_ENABLED"] = "false"
+        try:
+            class _PromptEvidenceRuntime(_FakeRuntime):
+                def consume_prompt_skill(
+                    self,
+                    *,
+                    capability: str,
+                    graph_state: GraphState,
+                ) -> dict[str, object] | None:
+                    if capability != "evidence.plan":
+                        return None
+                    graph_state.evidence_plan["budget"]["max_calls"] = 2
+                    graph_state.evidence_candidates = [{"type": "logs", "name": "error_budget"}]
+                    graph_state.evidence_plan["candidates"] = graph_state.evidence_candidates
+                    graph_state.logs_branch_meta = {"mode": "query", "query_type": "logs"}
+                    return {
+                        "selected_binding_key": "skill.binding",
+                        "skill_id": "claude.evidence.plan",
+                        "version": "1.0.0",
+                        "payload": {
+                            "evidence_plan_patch": {"budget": {"max_calls": 2}},
+                            "evidence_candidates": [{"type": "logs", "name": "error_budget"}],
+                            "logs_branch_meta": {"mode": "query", "query_type": "logs"},
+                        },
+                        "session_patch": {},
+                        "observations": [{"kind": "note", "message": "applied"}],
+                    }
 
-        runtime = _PromptEvidenceRuntime()
-        graph = build_graph(
-            None,
-            OrchestratorConfig(
-                run_query=False,
-                run_verification=False,
-                post_finalize_observe=False,
-            ),
-            runtime,
-        )
-        out = graph.invoke(GraphState(job_id="job-1", instance_id="orc-1", started=True))
-        if isinstance(out, dict):
-            out = GraphState.model_validate(out)
+            runtime = _PromptEvidenceRuntime()
+            graph = build_graph(
+                None,
+                OrchestratorConfig(
+                    run_query=False,
+                    run_verification=False,
+                    post_finalize_observe=False,
+                ),
+                runtime,
+            )
+            out = graph.invoke(GraphState(job_id="job-1", instance_id="orc-1", started=True))
+            if isinstance(out, dict):
+                out = GraphState.model_validate(out)
 
-        self.assertTrue(out.finalized)
-        self.assertEqual(out.evidence_plan["budget"]["max_calls"], 2)
-        self.assertEqual(out.evidence_plan["candidates"], [{"type": "logs", "name": "error_budget"}])
-        plan_call = next(item for item in runtime.tool_calls if item["tool_name"] == "evidence.plan")
-        response = plan_call["response_json"]
-        self.assertIsInstance(response, dict)
-        self.assertEqual(response["skill"]["skill_id"], "claude.evidence.plan")
-        self.assertIn("evidence_plan", response)
-        self.assertEqual(response["evidence_plan"]["budget"]["max_calls"], 2)
+            self.assertTrue(out.finalized)
+            self.assertEqual(out.evidence_plan["budget"]["max_calls"], 2)
+            self.assertEqual(out.evidence_plan["candidates"], [{"type": "logs", "name": "error_budget"}])
+            plan_call = next(item for item in runtime.tool_calls if item["tool_name"] == "evidence.plan")
+            response = plan_call["response_json"]
+            self.assertIsInstance(response, dict)
+            self.assertEqual(response["skill"]["skill_id"], "claude.evidence.plan")
+            self.assertIn("evidence_plan", response)
+            self.assertEqual(response["evidence_plan"]["budget"]["max_calls"], 2)
+        finally:
+            if old_route_val is None:
+                os.environ.pop("RCA_ROUTE_AGENT_ENABLED", None)
+            else:
+                os.environ["RCA_ROUTE_AGENT_ENABLED"] = old_route_val
 
     def test_phasee_lease_lost_skips_query_nodes_and_no_toolcall_write(self) -> None:
-        class _LeaseLostAtQueryRuntime(_FakeRuntime):
-            def __init__(self) -> None:
-                super().__init__()
-                self._lease_lost = False
+        import os
+        # HM3: Use legacy path for this test (tests lease_lost behavior in plan_evidence)
+        old_route_val = os.environ.get("RCA_ROUTE_AGENT_ENABLED")
+        os.environ["RCA_ROUTE_AGENT_ENABLED"] = "false"
+        try:
+            class _LeaseLostAtQueryRuntime(_FakeRuntime):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self._lease_lost = False
 
-            def is_lease_lost(self) -> bool:
-                return self._lease_lost
+                def is_lease_lost(self) -> bool:
+                    return self._lease_lost
 
-            def report_tool_call(
-                self,
-                *,
-                node_name: str,
-                tool_name: str,
-                request_json: dict[str, object],
-                response_json: dict[str, object] | None,
-                latency_ms: int,
-                status: str,
-                error: str | None = None,
-                evidence_ids: list[str] | None = None,
-            ) -> int:
-                result = super().report_tool_call(
-                    node_name=node_name,
-                    tool_name=tool_name,
-                    request_json=request_json,
-                    response_json=response_json,
-                    latency_ms=latency_ms,
-                    status=status,
-                    error=error,
-                    evidence_ids=evidence_ids,
-                )
-                if node_name == "plan_evidence":
-                    self._lease_lost = True
-                return result
+                def report_tool_call(
+                    self,
+                    *,
+                    node_name: str,
+                    tool_name: str,
+                    request_json: dict[str, object],
+                    response_json: dict[str, object] | None,
+                    latency_ms: int,
+                    status: str,
+                    error: str | None = None,
+                    evidence_ids: list[str] | None = None,
+                ) -> int:
+                    result = super().report_tool_call(
+                        node_name=node_name,
+                        tool_name=tool_name,
+                        request_json=request_json,
+                        response_json=response_json,
+                        latency_ms=latency_ms,
+                        status=status,
+                        error=error,
+                        evidence_ids=evidence_ids,
+                    )
+                    if node_name == "plan_evidence":
+                        self._lease_lost = True
+                    return result
 
-        runtime = _LeaseLostAtQueryRuntime()
-        graph = build_graph(
-            None,
-            OrchestratorConfig(
-                run_query=True,
-                ds_base_url="http://prometheus:9090",
-                auto_create_datasource=True,
-                run_verification=False,
-                post_finalize_observe=False,
-            ),
-            runtime,
-        )
-        out = graph.invoke(GraphState(job_id="job-lease", instance_id="orc-1", started=True))
-        if isinstance(out, dict):
-            out = GraphState.model_validate(out)
+            runtime = _LeaseLostAtQueryRuntime()
+            graph = build_graph(
+                None,
+                OrchestratorConfig(
+                    run_query=True,
+                    ds_base_url="http://prometheus:9090",
+                    auto_create_datasource=True,
+                    run_verification=False,
+                    post_finalize_observe=False,
+                ),
+                runtime,
+            )
+            out = graph.invoke(GraphState(job_id="job-lease", instance_id="orc-1", started=True))
+            if isinstance(out, dict):
+                out = GraphState.model_validate(out)
 
-        node_names = [item["node_name"] for item in runtime.tool_calls]
-        self.assertIn("plan_evidence", node_names)
-        self.assertNotIn("query_metrics", node_names)
-        self.assertNotIn("query_logs", node_names)
-        self.assertEqual(runtime.query_metrics_calls, 0)
-        self.assertEqual(runtime.query_logs_calls, 0)
-        self.assertIn("lease_lost", str(out.last_error or ""))
+            node_names = [item["node_name"] for item in runtime.tool_calls]
+            self.assertIn("plan_evidence", node_names)
+            self.assertNotIn("query_metrics", node_names)
+            self.assertNotIn("query_logs", node_names)
+            self.assertEqual(runtime.query_metrics_calls, 0)
+            self.assertEqual(runtime.query_logs_calls, 0)
+            self.assertIn("lease_lost", str(out.last_error or ""))
+        finally:
+            if old_route_val is None:
+                os.environ.pop("RCA_ROUTE_AGENT_ENABLED", None)
+            else:
+                os.environ["RCA_ROUTE_AGENT_ENABLED"] = old_route_val
 
 
 if __name__ == "__main__":

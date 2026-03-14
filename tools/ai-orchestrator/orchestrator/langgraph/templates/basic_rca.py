@@ -18,11 +18,16 @@ from ..nodes import (
     run_verification,
     summarize_diagnosis,
 )
+from ..nodes_agents import (
+    merge_domain_findings,
+    run_observability_agent,
+)
 from ..nodes_dynamic import (
     execute_tool_calls,
     plan_tool_calls,
     run_tool_agent,
 )
+from ..nodes_router import route_domains
 
 
 def _is_fc_graph_agent_enabled() -> bool:
@@ -51,6 +56,24 @@ def _is_fc_graph_agent_enabled() -> bool:
     return True
 
 
+def _is_route_agent_enabled() -> bool:
+    """Check if Route Agent is enabled.
+
+    HM3: Default is true, but respects env var override for rollback.
+    Set RCA_ROUTE_AGENT_ENABLED=false to use the legacy plan_evidence path.
+
+    Returns:
+        True if Route Agent should be used.
+    """
+    env_val = os.environ.get("RCA_ROUTE_AGENT_ENABLED", "").strip().lower()
+    if env_val in ("false", "0", "no", "off"):
+        return False
+    if env_val in ("true", "1", "yes", "on"):
+        return True
+    # Default: Route Agent enabled
+    return True
+
+
 def build_basic_rca_graph(
     runtime: OrchestratorRuntime,
     cfg: OrchestratorConfig,
@@ -64,6 +87,9 @@ def build_basic_rca_graph(
     Set RCA_FC_GRAPH_AGENT_ENABLED=false to use the legacy dual-node path
     (plan_tool_calls + execute_tool_calls) for rollback scenarios.
 
+    HM3: Route Agent is now the default path when enabled.
+    Set RCA_ROUTE_AGENT_ENABLED=false to use the legacy plan_evidence path.
+
     Args:
         runtime: Orchestrator runtime instance.
         cfg: Orchestrator configuration.
@@ -72,41 +98,12 @@ def build_basic_rca_graph(
         Compiled LangGraph graph.
     """
     builder = StateGraph(GraphState)
+
+    # Common nodes
     builder.add_node(
         "load_job_and_start",
         guard("load_job_and_start", lambda s: load_job_and_start(s, cfg, runtime), runtime),
     )
-    builder.add_node(
-        "plan_evidence",
-        guard("plan_evidence", lambda s: plan_evidence(s, cfg, runtime), runtime),
-    )
-
-    # FC4D: Check feature flag for tool execution path
-    # Default is FC agent, but allow rollback to dual-node path via env var
-    fc_enabled = _is_fc_graph_agent_enabled()
-
-    if fc_enabled:
-        # Primary path: single-node function-calling agent
-        builder.add_node(
-            "run_tool_agent",
-            guard("run_tool_agent", lambda s: run_tool_agent(s, cfg, runtime), runtime),
-        )
-        builder.add_edge("plan_evidence", "run_tool_agent")
-        builder.add_edge("run_tool_agent", "merge_evidence")
-    else:
-        # Fallback path: dual-node plan + execute (for rollback scenarios)
-        builder.add_node(
-            "plan_tool_calls",
-            guard("plan_tool_calls", lambda s: plan_tool_calls(s, cfg, runtime), runtime),
-        )
-        builder.add_node(
-            "execute_tool_calls",
-            guard("execute_tool_calls", lambda s: execute_tool_calls(s, cfg, runtime), runtime),
-        )
-        builder.add_edge("plan_evidence", "plan_tool_calls")
-        builder.add_edge("plan_tool_calls", "execute_tool_calls")
-        builder.add_edge("execute_tool_calls", "merge_evidence")
-
     builder.add_node(
         "merge_evidence",
         guard("merge_evidence", lambda s: merge_evidence(s, cfg, runtime), runtime),
@@ -123,8 +120,67 @@ def build_basic_rca_graph(
     builder.add_node("post_finalize_observe", lambda s: post_finalize_observe(s, cfg, runtime))
     builder.add_node("run_verification", lambda s: run_verification(s, cfg, runtime))
 
-    builder.add_edge(START, "load_job_and_start")
-    builder.add_edge("load_job_and_start", "plan_evidence")
+    # HM3: Check if Route Agent is enabled
+    route_enabled = _is_route_agent_enabled()
+
+    if route_enabled:
+        # New path: Route Agent + Domain Agents
+        builder.add_node(
+            "route_domains",
+            guard("route_domains", lambda s: route_domains(s, cfg, runtime), runtime),
+        )
+        builder.add_node(
+            "run_observability_agent",
+            guard("run_observability_agent", lambda s: run_observability_agent(s, cfg, runtime), runtime),
+        )
+        builder.add_node(
+            "merge_domain_findings",
+            guard("merge_domain_findings", lambda s: merge_domain_findings(s, cfg, runtime), runtime),
+        )
+
+        # New edges: load -> route -> observability -> merge_findings -> merge_evidence
+        builder.add_edge(START, "load_job_and_start")
+        builder.add_edge("load_job_and_start", "route_domains")
+        builder.add_edge("route_domains", "run_observability_agent")
+        builder.add_edge("run_observability_agent", "merge_domain_findings")
+        builder.add_edge("merge_domain_findings", "merge_evidence")
+    else:
+        # Legacy path: plan_evidence -> run_tool_agent
+        builder.add_node(
+            "plan_evidence",
+            guard("plan_evidence", lambda s: plan_evidence(s, cfg, runtime), runtime),
+        )
+
+        # FC4D: Check feature flag for tool execution path
+        fc_enabled = _is_fc_graph_agent_enabled()
+
+        if fc_enabled:
+            # Primary path: single-node function-calling agent
+            builder.add_node(
+                "run_tool_agent",
+                guard("run_tool_agent", lambda s: run_tool_agent(s, cfg, runtime), runtime),
+            )
+            builder.add_edge("plan_evidence", "run_tool_agent")
+            builder.add_edge("run_tool_agent", "merge_evidence")
+        else:
+            # Fallback path: dual-node plan + execute (for rollback scenarios)
+            builder.add_node(
+                "plan_tool_calls",
+                guard("plan_tool_calls", lambda s: plan_tool_calls(s, cfg, runtime), runtime),
+            )
+            builder.add_node(
+                "execute_tool_calls",
+                guard("execute_tool_calls", lambda s: execute_tool_calls(s, cfg, runtime), runtime),
+            )
+            builder.add_edge("plan_evidence", "plan_tool_calls")
+            builder.add_edge("plan_tool_calls", "execute_tool_calls")
+            builder.add_edge("execute_tool_calls", "merge_evidence")
+
+        # Legacy edges
+        builder.add_edge(START, "load_job_and_start")
+        builder.add_edge("load_job_and_start", "plan_evidence")
+
+    # Common downstream nodes
     builder.add_edge("merge_evidence", "quality_gate")
     builder.add_edge("quality_gate", "summarize_diagnosis")
     builder.add_edge("summarize_diagnosis", "finalize_job")
