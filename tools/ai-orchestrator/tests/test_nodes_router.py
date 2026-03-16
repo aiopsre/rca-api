@@ -183,17 +183,32 @@ class TestValidateDomainTask(unittest.TestCase):
         result = _validate_domain_task(task)
         self.assertEqual(result["domain"], "observability")
 
-    def test_validate_unsupported_domain_fallback_with_state(self) -> None:
-        """Test unsupported domain (change/knowledge) falls back with degradation."""
+    def test_validate_supported_domains_preserved(self) -> None:
+        """Test HM4: observability, change, and knowledge domains are preserved."""
         state = GraphState(job_id="job-1")
+
+        # Test change domain is preserved
         task = {"task_id": "t1", "domain": "change", "goal": "Test"}
         result = _validate_domain_task(task, state)
-        # HM3: change domain should fall back to observability
+        self.assertEqual(result["domain"], "change")
+        self.assertFalse(any("domain_not_supported" in r for r in state.degrade_reasons))
+
+        # Test knowledge domain is preserved
+        task = {"task_id": "t2", "domain": "knowledge", "goal": "Test"}
+        result = _validate_domain_task(task, state)
+        self.assertEqual(result["domain"], "knowledge")
+        self.assertFalse(any("domain_not_supported" in r for r in state.degrade_reasons))
+
+    def test_validate_unsupported_domain_fallback_with_state(self) -> None:
+        """Test truly unsupported domain falls back to observability with degradation."""
+        state = GraphState(job_id="job-1")
+        task = {"task_id": "t1", "domain": "unsupported_domain", "goal": "Test"}
+        result = _validate_domain_task(task, state)
         self.assertEqual(result["domain"], "observability")
-        self.assertTrue(any("domain_not_supported_in_hm3" in r for r in state.degrade_reasons))
+        self.assertTrue(any("domain_not_supported" in r for r in state.degrade_reasons))
 
     def test_validate_observability_domain_preserved(self) -> None:
-        """Test observability domain is preserved in HM3."""
+        """Test observability domain is preserved in HM4."""
         state = GraphState(job_id="job-1")
         task = {"task_id": "t1", "domain": "observability", "goal": "Test"}
         result = _validate_domain_task(task, state)

@@ -4,6 +4,7 @@ This module implements the Route Agent that analyzes incidents and
 assigns investigation tasks to domain-specific agents.
 
 Phase HM3: Route Agent + Observability Agent MVP.
+Phase HM4: Extended to support Change and Knowledge domains.
 """
 from __future__ import annotations
 
@@ -25,9 +26,8 @@ if TYPE_CHECKING:
     from .config import OrchestratorConfig
 
 
-# HM3: Currently only observability domain is supported.
-# Change and knowledge domains will be added in Phase HM4.
-HM3_SUPPORTED_DOMAINS: frozenset[str] = frozenset({"observability"})
+# HM4: Support all three domains - observability, change, knowledge.
+HM3_SUPPORTED_DOMAINS: frozenset[str] = frozenset({"observability", "change", "knowledge"})
 
 
 @dataclass
@@ -180,16 +180,14 @@ def _validate_domain_task(task: dict[str, Any], state: "GraphState | None" = Non
     """
     domain = str(task.get("domain") or "observability").strip().lower()
 
-    # P2 (HM3): Filter unsupported domains - only observability is supported in HM3
+    # HM4: Support observability, change, and knowledge domains
     if domain not in HM3_SUPPORTED_DOMAINS:
         original_domain = domain
         domain = "observability"  # Fallback to observability
         if state is not None:
             state.add_degrade_reason(
-                f"domain_not_supported_in_hm3:{original_domain}_fallback_to_observability"
+                f"domain_not_supported:{original_domain}_fallback_to_observability"
             )
-    elif domain not in ("observability", "change", "knowledge"):
-        domain = "observability"
 
     task_id = str(task.get("task_id") or "").strip()
     if not task_id:
@@ -212,14 +210,13 @@ def _build_router_system_prompt() -> str:
     Returns:
         System prompt string.
     """
-    # HM3: Only observability domain is currently supported.
-    # Change and knowledge domains will be added in Phase HM4.
+    # HM4: Support all three domains
     return """You are an RCA Router Agent. Your job is to analyze incidents and assign investigation tasks to domain-specific agents.
 
-Currently available domain:
-- observability: For metrics, logs, and traces investigation
-
-Analyze the incident context and output a JSON array of tasks.
+Available domains:
+1. observability: For metrics, logs, and traces investigation (ALWAYS include)
+2. change: For change events, deployments, and configuration analysis
+3. knowledge: For knowledge base lookup, historical incidents, and runbooks
 
 Output format (JSON):
 {
@@ -237,8 +234,9 @@ Output format (JSON):
 }
 
 Rules:
-- Only use "observability" as the domain value
-- Always include at least one observability task
+- ALWAYS include at least one observability task
+- Include change domain if the incident might be related to recent deployments/changes
+- Include knowledge domain for historical context or known solutions
 - Use priority 100 for primary tasks, 50 for secondary
 - Use mode "hybrid" for tasks that can use both tools and skills
 - Leave tool_scope and skill_scope empty to allow all available resources

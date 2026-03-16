@@ -1,4 +1,4 @@
-"""Tests for Domain Agent nodes (Phase HM3)."""
+"""Tests for Domain Agent nodes (Phase HM3/HM4)."""
 from __future__ import annotations
 
 import json
@@ -12,8 +12,11 @@ from orchestrator.langgraph.nodes_agents import (
     DomainFinding,
     _append_empty_finding,
     _find_task_for_domain,
+    _is_domain_agent_enabled,
     _is_route_agent_enabled,
     merge_domain_findings,
+    run_change_agent,
+    run_knowledge_agent,
     run_observability_agent,
 )
 from orchestrator.langgraph.config import OrchestratorConfig
@@ -402,6 +405,173 @@ class TestRunObservabilityAgent(unittest.TestCase):
         if report_calls:
             # Check that status was error
             self.assertEqual(report_calls[0][1].get("status"), "error")
+
+
+class TestRunChangeAgent(unittest.TestCase):
+    """Tests for run_change_agent node function."""
+
+    def test_change_agent_disabled_skips(self) -> None:
+        """Test when change agent disabled, skips execution."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            domain_tasks=[
+                {"task_id": "t1", "domain": "change", "goal": "Test"},
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        with mock.patch.dict(os.environ, {
+            "RCA_ROUTE_AGENT_ENABLED": "true",
+            "RCA_DOMAIN_AGENT_CHANGE_ENABLED": "false",
+        }):
+            result = run_change_agent(state, cfg, runtime)
+
+        # Should not add any findings when disabled
+        self.assertEqual(len(result.domain_findings), 0)
+
+    def test_change_agent_no_task_skips(self) -> None:
+        """Test when no change task, skips gracefully."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            domain_tasks=[
+                {"task_id": "t1", "domain": "observability", "goal": "Test"},
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
+            result = run_change_agent(state, cfg, runtime)
+
+        # Should not add any findings when no task
+        self.assertEqual(len(result.domain_findings), 0)
+
+    def test_change_agent_with_task_executes(self) -> None:
+        """Test change agent executes when task is present."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            domain_tasks=[
+                {
+                    "task_id": "t1",
+                    "domain": "change",
+                    "goal": "Find changes",
+                    "tool_scope": ["deployment_history"],
+                },
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        # Mock FC adapter
+        mock_adapter = mock.MagicMock()
+        mock_adapter.to_openai_tools_for_graph.return_value = [
+            {"type": "function", "function": {"name": "deployment_history", "description": "desc"}},
+        ]
+        runtime.get_fc_adapter.return_value = mock_adapter
+
+        # Mock LLM
+        mock_llm = mock.MagicMock()
+        mock_llm.bind_tools.return_value.invoke.return_value = mock.MagicMock(
+            content="Found deployment", tool_calls=[]
+        )
+
+        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
+            with mock.patch(
+                "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+            ):
+                result = run_change_agent(state, cfg, runtime)
+
+        # Should have finding
+        self.assertEqual(len(result.domain_findings), 1)
+        self.assertEqual(result.domain_findings[0]["domain"], "change")
+
+
+class TestRunKnowledgeAgent(unittest.TestCase):
+    """Tests for run_knowledge_agent node function."""
+
+    def test_knowledge_agent_disabled_skips(self) -> None:
+        """Test when knowledge agent disabled, skips execution."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            domain_tasks=[
+                {"task_id": "t1", "domain": "knowledge", "goal": "Test"},
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        with mock.patch.dict(os.environ, {
+            "RCA_ROUTE_AGENT_ENABLED": "true",
+            "RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED": "false",
+        }):
+            result = run_knowledge_agent(state, cfg, runtime)
+
+        # Should not add any findings when disabled
+        self.assertEqual(len(result.domain_findings), 0)
+
+    def test_knowledge_agent_no_task_skips(self) -> None:
+        """Test when no knowledge task, skips gracefully."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            domain_tasks=[
+                {"task_id": "t1", "domain": "observability", "goal": "Test"},
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
+            result = run_knowledge_agent(state, cfg, runtime)
+
+        # Should not add any findings when no task
+        self.assertEqual(len(result.domain_findings), 0)
+
+    def test_knowledge_agent_with_task_executes(self) -> None:
+        """Test knowledge agent executes when task is present."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            incident_context={"alert_name": "HighErrorRate"},
+            domain_tasks=[
+                {
+                    "task_id": "t1",
+                    "domain": "knowledge",
+                    "goal": "Find similar incidents",
+                    "tool_scope": ["search_kb"],
+                },
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        # Mock FC adapter
+        mock_adapter = mock.MagicMock()
+        mock_adapter.to_openai_tools_for_graph.return_value = [
+            {"type": "function", "function": {"name": "search_kb", "description": "desc"}},
+        ]
+        runtime.get_fc_adapter.return_value = mock_adapter
+
+        # Mock LLM
+        mock_llm = mock.MagicMock()
+        mock_llm.bind_tools.return_value.invoke.return_value = mock.MagicMock(
+            content="Found similar incidents", tool_calls=[]
+        )
+
+        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
+            with mock.patch(
+                "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+            ):
+                result = run_knowledge_agent(state, cfg, runtime)
+
+        # Should have finding
+        self.assertEqual(len(result.domain_findings), 1)
+        self.assertEqual(result.domain_findings[0]["domain"], "knowledge")
 
 
 if __name__ == "__main__":

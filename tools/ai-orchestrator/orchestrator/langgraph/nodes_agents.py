@@ -4,6 +4,7 @@ This module implements domain-specific agents that execute investigation
 tasks assigned by the Route Agent.
 
 Phase HM3: Route Agent + Observability Agent MVP.
+Phase HM4: Extended to support Change and Knowledge domains.
 """
 from __future__ import annotations
 
@@ -83,6 +84,28 @@ def _is_route_agent_enabled() -> bool:
     """
     import os
     env = os.environ.get("RCA_ROUTE_AGENT_ENABLED", "true").strip().lower()
+    return env not in ("false", "0", "no", "off")
+
+
+def _is_domain_agent_enabled(domain: str) -> bool:
+    """Check if a domain agent is enabled.
+
+    Args:
+        domain: Domain name (observability, change, knowledge).
+
+    Returns:
+        True if the domain agent is enabled.
+    """
+    import os
+
+    if domain == "change":
+        env = os.environ.get("RCA_DOMAIN_AGENT_CHANGE_ENABLED", "true").strip().lower()
+    elif domain == "knowledge":
+        env = os.environ.get("RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED", "true").strip().lower()
+    else:
+        # observability is always enabled when route agent is on
+        return True
+
     return env not in ("false", "0", "no", "off")
 
 
@@ -225,6 +248,143 @@ def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) 
 Gather relevant observability data and report your findings."""
 
 
+def _build_change_system_prompt(task: dict[str, Any]) -> str:
+    """Build the system prompt for the change agent.
+
+    Args:
+        task: Domain task dictionary.
+
+    Returns:
+        System prompt string.
+    """
+    return """You are an RCA Change Agent. Your job is to investigate change events, deployments, and configuration changes that may correlate with the incident.
+
+Use the available tools to:
+1. Query deployment history for recent changes
+2. Check configuration diffs for potential issues
+3. Correlate change timelines with incident onset
+
+After investigation, provide:
+1. A summary of relevant changes found
+2. Evidence candidates (which changes correlate with the incident)
+3. A diagnosis patch (potential root causes related to changes)
+
+Focus on changes that occurred around the time of the incident. Be precise with timestamps."""
+
+
+def _build_change_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
+    """Build the user prompt for the change agent.
+
+    Args:
+        state: Current graph state.
+        task: Domain task dictionary.
+
+    Returns:
+        User prompt string.
+    """
+    incident_context = state.incident_context or {}
+    incident_id = state.incident_id or "unknown"
+    goal = task.get("goal", "Investigate change events")
+
+    context_parts = [
+        f"Incident ID: {incident_id}",
+        f"Task: {goal}",
+    ]
+
+    service = incident_context.get("service")
+    if service:
+        context_parts.append(f"Service: {service}")
+
+    namespace = incident_context.get("namespace")
+    if namespace:
+        context_parts.append(f"Namespace: {namespace}")
+
+    # Add incident time for change correlation
+    incident_time = incident_context.get("incident_time") or incident_context.get("triggered_at")
+    if incident_time:
+        context_parts.append(f"Incident Time: {incident_time}")
+
+    # Add any additional context
+    for key, value in incident_context.items():
+        if key not in ("service", "namespace", "severity", "alert_name", "incident_time", "triggered_at"):
+            context_parts.append(f"{key}: {value}")
+
+    return f"""Investigate changes related to this incident:
+
+{chr(10).join(context_parts)}
+
+Look for deployments, configuration changes, or infrastructure updates around the incident time."""
+
+
+def _build_knowledge_system_prompt(task: dict[str, Any]) -> str:
+    """Build the system prompt for the knowledge agent.
+
+    Args:
+        task: Domain task dictionary.
+
+    Returns:
+        System prompt string.
+    """
+    return """You are an RCA Knowledge Agent. Your job is to search the knowledge base, historical incidents, and runbooks to find relevant context for the current incident.
+
+Use the available tools to:
+1. Search for similar historical incidents
+2. Find relevant runbooks and documentation
+3. Look up known solutions for similar error patterns
+
+After investigation, provide:
+1. A summary of relevant knowledge found
+2. Evidence candidates (historical incidents, runbooks, etc.)
+3. A diagnosis patch (suggested solutions from knowledge base)
+
+Focus on actionable insights that can help resolve the current incident."""
+
+
+def _build_knowledge_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
+    """Build the user prompt for the knowledge agent.
+
+    Args:
+        state: Current graph state.
+        task: Domain task dictionary.
+
+    Returns:
+        User prompt string.
+    """
+    incident_context = state.incident_context or {}
+    incident_id = state.incident_id or "unknown"
+    goal = task.get("goal", "Search knowledge base")
+
+    context_parts = [
+        f"Incident ID: {incident_id}",
+        f"Task: {goal}",
+    ]
+
+    service = incident_context.get("service")
+    if service:
+        context_parts.append(f"Service: {service}")
+
+    # Add alert name for knowledge matching
+    alert_name = incident_context.get("alert_name")
+    if alert_name:
+        context_parts.append(f"Alert: {alert_name}")
+
+    # Add error patterns if available
+    error_message = incident_context.get("error_message") or incident_context.get("error")
+    if error_message:
+        context_parts.append(f"Error: {error_message}")
+
+    # Add any additional context
+    for key, value in incident_context.items():
+        if key not in ("service", "namespace", "severity", "alert_name", "incident_time", "triggered_at", "error_message", "error"):
+            context_parts.append(f"{key}: {value}")
+
+    return f"""Search knowledge base for this incident:
+
+{chr(10).join(context_parts)}
+
+Find relevant historical incidents, runbooks, or documentation that can help diagnose and resolve this issue."""
+
+
 def _build_messages(system_prompt: str, user_prompt: str) -> list[Any]:
     """Build messages for LLM invocation.
 
@@ -251,6 +411,7 @@ def _execute_tool_calls(
     runtime: "OrchestratorRuntime",
     adapter: Any,
     tool_calls: list[Any],
+    domain: str = "observability",
 ) -> list[dict[str, Any]]:
     """Execute tool calls from the agent.
 
@@ -259,6 +420,7 @@ def _execute_tool_calls(
         runtime: Orchestrator runtime instance.
         adapter: Function calling adapter.
         tool_calls: List of tool calls to execute.
+        domain: Domain name for source tracking.
 
     Returns:
         List of execution results.
@@ -281,7 +443,7 @@ def _execute_tool_calls(
             executed_call = runtime.execute_tool(
                 tool_name=tool_name,
                 args=args,
-                source="graph.observability_agent",
+                source=f"graph.{domain}_agent",
             )
             results.append({
                 "tool": tool_name,
@@ -292,7 +454,7 @@ def _execute_tool_calls(
 
             # Save evidence if successful
             if executed_call.status == "ok" and executed_call.response_json:
-                _save_evidence_from_tool_call(state, runtime, tool_name, args, executed_call)
+                _save_evidence_from_tool_call(state, runtime, tool_name, args, executed_call, domain)
 
         except Exception as exc:  # noqa: BLE001
             results.append({
@@ -311,6 +473,7 @@ def _save_evidence_from_tool_call(
     tool_name: str,
     args: dict[str, Any],
     executed_call: Any,
+    domain: str = "observability",
 ) -> None:
     """Save evidence from a successful tool call.
 
@@ -320,6 +483,7 @@ def _save_evidence_from_tool_call(
         tool_name: Tool name.
         args: Tool arguments.
         executed_call: Executed tool call result.
+        domain: Domain name for evidence categorization.
     """
     try:
         from .helpers import append_evidence, query_result_is_no_data
@@ -328,9 +492,14 @@ def _save_evidence_from_tool_call(
         if not isinstance(query_result, dict):
             return
 
+        # Determine kind based on tool name and domain
         kind = "metrics"
         name_lower = tool_name.lower()
-        if "log" in name_lower or "loki" in name_lower:
+        if domain == "change":
+            kind = "changes"
+        elif domain == "knowledge":
+            kind = "knowledge"
+        elif "log" in name_lower or "loki" in name_lower:
             kind = "logs"
         elif "trace" in name_lower or "tempo" in name_lower:
             kind = "traces"
@@ -338,12 +507,12 @@ def _save_evidence_from_tool_call(
         query_request = {
             "tool": tool_name,
             "params": args,
-            "queryText": f"Observability agent query for {tool_name}",
+            "queryText": f"{domain.capitalize()} agent query for {tool_name}",
         }
 
         published = runtime.save_evidence_from_query(
             incident_id=state.incident_id or "",
-            node_name="run_observability_agent",
+            node_name=f"run_{domain}_agent",
             kind=kind,
             query=query_request,
             result=query_result,
@@ -608,6 +777,446 @@ def run_observability_agent(
         tool_name="agent.observability",
         request_json={
             "task": obs_task,
+            "tool_scope": tool_scope if tool_scope else None,
+        },
+        response_json={
+            "finding": finding,
+            "tool_count": len(openai_tools),
+        },
+        started_ms=started_ms,
+        status="error" if agent_error else "ok",
+        error=agent_error,
+        count_in_state=False,
+    )
+
+    return state
+
+
+def run_change_agent(
+    state: "GraphState",
+    cfg: "OrchestratorConfig",
+    runtime: "OrchestratorRuntime",
+) -> "GraphState":
+    """Change Domain Agent: Investigate change events and deployments.
+
+    This agent handles the change domain - deployments, configurations,
+    infrastructure changes that may correlate with the incident.
+
+    Args:
+        state: Current graph state.
+        cfg: Orchestrator configuration.
+        runtime: Orchestrator runtime instance.
+
+    Returns:
+        Updated graph state with domain_findings populated.
+    """
+    started_ms = int(time.time() * 1000)
+
+    # Check if change agent is enabled
+    if not _is_domain_agent_enabled("change"):
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_change_agent",
+            tool_name="agent.change",
+            request_json={},
+            response_json={
+                "status": "skipped",
+                "reason": "change_agent_disabled",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return state
+
+    # Check if route agent is enabled
+    if not _is_route_agent_enabled():
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_change_agent",
+            tool_name="agent.change",
+            request_json={},
+            response_json={
+                "status": "skipped",
+                "reason": "route_agent_disabled",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return state
+
+    # Find change task
+    change_task = _find_task_for_domain(state, "change")
+    if change_task is None:
+        # No change task assigned - this is OK, not all incidents need change analysis
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_change_agent",
+            tool_name="agent.change",
+            request_json={},
+            response_json={
+                "status": "skipped",
+                "reason": "no_change_task",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return state
+
+    # Get LLM
+    llm = _get_llm(runtime)
+    if llm is None:
+        state.add_degrade_reason("llm_not_configured_for_change")
+        _append_empty_finding(state, "change", "no_llm")
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_change_agent",
+            tool_name="agent.change",
+            request_json={"task": change_task},
+            response_json={
+                "status": "error",
+                "reason": "llm_not_configured",
+            },
+            started_ms=started_ms,
+            status="error",
+            count_in_state=False,
+        )
+        return state
+
+    # Get FC adapter for tool surface
+    adapter = runtime.get_fc_adapter()
+    if adapter is None:
+        state.add_degrade_reason("no_fc_adapter_for_change")
+        _append_empty_finding(state, "change", "no_adapter")
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_change_agent",
+            tool_name="agent.change",
+            request_json={"task": change_task},
+            response_json={
+                "status": "error",
+                "reason": "no_fc_adapter",
+            },
+            started_ms=started_ms,
+            status="error",
+            count_in_state=False,
+        )
+        return state
+
+    # Build agent context
+    agent_context = _get_agent_context(state)
+    middleware_chain: "MiddlewareChain | None" = getattr(cfg, "middleware_chain", None)
+    middleware_enabled: bool = getattr(cfg, "middleware_enabled", False)
+
+    # Build request with middleware
+    system_prompt = _build_change_system_prompt(change_task)
+    user_prompt = _build_change_user_prompt(state, change_task)
+
+    # Extract task-level scopes for tool/skill filtering
+    tool_scope = list(change_task.get("tool_scope") or [])
+
+    request = AgentRequest(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        metadata={
+            "node": "run_change_agent",
+            "trace_event": TRACE_EVENT_DOMAIN_EXECUTE,
+        },
+    )
+
+    # Build middleware config with task-level scopes
+    middleware_config: dict[str, Any] = {
+        "mode": "fc_surface",
+        "surface": "graph",
+        "domain": "change",
+    }
+    if tool_scope:
+        middleware_config["tool_scope"] = tool_scope
+
+    if middleware_enabled and middleware_chain is not None and agent_context is not None:
+        prepared = middleware_chain.prepare(
+            state=state,
+            context=agent_context,
+            request=request,
+            config=middleware_config,
+        )
+    else:
+        prepared = request
+
+    # Get tools for change domain
+    if tool_scope:
+        all_tools = adapter.to_openai_tools_for_graph()
+        tool_scope_set = set(tool_scope)
+        openai_tools = [
+            t for t in all_tools
+            if isinstance(t, dict) and t.get("function", {}).get("name") in tool_scope_set
+        ]
+        if len(openai_tools) < len(all_tools):
+            state.add_degrade_reason(f"change_tools_filtered_by_scope:{len(all_tools)-len(openai_tools)}_removed")
+    else:
+        openai_tools = adapter.to_openai_tools_for_graph()
+
+    agent_error: str | None = None
+    try:
+        # Invoke LLM with tools
+        llm_with_tools = llm.bind_tools(openai_tools)
+        messages = _build_messages(prepared.system_prompt, prepared.user_prompt)
+        response = llm_with_tools.invoke(messages)
+
+        # Process tool calls if any
+        tool_calls = getattr(response, "tool_calls", []) or []
+        if tool_calls:
+            _execute_tool_calls(state, runtime, adapter, tool_calls, domain="change")
+
+        # Extract finding
+        content = getattr(response, "content", "") or ""
+        finding = _extract_finding_from_response("change", content, state)
+
+    except Exception as exc:  # noqa: BLE001
+        agent_error = str(exc)[:128]
+        state.add_degrade_reason(f"change_agent_error:{str(exc)[:64]}")
+        finding = DomainFinding(
+            domain="change",
+            summary=f"Agent error: {exc}",
+            status="error",
+        ).to_dict()
+
+    state.domain_findings.append(finding)
+
+    report_node_action(
+        state,
+        runtime,
+        node_name="run_change_agent",
+        tool_name="agent.change",
+        request_json={
+            "task": change_task,
+            "tool_scope": tool_scope if tool_scope else None,
+        },
+        response_json={
+            "finding": finding,
+            "tool_count": len(openai_tools),
+        },
+        started_ms=started_ms,
+        status="error" if agent_error else "ok",
+        error=agent_error,
+        count_in_state=False,
+    )
+
+    return state
+
+
+def run_knowledge_agent(
+    state: "GraphState",
+    cfg: "OrchestratorConfig",
+    runtime: "OrchestratorRuntime",
+) -> "GraphState":
+    """Knowledge Domain Agent: Search knowledge base and documentation.
+
+    This agent handles the knowledge domain - searching historical
+    incidents, runbooks, documentation, and known solutions.
+
+    Args:
+        state: Current graph state.
+        cfg: Orchestrator configuration.
+        runtime: Orchestrator runtime instance.
+
+    Returns:
+        Updated graph state with domain_findings populated.
+    """
+    started_ms = int(time.time() * 1000)
+
+    # Check if knowledge agent is enabled
+    if not _is_domain_agent_enabled("knowledge"):
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_knowledge_agent",
+            tool_name="agent.knowledge",
+            request_json={},
+            response_json={
+                "status": "skipped",
+                "reason": "knowledge_agent_disabled",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return state
+
+    # Check if route agent is enabled
+    if not _is_route_agent_enabled():
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_knowledge_agent",
+            tool_name="agent.knowledge",
+            request_json={},
+            response_json={
+                "status": "skipped",
+                "reason": "route_agent_disabled",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return state
+
+    # Find knowledge task
+    knowledge_task = _find_task_for_domain(state, "knowledge")
+    if knowledge_task is None:
+        # No knowledge task assigned - this is OK, not all incidents need knowledge lookup
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_knowledge_agent",
+            tool_name="agent.knowledge",
+            request_json={},
+            response_json={
+                "status": "skipped",
+                "reason": "no_knowledge_task",
+            },
+            started_ms=started_ms,
+            status="ok",
+            count_in_state=False,
+        )
+        return state
+
+    # Get LLM
+    llm = _get_llm(runtime)
+    if llm is None:
+        state.add_degrade_reason("llm_not_configured_for_knowledge")
+        _append_empty_finding(state, "knowledge", "no_llm")
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_knowledge_agent",
+            tool_name="agent.knowledge",
+            request_json={"task": knowledge_task},
+            response_json={
+                "status": "error",
+                "reason": "llm_not_configured",
+            },
+            started_ms=started_ms,
+            status="error",
+            count_in_state=False,
+        )
+        return state
+
+    # Get FC adapter for tool surface
+    adapter = runtime.get_fc_adapter()
+    if adapter is None:
+        state.add_degrade_reason("no_fc_adapter_for_knowledge")
+        _append_empty_finding(state, "knowledge", "no_adapter")
+        report_node_action(
+            state,
+            runtime,
+            node_name="run_knowledge_agent",
+            tool_name="agent.knowledge",
+            request_json={"task": knowledge_task},
+            response_json={
+                "status": "error",
+                "reason": "no_fc_adapter",
+            },
+            started_ms=started_ms,
+            status="error",
+            count_in_state=False,
+        )
+        return state
+
+    # Build agent context
+    agent_context = _get_agent_context(state)
+    middleware_chain: "MiddlewareChain | None" = getattr(cfg, "middleware_chain", None)
+    middleware_enabled: bool = getattr(cfg, "middleware_enabled", False)
+
+    # Build request with middleware
+    system_prompt = _build_knowledge_system_prompt(knowledge_task)
+    user_prompt = _build_knowledge_user_prompt(state, knowledge_task)
+
+    # Extract task-level scopes for tool/skill filtering
+    tool_scope = list(knowledge_task.get("tool_scope") or [])
+
+    request = AgentRequest(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        metadata={
+            "node": "run_knowledge_agent",
+            "trace_event": TRACE_EVENT_DOMAIN_EXECUTE,
+        },
+    )
+
+    # Build middleware config with task-level scopes
+    middleware_config: dict[str, Any] = {
+        "mode": "fc_surface",
+        "surface": "graph",
+        "domain": "knowledge",
+    }
+    if tool_scope:
+        middleware_config["tool_scope"] = tool_scope
+
+    if middleware_enabled and middleware_chain is not None and agent_context is not None:
+        prepared = middleware_chain.prepare(
+            state=state,
+            context=agent_context,
+            request=request,
+            config=middleware_config,
+        )
+    else:
+        prepared = request
+
+    # Get tools for knowledge domain
+    if tool_scope:
+        all_tools = adapter.to_openai_tools_for_graph()
+        tool_scope_set = set(tool_scope)
+        openai_tools = [
+            t for t in all_tools
+            if isinstance(t, dict) and t.get("function", {}).get("name") in tool_scope_set
+        ]
+        if len(openai_tools) < len(all_tools):
+            state.add_degrade_reason(f"knowledge_tools_filtered_by_scope:{len(all_tools)-len(openai_tools)}_removed")
+    else:
+        openai_tools = adapter.to_openai_tools_for_graph()
+
+    agent_error: str | None = None
+    try:
+        # Invoke LLM with tools
+        llm_with_tools = llm.bind_tools(openai_tools)
+        messages = _build_messages(prepared.system_prompt, prepared.user_prompt)
+        response = llm_with_tools.invoke(messages)
+
+        # Process tool calls if any
+        tool_calls = getattr(response, "tool_calls", []) or []
+        if tool_calls:
+            _execute_tool_calls(state, runtime, adapter, tool_calls, domain="knowledge")
+
+        # Extract finding
+        content = getattr(response, "content", "") or ""
+        finding = _extract_finding_from_response("knowledge", content, state)
+
+    except Exception as exc:  # noqa: BLE001
+        agent_error = str(exc)[:128]
+        state.add_degrade_reason(f"knowledge_agent_error:{str(exc)[:64]}")
+        finding = DomainFinding(
+            domain="knowledge",
+            summary=f"Agent error: {exc}",
+            status="error",
+        ).to_dict()
+
+    state.domain_findings.append(finding)
+
+    report_node_action(
+        state,
+        runtime,
+        node_name="run_knowledge_agent",
+        tool_name="agent.knowledge",
+        request_json={
+            "task": knowledge_task,
             "tool_scope": tool_scope if tool_scope else None,
         },
         response_json={

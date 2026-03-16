@@ -20,6 +20,8 @@ from ..nodes import (
 )
 from ..nodes_agents import (
     merge_domain_findings,
+    run_change_agent,
+    run_knowledge_agent,
     run_observability_agent,
 )
 from ..nodes_dynamic import (
@@ -90,6 +92,10 @@ def build_basic_rca_graph(
     HM3: Route Agent is now the default path when enabled.
     Set RCA_ROUTE_AGENT_ENABLED=false to use the legacy plan_evidence path.
 
+    HM4: Three-domain support (observability, change, knowledge).
+    Set RCA_DOMAIN_AGENT_CHANGE_ENABLED=false or RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED=false
+    to disable specific domain agents.
+
     Args:
         runtime: Orchestrator runtime instance.
         cfg: Orchestrator configuration.
@@ -124,7 +130,7 @@ def build_basic_rca_graph(
     route_enabled = _is_route_agent_enabled()
 
     if route_enabled:
-        # New path: Route Agent + Domain Agents
+        # HM4: New path: Route Agent + Three Domain Agents
         builder.add_node(
             "route_domains",
             guard("route_domains", lambda s: route_domains(s, cfg, runtime), runtime),
@@ -134,15 +140,25 @@ def build_basic_rca_graph(
             guard("run_observability_agent", lambda s: run_observability_agent(s, cfg, runtime), runtime),
         )
         builder.add_node(
+            "run_change_agent",
+            guard("run_change_agent", lambda s: run_change_agent(s, cfg, runtime), runtime),
+        )
+        builder.add_node(
+            "run_knowledge_agent",
+            guard("run_knowledge_agent", lambda s: run_knowledge_agent(s, cfg, runtime), runtime),
+        )
+        builder.add_node(
             "merge_domain_findings",
             guard("merge_domain_findings", lambda s: merge_domain_findings(s, cfg, runtime), runtime),
         )
 
-        # New edges: load -> route -> observability -> merge_findings -> merge_evidence
+        # HM4: Sequential execution: observability -> change -> knowledge
         builder.add_edge(START, "load_job_and_start")
         builder.add_edge("load_job_and_start", "route_domains")
         builder.add_edge("route_domains", "run_observability_agent")
-        builder.add_edge("run_observability_agent", "merge_domain_findings")
+        builder.add_edge("run_observability_agent", "run_change_agent")
+        builder.add_edge("run_change_agent", "run_knowledge_agent")
+        builder.add_edge("run_knowledge_agent", "merge_domain_findings")
         builder.add_edge("merge_domain_findings", "merge_evidence")
     else:
         # Legacy path: plan_evidence -> run_tool_agent
