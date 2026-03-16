@@ -868,6 +868,13 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
                 current_root_cause["statement"] = root_statement.strip()
             elif isinstance(root_statement, str):
                 current_root_cause.pop("statement", None)
+        # HM5: Merge confidence from patch (platform special agent produces this)
+        if "confidence" in root_cause_patch:
+            try:
+                confidence = float(root_cause_patch["confidence"])
+                current_root_cause["confidence"] = max(0.0, min(1.0, confidence))
+            except (TypeError, ValueError):
+                pass
         merged["root_cause"] = current_root_cause
 
     recommendations = diagnosis_patch.get("recommendations")
@@ -970,6 +977,74 @@ def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> Grap
         status="ok",
         evidence_ids=state.evidence_ids,
     )
+    return state
+
+
+def summarize_diagnosis_agentized(
+    state: GraphState,
+    cfg: "OrchestratorConfig",
+    runtime: OrchestratorRuntime,
+) -> GraphState:
+    """Agentized diagnosis summarization.
+
+    This node combines:
+    1. Deterministic base diagnosis (from _build_native_diagnosis)
+    2. Domain agent diagnosis patches (from merged_findings)
+    3. Platform special agent patch (from platform_special_patch)
+
+    The result is a normalized diagnosis_json ready for finalize.
+
+    Args:
+        state: Current graph state.
+        cfg: Orchestrator configuration.
+        runtime: Orchestrator runtime instance.
+
+    Returns:
+        Updated graph state with diagnosis_json populated.
+    """
+    if not state.incident_id:
+        raise RuntimeError("incident_id is required before summarize_diagnosis")
+    if not state.evidence_ids:
+        raise RuntimeError("evidence_ids is empty before summarize_diagnosis")
+
+    started_ms = int(time.time() * 1000)
+
+    # Build base diagnosis using deterministic logic
+    diagnosis_json = _build_native_diagnosis(state)
+
+    # Merge diagnosis patches from domain agents (if available)
+    if state.merged_findings:
+        domain_patch = state.merged_findings.get("diagnosis_patch") or {}
+        if domain_patch:
+            diagnosis_json = _merge_diagnosis_patch(diagnosis_json, domain_patch)
+
+    # Merge platform special agent patch (if available)
+    if state.platform_special_patch:
+        diagnosis_json = _merge_diagnosis_patch(diagnosis_json, state.platform_special_patch)
+
+    state.diagnosis_json = diagnosis_json
+
+    # Report
+    report_node_action(
+        state,
+        runtime,
+        node_name="summarize_diagnosis_agentized",
+        tool_name="diagnosis.summarize",
+        request_json={
+            "incident_id": state.incident_id,
+            "domain_count": state.merged_findings.get("domain_count", 0) if state.merged_findings else 0,
+            "has_platform_patch": bool(state.platform_special_patch),
+        },
+        response_json={
+            "status": "ok",
+            "diagnosis_summary": (diagnosis_json.get("summary") or "")[:200],
+            "root_cause_type": (diagnosis_json.get("root_cause") or {}).get("type", "unknown"),
+        },
+        started_ms=started_ms,
+        status="ok",
+        count_in_state=False,
+    )
+
     return state
 
 

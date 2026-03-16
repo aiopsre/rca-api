@@ -17,6 +17,7 @@ from ..nodes import (
     quality_gate_node,
     run_verification,
     summarize_diagnosis,
+    summarize_diagnosis_agentized,
 )
 from ..nodes_agents import (
     merge_domain_findings,
@@ -29,6 +30,7 @@ from ..nodes_dynamic import (
     plan_tool_calls,
     run_tool_agent,
 )
+from ..nodes_platform import run_platform_special_agent
 from ..nodes_router import route_domains
 
 
@@ -96,6 +98,9 @@ def build_basic_rca_graph(
     Set RCA_DOMAIN_AGENT_CHANGE_ENABLED=false or RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED=false
     to disable specific domain agents.
 
+    HM5: Platform Special Agent for diagnosis summarization.
+    Set RCA_PLATFORM_SPECIAL_AGENT_ENABLED=false to use deterministic diagnosis.
+
     Args:
         runtime: Orchestrator runtime instance.
         cfg: Orchestrator configuration.
@@ -130,7 +135,7 @@ def build_basic_rca_graph(
     route_enabled = _is_route_agent_enabled()
 
     if route_enabled:
-        # HM4: New path: Route Agent + Three Domain Agents
+        # HM5: New path: Route Agent + Three Domain Agents + Platform Special Agent
         builder.add_node(
             "route_domains",
             guard("route_domains", lambda s: route_domains(s, cfg, runtime), runtime),
@@ -151,8 +156,16 @@ def build_basic_rca_graph(
             "merge_domain_findings",
             guard("merge_domain_findings", lambda s: merge_domain_findings(s, cfg, runtime), runtime),
         )
+        builder.add_node(
+            "run_platform_special_agent",
+            guard("run_platform_special_agent", lambda s: run_platform_special_agent(s, cfg, runtime), runtime),
+        )
+        builder.add_node(
+            "summarize_diagnosis_agentized",
+            guard("summarize_diagnosis_agentized", lambda s: summarize_diagnosis_agentized(s, cfg, runtime), runtime),
+        )
 
-        # HM4: Sequential execution: observability -> change -> knowledge
+        # HM5: Sequential execution: observability -> change -> knowledge -> platform_special -> diagnosis
         builder.add_edge(START, "load_job_and_start")
         builder.add_edge("load_job_and_start", "route_domains")
         builder.add_edge("route_domains", "run_observability_agent")
@@ -160,6 +173,9 @@ def build_basic_rca_graph(
         builder.add_edge("run_change_agent", "run_knowledge_agent")
         builder.add_edge("run_knowledge_agent", "merge_domain_findings")
         builder.add_edge("merge_domain_findings", "merge_evidence")
+        builder.add_edge("merge_evidence", "run_platform_special_agent")
+        builder.add_edge("run_platform_special_agent", "summarize_diagnosis_agentized")
+        builder.add_edge("summarize_diagnosis_agentized", "quality_gate")
     else:
         # Legacy path: plan_evidence -> run_tool_agent
         builder.add_node(

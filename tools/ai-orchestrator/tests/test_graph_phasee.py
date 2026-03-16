@@ -440,66 +440,76 @@ class GraphPhaseETest(unittest.TestCase):
                 os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = old_fc_val
 
     def test_phasee_prompt_first_diagnosis_enrich_updates_state_and_finalize(self) -> None:
-        class _PromptSkillRuntime(_FakeRuntime):
-            def consume_prompt_skill(
-                self,
-                *,
-                capability: str,
-                graph_state: GraphState,
-            ) -> dict[str, object] | None:
-                if capability != "diagnosis.enrich":
-                    return None
-                graph_state.diagnosis_json = {
-                    **(graph_state.diagnosis_json or {}),
-                    "summary": "Enriched summary",
-                    "root_cause": {
-                        **(((graph_state.diagnosis_json or {}).get("root_cause") or {}) if isinstance(graph_state.diagnosis_json, dict) else {}),
-                        "statement": "Enriched statement",
-                    },
-                    "next_steps": ["Review enriched follow-up"],
-                }
-                self.merge_session_patch(
-                    graph_state,
-                    {
-                        "latest_summary": {"summary": "Enriched summary"},
-                        "context_state_patch": {"skills": {"diagnosis_enrich": {"applied": True}}},
-                    },
-                )
-                return {
-                    "selected_binding_key": "skill.binding",
-                    "skill_id": "claude.diagnosis.enricher",
-                    "version": "1.0.0",
-                    "payload": {
-                        "diagnosis_patch": {
-                            "summary": "Enriched summary",
-                            "root_cause": {"statement": "Enriched statement"},
-                            "next_steps": ["Review enriched follow-up"],
+        import os
+        # HM3: Use legacy path for this test (tests diagnosis.enrich skill integration)
+        old_route_val = os.environ.get("RCA_ROUTE_AGENT_ENABLED")
+        os.environ["RCA_ROUTE_AGENT_ENABLED"] = "false"
+        try:
+            class _PromptSkillRuntime(_FakeRuntime):
+                def consume_prompt_skill(
+                    self,
+                    *,
+                    capability: str,
+                    graph_state: GraphState,
+                ) -> dict[str, object] | None:
+                    if capability != "diagnosis.enrich":
+                        return None
+                    graph_state.diagnosis_json = {
+                        **(graph_state.diagnosis_json or {}),
+                        "summary": "Enriched summary",
+                        "root_cause": {
+                            **(((graph_state.diagnosis_json or {}).get("root_cause") or {}) if isinstance(graph_state.diagnosis_json, dict) else {}),
+                            "statement": "Enriched statement",
                         },
-                    },
-                    "session_patch": {"latest_summary": {"summary": "Enriched summary"}},
-                    "observations": [{"kind": "note", "message": "applied"}],
-                }
+                        "next_steps": ["Review enriched follow-up"],
+                    }
+                    self.merge_session_patch(
+                        graph_state,
+                        {
+                            "latest_summary": {"summary": "Enriched summary"},
+                            "context_state_patch": {"skills": {"diagnosis_enrich": {"applied": True}}},
+                        },
+                    )
+                    return {
+                        "selected_binding_key": "skill.binding",
+                        "skill_id": "claude.diagnosis.enricher",
+                        "version": "1.0.0",
+                        "payload": {
+                            "diagnosis_patch": {
+                                "summary": "Enriched summary",
+                                "root_cause": {"statement": "Enriched statement"},
+                                "next_steps": ["Review enriched follow-up"],
+                            },
+                        },
+                        "session_patch": {"latest_summary": {"summary": "Enriched summary"}},
+                        "observations": [{"kind": "note", "message": "applied"}],
+                    }
 
-        runtime = _PromptSkillRuntime()
-        graph = build_graph(
-            None,
-            OrchestratorConfig(
-                run_query=False,
-                run_verification=False,
-                post_finalize_observe=False,
-            ),
-            runtime,
-        )
-        out = graph.invoke(GraphState(job_id="job-1", instance_id="orc-1", started=True))
-        if isinstance(out, dict):
-            out = GraphState.model_validate(out)
+            runtime = _PromptSkillRuntime()
+            graph = build_graph(
+                None,
+                OrchestratorConfig(
+                    run_query=False,
+                    run_verification=False,
+                    post_finalize_observe=False,
+                ),
+                runtime,
+            )
+            out = graph.invoke(GraphState(job_id="job-1", instance_id="orc-1", started=True))
+            if isinstance(out, dict):
+                out = GraphState.model_validate(out)
 
-        self.assertTrue(out.finalized)
-        self.assertIsInstance(out.diagnosis_json, dict)
-        self.assertEqual(out.diagnosis_json["summary"], "Enriched summary")
-        self.assertEqual(out.diagnosis_json["root_cause"]["statement"], "Enriched statement")
-        self.assertEqual(out.session_patch["latest_summary"]["summary"], "Enriched summary")
-        self.assertEqual(runtime.finalize_calls[-1]["diagnosis_json"]["summary"], "Enriched summary")
+            self.assertTrue(out.finalized)
+            self.assertIsInstance(out.diagnosis_json, dict)
+            self.assertEqual(out.diagnosis_json["summary"], "Enriched summary")
+            self.assertEqual(out.diagnosis_json["root_cause"]["statement"], "Enriched statement")
+            self.assertEqual(out.session_patch["latest_summary"]["summary"], "Enriched summary")
+            self.assertEqual(runtime.finalize_calls[-1]["diagnosis_json"]["summary"], "Enriched summary")
+        finally:
+            if old_route_val is None:
+                os.environ.pop("RCA_ROUTE_AGENT_ENABLED", None)
+            else:
+                os.environ["RCA_ROUTE_AGENT_ENABLED"] = old_route_val
 
     def test_phasee_prompt_first_evidence_plan_updates_state_before_queries(self) -> None:
         import os
