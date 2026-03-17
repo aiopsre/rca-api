@@ -58,7 +58,6 @@ class Settings:
     # Phase 4: FC path is now the default (2026-03-18)
     fc_runtime_snapshot_enabled: bool = True
     fc_skill_tool_calling_enabled: bool = True
-    fc_graph_agent_enabled: bool = True
     fc_compat_json_toolcalls_enabled: bool = False
     fc_compat_dynamic_tool_nodes_enabled: bool = False
 
@@ -67,8 +66,6 @@ class Settings:
     rca_agent_context_enabled: bool = True
     # Phase 2: Surface & Middleware
     rca_hybrid_middleware_enabled: bool = True
-    # Phase 3: Route Agent
-    rca_route_agent_enabled: bool = True
     # Phase 4: Domain Agents
     rca_domain_agent_change_enabled: bool = True
     rca_domain_agent_knowledge_enabled: bool = True
@@ -106,13 +103,11 @@ class Settings:
             # Function Calling feature flags
             "fc_runtime_snapshot_enabled": self.fc_runtime_snapshot_enabled,
             "fc_skill_tool_calling_enabled": self.fc_skill_tool_calling_enabled,
-            "fc_graph_agent_enabled": self.fc_graph_agent_enabled,
             "fc_compat_json_toolcalls_enabled": self.fc_compat_json_toolcalls_enabled,
             "fc_compat_dynamic_tool_nodes_enabled": self.fc_compat_dynamic_tool_nodes_enabled,
             # Hybrid Multi-Agent feature flags
             "rca_agent_context_enabled": self.rca_agent_context_enabled,
             "rca_hybrid_middleware_enabled": self.rca_hybrid_middleware_enabled,
-            "rca_route_agent_enabled": self.rca_route_agent_enabled,
             "rca_domain_agent_change_enabled": self.rca_domain_agent_change_enabled,
             "rca_domain_agent_knowledge_enabled": self.rca_domain_agent_knowledge_enabled,
             "rca_platform_special_agent_enabled": self.rca_platform_special_agent_enabled,
@@ -233,13 +228,11 @@ def load_settings() -> Settings:
         # Phase 4: FC path is now the default (2026-03-18)
         fc_runtime_snapshot_enabled=_env_bool("RCA_FC_RUNTIME_SNAPSHOT_ENABLED", True),
         fc_skill_tool_calling_enabled=_env_bool("RCA_FC_SKILL_TOOL_CALLING_ENABLED", True),
-        fc_graph_agent_enabled=_env_bool("RCA_FC_GRAPH_AGENT_ENABLED", True),
         fc_compat_json_toolcalls_enabled=_env_bool("RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED", False),
         fc_compat_dynamic_tool_nodes_enabled=_env_bool("RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED", False),
         # Hybrid Multi-Agent feature flags (rollback-only)
         rca_agent_context_enabled=_env_bool("RCA_AGENT_CONTEXT_ENABLED", True),
         rca_hybrid_middleware_enabled=_env_bool("RCA_HYBRID_MIDDLEWARE_ENABLED", True),
-        rca_route_agent_enabled=_env_bool("RCA_ROUTE_AGENT_ENABLED", True),
         rca_domain_agent_change_enabled=_env_bool("RCA_DOMAIN_AGENT_CHANGE_ENABLED", True),
         rca_domain_agent_knowledge_enabled=_env_bool("RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED", True),
         rca_platform_special_agent_enabled=_env_bool("RCA_PLATFORM_SPECIAL_AGENT_ENABLED", True),

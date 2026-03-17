@@ -85,16 +85,6 @@ class DomainTask:
         )
 
 
-def _is_route_agent_enabled() -> bool:
-    """Check if route agent is enabled.
-
-    Returns:
-        True if route agent should be used.
-    """
-    env = os.environ.get("RCA_ROUTE_AGENT_ENABLED", "true").strip().lower()
-    return env not in ("false", "0", "no", "off")
-
-
 def _parse_domain_tasks(content: str) -> list[dict[str, Any]]:
     """Parse domain tasks from LLM response.
 
@@ -368,33 +358,6 @@ def route_domains(
         Updated graph state with domain_tasks populated.
     """
     started_ms = int(time.time() * 1000)
-
-    # Check if route agent is enabled
-    if not _is_route_agent_enabled():
-        # Fallback: create default observability task
-        state.domain_tasks = [_default_observability_task(state)]
-        state.route_context = {
-            "routed_at": int(time.time() * 1000),
-            "domain_count": 1,
-            "domains": ["observability"],
-            "mode": "fallback_disabled",
-        }
-        report_node_action(
-            state,
-            runtime,
-            node_name="route_domains",
-            tool_name="agent.route",
-            request_json={"incident_id": state.incident_id},
-            response_json={
-                "status": "fallback",
-                "reason": "route_agent_disabled",
-                "domain_tasks": state.domain_tasks,
-            },
-            started_ms=started_ms,
-            status="ok",
-            count_in_state=False,
-        )
-        return state
 
     # Build context for LLM
     agent_context = _get_agent_context(state)

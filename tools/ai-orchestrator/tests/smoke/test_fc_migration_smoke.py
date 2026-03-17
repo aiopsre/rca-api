@@ -381,14 +381,12 @@ class TestFCFeatureFlags:
             toolset_config_json="",
         )
 
-        # FC4A/FC4B/FC4D: New defaults
+        # FC4A/FC4B: New defaults (FC4D removed - legacy path deleted)
         assert settings.fc_runtime_snapshot_enabled is True, "FC4B: snapshot should be enabled by default"
         assert settings.fc_skill_tool_calling_enabled is True, "FC4A: skill FC should be enabled by default"
-        assert settings.fc_graph_agent_enabled is True, "FC4D: graph agent should be enabled by default"
 
         # Compatibility flags should be disabled
         assert settings.fc_compat_json_toolcalls_enabled is False, "FC4A: JSON compat should be disabled by default"
-        assert settings.fc_compat_dynamic_tool_nodes_enabled is False, "FC4D: dual-node compat should be disabled by default"
 
     def test_fc_skill_flag_respects_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify RCA_FC_SKILL_TOOL_CALLING_ENABLED env var is respected for rollback."""
@@ -435,64 +433,6 @@ class TestFCFeatureFlags:
         # Clean up
         monkeypatch.delenv("RCA_FC_SKILL_TOOL_CALLING_ENABLED", raising=False)
         monkeypatch.delenv("RCA_FC_COMPAT_JSON_TOOLCALLS_ENABLED", raising=False)
-
-    def test_fc_graph_flag_respects_env_var_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify RCA_FC_GRAPH_AGENT_ENABLED env var is respected for rollback."""
-        import os
-
-        # Test with FC disabled via env var (rollback scenario)
-        monkeypatch.setenv("RCA_FC_GRAPH_AGENT_ENABLED", "false")
-
-        # Import the helper function
-        from orchestrator.langgraph.templates.basic_rca import _is_fc_graph_agent_enabled
-
-        # Should return False when env var is "false"
-        assert _is_fc_graph_agent_enabled() is False
-
-        # Test with FC enabled via env var
-        monkeypatch.setenv("RCA_FC_GRAPH_AGENT_ENABLED", "true")
-        assert _is_fc_graph_agent_enabled() is True
-
-        # Test default (no env var) - should be True
-        monkeypatch.delenv("RCA_FC_GRAPH_AGENT_ENABLED", raising=False)
-        assert _is_fc_graph_agent_enabled() is True
-
-    def test_fc_graph_compat_flag_forces_dual_node(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED=true forces dual-node path."""
-        from orchestrator.langgraph.templates.basic_rca import _is_fc_graph_agent_enabled
-
-        # Even with FC_GRAPH_AGENT_ENABLED=true, compat flag should take precedence
-        monkeypatch.setenv("RCA_FC_GRAPH_AGENT_ENABLED", "true")
-        monkeypatch.setenv("RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED", "true")
-
-        # Should return False when compat flag is set
-        assert _is_fc_graph_agent_enabled() is False
-
-        # Clean up
-        monkeypatch.delenv("RCA_FC_GRAPH_AGENT_ENABLED", raising=False)
-        monkeypatch.delenv("RCA_FC_COMPAT_DYNAMIC_TOOL_NODES_ENABLED", raising=False)
-
-    def test_graph_builds_with_dual_node_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify graph can fall back to dual-node path when FC flag is false."""
-        from orchestrator.langgraph.templates.basic_rca import build_basic_rca_graph
-        from orchestrator.langgraph.config import OrchestratorConfig
-        from unittest.mock import MagicMock
-
-        # Disable FC graph agent to force dual-node path
-        monkeypatch.setenv("RCA_FC_GRAPH_AGENT_ENABLED", "false")
-
-        # Create mock runtime
-        runtime = MagicMock()
-        runtime.get_fc_adapter.return_value = None
-        runtime.discover_tools.return_value = MagicMock(tools=[])
-
-        # Create config
-        cfg = OrchestratorConfig()
-
-        # Build graph - should succeed with dual-node path
-        graph = build_basic_rca_graph(runtime, cfg)
-
-        assert graph is not None
 
 
 class TestScriptExecutorPath:

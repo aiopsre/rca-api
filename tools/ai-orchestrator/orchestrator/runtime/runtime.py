@@ -839,6 +839,23 @@ class OrchestratorRuntime:
         capability: str,
         graph_state: Any,
     ) -> dict[str, Any] | None:
+        """Execute a prompt-based skill for the given capability.
+
+        DEPRECATED (HM6): This method is retained for backward compatibility.
+        The primary execution path is now the Route Agent + Domain Agents pattern:
+        - route_domains -> run_observability/change/knowledge_agent -> merge_domain_findings
+        - run_platform_special_agent -> summarize_diagnosis_agentized
+
+        The capability-first path is deprecated and no longer available as a graph topology
+        (legacy RCA_ROUTE_AGENT_ENABLED flag has been removed).
+
+        Args:
+            capability: The capability to execute (e.g., "diagnosis.enrich", "evidence.plan")
+            graph_state: Current graph state.
+
+        Returns:
+            Skill execution result or None if no skill available.
+        """
         definition = get_capability_definition(capability)
         if definition is None:
             return None
@@ -868,6 +885,11 @@ class OrchestratorRuntime:
         graph_state: Any,
         input_payload: dict[str, Any],
     ) -> dict[str, Any] | None:
+        """Execute a diagnosis.enrich skill.
+
+        DEPRECATED (HM6): Use Platform Special Agent instead.
+        See nodes_platform.run_platform_special_agent.
+        """
         definition = get_capability_definition("diagnosis.enrich")
         if definition is None:
             return None

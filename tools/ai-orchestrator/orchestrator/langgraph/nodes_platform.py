@@ -34,16 +34,6 @@ def _is_platform_special_agent_enabled() -> bool:
     return env not in ("false", "0", "no", "off")
 
 
-def _is_route_agent_enabled() -> bool:
-    """Check if route agent is enabled.
-
-    Returns:
-        True if route agent should be used.
-    """
-    env = os.environ.get("RCA_ROUTE_AGENT_ENABLED", "true").strip().lower()
-    return env not in ("false", "0", "no", "off")
-
-
 def _get_agent_context(state: "GraphState") -> "ResolvedAgentContext | None":
     """Get the ResolvedAgentContext from state.
 
@@ -351,24 +341,6 @@ def run_platform_special_agent(
             response_json={
                 "status": "skipped",
                 "reason": "platform_special_agent_disabled",
-            },
-            started_ms=started_ms,
-            status="ok",
-            count_in_state=False,
-        )
-        return state
-
-    # Check if route agent is enabled
-    if not _is_route_agent_enabled():
-        report_node_action(
-            state,
-            runtime,
-            node_name="run_platform_special_agent",
-            tool_name="agent.platform_special",
-            request_json={},
-            response_json={
-                "status": "skipped",
-                "reason": "route_agent_disabled",
             },
             started_ms=started_ms,
             status="ok",

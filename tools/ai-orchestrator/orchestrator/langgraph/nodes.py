@@ -709,6 +709,12 @@ def merge_evidence(
     if not state.incident_id:
         raise RuntimeError("incident_id is required before merge_evidence")
 
+    started_ms = int(time.time() * 1000)
+
+    # Capture evidence saved by domain agents before clearing
+    pre_existing_evidence_ids = list(state.evidence_ids) if state.evidence_ids else []
+    pre_existing_evidence_meta = list(state.evidence_meta) if state.evidence_meta else []
+
     state.evidence_ids = []
     state.evidence_meta = []
 
@@ -717,6 +723,44 @@ def merge_evidence(
     if not isinstance(state.evidence_plan.get("skipped"), list):
         state.evidence_plan["skipped"] = []
 
+    # Hybrid Multi-Agent path: domain agents already saved evidence
+    # Only take this path if evidence was actually saved (not just domain_findings exist)
+    if pre_existing_evidence_ids:
+        # Restore evidence from domain agents
+        state.evidence_ids = pre_existing_evidence_ids
+        state.evidence_meta = pre_existing_evidence_meta
+
+        report_node_action(
+            state,
+            runtime,
+            node_name="merge_evidence",
+            tool_name="evidence.merge",
+            request_json={
+                "incident_id": state.incident_id,
+                "mode": "domain_agent",
+                "domain_count": len(state.domain_findings),
+            },
+            response_json={
+                "status": "ok",
+                "evidence_count": len(state.evidence_ids),
+                "evidence_ids": state.evidence_ids,
+            },
+            started_ms=started_ms,
+            status="ok",
+            evidence_ids=state.evidence_ids,
+        )
+
+        # Set missing evidence based on what we collected
+        missing: list[str] = []
+        sources = {str(item.get("source") or "") for item in state.evidence_meta}
+        if "logs" not in sources:
+            missing.append("logs")
+        if "traces" not in sources:
+            missing.append("traces")
+        state.missing_evidence = ordered_unique_strings(missing)
+        return state
+
+    # Legacy path: branch-based evidence saving
     save_branch_evidence(
         state=state,
         runtime=runtime,

@@ -194,32 +194,11 @@ class TestRunPlatformSpecialAgent(unittest.TestCase):
         runtime = mock.MagicMock()
 
         with mock.patch.dict(os.environ, {
-            "RCA_ROUTE_AGENT_ENABLED": "true",
             "RCA_PLATFORM_SPECIAL_AGENT_ENABLED": "false",
         }):
             result = run_platform_special_agent(state, cfg, runtime)
 
         # Should not set platform_special_patch when disabled
-        self.assertEqual(result.platform_special_patch, {})
-
-    def test_platform_agent_route_disabled_skips(self) -> None:
-        """Test when route agent disabled, skips platform agent."""
-        from orchestrator.langgraph.nodes_platform import run_platform_special_agent
-
-        state = GraphState(
-            job_id="job-1",
-            incident_id="inc-1",
-        )
-        cfg = OrchestratorConfig()
-        runtime = mock.MagicMock()
-
-        with mock.patch.dict(os.environ, {
-            "RCA_ROUTE_AGENT_ENABLED": "false",
-            "RCA_PLATFORM_SPECIAL_AGENT_ENABLED": "true",
-        }):
-            result = run_platform_special_agent(state, cfg, runtime)
-
-        # Should not set platform_special_patch when route disabled
         self.assertEqual(result.platform_special_patch, {})
 
     def test_platform_agent_no_llm_adds_degrade_reason(self) -> None:
@@ -235,7 +214,6 @@ class TestRunPlatformSpecialAgent(unittest.TestCase):
         runtime = mock.MagicMock()
 
         with mock.patch.dict(os.environ, {
-            "RCA_ROUTE_AGENT_ENABLED": "true",
             "RCA_PLATFORM_SPECIAL_AGENT_ENABLED": "true",
         }):
             with mock.patch(

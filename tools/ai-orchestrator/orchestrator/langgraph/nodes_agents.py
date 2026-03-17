@@ -76,17 +76,6 @@ class DomainFinding:
         )
 
 
-def _is_route_agent_enabled() -> bool:
-    """Check if route agent is enabled.
-
-    Returns:
-        True if route agent should be used.
-    """
-    import os
-    env = os.environ.get("RCA_ROUTE_AGENT_ENABLED", "true").strip().lower()
-    return env not in ("false", "0", "no", "off")
-
-
 def _is_domain_agent_enabled(domain: str) -> bool:
     """Check if a domain agent is enabled.
 
@@ -624,25 +613,6 @@ def run_observability_agent(
         )
         return state
 
-    # Check if route agent is enabled (if not, use legacy path)
-    if not _is_route_agent_enabled():
-        # Legacy path: run_tool_agent will handle it
-        report_node_action(
-            state,
-            runtime,
-            node_name="run_observability_agent",
-            tool_name="agent.observability",
-            request_json={"task": obs_task},
-            response_json={
-                "status": "skipped",
-                "reason": "route_agent_disabled_using_legacy_path",
-            },
-            started_ms=started_ms,
-            status="ok",
-            count_in_state=False,
-        )
-        return state
-
     # Get LLM
     llm = _get_llm(runtime)
     if llm is None:
@@ -823,24 +793,6 @@ def run_change_agent(
             response_json={
                 "status": "skipped",
                 "reason": "change_agent_disabled",
-            },
-            started_ms=started_ms,
-            status="ok",
-            count_in_state=False,
-        )
-        return state
-
-    # Check if route agent is enabled
-    if not _is_route_agent_enabled():
-        report_node_action(
-            state,
-            runtime,
-            node_name="run_change_agent",
-            tool_name="agent.change",
-            request_json={},
-            response_json={
-                "status": "skipped",
-                "reason": "route_agent_disabled",
             },
             started_ms=started_ms,
             status="ok",
@@ -1043,24 +995,6 @@ def run_knowledge_agent(
             response_json={
                 "status": "skipped",
                 "reason": "knowledge_agent_disabled",
-            },
-            started_ms=started_ms,
-            status="ok",
-            count_in_state=False,
-        )
-        return state
-
-    # Check if route agent is enabled
-    if not _is_route_agent_enabled():
-        report_node_action(
-            state,
-            runtime,
-            node_name="run_knowledge_agent",
-            tool_name="agent.knowledge",
-            request_json={},
-            response_json={
-                "status": "skipped",
-                "reason": "route_agent_disabled",
             },
             started_ms=started_ms,
             status="ok",

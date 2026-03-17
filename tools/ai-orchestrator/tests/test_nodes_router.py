@@ -11,7 +11,6 @@ from unittest import mock
 from orchestrator.langgraph.nodes_router import (
     DomainTask,
     _default_observability_task,
-    _is_route_agent_enabled,
     _parse_domain_tasks,
     _validate_domain_task,
     route_domains,
@@ -281,47 +280,8 @@ class TestDefaultObservabilityTask(unittest.TestCase):
         self.assertIn("prod", result["goal"])
 
 
-class TestIsRouteAgentEnabled(unittest.TestCase):
-    """Tests for _is_route_agent_enabled helper."""
-
-    def test_default_enabled(self) -> None:
-        """Test default is enabled."""
-        with mock.patch.dict(os.environ, {}, clear=True):
-            result = _is_route_agent_enabled()
-            self.assertTrue(result)
-
-    def test_disabled_via_env(self) -> None:
-        """Test can be disabled via env var."""
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "false"}):
-            result = _is_route_agent_enabled()
-            self.assertFalse(result)
-
-    def test_enabled_via_env(self) -> None:
-        """Test can be explicitly enabled via env var."""
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            result = _is_route_agent_enabled()
-            self.assertTrue(result)
-
-
 class TestRouteDomainsNode(unittest.TestCase):
     """Tests for route_domains node function."""
-
-    def test_route_disabled_creates_default_task(self) -> None:
-        """Test when route disabled, creates default observability task."""
-        state = GraphState(
-            job_id="job-1",
-            incident_id="inc-1",
-            incident_context={"service": "test-svc"},
-        )
-        cfg = OrchestratorConfig()
-        runtime = mock.MagicMock()
-
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "false"}):
-            result = route_domains(state, cfg, runtime)
-
-        self.assertEqual(len(result.domain_tasks), 1)
-        self.assertEqual(result.domain_tasks[0]["domain"], "observability")
-        self.assertEqual(result.route_context["mode"], "fallback_disabled")
 
     def test_route_sets_route_context(self) -> None:
         """Test route_domains sets route_context."""
@@ -329,8 +289,7 @@ class TestRouteDomainsNode(unittest.TestCase):
         cfg = OrchestratorConfig()
         runtime = mock.MagicMock()
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "false"}):
-            result = route_domains(state, cfg, runtime)
+        result = route_domains(state, cfg, runtime)
 
         self.assertIn("routed_at", result.route_context)
         self.assertIn("domain_count", result.route_context)

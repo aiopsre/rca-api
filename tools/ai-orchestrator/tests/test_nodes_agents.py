@@ -13,7 +13,6 @@ from orchestrator.langgraph.nodes_agents import (
     _append_empty_finding,
     _find_task_for_domain,
     _is_domain_agent_enabled,
-    _is_route_agent_enabled,
     merge_domain_findings,
     run_change_agent,
     run_knowledge_agent,
@@ -143,22 +142,6 @@ class TestAppendEmptyFinding(unittest.TestCase):
         self.assertIn("no_llm", finding["summary"])
 
 
-class TestIsRouteAgentEnabled(unittest.TestCase):
-    """Tests for _is_route_agent_enabled helper."""
-
-    def test_default_enabled(self) -> None:
-        """Test default is enabled."""
-        with mock.patch.dict(os.environ, {}, clear=True):
-            result = _is_route_agent_enabled()
-            self.assertTrue(result)
-
-    def test_disabled_via_env(self) -> None:
-        """Test can be disabled via env var."""
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "false"}):
-            result = _is_route_agent_enabled()
-            self.assertFalse(result)
-
-
 class TestMergeDomainFindings(unittest.TestCase):
     """Tests for merge_domain_findings node function."""
 
@@ -281,24 +264,6 @@ class TestMergeDomainFindings(unittest.TestCase):
 class TestRunObservabilityAgent(unittest.TestCase):
     """Tests for run_observability_agent node function."""
 
-    def test_agent_disabled_skips(self) -> None:
-        """Test when route agent disabled, skips execution."""
-        state = GraphState(
-            job_id="job-1",
-            incident_id="inc-1",
-            domain_tasks=[
-                {"task_id": "t1", "domain": "observability", "goal": "Test"},
-            ],
-        )
-        cfg = OrchestratorConfig()
-        runtime = mock.MagicMock()
-
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "false"}):
-            result = run_observability_agent(state, cfg, runtime)
-
-        # Should not add any findings when disabled
-        self.assertEqual(len(result.domain_findings), 0)
-
     def test_agent_no_task_adds_empty_finding(self) -> None:
         """Test when no observability task, adds empty finding."""
         state = GraphState(
@@ -349,11 +314,10 @@ class TestRunObservabilityAgent(unittest.TestCase):
             content="Test finding", tool_calls=[]
         )
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            with mock.patch(
-                "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
-            ):
-                result = run_observability_agent(state, cfg, runtime)
+        with mock.patch(
+            "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+        ):
+            result = run_observability_agent(state, cfg, runtime)
 
         # Should have filtered tools - only allowed_tool should be bound
         bind_call_args = mock_llm.bind_tools.call_args
@@ -386,11 +350,10 @@ class TestRunObservabilityAgent(unittest.TestCase):
         mock_llm = mock.MagicMock()
         mock_llm.bind_tools.return_value.invoke.side_effect = RuntimeError("LLM failed")
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            with mock.patch(
-                "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
-            ):
-                result = run_observability_agent(state, cfg, runtime)
+        with mock.patch(
+            "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+        ):
+            result = run_observability_agent(state, cfg, runtime)
 
         # Should have error finding
         self.assertEqual(len(result.domain_findings), 1)
@@ -423,7 +386,6 @@ class TestRunChangeAgent(unittest.TestCase):
         runtime = mock.MagicMock()
 
         with mock.patch.dict(os.environ, {
-            "RCA_ROUTE_AGENT_ENABLED": "true",
             "RCA_DOMAIN_AGENT_CHANGE_ENABLED": "false",
         }):
             result = run_change_agent(state, cfg, runtime)
@@ -443,8 +405,7 @@ class TestRunChangeAgent(unittest.TestCase):
         cfg = OrchestratorConfig()
         runtime = mock.MagicMock()
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            result = run_change_agent(state, cfg, runtime)
+        result = run_change_agent(state, cfg, runtime)
 
         # Should not add any findings when no task
         self.assertEqual(len(result.domain_findings), 0)
@@ -479,11 +440,10 @@ class TestRunChangeAgent(unittest.TestCase):
             content="Found deployment", tool_calls=[]
         )
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            with mock.patch(
-                "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
-            ):
-                result = run_change_agent(state, cfg, runtime)
+        with mock.patch(
+            "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+        ):
+            result = run_change_agent(state, cfg, runtime)
 
         # Should have finding
         self.assertEqual(len(result.domain_findings), 1)
@@ -506,7 +466,6 @@ class TestRunKnowledgeAgent(unittest.TestCase):
         runtime = mock.MagicMock()
 
         with mock.patch.dict(os.environ, {
-            "RCA_ROUTE_AGENT_ENABLED": "true",
             "RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED": "false",
         }):
             result = run_knowledge_agent(state, cfg, runtime)
@@ -526,8 +485,7 @@ class TestRunKnowledgeAgent(unittest.TestCase):
         cfg = OrchestratorConfig()
         runtime = mock.MagicMock()
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            result = run_knowledge_agent(state, cfg, runtime)
+        result = run_knowledge_agent(state, cfg, runtime)
 
         # Should not add any findings when no task
         self.assertEqual(len(result.domain_findings), 0)
@@ -563,15 +521,102 @@ class TestRunKnowledgeAgent(unittest.TestCase):
             content="Found similar incidents", tool_calls=[]
         )
 
-        with mock.patch.dict(os.environ, {"RCA_ROUTE_AGENT_ENABLED": "true"}):
-            with mock.patch(
-                "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
-            ):
-                result = run_knowledge_agent(state, cfg, runtime)
+        with mock.patch(
+            "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+        ):
+            result = run_knowledge_agent(state, cfg, runtime)
 
         # Should have finding
         self.assertEqual(len(result.domain_findings), 1)
         self.assertEqual(result.domain_findings[0]["domain"], "knowledge")
+
+
+class TestMergeEvidenceHybridPath(unittest.TestCase):
+    """Tests for merge_evidence in hybrid multi-agent path."""
+
+    def test_preserves_evidence_from_domain_agents(self) -> None:
+        """Test that merge_evidence preserves evidence saved by domain agents."""
+        from orchestrator.langgraph.nodes import merge_evidence
+
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            # Simulate evidence saved by domain agents
+            evidence_ids=["ev-1", "ev-2"],
+            evidence_meta=[
+                {"source": "metrics", "no_data": False},
+                {"source": "logs", "no_data": False},
+            ],
+            # Simulate domain findings (indicates hybrid path)
+            domain_findings=[
+                {"domain": "observability", "summary": "Found issues"},
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        result = merge_evidence(state, cfg, runtime)
+
+        # Should preserve evidence from domain agents
+        self.assertEqual(result.evidence_ids, ["ev-1", "ev-2"])
+        self.assertEqual(len(result.evidence_meta), 2)
+
+    def test_creates_mock_evidence_when_no_domain_evidence(self) -> None:
+        """Test that merge_evidence creates mock evidence when no domain evidence exists."""
+        from orchestrator.langgraph.nodes import merge_evidence
+
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            evidence_ids=[],
+            evidence_meta=[],
+            # No domain findings - should use legacy path which falls back to mock
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+        runtime.save_mock_evidence.return_value = mock.MagicMock(
+            evidence_id="fallback-ev-1",
+            idempotency_key="key-1",
+            created_by="ai:job-1",
+        )
+
+        result = merge_evidence(state, cfg, runtime)
+
+        # Should have created mock evidence
+        self.assertTrue(len(result.evidence_ids) >= 1)
+        runtime.save_mock_evidence.assert_called_once()
+
+    def test_creates_mock_evidence_when_domain_findings_but_no_evidence(self) -> None:
+        """Test that merge_evidence creates mock when domain findings exist but no evidence was saved.
+
+        This covers the case where LLM/adapter was missing and domain agents only
+        produced degraded/empty findings without saving any evidence.
+        """
+        from orchestrator.langgraph.nodes import merge_evidence
+
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            evidence_ids=[],  # No evidence saved
+            evidence_meta=[],
+            # Domain findings exist (degraded) but no evidence
+            domain_findings=[
+                {"domain": "observability", "summary": "No finding: no_llm", "status": "degraded"},
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+        runtime.save_mock_evidence.return_value = mock.MagicMock(
+            evidence_id="fallback-ev-1",
+            idempotency_key="key-1",
+            created_by="ai:job-1",
+        )
+
+        result = merge_evidence(state, cfg, runtime)
+
+        # Should have created mock evidence (not skipped due to domain_findings existing)
+        self.assertTrue(len(result.evidence_ids) >= 1)
+        runtime.save_mock_evidence.assert_called_once()
 
 
 if __name__ == "__main__":

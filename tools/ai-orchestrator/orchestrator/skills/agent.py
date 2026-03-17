@@ -1,3 +1,12 @@
+"""Skill agent for prompt-based skill execution.
+
+DEPRECATED (HM6): The capability-first pattern is no longer the primary execution model.
+- For Route Agent + Domain Agents path, see nodes_router.py and nodes_agents.py
+- For Platform Special Agent, see nodes_platform.py
+
+This module is retained for backward compatibility with skill-based enrichment
+via consume_prompt_skill() and consume_diagnosis_enrich_skill().
+"""
 from __future__ import annotations
 
 import json
@@ -183,6 +192,12 @@ class ToolCallSequence:
 
 
 class PromptSkillAgent:
+    """Skill agent for prompt-based skill execution.
+
+    DEPRECATED (HM6): This class is retained for backward compatibility.
+    For the new agent-based approach, see nodes_router.py and nodes_agents.py.
+    """
+
     def __init__(
         self,
         *,

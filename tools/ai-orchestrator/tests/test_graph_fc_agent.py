@@ -3,7 +3,6 @@
 This test module covers:
 - run_tool_agent: Function-calling agent node for tool execution
 - ToolExecutionResult: Execution envelope with source tracking
-- Feature flag behavior for RCA_FC_GRAPH_AGENT_ENABLED
 """
 from __future__ import annotations
 
@@ -178,57 +177,6 @@ class TestRunToolAgent:
 
         assert result.tool_call_results == []
         state.add_degrade_reason.assert_called_with("llm_not_configured")
-
-
-class TestFeatureFlag:
-    """Tests for feature flag behavior."""
-
-    def test_feature_flag_disabled_uses_old_path(self) -> None:
-        """Verify that disabled flag uses old dual-node path."""
-        # Save original env
-        original = os.environ.get("RCA_FC_GRAPH_AGENT_ENABLED")
-
-        try:
-            os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = "false"
-
-            # Import and check template uses old nodes
-            from orchestrator.langgraph.templates.basic_rca import build_basic_rca_graph
-
-            # Mock dependencies
-            runtime = MagicMock()
-            cfg = OrchestratorConfig()
-
-            # Build graph and check node names
-            # We can't easily inspect the internal structure without executing
-            # So we just verify the function exists and can be called
-            assert callable(build_basic_rca_graph)
-
-        finally:
-            # Restore original env
-            if original is None:
-                os.environ.pop("RCA_FC_GRAPH_AGENT_ENABLED", None)
-            else:
-                os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = original
-
-    def test_feature_flag_enabled_uses_new_path(self) -> None:
-        """Verify that enabled flag uses new single-node path."""
-        # Save original env
-        original = os.environ.get("RCA_FC_GRAPH_AGENT_ENABLED")
-
-        try:
-            os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = "true"
-
-            # Import and check template uses new node
-            from orchestrator.langgraph.templates.basic_rca import build_basic_rca_graph
-
-            assert callable(build_basic_rca_graph)
-
-        finally:
-            # Restore original env
-            if original is None:
-                os.environ.pop("RCA_FC_GRAPH_AGENT_ENABLED", None)
-            else:
-                os.environ["RCA_FC_GRAPH_AGENT_ENABLED"] = original
 
 
 class TestBudgetEnforcement:

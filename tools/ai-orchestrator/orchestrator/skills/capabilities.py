@@ -1,3 +1,17 @@
+"""Capability definitions for RCA skill execution.
+
+DEPRECATED (HM6): The capability-first pattern is no longer the primary execution model.
+- For Route Agent + Domain Agents path, see nodes_router.py and nodes_agents.py
+- For Platform Special Agent, see nodes_platform.py
+- For diagnosis summarization, see nodes.py:summarize_diagnosis_agentized()
+
+This module is retained for:
+1. Sanitization utilities (sanitize_diagnosis_patch, _sanitize_session_patch)
+2. Backward compatibility with skill-based enrichment via consume_prompt_skill()
+3. Schema validation helpers
+
+Do not add new capabilities. Use the agent-based approach instead.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,6 +38,11 @@ class PromptSkillConsumeResult:
 
 @dataclass(frozen=True)
 class CapabilityDefinition:
+    """Definition of a capability for skill execution.
+
+    DEPRECATED (HM6): Capability-based execution is deprecated.
+    Use Route Agent + Domain Agents pattern instead.
+    """
     capability: str
     stage: str
     output_contract: dict[str, Any]
@@ -170,6 +189,12 @@ def _sanitize_session_patch(patch: Any) -> dict[str, Any]:
 
 
 def _sanitize_diagnosis_patch(patch: Any) -> tuple[dict[str, Any], list[str]]:
+    """Sanitize a diagnosis patch from skill output.
+
+    Note: This is different from nodes_platform.sanitize_diagnosis_patch which
+    handles Platform Special Agent output with confidence field.
+    This function is retained for backward compatibility with skill-based diagnosis.enrich.
+    """
     if not isinstance(patch, dict):
         return {}, []
     sanitized: dict[str, Any] = {}
@@ -672,6 +697,8 @@ def _apply_tool_plan_result(
 
 
 _CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
+    # DEPRECATED (HM6): Capability-based execution is deprecated.
+    # Retained for backward compatibility with skill-based enrichment.
     "diagnosis.enrich": CapabilityDefinition(
         capability="diagnosis.enrich",
         stage="summarize_diagnosis",
@@ -753,8 +780,18 @@ _CAPABILITY_DEFINITIONS: dict[str, CapabilityDefinition] = {
 
 
 def get_capability_definition(capability: str) -> CapabilityDefinition | None:
+    """Get capability definition by name.
+
+    DEPRECATED (HM6): Capability-based execution is deprecated.
+    Use Route Agent + Domain Agents pattern instead.
+    """
     return _CAPABILITY_DEFINITIONS.get(_trim(capability))
 
 
 def list_capabilities() -> list[str]:
+    """List all available capabilities.
+
+    DEPRECATED (HM6): Capability-based execution is deprecated.
+    Use Route Agent + Domain Agents pattern instead.
+    """
     return sorted(_CAPABILITY_DEFINITIONS.keys())
