@@ -60,10 +60,19 @@ func TestMaybeTriggerOnEscalationAIJob_BlockedWhenNoOp(t *testing.T) {
 }
 
 func TestMaybeTriggerOnEscalationAIJob_NotBlockedContinuesEvaluateAndRun(t *testing.T) {
-	fake := &fakeAIJobBizForEscalationRunPlan{
+	aiJobFake := &fakeAIJobBizForEscalationRunPlan{
 		runResp: &v1.RunAIJobResponse{JobID: "ai-job-on-escalation-1"},
 	}
-	biz := &incidentBiz{runAIJobBiz: fake}
+	triggerFake := &fakeTriggerRouter{
+		resp: &triggerbiz.TriggerResult{
+			JobID:      "ai-job-on-escalation-1",
+			IncidentID: "incident-run",
+		},
+	}
+	biz := &incidentBiz{
+		runAIJobBiz: aiJobFake,
+		triggerBiz:  triggerFake,
+	}
 	incident := &model.IncidentM{
 		IncidentID: "incident-run",
 		Status:     "open",
@@ -88,9 +97,10 @@ func TestMaybeTriggerOnEscalationAIJob_NotBlockedContinuesEvaluateAndRun(t *test
 	biz.maybeTriggerOnEscalationAIJob(context.Background(), incident, "open", "P2", "v1")
 
 	require.True(t, evalCalled)
-	require.Equal(t, 1, fake.runCalls)
-	require.NotNil(t, fake.lastRunRequest)
-	require.Equal(t, "incident-run", fake.lastRunRequest.GetIncidentID())
+	require.Equal(t, 1, triggerFake.calls)
+	require.NotNil(t, triggerFake.lastReq)
+	require.Equal(t, "incident-run", triggerFake.lastReq.IncidentHint.IncidentID)
+	require.Equal(t, 0, aiJobFake.runCalls)
 }
 
 func TestTriggerScheduledRunWithIncident_BlockedWhenTerminal(t *testing.T) {
@@ -125,10 +135,19 @@ func TestTriggerScheduledRunWithIncident_BlockedWhenTerminal(t *testing.T) {
 }
 
 func TestTriggerScheduledRunWithIncident_NotTerminalContinuesEvaluateAndRun(t *testing.T) {
-	fake := &fakeAIJobBizForEscalationRunPlan{
+	aiJobFake := &fakeAIJobBizForEscalationRunPlan{
 		runResp: &v1.RunAIJobResponse{JobID: "ai-job-scheduled-1"},
 	}
-	biz := &incidentBiz{runAIJobBiz: fake}
+	triggerFake := &fakeTriggerRouter{
+		resp: &triggerbiz.TriggerResult{
+			JobID:    "ai-job-scheduled-1",
+			IncidentID: "incident-scheduled-open",
+		},
+	}
+	biz := &incidentBiz{
+		runAIJobBiz: aiJobFake,
+		triggerBiz:  triggerFake,
+	}
 	incident := &model.IncidentM{
 		IncidentID: "incident-scheduled-open",
 		Status:     "open",
@@ -163,9 +182,10 @@ func TestTriggerScheduledRunWithIncident_NotTerminalContinuesEvaluateAndRun(t *t
 	require.True(t, resp.ShouldRun)
 	require.Equal(t, "run", resp.Decision)
 	require.True(t, evalCalled)
-	require.Equal(t, 1, fake.runCalls)
-	require.NotNil(t, fake.lastRunRequest)
-	require.Equal(t, incident.IncidentID, fake.lastRunRequest.GetIncidentID())
+	require.Equal(t, 1, triggerFake.calls)
+	require.NotNil(t, triggerFake.lastReq)
+	require.Equal(t, "incident-scheduled-open", triggerFake.lastReq.IncidentHint.IncidentID)
+	require.Equal(t, 0, aiJobFake.runCalls)
 }
 
 func TestRunScheduledPlan_UsesTriggerRouterWhenAvailable(t *testing.T) {

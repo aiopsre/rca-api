@@ -140,6 +140,71 @@ func (b *incidentBiz) maybeTriggerOnEscalationAIJob(
 		return
 	}
 
+	// Use unified trigger path when triggerBiz is available
+	if b.triggerBiz != nil {
+		triggerResp, dispatchErr := b.triggerBiz.Dispatch(ctx, &triggerbiz.TriggerRequest{
+			TriggerType: triggerbiz.TriggerTypeAlert,
+			Source:      "on_escalation",
+			BusinessKey: strings.TrimSpace(incident.IncidentID),
+			IncidentHint: &triggerbiz.IncidentHint{
+				IncidentID: incident.IncidentID,
+			},
+			Initiator: runReq.CreatedBy,
+			Payload: map[string]any{
+				"trigger":       plan.Trigger,
+				"decision":      plan.Decision,
+				"rule_name":     plan.RuleName,
+				"policy_source": plan.PolicySource,
+				"old_severity":  oldSeverity,
+				"new_severity":  incident.Severity,
+			},
+			DesiredPipeline: runReq.Pipeline,
+			TimeRange: &triggerbiz.TriggerTimeRange{
+				Start: plan.TimeRangeStart,
+				End:   plan.TimeRangeEnd,
+			},
+			RunRequest: runReq,
+		})
+		if dispatchErr != nil {
+			if errors.Is(dispatchErr, errno.ErrAIJobAlreadyRunning) {
+				slog.InfoContext(ctx, "on_escalation run plan already running",
+					"request_id", contextx.RequestID(ctx),
+					"incident_id", incident.IncidentID,
+					"trigger", plan.Trigger,
+					"decision", triggerDecisionAlreadyRunning,
+					"rule", plan.RuleName,
+					"policy_source", plan.PolicySource,
+				)
+				return
+			}
+			slog.WarnContext(ctx, "on_escalation run plan trigger failed",
+				"request_id", contextx.RequestID(ctx),
+				"incident_id", incident.IncidentID,
+				"trigger", plan.Trigger,
+				"decision", triggerDecisionError,
+				"rule", plan.RuleName,
+				"policy_source", plan.PolicySource,
+				"error", dispatchErr,
+			)
+			return
+		}
+		jobID := ""
+		if triggerResp != nil {
+			jobID = triggerResp.JobID
+		}
+		slog.InfoContext(ctx, "on_escalation run plan triggered",
+			"request_id", contextx.RequestID(ctx),
+			"incident_id", incident.IncidentID,
+			"job_id", jobID,
+			"trigger", plan.Trigger,
+			"decision", plan.Decision,
+			"rule", plan.RuleName,
+			"policy_source", plan.PolicySource,
+		)
+		return
+	}
+
+	// Fallback: direct runAIJobBiz.Run when triggerBiz is not available
 	runResp, err := b.runAIJobBiz.Run(ctx, runReq)
 	if err != nil {
 		if errors.Is(err, errno.ErrAIJobAlreadyRunning) {
@@ -334,51 +399,43 @@ func (b *incidentBiz) runScheduledPlan(
 	if err != nil {
 		return nil, errorsx.ErrInvalidArgument
 	}
-	if b != nil && b.triggerBiz != nil {
-		triggerResp, dispatchErr := b.triggerBiz.Dispatch(ctx, &triggerbiz.TriggerRequest{
-			TriggerType: triggerbiz.TriggerTypeCron,
-			Source:      "incident_scheduler",
-			BusinessKey: strings.TrimSpace(incidentID),
-			IncidentHint: &triggerbiz.IncidentHint{
-				IncidentID: incidentID,
-			},
-			Initiator: runReq.CreatedBy,
-			Payload: map[string]any{
-				"trigger":       plan.Trigger,
-				"decision":      plan.Decision,
-				"rule_name":     plan.RuleName,
-				"policy_source": plan.PolicySource,
-				"scheduler":     trimOptionalString(runReq.CreatedBy),
-			},
-			DesiredPipeline: runReq.Pipeline,
-			TimeRange: &triggerbiz.TriggerTimeRange{
-				Start: plan.TimeRangeStart,
-				End:   plan.TimeRangeEnd,
-			},
-			RunRequest: runReq,
-		})
-		if dispatchErr != nil {
-			if errors.Is(dispatchErr, errno.ErrAIJobAlreadyRunning) {
-				resp.Decision = triggerDecisionAlreadyRunning
-				return resp, nil
-			}
-			return nil, dispatchErr
-		}
-		if triggerResp != nil {
-			resp.JobID = strPtr(triggerResp.JobID)
-		}
-		return resp, nil
+
+	if b == nil || b.triggerBiz == nil {
+		return nil, errorsx.ErrInternal
 	}
 
-	runResp, err := b.runAIJobBiz.Run(ctx, runReq)
-	if err != nil {
-		if errors.Is(err, errno.ErrAIJobAlreadyRunning) {
+	triggerResp, dispatchErr := b.triggerBiz.Dispatch(ctx, &triggerbiz.TriggerRequest{
+		TriggerType: triggerbiz.TriggerTypeCron,
+		Source:      "incident_scheduler",
+		BusinessKey: strings.TrimSpace(incidentID),
+		IncidentHint: &triggerbiz.IncidentHint{
+			IncidentID: incidentID,
+		},
+		Initiator: runReq.CreatedBy,
+		Payload: map[string]any{
+			"trigger":       plan.Trigger,
+			"decision":      plan.Decision,
+			"rule_name":     plan.RuleName,
+			"policy_source": plan.PolicySource,
+			"scheduler":     trimOptionalString(runReq.CreatedBy),
+		},
+		DesiredPipeline: runReq.Pipeline,
+		TimeRange: &triggerbiz.TriggerTimeRange{
+			Start: plan.TimeRangeStart,
+			End:   plan.TimeRangeEnd,
+		},
+		RunRequest: runReq,
+	})
+	if dispatchErr != nil {
+		if errors.Is(dispatchErr, errno.ErrAIJobAlreadyRunning) {
 			resp.Decision = triggerDecisionAlreadyRunning
 			return resp, nil
 		}
-		return nil, err
+		return nil, dispatchErr
 	}
-	resp.JobID = strPtr(runResp.GetJobID())
+	if triggerResp != nil {
+		resp.JobID = strPtr(triggerResp.JobID)
+	}
 	return resp, nil
 }
 
