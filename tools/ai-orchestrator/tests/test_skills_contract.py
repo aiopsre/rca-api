@@ -1755,5 +1755,110 @@ class TestSessionPatchWriteback(unittest.TestCase):
         mock_runtime.patch_job_session_context.assert_not_called()
 
 
+class TestSkillSurfaceHM4Fields(unittest.TestCase):
+    """HM4-5 tests for new SkillSurface fields: domain_tags, surface_mode, resource_priority."""
+
+    def test_skill_surface_defaults(self) -> None:
+        """SkillSurface should have correct default values."""
+        from orchestrator.runtime.resolved_context import SkillSurface
+
+        surface = SkillSurface()
+        self.assertEqual(surface.skill_ids, [])
+        self.assertEqual(surface.capability_map, {})
+        self.assertEqual(surface.domain_tags, [])
+        self.assertEqual(surface.surface_mode, "")
+        self.assertEqual(surface.resource_priority, 100)
+
+    def test_skill_surface_new_fields_to_dict(self) -> None:
+        """SkillSurface.to_dict should include new HM4-5 fields."""
+        from orchestrator.runtime.resolved_context import SkillSurface
+
+        surface = SkillSurface(
+            skill_ids=["skill-1"],
+            capability_map={"evidence.plan": ["skill-1"]},
+            domain_tags=["observability", "change"],
+            surface_mode="hybrid",
+            resource_priority=50,
+        )
+        d = surface.to_dict()
+
+        self.assertEqual(d["skill_ids"], ["skill-1"])
+        self.assertEqual(d["capability_map"], {"evidence.plan": ["skill-1"]})
+        self.assertEqual(d["domain_tags"], ["observability", "change"])
+        self.assertEqual(d["surface_mode"], "hybrid")
+        self.assertEqual(d["resource_priority"], 50)
+
+    def test_from_json_parses_new_skill_surface_fields(self) -> None:
+        """ResolvedAgentContext.from_json should parse new SkillSurface fields."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        go_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "basic_rca",
+            "tool_surface": {},
+            "skill_surface": {
+                "skill_ids": ["skill-1", "skill-2"],
+                "capability_map": {"evidence.plan": ["skill-1"]},
+                "domain_tags": ["observability", "knowledge"],
+                "surface_mode": "skills_only",
+                "resource_priority": 75
+            }
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(go_json)
+
+        self.assertEqual(ctx.skill_surface.skill_ids, ["skill-1", "skill-2"])
+        self.assertEqual(ctx.skill_surface.capability_map, {"evidence.plan": ["skill-1"]})
+        self.assertEqual(ctx.skill_surface.domain_tags, ["observability", "knowledge"])
+        self.assertEqual(ctx.skill_surface.surface_mode, "skills_only")
+        self.assertEqual(ctx.skill_surface.resource_priority, 75)
+
+    def test_from_json_defaults_missing_skill_surface_fields(self) -> None:
+        """ResolvedAgentContext.from_json should use defaults for missing new fields."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        go_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "basic_rca",
+            "tool_surface": {},
+            "skill_surface": {
+                "skill_ids": ["skill-1"],
+                "capability_map": {}
+            }
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(go_json)
+
+        # New fields should have defaults
+        self.assertEqual(ctx.skill_surface.domain_tags, [])
+        self.assertEqual(ctx.skill_surface.surface_mode, "")
+        self.assertEqual(ctx.skill_surface.resource_priority, 100)
+
+    def test_from_json_handles_empty_skill_surface(self) -> None:
+        """ResolvedAgentContext.from_json should handle empty skill_surface."""
+        from orchestrator.runtime.resolved_context import ResolvedAgentContext
+
+        go_json = '''
+        {
+            "job_id": "test-job",
+            "pipeline": "basic_rca",
+            "template_id": "basic_rca",
+            "tool_surface": {},
+            "skill_surface": {}
+        }
+        '''
+        ctx = ResolvedAgentContext.from_json(go_json)
+
+        self.assertEqual(ctx.skill_surface.skill_ids, [])
+        self.assertEqual(ctx.skill_surface.capability_map, {})
+        self.assertEqual(ctx.skill_surface.domain_tags, [])
+        self.assertEqual(ctx.skill_surface.surface_mode, "")
+        self.assertEqual(ctx.skill_surface.resource_priority, 100)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -500,14 +500,18 @@ type UploadSkillReleaseRequest struct {
 }
 
 type SkillRef struct {
-	SkillID      string   `json:"skill_id"`
-	Version      string   `json:"version"`
-	Capability   string   `json:"capability"`
-	Role         string   `json:"role,omitempty"`
-	ExecutorMode string   `json:"executor_mode,omitempty"`
-	AllowedTools []string `json:"allowed_tools,omitempty"`
-	Priority     *int     `json:"priority,omitempty"`
-	Enabled      *bool    `json:"enabled,omitempty"`
+	SkillID           string   `json:"skill_id"`
+	Version           string   `json:"version"`
+	Capability        string   `json:"capability"`
+	Role              string   `json:"role,omitempty"`
+	ExecutorMode      string   `json:"executor_mode,omitempty"`
+	AllowedTools      []string `json:"allowed_tools,omitempty"`
+	Priority          *int     `json:"priority,omitempty"`
+	Enabled           *bool    `json:"enabled,omitempty"`
+	// HM4-5: New fields for hybrid multi-agent routing
+	DomainTags       []string `json:"domain_tags,omitempty"`
+	SurfaceMode      string   `json:"surface_mode,omitempty"`
+	ResourcePriority *int     `json:"resource_priority,omitempty"`
 }
 
 type SkillsetItem struct {

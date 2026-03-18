@@ -2562,12 +2562,20 @@ func (b *aiJobBiz) buildAgentContextJSON(
 
 	// Build skill surface from skillsets response
 	skillSurface := map[string]any{
-		"skill_ids":      []string{},
-		"capability_map": map[string][]string{},
+		"skill_ids":         []string{},
+		"capability_map":    map[string][]string{},
+		"domain_tags":       []string{}, // HM4-5: New field
+		"surface_mode":      "",         // HM4-5: New field
+		"resource_priority": 100,        // HM4-5: New field with default
 	}
 	if skillsetsResp != nil && len(skillsetsResp.Skillsets) > 0 {
 		skillIDs := make([]string, 0, len(skillsetsResp.Skillsets))
 		capabilityMap := make(map[string][]string)
+		// HM4-5: Collect domain_tags from all skills
+		allDomainTags := make(map[string]struct{})
+		var globalSurfaceMode string
+		minResourcePriority := 100
+
 		for _, skillset := range skillsetsResp.Skillsets {
 			if skillset == nil {
 				continue
@@ -2585,10 +2593,36 @@ func (b *aiJobBiz) buildAgentContextJSON(
 					capName := skill.Capability
 					capabilityMap[capName] = append(capabilityMap[capName], skillID)
 				}
+				// HM4-5: Collect domain tags
+				for _, tag := range skill.DomainTags {
+					tag = strings.TrimSpace(tag)
+					if tag != "" {
+						allDomainTags[tag] = struct{}{}
+					}
+				}
+				// HM4-5: Use first non-empty surface_mode
+				if globalSurfaceMode == "" && skill.SurfaceMode != nil && *skill.SurfaceMode != "" {
+					globalSurfaceMode = *skill.SurfaceMode
+				}
+				// HM4-5: Use minimum resource_priority (lower = higher priority)
+				if skill.ResourcePriority != nil && int(*skill.ResourcePriority) < minResourcePriority {
+					minResourcePriority = int(*skill.ResourcePriority)
+				}
 			}
 		}
 		skillSurface["skill_ids"] = skillIDs
 		skillSurface["capability_map"] = capabilityMap
+
+		// HM4-5: Add collected domain_tags
+		domainTags := make([]string, 0, len(allDomainTags))
+		for tag := range allDomainTags {
+			domainTags = append(domainTags, tag)
+		}
+		skillSurface["domain_tags"] = domainTags
+		if globalSurfaceMode != "" {
+			skillSurface["surface_mode"] = globalSurfaceMode
+		}
+		skillSurface["resource_priority"] = minResourcePriority
 	}
 
 	// Platform hints (currently minimal, will be extended in future phases)

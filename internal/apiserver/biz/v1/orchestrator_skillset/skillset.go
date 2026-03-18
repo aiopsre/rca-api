@@ -91,18 +91,21 @@ func (b *skillsetBiz) Resolve(
 				priority = int32(*ref.Priority)
 			}
 			resolvedSkills = append(resolvedSkills, &v1.OrchestratorSkillRelease{
-				SkillID:      strings.TrimSpace(release.SkillID),
-				Version:      strings.TrimSpace(release.Version),
-				BundleDigest: strings.TrimSpace(release.BundleDigest),
-				ArtifactURL:  downloadURL,
-				ManifestJSON: cloneOptionalTrimmedString(release.ManifestJSON),
-				Capability:   strings.TrimSpace(ref.Capability),
-				Role:         strings.TrimSpace(ref.Role),
-				ExecutorMode: strings.TrimSpace(ref.ExecutorMode),
-				AllowedTools: append([]string(nil), ref.AllowedTools...),
-				Priority:     priority,
-				Enabled:      ref.Enabled == nil || *ref.Enabled,
-				Status:       strings.TrimSpace(release.Status),
+				SkillID:           strings.TrimSpace(release.SkillID),
+				Version:           strings.TrimSpace(release.Version),
+				BundleDigest:      strings.TrimSpace(release.BundleDigest),
+				ArtifactURL:       downloadURL,
+				ManifestJSON:      cloneOptionalTrimmedString(release.ManifestJSON),
+				Capability:        strings.TrimSpace(ref.Capability),
+				Role:              strings.TrimSpace(ref.Role),
+				ExecutorMode:      strings.TrimSpace(ref.ExecutorMode),
+				AllowedTools:      append([]string(nil), ref.AllowedTools...),
+				Priority:          priority,
+				Enabled:           ref.Enabled == nil || *ref.Enabled,
+				Status:            strings.TrimSpace(release.Status),
+				DomainTags:        append([]string(nil), ref.DomainTags...),
+				SurfaceMode:       wrapString(ref.SurfaceMode),
+				ResourcePriority:  wrapInt32(ref.ResourcePriority),
 			})
 		}
 		if len(resolvedSkills) == 0 {
@@ -124,5 +127,24 @@ func cloneOptionalTrimmedString(in *string) *string {
 		return nil
 	}
 	value := strings.TrimSpace(*in)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func wrapInt32(in *int) *int32 {
+	if in == nil {
+		return nil
+	}
+	value := int32(*in)
+	return &value
+}
+
+func wrapString(in string) *string {
+	value := strings.TrimSpace(in)
+	if value == "" {
+		return nil
+	}
 	return &value
 }

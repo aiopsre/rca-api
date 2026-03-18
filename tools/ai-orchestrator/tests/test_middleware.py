@@ -30,6 +30,10 @@ class MockSkillSurface:
     """Minimal mock for SkillSurface."""
     skill_ids: list[str] = field(default_factory=list)
     capability_map: dict[str, list[str]] = field(default_factory=dict)
+    # HM4-5: New fields for hybrid multi-agent routing
+    domain_tags: list[str] = field(default_factory=list)
+    surface_mode: str = ""
+    resource_priority: int = 100
 
 
 @dataclass

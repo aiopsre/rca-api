@@ -19,6 +19,10 @@ message OrchestratorSkillRelease {
   bool enabled = 10;
   string role = 11;
   string executorMode = 12;
+  // HM4-5: New fields for hybrid multi-agent routing
+  repeated string domainTags = 13;           // Domain tags for routing (e.g., "observability", "change")
+  optional string surfaceMode = 14;          // Surface visibility mode (e.g., "skills_only", "hybrid")
+  optional int32 resourcePriority = 15;      // Resource loading priority (lower = higher priority)
 }
 
 // OrchestratorSkillset is one resolved skillset definition.

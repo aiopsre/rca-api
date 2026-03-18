@@ -33,16 +33,26 @@ class SkillSurface:
 
     Contains the skill IDs and capability map that define what skills
     are available for this job.
+
+    HM4-5: Added domain_tags, surface_mode, resource_priority for
+    hybrid multi-agent routing decisions.
     """
 
     skill_ids: list[str] = field(default_factory=list)
     capability_map: dict[str, list[str]] = field(default_factory=dict)
+    # HM4-5: New fields for hybrid multi-agent routing
+    domain_tags: list[str] = field(default_factory=list)
+    surface_mode: str = ""
+    resource_priority: int = 100
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "skill_ids": self.skill_ids,
             "capability_map": self.capability_map,
+            "domain_tags": self.domain_tags,
+            "surface_mode": self.surface_mode,
+            "resource_priority": self.resource_priority,
         }
 
 
@@ -122,9 +132,16 @@ class ResolvedAgentContext:
 
         skill_surface_data = data.get("skill_surface", {})
         if isinstance(skill_surface_data, dict):
+            # HM4-5: Parse new fields with defaults
+            resource_priority = skill_surface_data.get("resource_priority", 100)
+            if not isinstance(resource_priority, int):
+                resource_priority = 100
             skill_surface = SkillSurface(
                 skill_ids=skill_surface_data.get("skill_ids", []),
                 capability_map=skill_surface_data.get("capability_map", {}),
+                domain_tags=skill_surface_data.get("domain_tags", []),
+                surface_mode=str(skill_surface_data.get("surface_mode", "")),
+                resource_priority=resource_priority,
             )
         else:
             skill_surface = SkillSurface()

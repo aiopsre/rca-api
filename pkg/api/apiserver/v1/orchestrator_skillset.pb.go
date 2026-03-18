@@ -25,21 +25,25 @@ const (
 
 // OrchestratorSkillRelease defines one resolved skill release entry.
 type OrchestratorSkillRelease struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SkillID       string                 `protobuf:"bytes,1,opt,name=skillID,proto3" json:"skillID,omitempty"`
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
-	BundleDigest  string                 `protobuf:"bytes,3,opt,name=bundleDigest,proto3" json:"bundleDigest,omitempty"`
-	ArtifactURL   string                 `protobuf:"bytes,4,opt,name=artifactURL,proto3" json:"artifactURL,omitempty"`
-	ManifestJSON  *string                `protobuf:"bytes,5,opt,name=manifestJSON,proto3,oneof" json:"manifestJSON,omitempty"`
-	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
-	Capability    string                 `protobuf:"bytes,7,opt,name=capability,proto3" json:"capability,omitempty"`
-	AllowedTools  []string               `protobuf:"bytes,8,rep,name=allowedTools,proto3" json:"allowedTools,omitempty"`
-	Priority      int32                  `protobuf:"varint,9,opt,name=priority,proto3" json:"priority,omitempty"`
-	Enabled       bool                   `protobuf:"varint,10,opt,name=enabled,proto3" json:"enabled,omitempty"`
-	Role          string                 `protobuf:"bytes,11,opt,name=role,proto3" json:"role,omitempty"`
-	ExecutorMode  string                 `protobuf:"bytes,12,opt,name=executorMode,proto3" json:"executorMode,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	SkillID      string                 `protobuf:"bytes,1,opt,name=skillID,proto3" json:"skillID,omitempty"`
+	Version      string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	BundleDigest string                 `protobuf:"bytes,3,opt,name=bundleDigest,proto3" json:"bundleDigest,omitempty"`
+	ArtifactURL  string                 `protobuf:"bytes,4,opt,name=artifactURL,proto3" json:"artifactURL,omitempty"`
+	ManifestJSON *string                `protobuf:"bytes,5,opt,name=manifestJSON,proto3,oneof" json:"manifestJSON,omitempty"`
+	Status       string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`
+	Capability   string                 `protobuf:"bytes,7,opt,name=capability,proto3" json:"capability,omitempty"`
+	AllowedTools []string               `protobuf:"bytes,8,rep,name=allowedTools,proto3" json:"allowedTools,omitempty"`
+	Priority     int32                  `protobuf:"varint,9,opt,name=priority,proto3" json:"priority,omitempty"`
+	Enabled      bool                   `protobuf:"varint,10,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	Role         string                 `protobuf:"bytes,11,opt,name=role,proto3" json:"role,omitempty"`
+	ExecutorMode string                 `protobuf:"bytes,12,opt,name=executorMode,proto3" json:"executorMode,omitempty"`
+	// HM4-5: New fields for hybrid multi-agent routing
+	DomainTags       []string `protobuf:"bytes,13,rep,name=domainTags,proto3" json:"domainTags,omitempty"`                    // Domain tags for routing (e.g., "observability", "change")
+	SurfaceMode      *string  `protobuf:"bytes,14,opt,name=surfaceMode,proto3,oneof" json:"surfaceMode,omitempty"`            // Surface visibility mode (e.g., "skills_only", "hybrid")
+	ResourcePriority *int32   `protobuf:"varint,15,opt,name=resourcePriority,proto3,oneof" json:"resourcePriority,omitempty"` // Resource loading priority (lower = higher priority)
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *OrchestratorSkillRelease) Reset() {
@@ -154,6 +158,27 @@ func (x *OrchestratorSkillRelease) GetExecutorMode() string {
 		return x.ExecutorMode
 	}
 	return ""
+}
+
+func (x *OrchestratorSkillRelease) GetDomainTags() []string {
+	if x != nil {
+		return x.DomainTags
+	}
+	return nil
+}
+
+func (x *OrchestratorSkillRelease) GetSurfaceMode() string {
+	if x != nil && x.SurfaceMode != nil {
+		return *x.SurfaceMode
+	}
+	return ""
+}
+
+func (x *OrchestratorSkillRelease) GetResourcePriority() int32 {
+	if x != nil && x.ResourcePriority != nil {
+		return *x.ResourcePriority
+	}
+	return 0
 }
 
 // OrchestratorSkillset is one resolved skillset definition.
@@ -312,7 +337,7 @@ var File_apiserver_v1_orchestrator_skillset_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_orchestrator_skillset_proto_rawDesc = "" +
 	"\n" +
-	"(apiserver/v1/orchestrator_skillset.proto\x12\fapiserver.v1\"\x98\x03\n" +
+	"(apiserver/v1/orchestrator_skillset.proto\x12\fapiserver.v1\"\xb5\x04\n" +
 	"\x18OrchestratorSkillRelease\x12\x18\n" +
 	"\askillID\x18\x01 \x01(\tR\askillID\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12\"\n" +
@@ -328,8 +353,15 @@ const file_apiserver_v1_orchestrator_skillset_proto_rawDesc = "" +
 	"\aenabled\x18\n" +
 	" \x01(\bR\aenabled\x12\x12\n" +
 	"\x04role\x18\v \x01(\tR\x04role\x12\"\n" +
-	"\fexecutorMode\x18\f \x01(\tR\fexecutorModeB\x0f\n" +
-	"\r_manifestJSON\"v\n" +
+	"\fexecutorMode\x18\f \x01(\tR\fexecutorMode\x12\x1e\n" +
+	"\n" +
+	"domainTags\x18\r \x03(\tR\n" +
+	"domainTags\x12%\n" +
+	"\vsurfaceMode\x18\x0e \x01(\tH\x01R\vsurfaceMode\x88\x01\x01\x12/\n" +
+	"\x10resourcePriority\x18\x0f \x01(\x05H\x02R\x10resourcePriority\x88\x01\x01B\x0f\n" +
+	"\r_manifestJSONB\x0e\n" +
+	"\f_surfaceModeB\x13\n" +
+	"\x11_resourcePriority\"v\n" +
 	"\x14OrchestratorSkillset\x12\x1e\n" +
 	"\n" +
 	"skillsetID\x18\x01 \x01(\tR\n" +
