@@ -463,6 +463,55 @@ class RuntimeContractModelTest(unittest.TestCase):
         self.assertEqual(body["createdBy"], "ai:job-2")
 
 
+class ClaimStartResponseTest(unittest.TestCase):
+    def test_parse_playbook_config_from_response(self) -> None:
+        from orchestrator.sdk.runtime_contract import ClaimStartResponse
+
+        playbook_config = {
+            "version": "v1",
+            "rules": [
+                {
+                    "id": "rule-1",
+                    "match": {"root_cause_types": ["deploy_regression"]},
+                    "items": [{"id": "item-1", "title": "Check deploy", "risk": "LOW"}],
+                }
+            ],
+            "fallback": {"items": []},
+        }
+
+        response = ClaimStartResponse.from_api_response({
+            "playbookConfigJSON": json.dumps(playbook_config),
+        })
+
+        self.assertTrue(response.has_playbook_config())
+        parsed = response.parse_playbook_config()
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["version"], "v1")
+        self.assertEqual(len(parsed["rules"]), 1)
+
+    def test_has_playbook_config_returns_false_for_missing_field(self) -> None:
+        from orchestrator.sdk.runtime_contract import ClaimStartResponse
+
+        response = ClaimStartResponse.from_api_response({
+            "skillsetsJSON": "{}",
+        })
+
+        self.assertFalse(response.has_playbook_config())
+        self.assertIsNone(response.parse_playbook_config())
+
+    def test_parse_playbook_config_returns_none_for_invalid_json(self) -> None:
+        from orchestrator.sdk.runtime_contract import ClaimStartResponse
+
+        response = ClaimStartResponse.from_api_response({
+            "playbookConfigJSON": "not valid json",
+        })
+
+        # has_playbook_config returns True because the string is non-empty
+        self.assertTrue(response.has_playbook_config())
+        # but parse returns None because JSON is invalid
+        self.assertIsNone(response.parse_playbook_config())
+
+
 class ToolCallReporterTest(unittest.TestCase):
     def test_reporter_assigns_monotonic_seq_per_job(self) -> None:
         calls: list[dict[str, Any]] = []

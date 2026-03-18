@@ -37,3 +37,8 @@ class OrchestratorConfig:
     # It's built per-job using job-specific context (session, skills, tools).
     middleware_chain: Any = None  # MiddlewareChain | None
     middleware_enabled: bool = True  # Controlled by RCA_HYBRID_MIDDLEWARE_ENABLED
+
+    # Playbook configuration (Phase 8A)
+    # Dynamic playbook config loaded from platform at claim time.
+    # Empty dict means no active playbook (use fallback).
+    playbook_config: dict[str, Any] = field(default_factory=dict)

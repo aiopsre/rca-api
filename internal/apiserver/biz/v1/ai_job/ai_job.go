@@ -124,6 +124,7 @@ type aiJobBiz struct {
 	sessionBiz        sessionbiz.SessionBiz
 	skillsetBiz       skillsetbiz.SkillsetBiz
 	mcpServerBiz      mcpserverbiz.McpServerBiz
+	playbookBiz       playbookbiz.PlaybookBiz
 	operatorReadCache *operatorReadCache
 }
 
@@ -171,6 +172,7 @@ func New(store store.IStore) *aiJobBiz {
 		sessionBiz:        sessionbiz.New(store),
 		skillsetBiz:       skillsetbiz.New(store),
 		mcpServerBiz:      mcpserverbiz.New(store, toolMetadataBiz),
+		playbookBiz:       playbookbiz.New(store),
 		operatorReadCache: newOperatorReadCache(defaultOperatorReadCacheTTL),
 	}
 }
@@ -487,6 +489,14 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 			skillsetsResp,
 		); agentContextJSON != "" {
 			resp.AgentContextJSON = &agentContextJSON
+		}
+
+		// Fetch active playbook configuration for the job
+		if playbookConfig, _, playbookErr := b.playbookBiz.GetActiveForRuntime(ctx); playbookErr == nil && playbookConfig != nil {
+			if configData, marshalErr := json.Marshal(playbookConfig); marshalErr == nil {
+				playbookConfigJSON := string(configData)
+				resp.PlaybookConfigJSON = &playbookConfigJSON
+			}
 		}
 	}
 

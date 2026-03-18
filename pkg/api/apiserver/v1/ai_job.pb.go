@@ -754,8 +754,12 @@ type StartAIJobResponse struct {
 	// Contains job_id, pipeline, template_id, session_snapshot, tool_surface, skill_surface,
 	// platform_hints, and run_policies.
 	AgentContextJSON *string `protobuf:"bytes,3,opt,name=agentContextJSON,proto3,oneof" json:"agentContextJSON,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// playbookConfigJSON contains the active playbook configuration for the job.
+	// Includes rules matching on root_cause_type/patterns and corresponding action items.
+	// Empty string if no active playbook exists (worker should use fallback).
+	PlaybookConfigJSON *string `protobuf:"bytes,4,opt,name=playbookConfigJSON,proto3,oneof" json:"playbookConfigJSON,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *StartAIJobResponse) Reset() {
@@ -805,6 +809,13 @@ func (x *StartAIJobResponse) GetResolvedToolProviders() []*ResolvedToolProvider 
 func (x *StartAIJobResponse) GetAgentContextJSON() string {
 	if x != nil && x.AgentContextJSON != nil {
 		return *x.AgentContextJSON
+	}
+	return ""
+}
+
+func (x *StartAIJobResponse) GetPlaybookConfigJSON() string {
+	if x != nil && x.PlaybookConfigJSON != nil {
+		return *x.PlaybookConfigJSON
 	}
 	return ""
 }
@@ -1832,13 +1843,15 @@ const file_apiserver_v1_ai_job_proto_rawDesc = "" +
 	"totalCount\x12'\n" +
 	"\x04jobs\x18\x02 \x03(\v2\x13.apiserver.v1.AIJobR\x04jobs\")\n" +
 	"\x11StartAIJobRequest\x12\x14\n" +
-	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"\xf1\x01\n" +
+	"\x05jobID\x18\x01 \x01(\tR\x05jobID\"\xbd\x02\n" +
 	"\x12StartAIJobResponse\x12)\n" +
 	"\rskillsetsJSON\x18\x01 \x01(\tH\x00R\rskillsetsJSON\x88\x01\x01\x12X\n" +
 	"\x15resolvedToolProviders\x18\x02 \x03(\v2\".apiserver.v1.ResolvedToolProviderR\x15resolvedToolProviders\x12/\n" +
-	"\x10agentContextJSON\x18\x03 \x01(\tH\x01R\x10agentContextJSON\x88\x01\x01B\x10\n" +
+	"\x10agentContextJSON\x18\x03 \x01(\tH\x01R\x10agentContextJSON\x88\x01\x01\x123\n" +
+	"\x12playbookConfigJSON\x18\x04 \x01(\tH\x02R\x12playbookConfigJSON\x88\x01\x01B\x10\n" +
 	"\x0e_skillsetsJSONB\x13\n" +
-	"\x11_agentContextJSON\"\xa9\x03\n" +
+	"\x11_agentContextJSONB\x15\n" +
+	"\x13_playbookConfigJSON\"\xa9\x03\n" +
 	"\x14ResolvedToolProvider\x12\x1e\n" +
 	"\n" +
 	"providerID\x18\x01 \x01(\tR\n" +

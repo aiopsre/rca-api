@@ -133,6 +133,10 @@ message StartAIJobResponse {
   // Contains job_id, pipeline, template_id, session_snapshot, tool_surface, skill_surface,
   // platform_hints, and run_policies.
   optional string agentContextJSON = 3;
+  // playbookConfigJSON contains the active playbook configuration for the job.
+  // Includes rules matching on root_cause_type/patterns and corresponding action items.
+  // Empty string if no active playbook exists (worker should use fallback).
+  optional string playbookConfigJSON = 4;
 }
 
 // ResolvedToolProvider represents a fully resolved tool provider with all metadata.

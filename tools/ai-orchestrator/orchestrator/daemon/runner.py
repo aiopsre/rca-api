@@ -755,6 +755,22 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 except Exception as provider_exc:  # noqa: BLE001
                     _log(f"job={job_id} resolved tool providers invoker build failed: {provider_exc}")
 
+            # Parse playbook config from claim response (Phase 8A)
+            if claim_response is not None and claim_response.has_playbook_config():
+                try:
+                    playbook_config = claim_response.parse_playbook_config()
+                    if isinstance(playbook_config, dict):
+                        graph_cfg.playbook_config = playbook_config
+                        if debug:
+                            rules_count = len(playbook_config.get("rules", []))
+                            _log(
+                                f"[DEBUG] job={job_id} loaded playbook config "
+                                f"version={playbook_config.get('version', 'unknown')} "
+                                f"rules_count={rules_count}"
+                            )
+                except Exception as playbook_exc:  # noqa: BLE001
+                    _log(f"job={job_id} playbook config parse failed: {playbook_exc}")
+
         # Build tool catalog snapshot after setting invoker
         # This provides an immutable snapshot for function calling
         if settings.fc_runtime_snapshot_enabled:
