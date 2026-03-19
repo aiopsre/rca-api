@@ -23,6 +23,7 @@ import (
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
 	toolmetadatav1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	triggerv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
+	verificationv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/verification"
 	"github.com/google/wire"
 
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
@@ -54,6 +55,7 @@ type IBiz interface {
 	NoticeV1() noticev1.NoticeBiz
 	AlertingPolicyV1() alertingpolicyv1.AlertingPolicyBiz
 	PlaybookV1() playbookv1.PlaybookBiz
+	VerificationTemplateV1() verificationv1.VerificationTemplateBiz
 	Close() error
 }
 
@@ -99,6 +101,8 @@ type biz struct {
 	alertingPolicyBiz          alertingpolicyv1.AlertingPolicyBiz
 	playbookOnce               sync.Once
 	playbookBiz                playbookv1.PlaybookBiz
+	verificationTemplateOnce   sync.Once
+	verificationTemplateBiz    verificationv1.VerificationTemplateBiz
 
 	closeOnce sync.Once
 	closeErr  error
@@ -243,6 +247,13 @@ func (b *biz) PlaybookV1() playbookv1.PlaybookBiz {
 		b.playbookBiz = playbookv1.New(b.store)
 	})
 	return b.playbookBiz
+}
+
+func (b *biz) VerificationTemplateV1() verificationv1.VerificationTemplateBiz {
+	b.verificationTemplateOnce.Do(func() {
+		b.verificationTemplateBiz = verificationv1.NewVerificationTemplateBiz(b.store)
+	})
+	return b.verificationTemplateBiz
 }
 
 func (b *biz) Close() error {

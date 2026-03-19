@@ -1302,7 +1302,32 @@ def run_verification(
     if not incident_id:
         return state
 
-    plan = state.post_finalize_verification_plan if isinstance(state.post_finalize_verification_plan, dict) else {}
+    # Try to match verification template first (Phase 8B)
+    plan: dict[str, Any] = {}
+    template_matched = False
+    if cfg.verification_templates:
+        from ..runtime.verification_runner import match_verification_template
+
+        # Extract diagnosis attributes for template matching
+        diagnosis_json = state.diagnosis_json if isinstance(state.diagnosis_json, dict) else {}
+        root_cause_type = diagnosis_json.get("root_cause_type") if isinstance(diagnosis_json, dict) else None
+        patterns = diagnosis_json.get("patterns") if isinstance(diagnosis_json, dict) else None
+        confidence = diagnosis_json.get("confidence") if isinstance(diagnosis_json, dict) else None
+
+        matched_steps = match_verification_template(
+            verification_templates=cfg.verification_templates,
+            root_cause_type=root_cause_type,
+            patterns=patterns if isinstance(patterns, list) else None,
+            confidence=float(confidence) if confidence is not None else None,
+        )
+        if isinstance(matched_steps, dict):
+            plan = matched_steps
+            template_matched = True
+
+    # Fallback to diagnosis verification_plan if no template matched
+    if not template_matched:
+        plan = state.post_finalize_verification_plan if isinstance(state.post_finalize_verification_plan, dict) else {}
+
     steps = plan.get("steps") if isinstance(plan, dict) else None
     if not isinstance(steps, list) or not steps:
         started_ms = int(time.time() * 1000)
@@ -1315,6 +1340,7 @@ def run_verification(
                 "incident_id": incident_id,
                 "source": cfg.verification_source,
                 "steps": 0,
+                "template_matched": template_matched,
             },
             response_json={"status": "skipped", "reason": "no_verification_plan_steps"},
             started_ms=started_ms,
@@ -1342,6 +1368,7 @@ def run_verification(
                 "incident_id": incident_id,
                 "source": cfg.verification_source,
                 "steps": len(steps),
+                "template_matched": template_matched,
             },
             response_json={"status": "error"},
             started_ms=started_ms,
@@ -1375,6 +1402,7 @@ def run_verification(
             "incident_id": incident_id,
             "source": cfg.verification_source,
             "steps": len(steps),
+            "template_matched": template_matched,
         },
         response_json={
             "status": "ok",
