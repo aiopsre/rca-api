@@ -137,6 +137,10 @@ message StartAIJobResponse {
   // Includes rules matching on root_cause_type/patterns and corresponding action items.
   // Empty string if no active playbook exists (worker should use fallback).
   optional string playbookConfigJSON = 4;
+  // verificationTemplateJSON contains matched verification template for the job.
+  // Selected based on root_cause_type and patterns from diagnosis.
+  // Empty string if no matching template (worker should use fallback).
+  optional string verificationTemplateJSON = 5;
 }
 
 // ResolvedToolProvider represents a fully resolved tool provider with all metadata.

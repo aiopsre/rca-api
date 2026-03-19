@@ -120,12 +120,13 @@ type AIJobExpansion interface {
 }
 
 type aiJobBiz struct {
-	store             store.IStore
-	sessionBiz        sessionbiz.SessionBiz
-	skillsetBiz       skillsetbiz.SkillsetBiz
-	mcpServerBiz      mcpserverbiz.McpServerBiz
-	playbookBiz       playbookbiz.PlaybookBiz
-	operatorReadCache *operatorReadCache
+	store                  store.IStore
+	sessionBiz             sessionbiz.SessionBiz
+	skillsetBiz            skillsetbiz.SkillsetBiz
+	mcpServerBiz           mcpserverbiz.McpServerBiz
+	playbookBiz            playbookbiz.PlaybookBiz
+	verificationTemplateBiz verificationbiz.VerificationTemplateBiz
+	operatorReadCache      *operatorReadCache
 }
 
 // RecordToolCallAuditRequest writes one audit row to ai_tool_calls without AI job status gating.
@@ -168,12 +169,13 @@ var _ AIJobBiz = (*aiJobBiz)(nil)
 func New(store store.IStore) *aiJobBiz {
 	toolMetadataBiz := toolmetadatabiz.New(store)
 	return &aiJobBiz{
-		store:             store,
-		sessionBiz:        sessionbiz.New(store),
-		skillsetBiz:       skillsetbiz.New(store),
-		mcpServerBiz:      mcpserverbiz.New(store, toolMetadataBiz),
-		playbookBiz:       playbookbiz.New(store),
-		operatorReadCache: newOperatorReadCache(defaultOperatorReadCacheTTL),
+		store:                  store,
+		sessionBiz:             sessionbiz.New(store),
+		skillsetBiz:            skillsetbiz.New(store),
+		mcpServerBiz:           mcpserverbiz.New(store, toolMetadataBiz),
+		playbookBiz:            playbookbiz.New(store),
+		verificationTemplateBiz: verificationbiz.NewVerificationTemplateBiz(store),
+		operatorReadCache:      newOperatorReadCache(defaultOperatorReadCacheTTL),
 	}
 }
 
@@ -496,6 +498,15 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 			if configData, marshalErr := json.Marshal(playbookConfig); marshalErr == nil {
 				playbookConfigJSON := string(configData)
 				resp.PlaybookConfigJSON = &playbookConfigJSON
+			}
+		}
+
+		// Fetch all active verification templates for the job
+		// Worker will match them against diagnosis root_cause_type after diagnosis is produced
+		if verificationTemplates, vtErr := b.verificationTemplateBiz.GetActiveForRuntime(ctx); vtErr == nil && len(verificationTemplates) > 0 {
+			if templateData, marshalErr := json.Marshal(verificationTemplates); marshalErr == nil {
+				verificationTemplateJSON := string(templateData)
+				resp.VerificationTemplateJSON = &verificationTemplateJSON
 			}
 		}
 	}

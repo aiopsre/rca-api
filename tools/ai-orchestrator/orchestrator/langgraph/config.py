@@ -42,3 +42,9 @@ class OrchestratorConfig:
     # Dynamic playbook config loaded from platform at claim time.
     # Empty dict means no active playbook (use fallback).
     playbook_config: dict[str, Any] = field(default_factory=dict)
+
+    # Verification templates configuration (Phase 8B)
+    # List of verification templates loaded from platform at claim time.
+    # Worker matches templates against diagnosis root_cause_type after diagnosis is produced.
+    # Empty list means no active templates (use fallback).
+    verification_templates: list[dict[str, Any]] = field(default_factory=list)

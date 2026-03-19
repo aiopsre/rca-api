@@ -1,0 +1,169 @@
+// Verification Template API 定义：验证步骤模板的请求和响应消息
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// VerificationTemplate 表示验证步骤模板配置
+// 支持版本管理和激活机制
+// 通过 root_cause_type 等字段匹配选择对应验证步骤
+message VerificationTemplate {
+  // id 表示模板唯一标识（自增主键）
+  int64 id = 1;
+
+  // name 表示模板名称（唯一）
+  string name = 2;
+  // description 表示模板描述
+  optional string description = 3;
+
+  // lineageID 表示逻辑模板版本链归属 ID（用于关联同一模板的多个版本）
+  string lineageID = 4;
+  // version 表示版本号（自动递增）
+  int32 version = 5;
+  // matchJSON 表示匹配条件 JSON（root_cause_types, patterns_contain, confidence_min）
+  string matchJSON = 6;
+  // stepsJSON 表示验证步骤 JSON（复用 verification.Plan 格式）
+  string stepsJSON = 7;
+
+  // active 表示是否激活
+  bool active = 8;
+  // activatedAt 表示激活时间
+  optional google.protobuf.Timestamp activatedAt = 9;
+  // activatedBy 表示激活人
+  optional string activatedBy = 10;
+  // previousVersion 表示前一个版本号（用于回滚）
+  optional int32 previousVersion = 11;
+
+  // createdBy 表示创建人
+  string createdBy = 12;
+  // updatedBy 表示更新人
+  optional string updatedBy = 13;
+  // createdAt 表示创建时间
+  google.protobuf.Timestamp createdAt = 14;
+  // updatedAt 表示更新时间
+  google.protobuf.Timestamp updatedAt = 15;
+}
+
+// CreateVerificationTemplateRequest 表示创建验证模板请求
+message CreateVerificationTemplateRequest {
+  // name 表示模板名称（必填）
+  string name = 1;
+  // description 表示模板描述
+  optional string description = 2;
+  // matchJSON 表示匹配条件 JSON（必填）
+  string matchJSON = 3;
+  // stepsJSON 表示验证步骤 JSON（必填）
+  string stepsJSON = 4;
+}
+
+// CreateVerificationTemplateResponse 表示创建验证模板响应
+message CreateVerificationTemplateResponse {
+  // verificationTemplate 表示创建的模板信息
+  VerificationTemplate verificationTemplate = 1;
+}
+
+// GetVerificationTemplateRequest 表示获取验证模板请求
+message GetVerificationTemplateRequest {
+  // id 表示要获取的模板 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+}
+
+// GetVerificationTemplateResponse 表示获取验证模板响应
+message GetVerificationTemplateResponse {
+  // verificationTemplate 表示返回的模板信息
+  VerificationTemplate verificationTemplate = 1;
+}
+
+// ListVerificationTemplatesRequest 表示获取验证模板列表请求
+message ListVerificationTemplatesRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // name 表示可选的名称过滤
+  optional string name = 3;
+  // active 表示可选的激活状态过滤
+  optional bool active = 4;
+}
+
+// ListVerificationTemplatesResponse 表示获取验证模板列表响应
+message ListVerificationTemplatesResponse {
+  // totalCount 表示总数
+  int64 totalCount = 1;
+  // verificationTemplates 表示模板列表
+  repeated VerificationTemplate verificationTemplates = 2;
+}
+
+// UpdateVerificationTemplateRequest 表示更新验证模板请求
+message UpdateVerificationTemplateRequest {
+  // id 表示要更新的模板 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+
+  // name 表示模板名称
+  optional string name = 2;
+  // description 表示模板描述
+  optional string description = 3;
+  // matchJSON 表示匹配条件 JSON
+  optional string matchJSON = 4;
+  // stepsJSON 表示验证步骤 JSON
+  optional string stepsJSON = 5;
+  // expectedVersion 表示期望的版本号（用于乐观锁）
+  optional int32 expectedVersion = 6;
+}
+
+// UpdateVerificationTemplateResponse 表示更新验证模板响应
+message UpdateVerificationTemplateResponse {
+  // verificationTemplate 表示更新后的模板信息
+  VerificationTemplate verificationTemplate = 1;
+}
+
+// DeleteVerificationTemplateRequest 表示删除验证模板请求
+message DeleteVerificationTemplateRequest {
+  // id 表示要删除的模板 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+}
+
+// DeleteVerificationTemplateResponse 表示删除验证模板响应
+message DeleteVerificationTemplateResponse {}
+
+// ActivateVerificationTemplateRequest 表示激活验证模板请求
+message ActivateVerificationTemplateRequest {
+  // id 表示要激活的模板 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+
+  // operator 表示操作者（可选，默认从上下文获取）
+  optional string operator = 2;
+}
+
+// ActivateVerificationTemplateResponse 表示激活验证模板响应
+message ActivateVerificationTemplateResponse {}
+
+// DeactivateVerificationTemplateRequest 表示停用验证模板请求
+message DeactivateVerificationTemplateRequest {
+  // id 表示要停用的模板 ID
+  // @gotags: uri:"id"
+  int64 id = 1;
+}
+
+// DeactivateVerificationTemplateResponse 表示停用验证模板响应
+message DeactivateVerificationTemplateResponse {}
+
+// GetActiveVerificationTemplateRequest 表示获取当前激活的验证模板请求
+message GetActiveVerificationTemplateRequest {}
+
+// GetActiveVerificationTemplateResponse 表示获取当前激活的验证模板响应
+message GetActiveVerificationTemplateResponse {
+  // verificationTemplate 表示当前激活的模板
+  VerificationTemplate verificationTemplate = 1;
+}

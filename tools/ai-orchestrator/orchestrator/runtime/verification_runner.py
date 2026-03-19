@@ -710,3 +710,69 @@ class VerificationRunner:
                 "value": value,
             },
         }
+
+
+def match_verification_template(
+    *,
+    verification_templates: list[dict[str, Any]] | None,
+    root_cause_type: str | None,
+    patterns: list[str] | None,
+    confidence: float | None,
+) -> dict[str, Any] | None:
+    """Match verification templates against diagnosis attributes.
+
+    Matching priority:
+    1. Exact root_cause_type match
+    2. Pattern containment match
+    3. Confidence threshold match
+
+    Returns the first matching template's steps, or None if no match.
+    """
+    if not verification_templates:
+        return None
+
+    root_cause_type_lower = (root_cause_type or "").strip().lower()
+    patterns_lower = [p.strip().lower() for p in (patterns or []) if p and p.strip()]
+    confidence_value = float(confidence) if confidence is not None else 0.0
+
+    for template in verification_templates:
+        if not isinstance(template, dict):
+            continue
+
+        match_config = template.get("match")
+        if not isinstance(match_config, dict):
+            continue
+
+        # Check confidence threshold
+        confidence_min = match_config.get("confidence_min")
+        if confidence_min is not None:
+            try:
+                min_val = float(confidence_min)
+                if confidence_value < min_val:
+                    continue
+            except (TypeError, ValueError):
+                pass
+
+        # Check root_cause_type match
+        root_cause_types = match_config.get("root_cause_types")
+        if root_cause_type_lower and isinstance(root_cause_types, list):
+            for rct in root_cause_types:
+                if isinstance(rct, str) and rct.strip().lower() == root_cause_type_lower:
+                    steps = template.get("steps")
+                    if isinstance(steps, dict):
+                        return steps
+
+        # Check patterns containment
+        patterns_contain = match_config.get("patterns_contain")
+        if patterns_lower and isinstance(patterns_contain, list):
+            for template_pattern in patterns_contain:
+                if not isinstance(template_pattern, str):
+                    continue
+                template_pattern_lower = template_pattern.strip().lower()
+                for input_pattern in patterns_lower:
+                    if template_pattern_lower == input_pattern:
+                        steps = template.get("steps")
+                        if isinstance(steps, dict):
+                            return steps
+
+    return None
