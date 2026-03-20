@@ -1299,6 +1299,30 @@ class VerificationTemplateMatchTest(unittest.TestCase):
         )
         self.assertIsNotNone(matched)
 
+    def test_match_with_missing_evidence_type(self) -> None:
+        """Test matching with actual diagnosis root_cause.type values."""
+        from orchestrator.runtime.verification_runner import match_verification_template
+
+        templates = [
+            {
+                "id": 1,
+                "name": "missing-evidence-template",
+                "match": {"root_cause_types": ["missing_evidence"]},
+                "steps": {"version": "v1", "steps": [{"id": "step-1", "tool": "mcp.query_logs"}]},
+            },
+        ]
+
+        # Simulate extraction from diagnosis_json["root_cause"]["type"]
+        matched = match_verification_template(
+            verification_templates=templates,
+            root_cause_type="missing_evidence",
+            patterns=None,
+            confidence=0.15,
+        )
+
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["version"], "v1")
+
 
 if __name__ == "__main__":
     unittest.main()

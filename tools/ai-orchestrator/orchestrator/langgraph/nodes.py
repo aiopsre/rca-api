@@ -1309,15 +1309,22 @@ def run_verification(
         from ..runtime.verification_runner import match_verification_template
 
         # Extract diagnosis attributes for template matching
+        # root_cause_type and confidence are nested under diagnosis_json["root_cause"]
         diagnosis_json = state.diagnosis_json if isinstance(state.diagnosis_json, dict) else {}
-        root_cause_type = diagnosis_json.get("root_cause_type") if isinstance(diagnosis_json, dict) else None
-        patterns = diagnosis_json.get("patterns") if isinstance(diagnosis_json, dict) else None
-        confidence = diagnosis_json.get("confidence") if isinstance(diagnosis_json, dict) else None
+        root_cause = diagnosis_json.get("root_cause") if isinstance(diagnosis_json, dict) else None
+        root_cause_type = None
+        confidence = None
+        if isinstance(root_cause, dict):
+            root_cause_type = root_cause.get("type")
+            confidence = root_cause.get("confidence")
+        # patterns is optional - can be derived from hypotheses or other fields
+        # For now, we use root_cause_type matching as the primary mechanism
+        patterns = None
 
         matched_steps = match_verification_template(
             verification_templates=cfg.verification_templates,
             root_cause_type=root_cause_type,
-            patterns=patterns if isinstance(patterns, list) else None,
+            patterns=patterns,
             confidence=float(confidence) if confidence is not None else None,
         )
         if isinstance(matched_steps, dict):
