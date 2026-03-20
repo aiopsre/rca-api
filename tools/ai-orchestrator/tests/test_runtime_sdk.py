@@ -1324,5 +1324,65 @@ class VerificationTemplateMatchTest(unittest.TestCase):
         self.assertEqual(matched["version"], "v1")
 
 
+class DiagnosisPatchMergeTest(unittest.TestCase):
+    def test_merge_diagnosis_patch_merges_root_cause_type(self) -> None:
+        """Test that _merge_diagnosis_patch merges root_cause.type from agent patches."""
+        from orchestrator.langgraph.nodes import _merge_diagnosis_patch
+
+        diagnosis_json = {
+            "root_cause": {
+                "type": "unknown",
+                "confidence": 0.65,
+            },
+        }
+
+        diagnosis_patch = {
+            "root_cause": {
+                "type": "deploy_regression",
+                "summary": "Deployment caused regression",
+            },
+        }
+
+        merged = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
+
+        self.assertEqual(merged["root_cause"]["type"], "deploy_regression")
+        self.assertEqual(merged["root_cause"]["summary"], "Deployment caused regression")
+        # Original confidence preserved
+        self.assertEqual(merged["root_cause"]["confidence"], 0.65)
+
+    def test_merge_diagnosis_patch_merges_patterns(self) -> None:
+        """Test that _merge_diagnosis_patch merges patterns from agent patches."""
+        from orchestrator.langgraph.nodes import _merge_diagnosis_patch
+
+        diagnosis_json = {
+            "root_cause": {"type": "unknown"},
+        }
+
+        diagnosis_patch = {
+            "patterns": ["latency_spike", "5xx_increase"],
+        }
+
+        merged = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
+
+        self.assertEqual(merged["patterns"], ["latency_spike", "5xx_increase"])
+
+    def test_merge_diagnosis_patch_preserves_existing_patterns(self) -> None:
+        """Test that patterns patch replaces existing patterns."""
+        from orchestrator.langgraph.nodes import _merge_diagnosis_patch
+
+        diagnosis_json = {
+            "root_cause": {"type": "unknown"},
+            "patterns": ["old_pattern"],
+        }
+
+        diagnosis_patch = {
+            "patterns": ["new_pattern"],
+        }
+
+        merged = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
+
+        self.assertEqual(merged["patterns"], ["new_pattern"])
+
+
 if __name__ == "__main__":
     unittest.main()

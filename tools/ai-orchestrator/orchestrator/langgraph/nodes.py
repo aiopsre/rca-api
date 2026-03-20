@@ -919,6 +919,16 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
                 current_root_cause["confidence"] = max(0.0, min(1.0, confidence))
             except (TypeError, ValueError):
                 pass
+        # Phase 8B: Merge root_cause.type from patch (allows agents to set meaningful types)
+        if "type" in root_cause_patch:
+            root_type = root_cause_patch.get("type")
+            if isinstance(root_type, str) and root_type.strip():
+                current_root_cause["type"] = root_type.strip()
+        # Phase 8B: Merge root_cause.category from patch
+        if "category" in root_cause_patch:
+            root_category = root_cause_patch.get("category")
+            if isinstance(root_category, str) and root_category.strip():
+                current_root_cause["category"] = root_category.strip()
         merged["root_cause"] = current_root_cause
 
     recommendations = diagnosis_patch.get("recommendations")
@@ -930,6 +940,10 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
     next_steps = diagnosis_patch.get("next_steps")
     if isinstance(next_steps, list):
         merged["next_steps"] = [str(item).strip() for item in next_steps if str(item).strip()]
+    # Phase 8B: Merge patterns from patch (A4 schema)
+    patterns = diagnosis_patch.get("patterns")
+    if isinstance(patterns, list):
+        merged["patterns"] = [str(item).strip() for item in patterns if str(item).strip()]
     return merged
 
 def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> GraphState:
@@ -1317,9 +1331,12 @@ def run_verification(
         if isinstance(root_cause, dict):
             root_cause_type = root_cause.get("type")
             confidence = root_cause.get("confidence")
-        # patterns is optional - can be derived from hypotheses or other fields
-        # For now, we use root_cause_type matching as the primary mechanism
+        # Extract patterns from diagnosis_json (A4 schema)
+        # patterns is a list of pattern strings at the top level of diagnosis_json
+        patterns_raw = diagnosis_json.get("patterns") if isinstance(diagnosis_json, dict) else None
         patterns = None
+        if isinstance(patterns_raw, list):
+            patterns = [str(p).strip() for p in patterns_raw if str(p).strip()]
 
         matched_steps = match_verification_template(
             verification_templates=cfg.verification_templates,
