@@ -940,10 +940,10 @@ def _merge_diagnosis_patch(diagnosis_json: dict[str, Any], diagnosis_patch: dict
     next_steps = diagnosis_patch.get("next_steps")
     if isinstance(next_steps, list):
         merged["next_steps"] = [str(item).strip() for item in next_steps if str(item).strip()]
-    # Phase 8B: Merge patterns from patch (A4 schema)
+    # Phase 8B: Merge patterns from patch (A4 schema: {type, value, weight})
     patterns = diagnosis_patch.get("patterns")
     if isinstance(patterns, list):
-        merged["patterns"] = [str(item).strip() for item in patterns if str(item).strip()]
+        merged["patterns"] = [p for p in patterns if isinstance(p, dict)]
     return merged
 
 def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> GraphState:
@@ -1115,10 +1115,7 @@ def finalize_job(
             state.last_error = f"lease_lost: {runtime.lease_lost_reason() or 'lease_renew_failed'}"
         return state
 
-    # 写回 Skills 输出的 session_patch（best effort）
-    from ..skills import write_session_patch_to_platform
-
-    write_session_patch_to_platform(state, runtime)
+    # MCL: session_patch writeback removed from main path
 
     error_message = (state.last_error or "").strip()
 
@@ -1331,12 +1328,14 @@ def run_verification(
         if isinstance(root_cause, dict):
             root_cause_type = root_cause.get("type")
             confidence = root_cause.get("confidence")
-        # Extract patterns from diagnosis_json (A4 schema)
-        # patterns is a list of pattern strings at the top level of diagnosis_json
+        # Extract patterns from diagnosis_json (A4 schema: {type, value, weight})
         patterns_raw = diagnosis_json.get("patterns") if isinstance(diagnosis_json, dict) else None
         patterns = None
         if isinstance(patterns_raw, list):
-            patterns = [str(p).strip() for p in patterns_raw if str(p).strip()]
+            patterns = [
+                p.get("value") for p in patterns_raw
+                if isinstance(p, dict) and isinstance(p.get("value"), str)
+            ]
 
         matched_steps = match_verification_template(
             verification_templates=cfg.verification_templates,

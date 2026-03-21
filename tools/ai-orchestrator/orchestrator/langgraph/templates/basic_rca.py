@@ -10,9 +10,7 @@ from ..nodes import (
     finalize_job,
     load_job_and_start,
     merge_evidence,
-    post_finalize_observe,
     quality_gate_node,
-    run_verification,
     summarize_diagnosis,
     summarize_diagnosis_agentized,
 )
@@ -32,7 +30,7 @@ def build_basic_rca_graph(
 ):
     """Build the basic RCA graph with hybrid multi-agent.
 
-    Execution flow:
+    Execution flow (MCL - Minimal Closed Loop):
         START -> load_job_and_start -> route_domains
             -> run_observability_agent -> run_change_agent -> run_knowledge_agent
             -> merge_domain_findings -> merge_evidence
@@ -71,8 +69,6 @@ def build_basic_rca_graph(
         guard("summarize_diagnosis", lambda s: summarize_diagnosis(s, runtime), runtime),
     )
     builder.add_node("finalize_job", lambda s: finalize_job(s, runtime))
-    builder.add_node("post_finalize_observe", lambda s: post_finalize_observe(s, cfg, runtime))
-    builder.add_node("run_verification", lambda s: run_verification(s, cfg, runtime))
 
     # Hybrid multi-agent nodes
     builder.add_node(
@@ -117,8 +113,6 @@ def build_basic_rca_graph(
     builder.add_edge("summarize_diagnosis_agentized", "quality_gate")
     builder.add_edge("quality_gate", "summarize_diagnosis")
     builder.add_edge("summarize_diagnosis", "finalize_job")
-    builder.add_edge("finalize_job", "post_finalize_observe")
-    builder.add_edge("post_finalize_observe", "run_verification")
-    builder.add_edge("run_verification", END)
+    builder.add_edge("finalize_job", END)
 
     return builder.compile()

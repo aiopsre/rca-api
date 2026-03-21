@@ -533,8 +533,6 @@ start_orchestrator() {
       DS_BASE_URL="${DS_BASE_URL}" \
       DS_TYPE=elasticsearch \
       AUTO_CREATE_DATASOURCE=1 \
-      RUN_VERIFICATION=0 \
-      POST_FINALIZE_OBSERVE=0 \
       SKILLS_EXECUTION_MODE=prompt_first \
       SKILLS_TOOL_CALLING_MODE=evidence_plan_single_hop \
       AGENT_MODEL="${AGENT_MODEL}" \

@@ -56,7 +56,6 @@ class ClaimStartResponse:
     skillsets_json: str | None = None
     resolved_tool_providers: list[dict[str, Any]] | None = None
     agent_context_json: str | None = None
-    playbook_config_json: str | None = None
     verification_template_json: str | None = None
 
     @classmethod
@@ -80,11 +79,6 @@ class ClaimStartResponse:
         raw_agent_context = data.get("agentContextJSON")
         if isinstance(raw_agent_context, str) and raw_agent_context.strip():
             agent_context_json = raw_agent_context.strip()
-        # Parse playbook_config_json (Phase 8A)
-        playbook_config_json = None
-        raw_playbook_config = data.get("playbookConfigJSON")
-        if isinstance(raw_playbook_config, str) and raw_playbook_config.strip():
-            playbook_config_json = raw_playbook_config.strip()
         # Parse verification_template_json (Phase 8B)
         verification_template_json = None
         raw_verification_template = data.get("verificationTemplateJSON")
@@ -94,7 +88,6 @@ class ClaimStartResponse:
             skillsets_json=skillsets_json,
             resolved_tool_providers=resolved_tool_providers,
             agent_context_json=agent_context_json,
-            playbook_config_json=playbook_config_json,
             verification_template_json=verification_template_json,
         )
 
@@ -107,21 +100,8 @@ class ClaimStartResponse:
     def has_agent_context(self) -> bool:
         return isinstance(self.agent_context_json, str) and self.agent_context_json != ""
 
-    def has_playbook_config(self) -> bool:
-        return isinstance(self.playbook_config_json, str) and self.playbook_config_json != ""
-
     def has_verification_template(self) -> bool:
         return isinstance(self.verification_template_json, str) and self.verification_template_json != ""
-
-    def parse_playbook_config(self) -> dict[str, Any] | None:
-        """Parse playbook_config_json into a dictionary."""
-        if not self.has_playbook_config():
-            return None
-        try:
-            parsed = json.loads(self.playbook_config_json)
-            return parsed if isinstance(parsed, dict) else None
-        except json.JSONDecodeError:
-            return None
 
     def parse_verification_template(self) -> list[dict[str, Any]] | None:
         """Parse verification_template_json into a list of template dictionaries."""

@@ -31,10 +31,7 @@ The orchestrator executes a dynamic workflow that discovers available tools at r
 │  summarize_diagnosis  ◄── diagnosis.enrich capability (LLM)             │
 │         │                                                                │
 │         ▼                                                                │
-│  finalize_job                                                            │
-│         │                                                                │
-│         ▼                                                                │
-│  post_finalize_observe ──► run_verification ──► END                     │
+│  finalize_job ──► END                                                    │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -236,14 +233,6 @@ skill-bundles/
 | `A3_MAX_CALLS` | Max tool calls per job | `6` |
 | `A3_MAX_TOTAL_BYTES` | Max response bytes | `2MB` |
 | `A3_MAX_TOTAL_LATENCY_MS` | Max total latency | `8000` |
-
-### Verification
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `RUN_VERIFICATION` | Enable post-finalize verification | `0` |
-| `VERIFICATION_SOURCE` | Verification source | `ai_job` |
-| `VERIFICATION_MAX_STEPS` | Max verification steps | `20` |
 
 ### Skill Paths
 

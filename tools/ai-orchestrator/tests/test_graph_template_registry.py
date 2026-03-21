@@ -53,16 +53,6 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
             a3_max_calls=6,
             a3_max_total_bytes=2 * 1024 * 1024,
             a3_max_total_latency_ms=8000,
-            run_verification=False,
-            post_finalize_observe=False,
-            verification_source="ai_job",
-            verification_max_steps=20,
-            verification_max_total_latency_ms=8000,
-            verification_max_total_bytes=2 * 1024 * 1024,
-            verification_dedupe_enabled=True,
-            post_finalize_wait_timeout_seconds=8,
-            post_finalize_wait_interval_ms=500,
-            post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json=(
                 '{"pipelines":{"basic_rca":"default"},'
@@ -143,7 +133,7 @@ class InvokeGraphTemplateSelectionTest(unittest.TestCase):
         ):
             runner_module._invoke_graph(
                 self._settings(),
-                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                OrchestratorConfig(run_query=True),
                 "job-unknown",
                 debug=False,
             )

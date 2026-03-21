@@ -464,53 +464,6 @@ class RuntimeContractModelTest(unittest.TestCase):
 
 
 class ClaimStartResponseTest(unittest.TestCase):
-    def test_parse_playbook_config_from_response(self) -> None:
-        from orchestrator.sdk.runtime_contract import ClaimStartResponse
-
-        playbook_config = {
-            "version": "v1",
-            "rules": [
-                {
-                    "id": "rule-1",
-                    "match": {"root_cause_types": ["deploy_regression"]},
-                    "items": [{"id": "item-1", "title": "Check deploy", "risk": "LOW"}],
-                }
-            ],
-            "fallback": {"items": []},
-        }
-
-        response = ClaimStartResponse.from_api_response({
-            "playbookConfigJSON": json.dumps(playbook_config),
-        })
-
-        self.assertTrue(response.has_playbook_config())
-        parsed = response.parse_playbook_config()
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["version"], "v1")
-        self.assertEqual(len(parsed["rules"]), 1)
-
-    def test_has_playbook_config_returns_false_for_missing_field(self) -> None:
-        from orchestrator.sdk.runtime_contract import ClaimStartResponse
-
-        response = ClaimStartResponse.from_api_response({
-            "skillsetsJSON": "{}",
-        })
-
-        self.assertFalse(response.has_playbook_config())
-        self.assertIsNone(response.parse_playbook_config())
-
-    def test_parse_playbook_config_returns_none_for_invalid_json(self) -> None:
-        from orchestrator.sdk.runtime_contract import ClaimStartResponse
-
-        response = ClaimStartResponse.from_api_response({
-            "playbookConfigJSON": "not valid json",
-        })
-
-        # has_playbook_config returns True because the string is non-empty
-        self.assertTrue(response.has_playbook_config())
-        # but parse returns None because JSON is invalid
-        self.assertIsNone(response.parse_playbook_config())
-
     def test_has_verification_template_returns_false_for_missing_field(self) -> None:
         from orchestrator.sdk.runtime_contract import ClaimStartResponse
 
@@ -1351,37 +1304,46 @@ class DiagnosisPatchMergeTest(unittest.TestCase):
         self.assertEqual(merged["root_cause"]["confidence"], 0.65)
 
     def test_merge_diagnosis_patch_merges_patterns(self) -> None:
-        """Test that _merge_diagnosis_patch merges patterns from agent patches."""
+        """Test that _merge_diagnosis_patch merges patterns from agent patches (A4 schema)."""
         from orchestrator.langgraph.nodes import _merge_diagnosis_patch
 
         diagnosis_json = {
             "root_cause": {"type": "unknown"},
         }
 
+        # A4 schema: patterns are structured objects {type, value, weight}
         diagnosis_patch = {
-            "patterns": ["latency_spike", "5xx_increase"],
+            "patterns": [
+                {"type": "signal", "value": "latency_spike", "weight": 0.8},
+                {"type": "signal", "value": "5xx_increase", "weight": 0.7},
+            ],
         }
 
         merged = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
 
-        self.assertEqual(merged["patterns"], ["latency_spike", "5xx_increase"])
+        # Patterns should be preserved as structured objects
+        self.assertEqual(len(merged["patterns"]), 2)
+        self.assertEqual(merged["patterns"][0]["value"], "latency_spike")
+        self.assertEqual(merged["patterns"][1]["value"], "5xx_increase")
 
     def test_merge_diagnosis_patch_preserves_existing_patterns(self) -> None:
-        """Test that patterns patch replaces existing patterns."""
+        """Test that patterns patch replaces existing patterns (A4 schema)."""
         from orchestrator.langgraph.nodes import _merge_diagnosis_patch
 
         diagnosis_json = {
             "root_cause": {"type": "unknown"},
-            "patterns": ["old_pattern"],
+            "patterns": [{"type": "signal", "value": "old_pattern", "weight": 0.5}],
         }
 
+        # A4 schema: patterns are structured objects
         diagnosis_patch = {
-            "patterns": ["new_pattern"],
+            "patterns": [{"type": "signal", "value": "new_pattern", "weight": 0.9}],
         }
 
         merged = _merge_diagnosis_patch(diagnosis_json, diagnosis_patch)
 
-        self.assertEqual(merged["patterns"], ["new_pattern"])
+        self.assertEqual(len(merged["patterns"]), 1)
+        self.assertEqual(merged["patterns"][0]["value"], "new_pattern")
 
 
 if __name__ == "__main__":

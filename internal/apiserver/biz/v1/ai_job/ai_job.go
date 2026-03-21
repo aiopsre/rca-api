@@ -6,14 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
-	kbbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/kb"
 	mcpserverbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/mcpserver"
 	playbookbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/playbook"
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
@@ -493,14 +491,6 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 			resp.AgentContextJSON = &agentContextJSON
 		}
 
-		// Fetch active playbook configuration for the job
-		if playbookConfig, _, playbookErr := b.playbookBiz.GetActiveForRuntime(ctx); playbookErr == nil && playbookConfig != nil {
-			if configData, marshalErr := json.Marshal(playbookConfig); marshalErr == nil {
-				playbookConfigJSON := string(configData)
-				resp.PlaybookConfigJSON = &playbookConfigJSON
-			}
-		}
-
 		// Fetch all active verification templates for the job
 		// Worker will match them against diagnosis root_cause_type after diagnosis is produced
 		if verificationTemplates, vtErr := b.verificationTemplateBiz.GetActiveForRuntime(ctx); vtErr == nil && len(verificationTemplates) > 0 {
@@ -685,39 +675,8 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 				}
 			}
 
-			var jobToolCalls []*model.AIToolCallM
-			if _, jobToolCalls, err = b.store.AIToolCall().List(txCtx, where.T(txCtx).P(0, 200).F("job_id", jobID)); err != nil {
-				slog.Warn("verification plan skipped: list tool calls failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", err)
-			} else {
-				verificationPlan := b.buildVerificationPlan(txCtx, jobToolCalls)
-				if len(verificationPlan) > 0 {
-					if patchedDiagnosisJSON, patchErr := injectVerificationPlanIntoDiagnosis(diagnosisJSON, verificationPlan); patchErr != nil {
-						slog.Warn("verification plan skipped: inject diagnosis failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", patchErr)
-					} else {
-						diagnosisJSON = patchedDiagnosisJSON
-						if mirrorErr := b.mirrorVerificationPlanToToolCall(txCtx, jobToolCalls, verificationPlan); mirrorErr != nil {
-							slog.Warn("verification plan mirror failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", mirrorErr)
-						}
-					}
-				}
-
-				playbookPayload, generatedPlaybook, playbookErr := playbookbiz.Build(playbookbiz.BuildInput{
-					DiagnosisJSON: diagnosisJSON,
-					RootCauseType: playbookRootCauseTypeFromDiagnosis(diagnosis),
-				})
-				if playbookErr != nil {
-					slog.Warn("playbook generation skipped", "job_id", jobID, "incident_id", incident.IncidentID, "error", playbookErr)
-				} else if generatedPlaybook {
-					if patchedDiagnosisJSON, patchErr := injectPlaybookIntoDiagnosis(diagnosisJSON, playbookPayload); patchErr != nil {
-						slog.Warn("playbook injection skipped: inject diagnosis failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", patchErr)
-					} else {
-						diagnosisJSON = patchedDiagnosisJSON
-						if mirrorErr := b.mirrorPlaybookToToolCall(txCtx, jobToolCalls, playbookPayload); mirrorErr != nil {
-							slog.Warn("playbook mirror failed", "job_id", jobID, "incident_id", incident.IncidentID, "error", mirrorErr)
-						}
-					}
-				}
-			}
+			// MCL: verification_plan and playbook injection removed from active path
+			// diagnosis_json now only contains the core diagnosis payload
 
 			updates["output_json"] = diagnosisJSON
 			if rq.OutputSummary == nil {
@@ -866,9 +825,7 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	if noticeReq != nil {
 		noticepkg.DispatchBestEffort(ctx, b.store, *noticeReq)
 	}
-	if targetStatus == jobStatusSucceeded {
-		b.runKBBestEffort(ctx, jobID)
-	}
+	// MCL: KB best-effort writeback removed from active path
 	cachex.InvalidateTraceReadModels(ctx, jobID)
 	if sessionPatch != nil {
 		cachex.InvalidateSessionReadModels(ctx, sessionPatch.SessionID)
@@ -878,335 +835,7 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	return &v1.FinalizeAIJobResponse{}, nil
 }
 
-func (b *aiJobBiz) buildVerificationPlan(ctx context.Context, toolCalls []*model.AIToolCallM) map[string]any {
-	executed := extractVerificationExecuted(toolCalls)
-	kbPatterns := extractVerificationKBPatterns(toolCalls)
-
-	prometheusID, logsID, defaultID := b.resolveVerificationDatasourceIDs(ctx, toolCalls)
-	if prometheusID == "" && logsID == "" && defaultID == "" {
-		return nil
-	}
-
-	plan := verificationbiz.BuildPlan(verificationbiz.BuildInput{
-		Executed:     executed,
-		KBPatterns:   kbPatterns,
-		Now:          time.Now().UTC(),
-		PrometheusID: prometheusID,
-		LogsID:       logsID,
-		DefaultID:    defaultID,
-	})
-	if plan == nil {
-		return nil
-	}
-
-	raw, err := json.Marshal(plan)
-	if err != nil {
-		return nil
-	}
-	out := map[string]any{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil
-	}
-	return out
-}
-
-// resolveVerificationDatasourceIDs returns empty strings as datasource management has been removed from the platform.
-// The orchestrator side now resolves datasources through external MCP servers.
-func (b *aiJobBiz) resolveVerificationDatasourceIDs(ctx context.Context, toolCalls []*model.AIToolCallM) (string, string, string) {
-	return "", "", ""
-}
-
-func (b *aiJobBiz) mirrorVerificationPlanToToolCall(ctx context.Context, toolCalls []*model.AIToolCallM, plan map[string]any) error {
-	if len(plan) == 0 {
-		return nil
-	}
-	target := selectDiagnosisRelatedToolCall(toolCalls)
-	if target == nil {
-		return nil
-	}
-
-	payload := map[string]any{}
-	if target.ResponseJSON != nil {
-		payload = parseJSONObject(*target.ResponseJSON)
-	}
-	if payload == nil {
-		payload = make(map[string]any)
-	}
-	payload["verification_plan"] = plan
-
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	value := string(raw)
-	target.ResponseJSON = &value
-	target.ResponseSizeBytes = int64(len(raw))
-	return b.store.AIToolCall().Update(ctx, target)
-}
-
-func selectDiagnosisRelatedToolCall(toolCalls []*model.AIToolCallM) *model.AIToolCallM {
-	if len(toolCalls) == 0 {
-		return nil
-	}
-	candidates := make([]*model.AIToolCallM, 0, len(toolCalls))
-	for _, toolCall := range toolCalls {
-		toolName := strings.ToLower(strings.TrimSpace(toolCall.ToolName))
-		nodeName := strings.ToLower(strings.TrimSpace(toolCall.NodeName))
-		if strings.Contains(toolName, "diagnosis") || strings.Contains(nodeName, "synthesize") {
-			candidates = append(candidates, toolCall)
-		}
-	}
-	if len(candidates) == 0 {
-		candidates = toolCalls
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].Seq != candidates[j].Seq {
-			return candidates[i].Seq < candidates[j].Seq
-		}
-		return candidates[i].ID < candidates[j].ID
-	})
-	return candidates[len(candidates)-1]
-}
-
-//nolint:gocognit // Extraction keeps explicit guards for heterogeneous historical payloads.
-func extractVerificationExecuted(toolCalls []*model.AIToolCallM) []string {
-	if len(toolCalls) == 0 {
-		return nil
-	}
-	for _, toolCall := range toolCalls {
-		payload := parseToolCallResponse(toolCall)
-		if payload == nil {
-			continue
-		}
-		evidencePlan, _ := payload["evidence_plan"].(map[string]any)
-		if evidencePlan == nil {
-			continue
-		}
-		executedAny, _ := evidencePlan["executed"].([]any)
-		if len(executedAny) == 0 {
-			continue
-		}
-		out := make([]string, 0, len(executedAny))
-		for _, item := range executedAny {
-			value := strings.TrimSpace(anyToString(item))
-			if value == "" {
-				continue
-			}
-			out = append(out, value)
-		}
-		if len(out) > 0 {
-			return out
-		}
-	}
-	return nil
-}
-
-//nolint:gocognit // Pattern extraction keeps explicit nested parsing for stable ordering/dedup.
-func extractVerificationKBPatterns(toolCalls []*model.AIToolCallM) []verificationbiz.KBPattern {
-	out := make([]verificationbiz.KBPattern, 0, 8)
-	seen := map[string]struct{}{}
-
-	for _, toolCall := range toolCalls {
-		payload := parseToolCallResponse(toolCall)
-		if payload == nil {
-			continue
-		}
-		refs, _ := payload["kb_refs"].([]any)
-		for _, ref := range refs {
-			refObj, _ := ref.(map[string]any)
-			if refObj == nil {
-				continue
-			}
-			patterns, _ := refObj["patterns"].([]any)
-			for _, pattern := range patterns {
-				patternObj, _ := pattern.(map[string]any)
-				if patternObj == nil {
-					continue
-				}
-				pType := strings.TrimSpace(anyToString(patternObj["type"]))
-				pValue := strings.TrimSpace(anyToString(patternObj["value"]))
-				if pType == "" || pValue == "" {
-					continue
-				}
-				key := strings.ToLower(pType) + ":" + strings.ToLower(pValue)
-				if _, ok := seen[key]; ok {
-					continue
-				}
-				seen[key] = struct{}{}
-				out = append(out, verificationbiz.KBPattern{
-					Type:  pType,
-					Value: pValue,
-				})
-			}
-		}
-	}
-	return out
-}
-
-func injectVerificationPlanIntoDiagnosis(diagnosisJSON string, plan map[string]any) (string, error) {
-	payload := parseJSONObject(diagnosisJSON)
-	if payload == nil {
-		return "", errno.ErrAIJobInvalidDiagnosis
-	}
-	payload["verification_plan"] = plan
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
-}
-
-func injectPlaybookIntoDiagnosis(diagnosisJSON string, playbook *playbookbiz.Playbook) (string, error) {
-	if playbook == nil {
-		return diagnosisJSON, nil
-	}
-	payload := parseJSONObject(diagnosisJSON)
-	if payload == nil {
-		return "", errno.ErrAIJobInvalidDiagnosis
-	}
-	payload["playbook"] = playbook
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
-}
-
-func playbookRootCauseTypeFromDiagnosis(diagnosis *diagnosisPayload) string {
-	if diagnosis == nil || diagnosis.RootCause == nil {
-		return ""
-	}
-	if value := strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Type)); value != "" {
-		return value
-	}
-	return strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Category))
-}
-
-func (b *aiJobBiz) mirrorPlaybookToToolCall(ctx context.Context, toolCalls []*model.AIToolCallM, playbook *playbookbiz.Playbook) error {
-	if playbook == nil {
-		return nil
-	}
-	target := selectDiagnosisRelatedToolCall(toolCalls)
-	if target == nil {
-		return nil
-	}
-
-	payload := map[string]any{}
-	if target.ResponseJSON != nil {
-		payload = parseJSONObject(*target.ResponseJSON)
-	}
-	if payload == nil {
-		payload = make(map[string]any)
-	}
-	payload["playbook"] = playbook
-
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	value := string(raw)
-	target.ResponseJSON = &value
-	target.ResponseSizeBytes = int64(len(raw))
-	return b.store.AIToolCall().Update(ctx, target)
-}
-
-//nolint:gocognit,gocyclo // Best-effort path keeps explicit early-return branches for safety.
-func (b *aiJobBiz) runKBBestEffort(ctx context.Context, jobID string) {
-	jobID = strings.TrimSpace(jobID)
-	if jobID == "" {
-		return
-	}
-
-	job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
-	if err != nil {
-		slog.Warn("kb best-effort skipped: get ai job failed", "job_id", jobID, "error", err)
-		return
-	}
-	if strings.ToLower(strings.TrimSpace(job.Status)) != jobStatusSucceeded {
-		return
-	}
-
-	incident, err := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", job.IncidentID))
-	if err != nil {
-		slog.Warn("kb best-effort skipped: get incident failed", "job_id", jobID, "incident_id", job.IncidentID, "error", err)
-		return
-	}
-	if incident.DiagnosisJSON == nil || strings.TrimSpace(*incident.DiagnosisJSON) == "" {
-		return
-	}
-
-	_, toolCalls, err := b.store.AIToolCall().List(ctx, where.T(ctx).P(0, 200).F("job_id", jobID))
-	if err != nil {
-		slog.Warn("kb best-effort skipped: list tool calls failed", "job_id", jobID, "error", err)
-		return
-	}
-	if len(toolCalls) == 0 {
-		return
-	}
-
-	qualityDecision := kbbiz.ExtractQualityGateDecision(toolCalls)
-	if qualityDecision != "pass" {
-		return
-	}
-
-	rootCauseType := ""
-	if incident.RootCauseType != nil {
-		rootCauseType = strings.TrimSpace(*incident.RootCauseType)
-	}
-	rootCauseSummary := ""
-	if incident.RootCauseSummary != nil {
-		rootCauseSummary = strings.TrimSpace(*incident.RootCauseSummary)
-	}
-	if rootCauseType == "" || rootCauseSummary == "" {
-		return
-	}
-
-	patterns := kbbiz.ExtractPatternsFromDiagnosis(*incident.DiagnosisJSON)
-	if len(patterns) == 0 {
-		patterns = kbbiz.ExtractPatternsFromToolCalls(toolCalls)
-	}
-	if len(patterns) == 0 {
-		return
-	}
-
-	kb := kbbiz.New(b.store)
-	_, err = kb.Writeback(ctx, kbbiz.WritebackInput{
-		Namespace:         incident.Namespace,
-		Service:           incident.Service,
-		RootCauseType:     rootCauseType,
-		RootCauseSummary:  rootCauseSummary,
-		Patterns:          patterns,
-		EvidenceSignature: kbbiz.BuildEvidenceSignature(*incident.DiagnosisJSON, toolCalls),
-		Confidence:        extractDiagnosisRootCauseConfidence(*incident.DiagnosisJSON),
-	})
-	if err != nil {
-		slog.Warn("kb writeback failed (best-effort)", "job_id", jobID, "incident_id", incident.IncidentID, "error", err)
-		return
-	}
-
-	refs, err := kb.Search(ctx, kbbiz.SearchInput{
-		Namespace:     incident.Namespace,
-		Service:       incident.Service,
-		RootCauseType: rootCauseType,
-		Patterns:      patterns,
-		Limit:         3,
-	})
-	if err != nil {
-		slog.Warn("kb retrieval failed (best-effort)", "job_id", jobID, "incident_id", incident.IncidentID, "error", err)
-		return
-	}
-	if len(refs) == 0 {
-		return
-	}
-
-	targetToolCall := kbbiz.SelectPrimaryToolCall(toolCalls)
-	if targetToolCall == nil {
-		return
-	}
-	if err := kb.InjectRefsToToolCall(ctx, targetToolCall, refs); err != nil {
-		slog.Warn("kb refs injection failed (best-effort)", "job_id", jobID, "incident_id", incident.IncidentID, "tool_call_id", targetToolCall.ToolCallID, "error", err)
-	}
-}
+// MCL: Removed unused verification/playbook/KB functions (buildVerificationPlan, mirrorVerificationPlanToToolCall, injectVerificationPlanIntoDiagnosis, injectPlaybookIntoDiagnosis, playbookRootCauseTypeFromDiagnosis, mirrorPlaybookToToolCall, runKBBestEffort, etc.)
 
 //nolint:gocognit,gocyclo,nestif // Existing tool-call write path is intentionally explicit for P0.
 func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error) {

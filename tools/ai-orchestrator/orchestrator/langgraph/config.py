@@ -17,12 +17,6 @@ class OrchestratorConfig:
     a3_max_calls: int = 6
     a3_max_total_bytes: int = 2 * 1024 * 1024
     a3_max_total_latency_ms: int = 8000
-    post_finalize_observe: bool = True
-    run_verification: bool = False
-    verification_source: str = "ai_job"
-    post_finalize_wait_timeout_seconds: int = 8
-    post_finalize_wait_interval_ms: int = 500
-    post_finalize_wait_max_interval_ms: int = 2000
     tool_execution_max_workers: int = 5
     tool_execution_group_timeout_s: float = 30.0
 
@@ -37,11 +31,6 @@ class OrchestratorConfig:
     # It's built per-job using job-specific context (session, skills, tools).
     middleware_chain: Any = None  # MiddlewareChain | None
     middleware_enabled: bool = True  # Controlled by RCA_HYBRID_MIDDLEWARE_ENABLED
-
-    # Playbook configuration (Phase 8A)
-    # Dynamic playbook config loaded from platform at claim time.
-    # Empty dict means no active playbook (use fallback).
-    playbook_config: dict[str, Any] = field(default_factory=dict)
 
     # Verification templates configuration (Phase 8B)
     # List of verification templates loaded from platform at claim time.

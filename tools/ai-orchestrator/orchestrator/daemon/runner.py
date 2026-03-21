@@ -714,10 +714,6 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             instance_id=settings.instance_id,
             heartbeat_interval_seconds=settings.lease_heartbeat_interval_seconds,
             log_func=_log,
-            verification_max_steps=settings.verification_max_steps,
-            verification_max_total_latency_ms=settings.verification_max_total_latency_ms,
-            verification_max_total_bytes=settings.verification_max_total_bytes,
-            verification_dedupe_enabled=settings.verification_dedupe_enabled,
             tool_invoker=tool_invoker,
             skill_catalog=skill_catalog,
             skills_execution_mode=settings.skills_execution_mode,
@@ -754,22 +750,6 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                             )
                 except Exception as provider_exc:  # noqa: BLE001
                     _log(f"job={job_id} resolved tool providers invoker build failed: {provider_exc}")
-
-            # Parse playbook config from claim response (Phase 8A)
-            if claim_response is not None and claim_response.has_playbook_config():
-                try:
-                    playbook_config = claim_response.parse_playbook_config()
-                    if isinstance(playbook_config, dict):
-                        graph_cfg.playbook_config = playbook_config
-                        if debug:
-                            rules_count = len(playbook_config.get("rules", []))
-                            _log(
-                                f"[DEBUG] job={job_id} loaded playbook config "
-                                f"version={playbook_config.get('version', 'unknown')} "
-                                f"rules_count={rules_count}"
-                            )
-                except Exception as playbook_exc:  # noqa: BLE001
-                    _log(f"job={job_id} playbook config parse failed: {playbook_exc}")
 
             # Parse verification templates from claim response (Phase 8B)
             if claim_response is not None and claim_response.has_verification_template():
@@ -914,10 +894,8 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
         if isinstance(final_state, dict):
             final_state = GraphState.model_validate(final_state)
-        try:
-            final_state = _apply_session_patch_if_needed(runtime, final_state)
-        except Exception as exc:  # noqa: BLE001
-            _log(f"job={job_id} session patch apply failed: {exc}")
+
+        # MCL: session_patch writeback removed from main path
 
         if debug:
             _log(
@@ -984,12 +962,6 @@ def main() -> None:
         f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
     )
     _log(
-        f"orchestrator verification run_verification={int(settings.run_verification)} "
-        f"verification_source={settings.verification_source} "
-        f"verification_max_steps={settings.verification_max_steps} "
-        f"post_finalize_observe={int(settings.post_finalize_observe)}"
-    )
-    _log(
         f"orchestrator skills skills_execution_mode={settings.skills_execution_mode} "
         f"skills_tool_calling_mode={settings.skills_tool_calling_mode} "
         f"skills_cache_dir={settings.skills_cache_dir} "
@@ -1025,12 +997,6 @@ def main() -> None:
         a3_max_calls=settings.a3_max_calls,
         a3_max_total_bytes=settings.a3_max_total_bytes,
         a3_max_total_latency_ms=settings.a3_max_total_latency_ms,
-        post_finalize_observe=settings.post_finalize_observe,
-        run_verification=settings.run_verification,
-        verification_source=settings.verification_source,
-        post_finalize_wait_timeout_seconds=settings.post_finalize_wait_timeout_seconds,
-        post_finalize_wait_interval_ms=settings.post_finalize_wait_interval_ms,
-        post_finalize_wait_max_interval_ms=settings.post_finalize_wait_max_interval_ms,
     )
 
     sleep_s = settings.poll_interval_ms / 1000.0

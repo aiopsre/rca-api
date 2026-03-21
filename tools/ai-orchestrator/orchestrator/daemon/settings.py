@@ -27,16 +27,6 @@ class Settings:
     a3_max_calls: int
     a3_max_total_bytes: int
     a3_max_total_latency_ms: int
-    run_verification: bool
-    post_finalize_observe: bool
-    verification_source: str
-    verification_max_steps: int
-    verification_max_total_latency_ms: int
-    verification_max_total_bytes: int
-    verification_dedupe_enabled: bool
-    post_finalize_wait_timeout_seconds: int
-    post_finalize_wait_interval_ms: int
-    post_finalize_wait_max_interval_ms: int
     toolset_config_path: str
     toolset_config_json: str
     ds_type: str = "prometheus"
@@ -89,7 +79,6 @@ class Settings:
             "skills_execution_mode": self.skills_execution_mode,
             "skills_tool_calling_mode": self.skills_tool_calling_mode,
             "run_query": self.run_query,
-            "run_verification": self.run_verification,
             "mcp_scopes_set": bool(self.mcp_scopes),
             "toolset_config_path_set": bool(self.toolset_config_path),
             "toolset_config_json_set": bool(self.toolset_config_json),
@@ -150,12 +139,6 @@ def load_settings() -> Settings:
     a3_max_calls = max(0, _env_int("A3_MAX_CALLS", 6))
     a3_max_total_bytes = max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024))
     a3_max_total_latency_ms = max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000))
-    post_finalize_wait_timeout_seconds = max(0, _env_int("POST_FINALIZE_WAIT_TIMEOUT_SECONDS", 8))
-    post_finalize_wait_interval_ms = max(50, _env_int("POST_FINALIZE_WAIT_INTERVAL_MS", 500))
-    post_finalize_wait_max_interval_ms = max(
-        post_finalize_wait_interval_ms,
-        _env_int("POST_FINALIZE_WAIT_MAX_INTERVAL_MS", 2000),
-    )
     skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "prompt_first").strip().lower() or "prompt_first"
     if skills_execution_mode not in {"catalog", "prompt_first"}:
         skills_execution_mode = "prompt_first"
@@ -194,22 +177,6 @@ def load_settings() -> Settings:
         a3_max_calls=a3_max_calls,
         a3_max_total_bytes=a3_max_total_bytes,
         a3_max_total_latency_ms=a3_max_total_latency_ms,
-        run_verification=_env_bool("RUN_VERIFICATION", False),
-        post_finalize_observe=_env_bool("POST_FINALIZE_OBSERVE", True),
-        verification_source=os.getenv("VERIFICATION_SOURCE", "ai_job").strip() or "ai_job",
-        verification_max_steps=max(0, _env_int("VERIFICATION_MAX_STEPS", 20)),
-        verification_max_total_latency_ms=max(
-            0,
-            _env_int("VERIFICATION_MAX_TOTAL_LATENCY_MS", a3_max_total_latency_ms),
-        ),
-        verification_max_total_bytes=max(
-            0,
-            _env_int("VERIFICATION_MAX_TOTAL_BYTES", a3_max_total_bytes),
-        ),
-        verification_dedupe_enabled=_env_bool("VERIFICATION_DEDUPE_ENABLED", True),
-        post_finalize_wait_timeout_seconds=post_finalize_wait_timeout_seconds,
-        post_finalize_wait_interval_ms=post_finalize_wait_interval_ms,
-        post_finalize_wait_max_interval_ms=post_finalize_wait_max_interval_ms,
         toolset_config_path=os.getenv("TOOLSET_CONFIG_PATH", "").strip(),
         toolset_config_json=os.getenv("TOOLSET_CONFIG_JSON", "").strip(),
         skills_execution_mode=skills_execution_mode,

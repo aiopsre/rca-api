@@ -46,16 +46,6 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
             a3_max_calls=6,
             a3_max_total_bytes=2 * 1024 * 1024,
             a3_max_total_latency_ms=8000,
-            run_verification=False,
-            post_finalize_observe=False,
-            verification_source="ai_job",
-            verification_max_steps=20,
-            verification_max_total_latency_ms=8000,
-            verification_max_total_bytes=2 * 1024 * 1024,
-            verification_dedupe_enabled=True,
-            post_finalize_wait_timeout_seconds=8,
-            post_finalize_wait_interval_ms=500,
-            post_finalize_wait_max_interval_ms=2000,
             toolset_config_path="",
             toolset_config_json="",
         )
@@ -128,7 +118,7 @@ class RunnerToolsetSelectObservationTest(unittest.TestCase):
         ), mock.patch.object(runner_module, "get_template_builder", return_value=_fake_builder):
             runner_module._invoke_graph(
                 settings,
-                OrchestratorConfig(run_query=True, post_finalize_observe=False, run_verification=False),
+                OrchestratorConfig(run_query=True),
                 "job-phasei-1",
                 debug=False,
             )

@@ -370,10 +370,6 @@ class OrchestratorRuntime:
         heartbeat_interval_seconds: int,
         log_func: Callable[[str], None] | None = None,
         retry_policy: RetryPolicy | None = None,
-        verification_max_steps: int = 20,
-        verification_max_total_latency_ms: int = 0,
-        verification_max_total_bytes: int = 0,
-        verification_dedupe_enabled: bool = True,
         tool_invoker: ToolInvoker | ToolInvokerChain | None = None,
         skill_catalog: SkillCatalog | None = None,
         skills_execution_mode: str = "catalog",
@@ -419,6 +415,8 @@ class OrchestratorRuntime:
             job_id=self._job_id,
             execute_with_retry=self._execute_with_retry,
         )
+        # MCL: PostFinalizeObserver and VerificationRunner are kept for future extension
+        # but are no longer called from the active graph path
         self._post_finalize_observer = PostFinalizeObserver(
             client=self._client,
             execute_with_retry=self._execute_with_retry,
@@ -429,12 +427,8 @@ class OrchestratorRuntime:
             execute_with_retry=self._execute_with_retry,
             call_tool=self.call_tool,
             log_func=self._log_func,
-            budget=VerificationBudget(
-                max_steps=verification_max_steps,
-                max_total_latency_ms=verification_max_total_latency_ms,
-                max_total_bytes=verification_max_total_bytes,
-            ),
-            dedupe_enabled=verification_dedupe_enabled,
+            budget=VerificationBudget(),
+            dedupe_enabled=True,
         )
 
     def start(self) -> bool:

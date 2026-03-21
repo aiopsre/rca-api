@@ -825,21 +825,7 @@ func TestPlaybookBiz_VersionManagement(t *testing.T) {
 	})
 }
 
-func TestBuild_LegacyOutput(t *testing.T) {
-	playbook, generated, err := Build(BuildInput{
-		DiagnosisJSON: `{"summary":"insufficient evidence"}`,
-		RootCauseType: "missing_evidence",
-	})
-	require.NoError(t, err)
-	require.True(t, generated)
-	require.Equal(t, "t6", playbook.Version)
-	require.NotEmpty(t, playbook.Items)
-	require.NotEmpty(t, playbook.Items[0].Rationale)
-	require.NotEmpty(t, playbook.Items[0].Steps)
-	require.True(t, playbook.Items[0].Verification.UseVerificationPlan)
-	require.NotEmpty(t, playbook.Items[0].Verification.RecommendedSteps)
-	require.NotEmpty(t, playbook.Items[0].Verification.ExpectedOutcome)
-}
+// MCL: TestBuild_LegacyOutput removed - Build() function was removed from active path
 
 func ptrString(v string) *string {
 	return &v
