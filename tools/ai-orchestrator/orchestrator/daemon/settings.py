@@ -85,6 +85,8 @@ class Settings:
             "skills_local_paths_set": bool(self.skills_local_paths),
             "agent_model_set": bool(self.agent_model),
             "agent_base_url_set": bool(self.agent_base_url),
+            # Graph LLM configuration status (HM7-1)
+            "graph_llm_configured": bool(self.agent_model and self.agent_base_url and self.agent_api_key),
             "health_port": self.health_port,
             "health_host": self.health_host,
             "tool_execution_max_workers": self.tool_execution_max_workers,
@@ -139,9 +141,9 @@ def load_settings() -> Settings:
     a3_max_calls = max(0, _env_int("A3_MAX_CALLS", 6))
     a3_max_total_bytes = max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024))
     a3_max_total_latency_ms = max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000))
-    skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "prompt_first").strip().lower() or "prompt_first"
+    skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "catalog").strip().lower() or "catalog"
     if skills_execution_mode not in {"catalog", "prompt_first"}:
-        skills_execution_mode = "prompt_first"
+        skills_execution_mode = "catalog"
     skills_tool_calling_mode = os.getenv("SKILLS_TOOL_CALLING_MODE", "disabled").strip().lower() or "disabled"
     if skills_tool_calling_mode not in {"disabled", "evidence_plan_single_hop", "evidence_plan_dual_tool"}:
         skills_tool_calling_mode = "disabled"
@@ -222,21 +224,21 @@ def validate_settings(settings: Settings) -> list[str]:
             "Set the SCOPES environment variable."
         )
 
-    # Layer 2: Conditional settings based on mode
-    if settings.skills_execution_mode == "prompt_first":
-        missing_agent_settings = []
-        if not settings.agent_model.strip():
-            missing_agent_settings.append("AGENT_MODEL")
-        if not settings.agent_base_url.strip():
-            missing_agent_settings.append("AGENT_BASE_URL")
-        if not settings.agent_api_key.strip():
-            missing_agent_settings.append("AGENT_API_KEY")
+    # Layer 2: Graph LLM required for Hybrid Multi-Agent
+    # (HM7-4: decoupled from prompt_first mode)
+    missing_llm_settings = []
+    if not settings.agent_model.strip():
+        missing_llm_settings.append("AGENT_MODEL")
+    if not settings.agent_base_url.strip():
+        missing_llm_settings.append("AGENT_BASE_URL")
+    if not settings.agent_api_key.strip():
+        missing_llm_settings.append("AGENT_API_KEY")
 
-        if missing_agent_settings:
-            missing_str = ", ".join(missing_agent_settings)
-            errors.append(
-                f"{missing_str} are required when SKILLS_EXECUTION_MODE=prompt_first. "
-                f"Set these environment variables to enable LLM-driven skill execution."
-            )
+    if missing_llm_settings:
+        missing_str = ", ".join(missing_llm_settings)
+        errors.append(
+            f"{missing_str} are required for Hybrid Multi-Agent. "
+            f"Set these environment variables to enable LLM-driven RCA."
+        )
 
     return errors

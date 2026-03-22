@@ -455,6 +455,35 @@ def _build_prompt_skill_agent(settings: Settings) -> PromptSkillAgent | None:
     )
 
 
+def _build_graph_llm(settings: Settings) -> Any | None:
+    """Build LLM instance for graph agents (Route/Domain/Platform agents).
+
+    This is independent of prompt_first skill agent.
+    Uses AGENT_* settings for configuration.
+
+    Args:
+        settings: Worker settings.
+
+    Returns:
+        LLM instance (ChatOpenAI) or None if not configured.
+    """
+    if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
+        return None
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        return None
+    try:
+        return ChatOpenAI(
+            model=settings.agent_model,
+            base_url=settings.agent_base_url,
+            api_key=settings.agent_api_key,
+            timeout=settings.agent_timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _report_skillset_selection_observation(
     *,
     runtime: OrchestratorRuntime,
@@ -719,6 +748,7 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             skills_execution_mode=settings.skills_execution_mode,
             skills_tool_calling_mode=settings.skills_tool_calling_mode,
             skill_agent=_build_prompt_skill_agent(settings),
+            graph_llm=_build_graph_llm(settings),
         )
         if not runtime.start():
             if debug:

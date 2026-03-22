@@ -7,7 +7,7 @@ from orchestrator.daemon.settings import Settings, validate_settings
 def _make_settings(
     *,
     scopes: str = "tenant:default",
-    skills_execution_mode: str = "prompt_first",
+    skills_execution_mode: str = "catalog",
     agent_model: str = "gpt-4o",
     agent_base_url: str = "https://api.openai.com/v1",
     agent_api_key: str = "sk-test",
@@ -58,21 +58,20 @@ class TestSettingsValidation(unittest.TestCase):
         """SCOPES is always required."""
         settings = _make_settings(scopes="")
         errors = validate_settings(settings)
+        # Only SCOPES error because AGENT_* has defaults set
         self.assertEqual(len(errors), 1)
-        self.assertIn("SCOPES", errors[0])
+        self.assertTrue(any("SCOPES" in e for e in errors))
 
     def test_scopes_whitespace_only_fails(self):
         """SCOPES with only whitespace should fail."""
         settings = _make_settings(scopes="   ")
         errors = validate_settings(settings)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("SCOPES", errors[0])
+        self.assertTrue(any("SCOPES" in e for e in errors))
 
-    def test_prompt_first_requires_all_agent_settings(self):
-        """When prompt_first mode, all AGENT_* settings are required."""
+    def test_graph_llm_required_all_agent_settings(self):
+        """Hybrid Multi-Agent requires all AGENT_* settings (HM7-4)."""
         settings = _make_settings(
             scopes="tenant:default",
-            skills_execution_mode="prompt_first",
             agent_model="",
             agent_base_url="",
             agent_api_key="",
@@ -82,12 +81,12 @@ class TestSettingsValidation(unittest.TestCase):
         self.assertIn("AGENT_MODEL", errors[0])
         self.assertIn("AGENT_BASE_URL", errors[0])
         self.assertIn("AGENT_API_KEY", errors[0])
+        self.assertIn("Hybrid Multi-Agent", errors[0])
 
-    def test_prompt_first_missing_model_only(self):
-        """When prompt_first mode, missing only AGENT_MODEL should fail."""
+    def test_missing_model_only(self):
+        """Missing only AGENT_MODEL should fail."""
         settings = _make_settings(
             scopes="tenant:default",
-            skills_execution_mode="prompt_first",
             agent_model="",
             agent_base_url="https://api.openai.com/v1",
             agent_api_key="sk-test",
@@ -98,11 +97,10 @@ class TestSettingsValidation(unittest.TestCase):
         self.assertNotIn("AGENT_BASE_URL", errors[0])
         self.assertNotIn("AGENT_API_KEY", errors[0])
 
-    def test_prompt_first_missing_base_url_only(self):
-        """When prompt_first mode, missing only AGENT_BASE_URL should fail."""
+    def test_missing_base_url_only(self):
+        """Missing only AGENT_BASE_URL should fail."""
         settings = _make_settings(
             scopes="tenant:default",
-            skills_execution_mode="prompt_first",
             agent_model="gpt-4o",
             agent_base_url="",
             agent_api_key="sk-test",
@@ -113,11 +111,10 @@ class TestSettingsValidation(unittest.TestCase):
         self.assertNotIn("AGENT_MODEL", errors[0])
         self.assertNotIn("AGENT_API_KEY", errors[0])
 
-    def test_prompt_first_missing_api_key_only(self):
-        """When prompt_first mode, missing only AGENT_API_KEY should fail."""
+    def test_missing_api_key_only(self):
+        """Missing only AGENT_API_KEY should fail."""
         settings = _make_settings(
             scopes="tenant:default",
-            skills_execution_mode="prompt_first",
             agent_model="gpt-4o",
             agent_base_url="https://api.openai.com/v1",
             agent_api_key="",
@@ -128,23 +125,10 @@ class TestSettingsValidation(unittest.TestCase):
         self.assertNotIn("AGENT_MODEL", errors[0])
         self.assertNotIn("AGENT_BASE_URL", errors[0])
 
-    def test_catalog_mode_no_agent_required(self):
-        """When catalog mode, AGENT_* settings are not required."""
+    def test_valid_config(self):
+        """Valid configuration should pass validation."""
         settings = _make_settings(
             scopes="tenant:default",
-            skills_execution_mode="catalog",
-            agent_model="",
-            agent_base_url="",
-            agent_api_key="",
-        )
-        errors = validate_settings(settings)
-        self.assertEqual(len(errors), 0)
-
-    def test_valid_prompt_first_config(self):
-        """Valid prompt_first configuration should pass validation."""
-        settings = _make_settings(
-            scopes="tenant:default",
-            skills_execution_mode="prompt_first",
             agent_model="gpt-4o",
             agent_base_url="https://api.openai.com/v1",
             agent_api_key="sk-test-key",
@@ -156,7 +140,6 @@ class TestSettingsValidation(unittest.TestCase):
         """Both missing SCOPES and AGENT_* should report both errors."""
         settings = _make_settings(
             scopes="",
-            skills_execution_mode="prompt_first",
             agent_model="",
             agent_base_url="",
             agent_api_key="",

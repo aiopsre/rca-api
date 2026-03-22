@@ -376,6 +376,7 @@ class OrchestratorRuntime:
         skills_tool_calling_mode: str = "disabled",
         skill_agent: PromptSkillAgent | None = None,
         tool_catalog_snapshot: ToolCatalogSnapshot | None = None,
+        graph_llm: Any | None = None,
     ) -> None:
         self._client = client
         self._job_id = str(job_id).strip()
@@ -386,6 +387,7 @@ class OrchestratorRuntime:
         self._skills_execution_mode = str(skills_execution_mode or "catalog").strip().lower() or "catalog"
         self._skills_tool_calling_mode = str(skills_tool_calling_mode or "disabled").strip().lower() or "disabled"
         self._skill_agent = skill_agent
+        self._graph_llm = graph_llm
         self._script_executor_runner = ScriptExecutorRunner()
         self._started = False
         self._tool_catalog_snapshot = tool_catalog_snapshot
@@ -435,6 +437,17 @@ class OrchestratorRuntime:
         claimed = self._execute_with_retry("job.start", lambda: self._lease_manager.start(self._job_id))
         self._started = bool(claimed)
         return self._started
+
+    def get_graph_llm(self) -> Any | None:
+        """Get LLM instance for graph agents (Route/Domain/Platform agents).
+
+        This is independent of prompt_first skill agent.
+        Returns None if not configured.
+
+        Returns:
+            LLM instance (ChatOpenAI) or None.
+        """
+        return self._graph_llm
 
     def _execute_with_retry(self, operation: str, fn: Callable[[], Any]) -> Any:
         return self._retry_executor.run(operation, fn)
@@ -850,6 +863,15 @@ class OrchestratorRuntime:
         Returns:
             Skill execution result or None if no skill available.
         """
+        # HM7-5: Track legacy prompt-first usage for deprecation monitoring
+        self._report_observation_best_effort(
+            tool="skill.legacy_prompt_first",
+            node_name="runtime.consume_prompt_skill",
+            params={"capability": str(capability or "").strip()},
+            response={"status": "called", "mode": "legacy", "deprecation": "HM6"},
+            evidence_ids=[],
+        )
+
         definition = get_capability_definition(capability)
         if definition is None:
             return None

@@ -744,7 +744,10 @@ def run_tool_agent(
 
 
 def _get_llm_for_tool_agent(runtime: "OrchestratorRuntime") -> Any:
-    """Get LLM instance for tool agent from runtime's skill agent.
+    """Get LLM instance for tool agent from runtime.
+
+    Uses the independent graph LLM (HM7-1), not prompt_first skill agent.
+    Falls back to legacy _skill_agent path for backward compatibility.
 
     Args:
         runtime: Orchestrator runtime instance.
@@ -752,12 +755,19 @@ def _get_llm_for_tool_agent(runtime: "OrchestratorRuntime") -> Any:
     Returns:
         LLM instance or None if not configured.
     """
+    # Primary path: use independent graph LLM (HM7-1)
+    get_graph_llm = getattr(runtime, "get_graph_llm", None)
+    if callable(get_graph_llm):
+        llm = get_graph_llm()
+        if llm is not None:
+            return llm
+
+    # Fallback: legacy _skill_agent path (for backward compatibility)
     skill_agent = getattr(runtime, "_skill_agent", None)
     if skill_agent is None:
         return None
     if not bool(getattr(skill_agent, "configured", False)):
         return None
-    # Use the skill agent's internal LLM
     try:
         return skill_agent._get_llm()  # noqa: SLF001
     except Exception:  # noqa: BLE001

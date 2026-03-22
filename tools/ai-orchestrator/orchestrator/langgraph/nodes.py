@@ -1009,16 +1009,10 @@ def summarize_diagnosis(state: GraphState, runtime: OrchestratorRuntime) -> Grap
 
     diagnosis_json = _build_native_diagnosis(state)
     state.diagnosis_json = diagnosis_json
-    consume_skill = getattr(runtime, "consume_prompt_skill", None)
-    if callable(consume_skill):
-        enriched = consume_skill(capability="diagnosis.enrich", graph_state=state)
-        if isinstance(enriched, dict):
-            diagnosis_json = state.diagnosis_json if isinstance(state.diagnosis_json, dict) else diagnosis_json
-            synthesize_response["skill"] = {
-                "status": "applied",
-                "skill_id": str(enriched.get("skill_id") or "").strip(),
-                "binding_key": str(enriched.get("selected_binding_key") or "").strip(),
-            }
+
+    # diagnosis.enrich skill is deprecated (HM6).
+    # Platform Special Agent in summarize_diagnosis_agentized() handles enrichment.
+    # No legacy prompt_first fallback needed.
 
     state.diagnosis_json = diagnosis_json
     synthesize_response["diagnosis_json"] = diagnosis_json

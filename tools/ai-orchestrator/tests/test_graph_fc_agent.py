@@ -165,10 +165,11 @@ class TestRunToolAgent:
             {"type": "function", "function": {"name": "test_tool"}}
         ]
 
-        # Mock runtime with no skill agent (LLM not configured)
+        # Mock runtime with no LLM configured (HM7-2: both paths return None)
         runtime = MagicMock()
         runtime.get_fc_adapter.return_value = mock_adapter
         runtime._skill_agent = None
+        runtime.get_graph_llm.return_value = None  # HM7-2: graph LLM path returns None
 
         # Mock config
         cfg = OrchestratorConfig()
