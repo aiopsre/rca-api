@@ -52,7 +52,6 @@ type IStore interface {
 	McpServerConfig() McpServerConfigStore
 	ToolMetadata() ToolMetadataStore
 	ToolsetProviderBinding() ToolsetProviderBindingStore
-	VerificationTemplate() VerificationTemplateStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -212,8 +211,4 @@ func (s *store) ToolMetadata() ToolMetadataStore {
 
 func (s *store) ToolsetProviderBinding() ToolsetProviderBindingStore {
 	return newToolsetProviderBindingStore(s)
-}
-
-func (s *store) VerificationTemplate() VerificationTemplateStore {
-	return newVerificationTemplateStore(s)
 }

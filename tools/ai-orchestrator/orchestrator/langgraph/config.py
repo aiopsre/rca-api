@@ -31,9 +31,3 @@ class OrchestratorConfig:
     # It's built per-job using job-specific context (session, skills, tools).
     middleware_chain: Any = None  # MiddlewareChain | None
     middleware_enabled: bool = True  # Controlled by RCA_HYBRID_MIDDLEWARE_ENABLED
-
-    # Verification templates configuration (Phase 8B)
-    # List of verification templates loaded from platform at claim time.
-    # Worker matches templates against diagnosis root_cause_type after diagnosis is produced.
-    # Empty list means no active templates (use fallback).
-    verification_templates: list[dict[str, Any]] = field(default_factory=list)

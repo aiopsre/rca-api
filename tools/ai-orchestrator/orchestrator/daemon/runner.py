@@ -751,20 +751,6 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
                 except Exception as provider_exc:  # noqa: BLE001
                     _log(f"job={job_id} resolved tool providers invoker build failed: {provider_exc}")
 
-            # Parse verification templates from claim response (Phase 8B)
-            if claim_response is not None and claim_response.has_verification_template():
-                try:
-                    verification_templates = claim_response.parse_verification_template()
-                    if isinstance(verification_templates, list):
-                        graph_cfg.verification_templates = verification_templates
-                        if debug:
-                            _log(
-                                f"[DEBUG] job={job_id} loaded verification templates "
-                                f"count={len(verification_templates)}"
-                            )
-                except Exception as vt_exc:  # noqa: BLE001
-                    _log(f"job={job_id} verification templates parse failed: {vt_exc}")
-
         # Build tool catalog snapshot after setting invoker
         # This provides an immutable snapshot for function calling
         if settings.fc_runtime_snapshot_enabled:

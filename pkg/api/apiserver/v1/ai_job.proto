@@ -137,10 +137,9 @@ message StartAIJobResponse {
   // MCL (2026-03-23): Static T6 playbook injection has also been removed from Finalize.
   // diagnosis_json now contains only the core diagnosis payload without playbook injection.
   reserved 4;
-  // verificationTemplateJSON contains matched verification template for the job.
-  // Selected based on root_cause_type and patterns from diagnosis.
-  // Empty string if no matching template (worker should use fallback).
-  optional string verificationTemplateJSON = 5;
+  // Reserved: field 5 was verificationTemplateJSON (verification removed from MCL active path).
+  // MCL (2026-03-23): run_verification node removed from basic_rca graph.
+  reserved 5;
 }
 
 // ResolvedToolProvider represents a fully resolved tool provider with all metadata.

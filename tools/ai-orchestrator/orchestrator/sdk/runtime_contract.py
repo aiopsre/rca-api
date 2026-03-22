@@ -56,7 +56,6 @@ class ClaimStartResponse:
     skillsets_json: str | None = None
     resolved_tool_providers: list[dict[str, Any]] | None = None
     agent_context_json: str | None = None
-    verification_template_json: str | None = None
 
     @classmethod
     def from_api_response(cls, payload: dict[str, Any]) -> "ClaimStartResponse":
@@ -79,16 +78,10 @@ class ClaimStartResponse:
         raw_agent_context = data.get("agentContextJSON")
         if isinstance(raw_agent_context, str) and raw_agent_context.strip():
             agent_context_json = raw_agent_context.strip()
-        # Parse verification_template_json (Phase 8B)
-        verification_template_json = None
-        raw_verification_template = data.get("verificationTemplateJSON")
-        if isinstance(raw_verification_template, str) and raw_verification_template.strip():
-            verification_template_json = raw_verification_template.strip()
         return cls(
             skillsets_json=skillsets_json,
             resolved_tool_providers=resolved_tool_providers,
             agent_context_json=agent_context_json,
-            verification_template_json=verification_template_json,
         )
 
     def has_skillsets(self) -> bool:
@@ -99,19 +92,6 @@ class ClaimStartResponse:
 
     def has_agent_context(self) -> bool:
         return isinstance(self.agent_context_json, str) and self.agent_context_json != ""
-
-    def has_verification_template(self) -> bool:
-        return isinstance(self.verification_template_json, str) and self.verification_template_json != ""
-
-    def parse_verification_template(self) -> list[dict[str, Any]] | None:
-        """Parse verification_template_json into a list of template dictionaries."""
-        if not self.has_verification_template():
-            return None
-        try:
-            parsed = json.loads(self.verification_template_json)
-            return parsed if isinstance(parsed, list) else None
-        except json.JSONDecodeError:
-            return None
 
     def parse_skillsets(self) -> dict[str, Any] | None:
         if not self.has_skillsets():
