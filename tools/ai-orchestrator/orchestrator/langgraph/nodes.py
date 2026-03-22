@@ -1144,7 +1144,8 @@ def finalize_job(
             },
             response_json={
                 "status": finalize_status,
-                "finalized": True,
+                "phase": "pre_finalize",
+                "finalized": False,
                 "error": error,
                 "degrade_reasons": state.degrade_reasons,
             },
@@ -1154,20 +1155,42 @@ def finalize_job(
             evidence_ids=state.evidence_ids,
         )
 
+    def _finalize_with_audit(
+        *,
+        finalize_status: str,
+        call_status: str,
+        started_ms: int,
+        diagnosis_json: dict[str, Any] | None,
+        error: str | None = None,
+        request_error_message: str | None = None,
+    ) -> None:
+        # Do not let audit-report failures block the terminal job transition.
+        try:
+            _report_finalize(
+                finalize_status=finalize_status,
+                call_status=call_status,
+                started_ms=started_ms,
+                error=error,
+                request_error_message=request_error_message,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        runtime.finalize(
+            status=finalize_status,
+            diagnosis_json=diagnosis_json,
+            error_message=request_error_message,
+            evidence_ids=state.evidence_ids,
+        )
+
     try:
         if error_message:
             state.last_error = error_message
             started_ms = int(time.time() * 1000)
-            runtime.finalize(
-                status="failed",
-                diagnosis_json=None,
-                error_message=error_message[:8192],
-                evidence_ids=state.evidence_ids,
-            )
-            _report_finalize(
+            _finalize_with_audit(
                 finalize_status="failed",
                 call_status="ok",
                 started_ms=started_ms,
+                diagnosis_json=None,
                 request_error_message=error_message[:8192],
             )
             state.finalized = True
@@ -1176,16 +1199,11 @@ def finalize_job(
         diagnosis_json = state.diagnosis_json if isinstance(state.diagnosis_json, dict) else _build_native_diagnosis(state)
         state.diagnosis_json = diagnosis_json
         started_ms = int(time.time() * 1000)
-        runtime.finalize(
-            status="succeeded",
-            diagnosis_json=diagnosis_json,
-            error_message=None,
-            evidence_ids=state.evidence_ids,
-        )
-        _report_finalize(
+        _finalize_with_audit(
             finalize_status="succeeded",
             call_status="ok",
             started_ms=started_ms,
+            diagnosis_json=diagnosis_json,
             request_error_message=None,
         )
         state.finalized = True
@@ -1207,16 +1225,11 @@ def finalize_job(
         state.last_error = fallback
         try:
             started_ms = int(time.time() * 1000)
-            runtime.finalize(
-                status="failed",
-                diagnosis_json=None,
-                error_message=fallback[:8192],
-                evidence_ids=state.evidence_ids,
-            )
-            _report_finalize(
+            _finalize_with_audit(
                 finalize_status="failed",
                 call_status="error",
                 started_ms=started_ms,
+                diagnosis_json=None,
                 error=str(exc)[:512],
                 request_error_message=fallback[:8192],
             )
