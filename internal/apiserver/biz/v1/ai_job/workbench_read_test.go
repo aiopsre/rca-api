@@ -708,21 +708,6 @@ func TestGetSessionWorkbenchViewer_IncludesEvidenceVerificationCompareAndHistory
 	})
 	sessionID := mustSessionIDByJob(t, s, replayJobID)
 
-	createdAt := time.Now().UTC().Add(-15 * time.Minute).Truncate(time.Second)
-	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
-		RunID:            "verify-viewer-1",
-		IncidentID:       incident.IncidentID,
-		JobID:            ptrAIString(replayJobID),
-		Actor:            "user:verifier",
-		Source:           "human",
-		StepIndex:        1,
-		Tool:             "kubectl",
-		Observed:         "service recovered",
-		MeetsExpectation: true,
-		CreatedAt:        createdAt,
-		UpdatedAt:        createdAt,
-	}))
-
 	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
 		SessionID:  sessionID,
 		EventType:  sessionbiz.SessionHistoryEventReviewStarted,
@@ -750,11 +735,6 @@ func TestGetSessionWorkbenchViewer_IncludesEvidenceVerificationCompareAndHistory
 	)
 	require.Equal(
 		t,
-		"/v1/sessions/"+sessionID+"/workbench/viewer?view=verification",
-		workbench.DrillDown.VerificationViewerPath,
-	)
-	require.Equal(
-		t,
 		"/v1/sessions/"+sessionID+"/workbench/viewer?history_scope=session&limit=5&offset=0&order=desc&view=history",
 		workbench.DrillDown.HistoryViewerPath,
 	)
@@ -773,7 +753,6 @@ func TestGetSessionWorkbenchViewer_IncludesEvidenceVerificationCompareAndHistory
 	require.Equal(t, sessionID, viewer.SessionID)
 	require.Equal(t, workbenchViewerTabCompare, viewer.Selected)
 	require.Contains(t, viewer.Tabs, workbenchViewerTabEvidence)
-	require.Contains(t, viewer.Tabs, workbenchViewerTabVerification)
 	require.Contains(t, viewer.Tabs, workbenchViewerTabCompare)
 	require.Contains(t, viewer.Tabs, workbenchViewerTabHistory)
 
@@ -782,10 +761,6 @@ func TestGetSessionWorkbenchViewer_IncludesEvidenceVerificationCompareAndHistory
 	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/evidence", viewer.Evidence.EvidencePath)
 	require.NotEmpty(t, viewer.Evidence.Items)
 	require.NotEmpty(t, viewer.Evidence.RelatedJobIDs)
-
-	require.NotNil(t, viewer.Verification)
-	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/verification-runs", viewer.Verification.VerificationPath)
-	require.NotEmpty(t, viewer.Verification.Items)
 
 	require.NotNil(t, viewer.Compare)
 	require.NotNil(t, viewer.Compare.Latest)

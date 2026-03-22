@@ -395,27 +395,6 @@ func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
-		RunID:            "verification-run-1",
-		IncidentID:       incident.IncidentID,
-		Actor:            "worker",
-		Source:           "ai_job_finalize",
-		StepIndex:        1,
-		Tool:             "evidence.queryMetrics",
-		Observed:         "ok",
-		MeetsExpectation: true,
-	}))
-	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
-		RunID:            "verification-run-2",
-		IncidentID:       incident.IncidentID,
-		Actor:            "worker",
-		Source:           "ai_job_finalize",
-		StepIndex:        2,
-		Tool:             "evidence.queryLogs",
-		Observed:         "ok",
-		MeetsExpectation: true,
-	}))
-
 	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
@@ -453,7 +432,6 @@ func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T
 	require.NotEmpty(t, strings.TrimSpace(anyToString(finalizedTrace["finished_at"])))
 	require.Equal(t, 1, parseAnyInt(t, finalizedTrace["tool_call_count"]))
 	require.Equal(t, 2, parseAnyInt(t, finalizedTrace["evidence_count"]))
-	require.GreaterOrEqual(t, parseAnyInt(t, finalizedTrace["verification_count"]), 2)
 	require.Equal(t, "manual", strings.TrimSpace(anyToString(finalizedTrace["trigger_type"])))
 	require.Equal(t, "manual_api", strings.TrimSpace(anyToString(finalizedTrace["trigger_source"])))
 
@@ -468,9 +446,6 @@ func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T
 	evidenceRefsAny, ok := decisionTrace["evidence_refs"].([]any)
 	require.True(t, ok)
 	require.Len(t, evidenceRefsAny, 2)
-	verificationRefsAny, ok := decisionTrace["verification_refs"].([]any)
-	require.True(t, ok)
-	require.GreaterOrEqual(t, len(verificationRefsAny), 2)
 }
 
 func TestAIJobRunTrace_UsesReplayTriggerContext(t *testing.T) {
@@ -798,83 +773,6 @@ func TestAIJobTraceReadModel_CompareRejectsUnrelatedRuns(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Equal(t, errorsx.ErrInvalidArgument, err)
-}
-
-func TestAIJobFinalize_DecisionTraceVerificationRefsPreferJobLinkedRuns(t *testing.T) {
-	db := newAIJobTestDB(t)
-	s := store.NewStore(db)
-	biz := New(s)
-	incident := createTestIncident(t, s)
-
-	end := time.Now().UTC().Truncate(time.Second)
-	start := end.Add(-20 * time.Minute)
-	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
-		IncidentID:     incident.IncidentID,
-		TimeRangeStart: timestamppb.New(start),
-		TimeRangeEnd:   timestamppb.New(end),
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, runResp.JobID)
-	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
-	require.NoError(t, err)
-
-	targetJobID := runResp.JobID
-	otherJobID := "ai-job-other"
-	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
-		RunID:            "verification-run-target",
-		IncidentID:       incident.IncidentID,
-		JobID:            &targetJobID,
-		Actor:            "ai:" + targetJobID,
-		Source:           "ai_job",
-		StepIndex:        1,
-		Tool:             "evidence.queryMetrics",
-		Observed:         "ok",
-		MeetsExpectation: true,
-	}))
-	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
-		RunID:            "verification-run-other",
-		IncidentID:       incident.IncidentID,
-		JobID:            &otherJobID,
-		Actor:            "ai:" + otherJobID,
-		Source:           "ai_job",
-		StepIndex:        1,
-		Tool:             "evidence.queryLogs",
-		Observed:         "ok",
-		MeetsExpectation: true,
-	}))
-
-	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
-		JobID:  runResp.JobID,
-		Status: "succeeded",
-		DiagnosisJSON: ptrAIString(`{
-			"summary":"database pool saturation confirmed",
-			"root_cause":{
-				"type":"db_pool_exhausted",
-				"category":"db",
-				"summary":"connection pool saturated",
-				"statement":"peak load exceeded pool size",
-				"confidence":0.9,
-				"evidence_ids":["evidence-1","evidence-2"]
-			},
-			"hypotheses":[
-				{
-					"statement":"pool limit reached",
-					"confidence":0.9,
-					"supporting_evidence_ids":["evidence-1","evidence-2"],
-					"missing_evidence":[]
-				}
-			]
-		}`),
-		EvidenceIDs: []string{"evidence-1", "evidence-2"},
-	})
-	require.NoError(t, err)
-
-	traceResp, err := biz.GetTraceReadModel(context.Background(), &GetTraceReadModelRequest{JobID: runResp.JobID})
-	require.NoError(t, err)
-	require.NotNil(t, traceResp.DecisionTrace)
-	require.NotContains(t, traceResp.DecisionTrace.VerificationRefs, "verification-run-other")
-	require.NotEmpty(t, traceResp.DecisionTrace.VerificationRefs)
-	require.GreaterOrEqual(t, traceResp.RunTrace.VerificationCount, int64(1))
 }
 
 func TestAIJobFinalize_SessionPatchFailureIsBestEffort(t *testing.T) {
@@ -1778,7 +1676,6 @@ CREATE TABLE incidents (
 		&model.EvidenceM{},
 		&model.SessionContextM{},
 		&model.SessionHistoryEventM{},
-		&model.IncidentVerificationRunM{},
 	))
 	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db

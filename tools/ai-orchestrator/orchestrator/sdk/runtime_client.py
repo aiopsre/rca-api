@@ -11,11 +11,9 @@ from .runtime_contract import (
     FinalizeRequest,
     GetJobSessionContextRequest,
     ListToolCallsRequest,
-    ListVerificationRunsRequest,
     PatchJobSessionContextRequest,
     RenewHeartbeatRequest,
     ToolCallReportRequest,
-    VerificationReportRequest,
 )
 
 
@@ -121,11 +119,3 @@ class RuntimeAPIClient:
         if not isinstance(evidence_id, str) or not evidence_id:
             raise RuntimeError(f"failed to parse evidence id from response: {payload}")
         return evidence_id
-
-    def create_verification_run(self, request: VerificationReportRequest) -> dict[str, Any]:
-        payload = self._request("POST", request.path(), json_body=request.to_api_body())
-        return extract_data(payload, default={})
-
-    def list_verification_runs(self, request: ListVerificationRunsRequest) -> dict[str, Any]:
-        payload = self._request("GET", request.path(), params=request.to_api_params())
-        return extract_data(payload, default={"totalCount": 0, "runs": []})

@@ -956,10 +956,6 @@ func (b *aiJobBiz) GetSessionWorkbenchViewer(
 	if err != nil {
 		return nil, err
 	}
-	verificationViewer, err := b.buildWorkbenchVerificationViewer(ctx, incidentID, latestDecision, latestRun)
-	if err != nil {
-		return nil, err
-	}
 	compareViewer := b.buildWorkbenchCompareViewer(recentRuns, rq.LeftJobID, rq.RightJobID)
 	historyViewer, err := b.buildWorkbenchHistoryViewer(
 		ctx,
@@ -980,15 +976,13 @@ func (b *aiJobBiz) GetSessionWorkbenchViewer(
 		IncidentID: incidentID,
 		Tabs: []string{
 			workbenchViewerTabEvidence,
-			workbenchViewerTabVerification,
 			workbenchViewerTabCompare,
 			workbenchViewerTabHistory,
 		},
-		Selected:     selectedView,
-		Evidence:     evidenceViewer,
-		Verification: verificationViewer,
-		Compare:      compareViewer,
-		History:      historyViewer,
+		Selected: selectedView,
+		Evidence: evidenceViewer,
+		Compare:  compareViewer,
+		History:  historyViewer,
 	}, nil
 }
 
@@ -1174,55 +1168,6 @@ func uniqueTraceJobIDs(runs []*TraceReadSummary, evidence []*model.EvidenceM) []
 		out = append(out, jobID)
 	}
 	return out
-}
-
-func (b *aiJobBiz) buildWorkbenchVerificationViewer(
-	ctx context.Context,
-	incidentID string,
-	latestDecision *DecisionTraceReadModel,
-	latestRun *TraceReadSummary,
-) (*WorkbenchVerificationViewer, error) {
-	viewer := &WorkbenchVerificationViewer{
-		IncidentID:       strings.TrimSpace(incidentID),
-		VerificationPath: buildIncidentVerificationPath(incidentID),
-		VerificationRefs: []string{},
-		Items:            []*WorkbenchVerificationItem{},
-		Pending:          false,
-	}
-	if latestDecision != nil {
-		viewer.VerificationRefs = normalizeStringSlice(latestDecision.VerificationRefs)
-	}
-	if strings.TrimSpace(incidentID) == "" {
-		return viewer, nil
-	}
-	_, runs, err := b.store.IncidentVerificationRun().List(
-		ctx,
-		where.T(ctx).F("incident_id", strings.TrimSpace(incidentID)).O(0).L(int(defaultWorkbenchViewerLimit)),
-	)
-	if err != nil {
-		return nil, errno.ErrIncidentVerificationRunListFailed
-	}
-	items := make([]*WorkbenchVerificationItem, 0, len(runs))
-	for _, run := range runs {
-		if run == nil {
-			continue
-		}
-		items = append(items, &WorkbenchVerificationItem{
-			RunID:            strings.TrimSpace(run.RunID),
-			JobID:            strings.TrimSpace(trimOptional(run.JobID)),
-			Actor:            strings.TrimSpace(run.Actor),
-			Source:           strings.TrimSpace(run.Source),
-			Tool:             strings.TrimSpace(run.Tool),
-			Observed:         strings.TrimSpace(run.Observed),
-			MeetsExpectation: run.MeetsExpectation,
-			CreatedAt:        toRFC3339String(run.CreatedAt),
-		})
-	}
-	viewer.Items = items
-	if latestRun != nil && latestRun.VerificationCount > 0 && len(viewer.VerificationRefs) == 0 {
-		viewer.Pending = true
-	}
-	return viewer, nil
 }
 
 func (b *aiJobBiz) buildWorkbenchCompareViewer(

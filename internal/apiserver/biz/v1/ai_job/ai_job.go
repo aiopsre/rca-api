@@ -61,7 +61,6 @@ const (
 	defaultRunTraceTriggerSource = "legacy_direct"
 	defaultRunTraceSchemaVersion = "v1"
 	humanReviewConfidenceGate    = 0.6
-	maxVerificationTraceRefs     = 20
 )
 
 var (
@@ -728,13 +727,11 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 			runWindowStart = job.StartedAt.UTC()
 		}
 		runWindowStart = runWindowStart.Add(-1 * time.Second)
-		verificationRefs, verificationCount := b.collectVerificationTraceRefs(txCtx, jobID, job.IncidentID, runWindowStart, now)
 		decisionTraceJSON := buildDecisionTraceJSON(
 			targetStatus,
 			outputSummary,
 			diagnosis,
 			evidenceIDs,
-			verificationRefs,
 			trimOptional(rq.ErrorMessage),
 		)
 		if decisionTraceJSON != "" {
@@ -751,13 +748,12 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 		}
 		evidenceCount := int64(len(normalizeStringSlice(evidenceIDs)))
 		runTraceJSON := b.buildRunTraceJSON(ctx, job, job.RunTraceJSON, &runTraceOverrides{
-			Status:            strPtr(targetStatus),
-			FinishedAt:        &now,
-			WorkerID:          strPtr(leaseOwner),
-			ToolCallCount:     &toolCallCount,
-			EvidenceCount:     &evidenceCount,
-			VerificationCount: &verificationCount,
-			ErrorSummary:      strPtr(trimOptional(rq.ErrorMessage)),
+			Status:        strPtr(targetStatus),
+			FinishedAt:    &now,
+			WorkerID:      strPtr(leaseOwner),
+			ToolCallCount: &toolCallCount,
+			EvidenceCount: &evidenceCount,
+			ErrorSummary:  strPtr(trimOptional(rq.ErrorMessage)),
 		})
 		if runTraceJSON != "" {
 			updates["run_trace_json"] = runTraceJSON
@@ -1312,24 +1308,22 @@ type runTracePayload struct {
 	FinishedAt        *string `json:"finished_at,omitempty"`
 	ToolCallCount     int64   `json:"tool_call_count"`
 	EvidenceCount     int64   `json:"evidence_count"`
-	VerificationCount int64   `json:"verification_count"`
 	ErrorSummary      string  `json:"error_summary,omitempty"`
 	UpdatedAt         string  `json:"updated_at,omitempty"`
 }
 
 type runTraceOverrides struct {
-	Status            *string
-	StartedAt         *time.Time
-	FinishedAt        *time.Time
-	WorkerID          *string
-	WorkerVersion     *string
-	ToolCallCount     *int64
-	EvidenceCount     *int64
-	VerificationCount *int64
-	ErrorSummary      *string
-	TriggerType       *string
-	TriggerSource     *string
-	Initiator         *string
+	Status        *string
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
+	WorkerID      *string
+	WorkerVersion *string
+	ToolCallCount *int64
+	EvidenceCount *int64
+	ErrorSummary  *string
+	TriggerType   *string
+	TriggerSource *string
+	Initiator     *string
 }
 
 type decisionTracePayload struct {
@@ -1342,7 +1336,6 @@ type decisionTracePayload struct {
 	MissingFacts        []string `json:"missing_facts"`
 	Conflicts           []string `json:"conflicts"`
 	HumanReviewRequired bool     `json:"human_review_required"`
-	VerificationRefs    []string `json:"verification_refs"`
 	ErrorSummary        string   `json:"error_summary,omitempty"`
 	UpdatedAt           string   `json:"updated_at,omitempty"`
 }
@@ -1451,9 +1444,6 @@ func (b *aiJobBiz) buildRunTraceJSON(
 	if trace.EvidenceCount < 0 {
 		trace.EvidenceCount = 0
 	}
-	if trace.VerificationCount < 0 {
-		trace.VerificationCount = 0
-	}
 
 	updatedAt := time.Now().UTC()
 	if overrides != nil {
@@ -1479,9 +1469,6 @@ func (b *aiJobBiz) buildRunTraceJSON(
 		}
 		if overrides.EvidenceCount != nil && *overrides.EvidenceCount >= 0 {
 			trace.EvidenceCount = *overrides.EvidenceCount
-		}
-		if overrides.VerificationCount != nil && *overrides.VerificationCount >= 0 {
-			trace.VerificationCount = *overrides.VerificationCount
 		}
 		if overrides.ErrorSummary != nil {
 			trace.ErrorSummary = strings.TrimSpace(*overrides.ErrorSummary)
@@ -1600,87 +1587,11 @@ func (b *aiJobBiz) countToolCallsByJob(ctx context.Context, jobID string) (int64
 	return total, nil
 }
 
-func (b *aiJobBiz) collectVerificationTraceRefs(
-	ctx context.Context,
-	jobID string,
-	incidentID string,
-	from time.Time,
-	to time.Time,
-) ([]string, int64) {
-	jobID = strings.TrimSpace(jobID)
-	incidentID = strings.TrimSpace(incidentID)
-	if jobID == "" && incidentID == "" {
-		return nil, 0
-	}
-
-	buildTimeRangeFilters := func(whr *where.Options) *where.Options {
-		if whr == nil {
-			whr = where.T(ctx)
-		}
-		if !from.IsZero() {
-			whr = whr.Q("created_at >= ?", from.UTC())
-		}
-		if !to.IsZero() {
-			whr = whr.Q("created_at <= ?", to.UTC())
-		}
-		return whr
-	}
-	listRefs := func(whr *where.Options) ([]string, int64, error) {
-		total, list, err := b.store.IncidentVerificationRun().List(ctx, whr)
-		if err != nil {
-			return nil, 0, err
-		}
-		refs := make([]string, 0, len(list))
-		for _, item := range list {
-			if item == nil {
-				continue
-			}
-			runID := strings.TrimSpace(item.RunID)
-			if runID == "" {
-				continue
-			}
-			refs = append(refs, runID)
-		}
-		return normalizeStringSlice(refs), total, nil
-	}
-
-	if jobID != "" {
-		jobWhr := buildTimeRangeFilters(where.T(ctx).O(0).L(maxVerificationTraceRefs).F("job_id", jobID))
-		if refs, total, err := listRefs(jobWhr); err == nil {
-			if total > 0 {
-				return refs, total
-			}
-		} else {
-			slog.WarnContext(ctx, "verification trace refs by job skipped",
-				"job_id", jobID,
-				"incident_id", incidentID,
-				"error", err,
-			)
-		}
-	}
-
-	if incidentID == "" {
-		return nil, 0
-	}
-	incidentWhr := buildTimeRangeFilters(where.T(ctx).O(0).L(maxVerificationTraceRefs).F("incident_id", incidentID))
-	refs, total, err := listRefs(incidentWhr)
-	if err != nil {
-		slog.WarnContext(ctx, "verification trace refs skipped",
-			"job_id", jobID,
-			"incident_id", incidentID,
-			"error", err,
-		)
-		return nil, 0
-	}
-	return refs, total
-}
-
 func buildDecisionTraceJSON(
 	status string,
 	outputSummary string,
 	diagnosis *diagnosisPayload,
 	evidenceIDs []string,
-	verificationRefs []string,
 	errorSummary string,
 ) string {
 	status = strings.ToLower(strings.TrimSpace(status))
@@ -1737,7 +1648,6 @@ func buildDecisionTraceJSON(
 		MissingFacts:        missingFacts,
 		Conflicts:           conflicts,
 		HumanReviewRequired: humanReviewRequired,
-		VerificationRefs:    normalizeStringSlice(verificationRefs),
 		ErrorSummary:        errorSummary,
 		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
 	}

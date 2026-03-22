@@ -17,14 +17,3 @@ func IncidentActionLogMToOperatorActionLogV1(m *model.IncidentActionLogM) *v1.Op
 	out.DetailsJSON = cloneStrPtr(m.DetailsJSON)
 	return &out
 }
-
-// IncidentVerificationRunMToVerificationRunV1 converts model verification-run to API object.
-func IncidentVerificationRunMToVerificationRunV1(m *model.IncidentVerificationRunM) *v1.VerificationRun {
-	var out v1.VerificationRun
-	_ = core.CopyWithConverters(&out, m)
-	if m == nil {
-		return &out
-	}
-	out.ParamsJSON = cloneStrPtr(m.ParamsJSON)
-	return &out
-}

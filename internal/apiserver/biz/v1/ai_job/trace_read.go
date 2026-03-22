@@ -325,7 +325,6 @@ func runTracePayloadToReadModel(in *runTracePayload) *RunTraceReadModel {
 		FinishedAt:        cloneOptionalTrimmedString(in.FinishedAt),
 		ToolCallCount:     in.ToolCallCount,
 		EvidenceCount:     in.EvidenceCount,
-		VerificationCount: in.VerificationCount,
 		ErrorSummary:      strings.TrimSpace(in.ErrorSummary),
 		UpdatedAt:         strings.TrimSpace(in.UpdatedAt),
 	}
@@ -345,7 +344,6 @@ func decisionTracePayloadToReadModel(in *decisionTracePayload) *DecisionTraceRea
 		MissingFacts:        append([]string(nil), in.MissingFacts...),
 		Conflicts:           append([]string(nil), in.Conflicts...),
 		HumanReviewRequired: in.HumanReviewRequired,
-		VerificationRefs:    append([]string(nil), in.VerificationRefs...),
 		ErrorSummary:        strings.TrimSpace(in.ErrorSummary),
 		UpdatedAt:           strings.TrimSpace(in.UpdatedAt),
 	}

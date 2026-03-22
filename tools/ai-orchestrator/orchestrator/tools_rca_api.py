@@ -18,11 +18,9 @@ from .sdk.runtime_contract import (
     FinalizeRequest,
     GetJobSessionContextRequest,
     ListToolCallsRequest,
-    ListVerificationRunsRequest,
     PatchJobSessionContextRequest,
     RenewHeartbeatRequest,
     ToolCallReportRequest,
-    VerificationReportRequest,
 )
 
 
@@ -502,46 +500,6 @@ class RCAApiClient:
             idempotency_key=f"orchestrator-mcp-list-evidence-{uuid.uuid4().hex}",
         )
         return self._extract_mcp_output("list_incident_evidence", payload)
-
-    def create_incident_verification_run(
-        self,
-        *,
-        incident_id: str,
-        source: str,
-        step_index: int,
-        tool: str,
-        observed: str,
-        meets_expectation: bool,
-        params_json: Dict[str, Any] | str | None = None,
-        actor: str | None = None,
-    ) -> Dict[str, Any]:
-        return self.runtime.create_verification_run(
-            VerificationReportRequest(
-                incident_id=incident_id,
-                source=source,
-                step_index=step_index,
-                tool=tool,
-                observed=observed,
-                meets_expectation=meets_expectation,
-                params_json=params_json,
-                actor=actor,
-            )
-        )
-
-    def list_incident_verification_runs(
-        self,
-        incident_id: str,
-        *,
-        page: int = 1,
-        limit: int = 200,
-    ) -> Dict[str, Any]:
-        return self.runtime.list_verification_runs(
-            ListVerificationRunsRequest(
-                incident_id=incident_id,
-                page=page,
-                limit=limit,
-            )
-        )
 
     # datasource / evidence (P0 minimal)
     def ensure_datasource(self, ds_base_url: str, ds_type: str = "prometheus") -> str:

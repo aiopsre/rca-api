@@ -96,52 +96,6 @@ func (v *Validator) ValidateListIncidentActionsRequest(ctx context.Context, rq *
 	return nil
 }
 
-func (v *Validator) ValidateCreateIncidentVerificationRunRequest(
-	ctx context.Context,
-	rq *v1.CreateIncidentVerificationRunRequest,
-) error {
-
-	_ = ctx
-
-	validations := []bool{
-		strings.TrimSpace(rq.GetIncidentID()) != "",
-		validateOptionalTrimmedMaxLen(rq.Actor, maxOperatorActorLen),
-		validateRequiredTrimmedMaxLen(rq.GetSource(), maxOperatorSourceLen),
-		rq.GetStepIndex() >= 0,
-		validateRequiredTrimmedMaxLen(rq.GetTool(), maxOperatorToolLen),
-		validateRequiredTrimmedMaxLen(rq.GetObserved(), maxOperatorObservedLen),
-		validateOptionalTrimmedMaxLen(rq.ParamsJSON, maxOperatorPayloadInput),
-	}
-	for _, ok := range validations {
-		if ok {
-			continue
-		}
-		return errorsx.ErrInvalidArgument
-	}
-	return nil
-}
-
-func (v *Validator) ValidateListIncidentVerificationRunsRequest(
-	ctx context.Context,
-	rq *v1.ListIncidentVerificationRunsRequest,
-) error {
-
-	_ = ctx
-	if strings.TrimSpace(rq.GetIncidentID()) == "" {
-		return errorsx.ErrInvalidArgument
-	}
-	if rq.GetPage() <= 0 {
-		rq.Page = defaultOperatorListPage
-	}
-	if rq.GetLimit() <= 0 {
-		rq.Limit = defaultOperatorListLimit
-	}
-	if rq.GetLimit() > maxOperatorListLimit {
-		return errorsx.ErrInvalidArgument
-	}
-	return nil
-}
-
 func validateOptionalTrimmedMaxLen(value *string, maxLen int) bool {
 	if value == nil {
 		return true

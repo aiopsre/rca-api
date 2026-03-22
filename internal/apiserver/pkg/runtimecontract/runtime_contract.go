@@ -96,24 +96,6 @@ type EvidencePublishResponse struct {
 	EvidenceID string
 }
 
-// VerificationReportRequest defines the canonical runtime contract for verification reporting.
-type VerificationReportRequest struct {
-	IncidentID       string
-	Actor            *string
-	Source           string
-	StepIndex        int64
-	Tool             string
-	ParamsJSON       *string
-	Observed         string
-	MeetsExpectation bool
-}
-
-// VerificationReportResponse defines the canonical runtime contract response for verification reporting.
-type VerificationReportResponse struct {
-	RunID    string
-	Warnings []string
-}
-
 func NewClaimStartRequest(jobID, orchestratorInstanceID string) ClaimStartRequest {
 	return ClaimStartRequest{
 		JobID:                  strings.TrimSpace(jobID),
@@ -312,61 +294,6 @@ func (r EvidencePublishResponse) ToAPIResponse() *v1.SaveEvidenceResponse {
 	return &v1.SaveEvidenceResponse{
 		EvidenceID: strings.TrimSpace(r.EvidenceID),
 	}
-}
-
-func VerificationReportRequestFromAPI(rq *v1.CreateIncidentVerificationRunRequest) VerificationReportRequest {
-	if rq == nil {
-		return VerificationReportRequest{}
-	}
-	return VerificationReportRequest{
-		IncidentID:       strings.TrimSpace(rq.GetIncidentID()),
-		Actor:            cloneOptionalTrimmedString(rq.Actor),
-		Source:           NormalizeLowerText(rq.GetSource()),
-		StepIndex:        rq.GetStepIndex(),
-		Tool:             strings.TrimSpace(rq.GetTool()),
-		ParamsJSON:       cloneOptionalTrimmedString(rq.ParamsJSON),
-		Observed:         strings.TrimSpace(rq.GetObserved()),
-		MeetsExpectation: rq.GetMeetsExpectation(),
-	}
-}
-
-func (r VerificationReportRequest) ToAPIRequest() *v1.CreateIncidentVerificationRunRequest {
-	return &v1.CreateIncidentVerificationRunRequest{
-		IncidentID:       strings.TrimSpace(r.IncidentID),
-		Actor:            cloneOptionalTrimmedString(r.Actor),
-		Source:           NormalizeLowerText(r.Source),
-		StepIndex:        r.StepIndex,
-		Tool:             strings.TrimSpace(r.Tool),
-		ParamsJSON:       cloneOptionalTrimmedString(r.ParamsJSON),
-		Observed:         strings.TrimSpace(r.Observed),
-		MeetsExpectation: r.MeetsExpectation,
-	}
-}
-
-func VerificationReportResponseFromAPI(rq *v1.CreateIncidentVerificationRunResponse) VerificationReportResponse {
-	if rq == nil {
-		return VerificationReportResponse{}
-	}
-	runID := ""
-	if rq.GetRun() != nil {
-		runID = strings.TrimSpace(rq.GetRun().GetRunID())
-	}
-	return VerificationReportResponse{
-		RunID:    runID,
-		Warnings: append([]string(nil), rq.GetWarnings()...),
-	}
-}
-
-func (r VerificationReportResponse) ToAPIResponse() *v1.CreateIncidentVerificationRunResponse {
-	resp := &v1.CreateIncidentVerificationRunResponse{
-		Warnings: append([]string(nil), r.Warnings...),
-	}
-	if strings.TrimSpace(r.RunID) != "" {
-		resp.Run = &v1.VerificationRun{
-			RunID: strings.TrimSpace(r.RunID),
-		}
-	}
-	return resp
 }
 
 func NormalizeLowerText(value string) string {

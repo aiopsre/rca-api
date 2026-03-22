@@ -1355,417 +1355,6 @@ func (x *ListIncidentActionsResponse) GetActions() []*OperatorActionLog {
 	return nil
 }
 
-// VerificationRun 表示一次人工复核执行结果记录。
-type VerificationRun struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// runID 表示复核记录 ID。
-	RunID string `protobuf:"bytes,1,opt,name=runID,proto3" json:"runID,omitempty"`
-	// incidentID 表示关联事件单 ID。
-	IncidentID string `protobuf:"bytes,2,opt,name=incidentID,proto3" json:"incidentID,omitempty"`
-	// actor 表示操作者（用户/系统标识）。
-	Actor string `protobuf:"bytes,3,opt,name=actor,proto3" json:"actor,omitempty"`
-	// source 表示触发来源（manual/playbook/recheck 等）。
-	Source string `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	// stepIndex 表示复核步骤序号。
-	StepIndex int64 `protobuf:"varint,5,opt,name=stepIndex,proto3" json:"stepIndex,omitempty"`
-	// tool 表示执行工具标识。
-	Tool string `protobuf:"bytes,6,opt,name=tool,proto3" json:"tool,omitempty"`
-	// paramsJSON 表示工具参数 JSON（脱敏后，<=2KB）。
-	ParamsJSON *string `protobuf:"bytes,7,opt,name=paramsJSON,proto3,oneof" json:"paramsJSON,omitempty"`
-	// observed 表示观测摘要（<=512）。
-	Observed string `protobuf:"bytes,8,opt,name=observed,proto3" json:"observed,omitempty"`
-	// meetsExpectation 表示是否满足预期。
-	MeetsExpectation bool `protobuf:"varint,9,opt,name=meetsExpectation,proto3" json:"meetsExpectation,omitempty"`
-	// createdAt 表示创建时间。
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=createdAt,proto3" json:"createdAt,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *VerificationRun) Reset() {
-	*x = VerificationRun{}
-	mi := &file_apiserver_v1_incident_proto_msgTypes[16]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *VerificationRun) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*VerificationRun) ProtoMessage() {}
-
-func (x *VerificationRun) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_incident_proto_msgTypes[16]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use VerificationRun.ProtoReflect.Descriptor instead.
-func (*VerificationRun) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_incident_proto_rawDescGZIP(), []int{16}
-}
-
-func (x *VerificationRun) GetRunID() string {
-	if x != nil {
-		return x.RunID
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetIncidentID() string {
-	if x != nil {
-		return x.IncidentID
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetActor() string {
-	if x != nil {
-		return x.Actor
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetSource() string {
-	if x != nil {
-		return x.Source
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetStepIndex() int64 {
-	if x != nil {
-		return x.StepIndex
-	}
-	return 0
-}
-
-func (x *VerificationRun) GetTool() string {
-	if x != nil {
-		return x.Tool
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetParamsJSON() string {
-	if x != nil && x.ParamsJSON != nil {
-		return *x.ParamsJSON
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetObserved() string {
-	if x != nil {
-		return x.Observed
-	}
-	return ""
-}
-
-func (x *VerificationRun) GetMeetsExpectation() bool {
-	if x != nil {
-		return x.MeetsExpectation
-	}
-	return false
-}
-
-func (x *VerificationRun) GetCreatedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.CreatedAt
-	}
-	return nil
-}
-
-// CreateIncidentVerificationRunRequest 表示新增 incident 复核记录。
-type CreateIncidentVerificationRunRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// incidentID 对应 URI 参数 {incidentID}。
-	// @gotags: uri:"incidentID"
-	IncidentID string `protobuf:"bytes,1,opt,name=incidentID,proto3" json:"incidentID,omitempty" uri:"incidentID"`
-	// actor 表示操作者（可选；为空时后端按上下文补齐）。
-	Actor *string `protobuf:"bytes,2,opt,name=actor,proto3,oneof" json:"actor,omitempty"`
-	// source 表示复核来源。
-	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
-	// stepIndex 表示步骤序号。
-	StepIndex int64 `protobuf:"varint,4,opt,name=stepIndex,proto3" json:"stepIndex,omitempty"`
-	// tool 表示执行工具。
-	Tool string `protobuf:"bytes,5,opt,name=tool,proto3" json:"tool,omitempty"`
-	// paramsJSON 表示工具参数 JSON（可选）。
-	ParamsJSON *string `protobuf:"bytes,6,opt,name=paramsJSON,proto3,oneof" json:"paramsJSON,omitempty"`
-	// observed 表示观测摘要。
-	Observed string `protobuf:"bytes,7,opt,name=observed,proto3" json:"observed,omitempty"`
-	// meetsExpectation 表示是否满足预期。
-	MeetsExpectation bool `protobuf:"varint,8,opt,name=meetsExpectation,proto3" json:"meetsExpectation,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
-}
-
-func (x *CreateIncidentVerificationRunRequest) Reset() {
-	*x = CreateIncidentVerificationRunRequest{}
-	mi := &file_apiserver_v1_incident_proto_msgTypes[17]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CreateIncidentVerificationRunRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CreateIncidentVerificationRunRequest) ProtoMessage() {}
-
-func (x *CreateIncidentVerificationRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_incident_proto_msgTypes[17]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CreateIncidentVerificationRunRequest.ProtoReflect.Descriptor instead.
-func (*CreateIncidentVerificationRunRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_incident_proto_rawDescGZIP(), []int{17}
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetIncidentID() string {
-	if x != nil {
-		return x.IncidentID
-	}
-	return ""
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetActor() string {
-	if x != nil && x.Actor != nil {
-		return *x.Actor
-	}
-	return ""
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetSource() string {
-	if x != nil {
-		return x.Source
-	}
-	return ""
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetStepIndex() int64 {
-	if x != nil {
-		return x.StepIndex
-	}
-	return 0
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetTool() string {
-	if x != nil {
-		return x.Tool
-	}
-	return ""
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetParamsJSON() string {
-	if x != nil && x.ParamsJSON != nil {
-		return *x.ParamsJSON
-	}
-	return ""
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetObserved() string {
-	if x != nil {
-		return x.Observed
-	}
-	return ""
-}
-
-func (x *CreateIncidentVerificationRunRequest) GetMeetsExpectation() bool {
-	if x != nil {
-		return x.MeetsExpectation
-	}
-	return false
-}
-
-// CreateIncidentVerificationRunResponse 表示新增 incident 复核记录响应。
-type CreateIncidentVerificationRunResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Run   *VerificationRun       `protobuf:"bytes,1,opt,name=run,proto3" json:"run,omitempty"`
-	// warnings 表示脱敏/截断告警。
-	Warnings      []string `protobuf:"bytes,2,rep,name=warnings,proto3" json:"warnings,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *CreateIncidentVerificationRunResponse) Reset() {
-	*x = CreateIncidentVerificationRunResponse{}
-	mi := &file_apiserver_v1_incident_proto_msgTypes[18]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *CreateIncidentVerificationRunResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*CreateIncidentVerificationRunResponse) ProtoMessage() {}
-
-func (x *CreateIncidentVerificationRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_incident_proto_msgTypes[18]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use CreateIncidentVerificationRunResponse.ProtoReflect.Descriptor instead.
-func (*CreateIncidentVerificationRunResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_incident_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *CreateIncidentVerificationRunResponse) GetRun() *VerificationRun {
-	if x != nil {
-		return x.Run
-	}
-	return nil
-}
-
-func (x *CreateIncidentVerificationRunResponse) GetWarnings() []string {
-	if x != nil {
-		return x.Warnings
-	}
-	return nil
-}
-
-// ListIncidentVerificationRunsRequest 表示分页查询 incident 复核记录。
-type ListIncidentVerificationRunsRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// incidentID 对应 URI 参数 {incidentID}。
-	// @gotags: uri:"incidentID"
-	IncidentID string `protobuf:"bytes,1,opt,name=incidentID,proto3" json:"incidentID,omitempty" uri:"incidentID"`
-	// page 表示页码（从 1 开始）。
-	// @gotags: form:"page"
-	Page int64 `protobuf:"varint,2,opt,name=page,proto3" json:"page,omitempty" form:"page"`
-	// limit 表示每页大小（<=200）。
-	// @gotags: form:"limit"
-	Limit         int64 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty" form:"limit"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListIncidentVerificationRunsRequest) Reset() {
-	*x = ListIncidentVerificationRunsRequest{}
-	mi := &file_apiserver_v1_incident_proto_msgTypes[19]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListIncidentVerificationRunsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListIncidentVerificationRunsRequest) ProtoMessage() {}
-
-func (x *ListIncidentVerificationRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_incident_proto_msgTypes[19]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListIncidentVerificationRunsRequest.ProtoReflect.Descriptor instead.
-func (*ListIncidentVerificationRunsRequest) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_incident_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *ListIncidentVerificationRunsRequest) GetIncidentID() string {
-	if x != nil {
-		return x.IncidentID
-	}
-	return ""
-}
-
-func (x *ListIncidentVerificationRunsRequest) GetPage() int64 {
-	if x != nil {
-		return x.Page
-	}
-	return 0
-}
-
-func (x *ListIncidentVerificationRunsRequest) GetLimit() int64 {
-	if x != nil {
-		return x.Limit
-	}
-	return 0
-}
-
-// ListIncidentVerificationRunsResponse 表示分页查询 incident 复核记录响应。
-type ListIncidentVerificationRunsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TotalCount    int64                  `protobuf:"varint,1,opt,name=totalCount,proto3" json:"totalCount,omitempty"`
-	Runs          []*VerificationRun     `protobuf:"bytes,2,rep,name=runs,proto3" json:"runs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListIncidentVerificationRunsResponse) Reset() {
-	*x = ListIncidentVerificationRunsResponse{}
-	mi := &file_apiserver_v1_incident_proto_msgTypes[20]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListIncidentVerificationRunsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListIncidentVerificationRunsResponse) ProtoMessage() {}
-
-func (x *ListIncidentVerificationRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_apiserver_v1_incident_proto_msgTypes[20]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListIncidentVerificationRunsResponse.ProtoReflect.Descriptor instead.
-func (*ListIncidentVerificationRunsResponse) Descriptor() ([]byte, []int) {
-	return file_apiserver_v1_incident_proto_rawDescGZIP(), []int{20}
-}
-
-func (x *ListIncidentVerificationRunsResponse) GetTotalCount() int64 {
-	if x != nil {
-		return x.TotalCount
-	}
-	return 0
-}
-
-func (x *ListIncidentVerificationRunsResponse) GetRuns() []*VerificationRun {
-	if x != nil {
-		return x.Runs
-	}
-	return nil
-}
-
 var File_apiserver_v1_incident_proto protoreflect.FileDescriptor
 
 const file_apiserver_v1_incident_proto_rawDesc = "" +
@@ -1945,53 +1534,7 @@ const file_apiserver_v1_incident_proto_rawDesc = "" +
 	"\n" +
 	"totalCount\x18\x01 \x01(\x03R\n" +
 	"totalCount\x129\n" +
-	"\aactions\x18\x02 \x03(\v2\x1f.apiserver.v1.OperatorActionLogR\aactions\"\xdd\x02\n" +
-	"\x0fVerificationRun\x12\x14\n" +
-	"\x05runID\x18\x01 \x01(\tR\x05runID\x12\x1e\n" +
-	"\n" +
-	"incidentID\x18\x02 \x01(\tR\n" +
-	"incidentID\x12\x14\n" +
-	"\x05actor\x18\x03 \x01(\tR\x05actor\x12\x16\n" +
-	"\x06source\x18\x04 \x01(\tR\x06source\x12\x1c\n" +
-	"\tstepIndex\x18\x05 \x01(\x03R\tstepIndex\x12\x12\n" +
-	"\x04tool\x18\x06 \x01(\tR\x04tool\x12#\n" +
-	"\n" +
-	"paramsJSON\x18\a \x01(\tH\x00R\n" +
-	"paramsJSON\x88\x01\x01\x12\x1a\n" +
-	"\bobserved\x18\b \x01(\tR\bobserved\x12*\n" +
-	"\x10meetsExpectation\x18\t \x01(\bR\x10meetsExpectation\x128\n" +
-	"\tcreatedAt\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAtB\r\n" +
-	"\v_paramsJSON\"\xb1\x02\n" +
-	"$CreateIncidentVerificationRunRequest\x12\x1e\n" +
-	"\n" +
-	"incidentID\x18\x01 \x01(\tR\n" +
-	"incidentID\x12\x19\n" +
-	"\x05actor\x18\x02 \x01(\tH\x00R\x05actor\x88\x01\x01\x12\x16\n" +
-	"\x06source\x18\x03 \x01(\tR\x06source\x12\x1c\n" +
-	"\tstepIndex\x18\x04 \x01(\x03R\tstepIndex\x12\x12\n" +
-	"\x04tool\x18\x05 \x01(\tR\x04tool\x12#\n" +
-	"\n" +
-	"paramsJSON\x18\x06 \x01(\tH\x01R\n" +
-	"paramsJSON\x88\x01\x01\x12\x1a\n" +
-	"\bobserved\x18\a \x01(\tR\bobserved\x12*\n" +
-	"\x10meetsExpectation\x18\b \x01(\bR\x10meetsExpectationB\b\n" +
-	"\x06_actorB\r\n" +
-	"\v_paramsJSON\"t\n" +
-	"%CreateIncidentVerificationRunResponse\x12/\n" +
-	"\x03run\x18\x01 \x01(\v2\x1d.apiserver.v1.VerificationRunR\x03run\x12\x1a\n" +
-	"\bwarnings\x18\x02 \x03(\tR\bwarnings\"o\n" +
-	"#ListIncidentVerificationRunsRequest\x12\x1e\n" +
-	"\n" +
-	"incidentID\x18\x01 \x01(\tR\n" +
-	"incidentID\x12\x12\n" +
-	"\x04page\x18\x02 \x01(\x03R\x04page\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\x03R\x05limit\"y\n" +
-	"$ListIncidentVerificationRunsResponse\x12\x1e\n" +
-	"\n" +
-	"totalCount\x18\x01 \x01(\x03R\n" +
-	"totalCount\x121\n" +
-	"\x04runs\x18\x02 \x03(\v2\x1d.apiserver.v1.VerificationRunR\x04runsB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
+	"\aactions\x18\x02 \x03(\v2\x1f.apiserver.v1.OperatorActionLogR\aactionsB4Z2github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1b\x06proto3"
 
 var (
 	file_apiserver_v1_incident_proto_rawDescOnce sync.Once
@@ -2005,54 +1548,46 @@ func file_apiserver_v1_incident_proto_rawDescGZIP() []byte {
 	return file_apiserver_v1_incident_proto_rawDescData
 }
 
-var file_apiserver_v1_incident_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_apiserver_v1_incident_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
 var file_apiserver_v1_incident_proto_goTypes = []any{
-	(*Incident)(nil),                              // 0: apiserver.v1.Incident
-	(*CreateIncidentRequest)(nil),                 // 1: apiserver.v1.CreateIncidentRequest
-	(*CreateIncidentResponse)(nil),                // 2: apiserver.v1.CreateIncidentResponse
-	(*UpdateIncidentRequest)(nil),                 // 3: apiserver.v1.UpdateIncidentRequest
-	(*UpdateIncidentResponse)(nil),                // 4: apiserver.v1.UpdateIncidentResponse
-	(*DeleteIncidentRequest)(nil),                 // 5: apiserver.v1.DeleteIncidentRequest
-	(*DeleteIncidentResponse)(nil),                // 6: apiserver.v1.DeleteIncidentResponse
-	(*GetIncidentRequest)(nil),                    // 7: apiserver.v1.GetIncidentRequest
-	(*GetIncidentResponse)(nil),                   // 8: apiserver.v1.GetIncidentResponse
-	(*ListIncidentRequest)(nil),                   // 9: apiserver.v1.ListIncidentRequest
-	(*ListIncidentResponse)(nil),                  // 10: apiserver.v1.ListIncidentResponse
-	(*OperatorActionLog)(nil),                     // 11: apiserver.v1.OperatorActionLog
-	(*CreateIncidentActionRequest)(nil),           // 12: apiserver.v1.CreateIncidentActionRequest
-	(*CreateIncidentActionResponse)(nil),          // 13: apiserver.v1.CreateIncidentActionResponse
-	(*ListIncidentActionsRequest)(nil),            // 14: apiserver.v1.ListIncidentActionsRequest
-	(*ListIncidentActionsResponse)(nil),           // 15: apiserver.v1.ListIncidentActionsResponse
-	(*VerificationRun)(nil),                       // 16: apiserver.v1.VerificationRun
-	(*CreateIncidentVerificationRunRequest)(nil),  // 17: apiserver.v1.CreateIncidentVerificationRunRequest
-	(*CreateIncidentVerificationRunResponse)(nil), // 18: apiserver.v1.CreateIncidentVerificationRunResponse
-	(*ListIncidentVerificationRunsRequest)(nil),   // 19: apiserver.v1.ListIncidentVerificationRunsRequest
-	(*ListIncidentVerificationRunsResponse)(nil),  // 20: apiserver.v1.ListIncidentVerificationRunsResponse
-	(*timestamppb.Timestamp)(nil),                 // 21: google.protobuf.Timestamp
+	(*Incident)(nil),                     // 0: apiserver.v1.Incident
+	(*CreateIncidentRequest)(nil),        // 1: apiserver.v1.CreateIncidentRequest
+	(*CreateIncidentResponse)(nil),       // 2: apiserver.v1.CreateIncidentResponse
+	(*UpdateIncidentRequest)(nil),        // 3: apiserver.v1.UpdateIncidentRequest
+	(*UpdateIncidentResponse)(nil),       // 4: apiserver.v1.UpdateIncidentResponse
+	(*DeleteIncidentRequest)(nil),        // 5: apiserver.v1.DeleteIncidentRequest
+	(*DeleteIncidentResponse)(nil),       // 6: apiserver.v1.DeleteIncidentResponse
+	(*GetIncidentRequest)(nil),           // 7: apiserver.v1.GetIncidentRequest
+	(*GetIncidentResponse)(nil),          // 8: apiserver.v1.GetIncidentResponse
+	(*ListIncidentRequest)(nil),          // 9: apiserver.v1.ListIncidentRequest
+	(*ListIncidentResponse)(nil),         // 10: apiserver.v1.ListIncidentResponse
+	(*OperatorActionLog)(nil),            // 11: apiserver.v1.OperatorActionLog
+	(*CreateIncidentActionRequest)(nil),  // 12: apiserver.v1.CreateIncidentActionRequest
+	(*CreateIncidentActionResponse)(nil), // 13: apiserver.v1.CreateIncidentActionResponse
+	(*ListIncidentActionsRequest)(nil),   // 14: apiserver.v1.ListIncidentActionsRequest
+	(*ListIncidentActionsResponse)(nil),  // 15: apiserver.v1.ListIncidentActionsResponse
+	(*timestamppb.Timestamp)(nil),        // 16: google.protobuf.Timestamp
 }
 var file_apiserver_v1_incident_proto_depIdxs = []int32{
-	21, // 0: apiserver.v1.Incident.startAt:type_name -> google.protobuf.Timestamp
-	21, // 1: apiserver.v1.Incident.endAt:type_name -> google.protobuf.Timestamp
-	21, // 2: apiserver.v1.Incident.createdAt:type_name -> google.protobuf.Timestamp
-	21, // 3: apiserver.v1.Incident.updatedAt:type_name -> google.protobuf.Timestamp
-	21, // 4: apiserver.v1.CreateIncidentRequest.startAt:type_name -> google.protobuf.Timestamp
-	21, // 5: apiserver.v1.UpdateIncidentRequest.startAt:type_name -> google.protobuf.Timestamp
-	21, // 6: apiserver.v1.UpdateIncidentRequest.endAt:type_name -> google.protobuf.Timestamp
+	16, // 0: apiserver.v1.Incident.startAt:type_name -> google.protobuf.Timestamp
+	16, // 1: apiserver.v1.Incident.endAt:type_name -> google.protobuf.Timestamp
+	16, // 2: apiserver.v1.Incident.createdAt:type_name -> google.protobuf.Timestamp
+	16, // 3: apiserver.v1.Incident.updatedAt:type_name -> google.protobuf.Timestamp
+	16, // 4: apiserver.v1.CreateIncidentRequest.startAt:type_name -> google.protobuf.Timestamp
+	16, // 5: apiserver.v1.UpdateIncidentRequest.startAt:type_name -> google.protobuf.Timestamp
+	16, // 6: apiserver.v1.UpdateIncidentRequest.endAt:type_name -> google.protobuf.Timestamp
 	0,  // 7: apiserver.v1.GetIncidentResponse.incident:type_name -> apiserver.v1.Incident
-	21, // 8: apiserver.v1.ListIncidentRequest.createdAtStart:type_name -> google.protobuf.Timestamp
-	21, // 9: apiserver.v1.ListIncidentRequest.createdAtEnd:type_name -> google.protobuf.Timestamp
+	16, // 8: apiserver.v1.ListIncidentRequest.createdAtStart:type_name -> google.protobuf.Timestamp
+	16, // 9: apiserver.v1.ListIncidentRequest.createdAtEnd:type_name -> google.protobuf.Timestamp
 	0,  // 10: apiserver.v1.ListIncidentResponse.incidents:type_name -> apiserver.v1.Incident
-	21, // 11: apiserver.v1.OperatorActionLog.createdAt:type_name -> google.protobuf.Timestamp
+	16, // 11: apiserver.v1.OperatorActionLog.createdAt:type_name -> google.protobuf.Timestamp
 	11, // 12: apiserver.v1.CreateIncidentActionResponse.action:type_name -> apiserver.v1.OperatorActionLog
 	11, // 13: apiserver.v1.ListIncidentActionsResponse.actions:type_name -> apiserver.v1.OperatorActionLog
-	21, // 14: apiserver.v1.VerificationRun.createdAt:type_name -> google.protobuf.Timestamp
-	16, // 15: apiserver.v1.CreateIncidentVerificationRunResponse.run:type_name -> apiserver.v1.VerificationRun
-	16, // 16: apiserver.v1.ListIncidentVerificationRunsResponse.runs:type_name -> apiserver.v1.VerificationRun
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	14, // [14:14] is the sub-list for method output_type
+	14, // [14:14] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_apiserver_v1_incident_proto_init() }
@@ -2066,15 +1601,13 @@ func file_apiserver_v1_incident_proto_init() {
 	file_apiserver_v1_incident_proto_msgTypes[9].OneofWrappers = []any{}
 	file_apiserver_v1_incident_proto_msgTypes[11].OneofWrappers = []any{}
 	file_apiserver_v1_incident_proto_msgTypes[12].OneofWrappers = []any{}
-	file_apiserver_v1_incident_proto_msgTypes[16].OneofWrappers = []any{}
-	file_apiserver_v1_incident_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_apiserver_v1_incident_proto_rawDesc), len(file_apiserver_v1_incident_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   16,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

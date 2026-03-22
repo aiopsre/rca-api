@@ -41,7 +41,6 @@ type IStore interface {
 	NoticeChannel() NoticeChannelStore
 	NoticeDelivery() NoticeDeliveryStore
 	IncidentActionLog() IncidentActionLogStore
-	IncidentVerificationRun() IncidentVerificationRunStore
 	SessionContext() SessionContextStore
 	SessionHistoryEvent() SessionHistoryEventStore
 	InternalStrategyConfig() InternalStrategyConfigStore
@@ -167,10 +166,6 @@ func (s *store) NoticeDelivery() NoticeDeliveryStore {
 
 func (s *store) IncidentActionLog() IncidentActionLogStore {
 	return newIncidentActionLogStore(s)
-}
-
-func (s *store) IncidentVerificationRun() IncidentVerificationRunStore {
-	return newIncidentVerificationRunStore(s)
 }
 
 func (s *store) SessionContext() SessionContextStore {

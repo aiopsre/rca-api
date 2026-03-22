@@ -24,7 +24,7 @@ from orchestrator.runtime.tool_registry import ToolMetadata, register_tool_metad
 from orchestrator.runtime.toolcall_reporter import ToolCallReporter
 from orchestrator.runtime.verification_runner import VerificationBudget, VerificationRunner
 from orchestrator.sdk.errors import OrchestratorErrorCategory, RCAApiError
-from orchestrator.sdk.runtime_contract import EvidencePublishRequest, ToolCallReportRequest, VerificationReportRequest
+from orchestrator.sdk.runtime_contract import EvidencePublishRequest, ToolCallReportRequest
 from orchestrator.tooling import ToolInvokeError
 from orchestrator.tooling.invoker import TOOLING_META_KEY
 from orchestrator.tools_rca_api import RCAApiClient
@@ -146,57 +146,6 @@ class RCAApiClientRequestTest(unittest.TestCase):
         self.assertEqual(captured["method"], "GET")
         self.assertEqual(captured["path"], "/v1/ai/jobs/job-abc/tool-calls")
         self.assertEqual(captured["kwargs"]["params"], {"limit": 20, "offset": 3, "seq": 2})
-        self.assertEqual(response["totalCount"], 1)
-
-    def test_create_incident_verification_run_uses_expected_payload(self) -> None:
-        client = RCAApiClient("http://example.com", scopes="*")
-        captured: dict[str, Any] = {}
-
-        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-            captured["method"] = method
-            captured["path"] = path
-            captured["kwargs"] = kwargs
-            return {"data": {"run": {"runID": "run-1"}}}
-
-        client._request = _fake_request  # type: ignore[method-assign]
-        response = client.create_incident_verification_run(
-            incident_id="inc-9",
-            source="ai_job",
-            step_index=1,
-            tool="mcp.query_logs",
-            params_json={"query": "error"},
-            observed="keyword matched",
-            meets_expectation=True,
-            actor="ai:job-9",
-        )
-        self.assertEqual(captured["method"], "POST")
-        self.assertEqual(captured["path"], "/v1/incidents/inc-9/verification-runs")
-        body = captured["kwargs"]["json_body"]
-        self.assertEqual(body["incidentID"], "inc-9")
-        self.assertEqual(body["source"], "ai_job")
-        self.assertEqual(body["stepIndex"], 1)
-        self.assertEqual(body["tool"], "mcp.query_logs")
-        self.assertEqual(body["observed"], "keyword matched")
-        self.assertTrue(body["meetsExpectation"])
-        self.assertEqual(body["actor"], "ai:job-9")
-        self.assertEqual(body["paramsJSON"], '{"query":"error"}')
-        self.assertEqual(response["run"]["runID"], "run-1")
-
-    def test_list_incident_verification_runs_uses_expected_endpoint_and_params(self) -> None:
-        client = RCAApiClient("http://example.com", scopes="*")
-        captured: dict[str, Any] = {}
-
-        def _fake_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-            captured["method"] = method
-            captured["path"] = path
-            captured["kwargs"] = kwargs
-            return {"data": {"totalCount": 1, "runs": [{"stepIndex": 2}]}}
-
-        client._request = _fake_request  # type: ignore[method-assign]
-        response = client.list_incident_verification_runs("inc-9", page=3, limit=50)
-        self.assertEqual(captured["method"], "GET")
-        self.assertEqual(captured["path"], "/v1/incidents/inc-9/verification-runs")
-        self.assertEqual(captured["kwargs"]["params"], {"page": 3, "limit": 50})
         self.assertEqual(response["totalCount"], 1)
 
     def test_add_tool_call_uses_expected_payload(self) -> None:
@@ -425,22 +374,6 @@ class RuntimeContractModelTest(unittest.TestCase):
         self.assertEqual(body["latencyMs"], 0)
         self.assertEqual(body["errorMessage"], "timeout")
         self.assertEqual(body["evidenceIDs"], ["evidence-1", "evidence-2"])
-
-    def test_verification_request_supports_dict_params(self) -> None:
-        request = VerificationReportRequest(
-            incident_id="inc-1",
-            source="AI_JOB",
-            step_index=1,
-            tool="mcp.query_logs",
-            observed="matched",
-            meets_expectation=True,
-            params_json={"query": "error"},
-            actor="ai:job-1",
-        )
-        body = request.to_api_body()
-        self.assertEqual(body["incidentID"], "inc-1")
-        self.assertEqual(body["source"], "ai_job")
-        self.assertEqual(body["paramsJSON"], '{"query":"error"}')
 
     def test_evidence_publish_request_for_query_extracts_fields(self) -> None:
         request = EvidencePublishRequest.for_query(

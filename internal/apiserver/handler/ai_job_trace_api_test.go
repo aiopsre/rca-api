@@ -1223,7 +1223,6 @@ func TestSessionWorkbenchViewerAPI_Get(t *testing.T) {
 	require.NoError(t, s.DB(context.Background()).AutoMigrate(
 		&model.SessionContextM{},
 		&model.SessionHistoryEventM{},
-		&model.IncidentVerificationRunM{},
 		&model.EvidenceM{},
 	))
 
@@ -1242,20 +1241,6 @@ func TestSessionWorkbenchViewerAPI_Get(t *testing.T) {
 	rightJobID := createFailedTraceJob(t, aiBiz, incident.IncidentID, "replay", "replay_api", "user:replay", "viewer replay failed")
 	sessionID := mustHandlerSessionIDByJob(t, s, rightJobID)
 
-	now := time.Now().UTC().Truncate(time.Second)
-	require.NoError(t, s.IncidentVerificationRun().Create(context.Background(), &model.IncidentVerificationRunM{
-		RunID:            "verify-api-viewer-1",
-		IncidentID:       incident.IncidentID,
-		JobID:            strPtr(rightJobID),
-		Actor:            "user:verifier",
-		Source:           "human",
-		StepIndex:        1,
-		Tool:             "kubectl",
-		Observed:         "service recovered",
-		MeetsExpectation: true,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}))
 	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
 		SessionID: sessionID,
 		EventType: sessionbiz.SessionHistoryEventReviewStarted,
@@ -1287,14 +1272,6 @@ func TestSessionWorkbenchViewerAPI_Get(t *testing.T) {
 	evidence := extractMap(data, "evidence", "Evidence")
 	require.NotNil(t, evidence)
 	require.Equal(t, fmt.Sprintf("/v1/incidents/%s/evidence", incident.IncidentID), extractString(evidence, "evidence_path", "evidencePath", "EvidencePath"))
-
-	verification := extractMap(data, "verification", "Verification")
-	require.NotNil(t, verification)
-	require.Equal(
-		t,
-		fmt.Sprintf("/v1/incidents/%s/verification-runs", incident.IncidentID),
-		extractString(verification, "verification_path", "verificationPath", "VerificationPath"),
-	)
 
 	compare := extractMap(data, "compare", "Compare")
 	require.NotNil(t, compare)

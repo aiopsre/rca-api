@@ -139,43 +139,6 @@ func TestEvidencePublishRoundTrip(t *testing.T) {
 	require.Equal(t, end, apiReq.GetTimeRangeEnd().AsTime().UTC())
 }
 
-func TestVerificationReportRoundTrip(t *testing.T) {
-	req := VerificationReportRequestFromAPI(&v1.CreateIncidentVerificationRunRequest{
-		IncidentID:       "  inc-1  ",
-		Actor:            ptrString("  ai:job-1  "),
-		Source:           "  AI_JOB  ",
-		StepIndex:        2,
-		Tool:             "  mcp.query_logs  ",
-		ParamsJSON:       ptrString("  {\"q\":\"err\"}  "),
-		Observed:         "  keyword matched  ",
-		MeetsExpectation: true,
-	})
-	require.Equal(t, "inc-1", req.IncidentID)
-	require.NotNil(t, req.Actor)
-	require.Equal(t, "ai:job-1", *req.Actor)
-	require.Equal(t, "ai_job", req.Source)
-	require.Equal(t, int64(2), req.StepIndex)
-	require.Equal(t, "mcp.query_logs", req.Tool)
-	require.NotNil(t, req.ParamsJSON)
-	require.Equal(t, "{\"q\":\"err\"}", *req.ParamsJSON)
-	require.Equal(t, "keyword matched", req.Observed)
-	require.True(t, req.MeetsExpectation)
-
-	apiReq := req.ToAPIRequest()
-	require.Equal(t, "ai_job", apiReq.GetSource())
-	require.Equal(t, "mcp.query_logs", apiReq.GetTool())
-
-	resp := VerificationReportResponseFromAPI(&v1.CreateIncidentVerificationRunResponse{
-		Run: &v1.VerificationRun{RunID: "run-1"},
-		Warnings: []string{
-			"trimmed",
-		},
-	})
-	require.Equal(t, "run-1", resp.RunID)
-	require.Equal(t, []string{"trimmed"}, resp.Warnings)
-	require.Equal(t, "run-1", resp.ToAPIResponse().GetRun().GetRunID())
-}
-
 func TestNormalizeStringList(t *testing.T) {
 	require.Nil(t, NormalizeStringList(nil))
 	require.Equal(t, []string{"a", "b"}, NormalizeStringList([]string{" a ", "b", "a", "", " "}))

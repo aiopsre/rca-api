@@ -40,11 +40,6 @@ const (
 	maxActionSummaryLen     = 256
 	maxActionDetailsJSONLen = 8 * 1024
 
-	maxVerificationSourceLen     = 64
-	maxVerificationToolLen       = 128
-	maxVerificationObservedLen   = 512
-	maxVerificationParamsJSONLen = 2 * 1024
-
 	operatorWarningRedacted  = "REDACTION_APPLIED"
 	operatorWarningTruncated = "PAYLOAD_TRUNCATED"
 )
@@ -62,8 +57,6 @@ type IncidentBiz interface {
 	List(ctx context.Context, rq *apiv1.ListIncidentRequest) (*apiv1.ListIncidentResponse, error)
 	CreateAction(ctx context.Context, rq *apiv1.CreateIncidentActionRequest) (*apiv1.CreateIncidentActionResponse, error)
 	ListActions(ctx context.Context, rq *apiv1.ListIncidentActionsRequest) (*apiv1.ListIncidentActionsResponse, error)
-	CreateVerificationRun(ctx context.Context, rq *apiv1.CreateIncidentVerificationRunRequest) (*apiv1.CreateIncidentVerificationRunResponse, error)
-	ListVerificationRuns(ctx context.Context, rq *apiv1.ListIncidentVerificationRunsRequest) (*apiv1.ListIncidentVerificationRunsResponse, error)
 	TriggerScheduledRun(ctx context.Context, rq *TriggerScheduledRunRequest) (*TriggerScheduledRunResponse, error)
 	Search(ctx context.Context, rq *SearchIncidentsRequest) (*SearchIncidentsResponse, error)
 	ListTimeline(ctx context.Context, rq *ListIncidentTimelineRequest) (*ListIncidentTimelineResponse, error)
@@ -343,106 +336,6 @@ func (b *incidentBiz) ListActions(
 	return &apiv1.ListIncidentActionsResponse{
 		TotalCount: total,
 		Actions:    actions,
-	}, nil
-}
-
-func (b *incidentBiz) CreateVerificationRun(
-	ctx context.Context,
-	rq *apiv1.CreateIncidentVerificationRunRequest,
-) (*apiv1.CreateIncidentVerificationRunResponse, error) {
-
-	incidentID := strings.TrimSpace(rq.GetIncidentID())
-	if err := b.ensureIncidentExists(ctx, incidentID); err != nil {
-		return nil, err
-	}
-
-	actor := resolveOperatorActor(ctx, rq.Actor)
-	source, _, _ := sanitizeOperatorTextWithLimit(rq.GetSource(), maxVerificationSourceLen)
-	tool, _, _ := sanitizeOperatorTextWithLimit(rq.GetTool(), maxVerificationToolLen)
-	observed, observedRedacted, observedTruncated := sanitizeOperatorTextWithLimit(rq.GetObserved(), maxVerificationObservedLen)
-	paramsJSON, warnings := sanitizeAndLimitJSONLike(rq.GetParamsJSON(), maxVerificationParamsJSONLen)
-	if observedRedacted {
-		warnings = appendOperatorWarning(warnings, operatorWarningRedacted)
-	}
-	if observedTruncated {
-		warnings = appendOperatorWarning(warnings, operatorWarningTruncated)
-	}
-
-	m := &model.IncidentVerificationRunM{
-		IncidentID:       incidentID,
-		Actor:            actor,
-		Source:           strings.ToLower(strings.TrimSpace(source)),
-		StepIndex:        rq.GetStepIndex(),
-		Tool:             strings.TrimSpace(tool),
-		Observed:         observed,
-		MeetsExpectation: rq.GetMeetsExpectation(),
-	}
-	if paramsJSON != "" {
-		m.ParamsJSON = &paramsJSON
-	}
-	if jobID := b.resolveVerificationJobIDBestEffort(ctx, incidentID, actor, paramsJSON); jobID != "" {
-		jobIDCopy := jobID
-		m.JobID = &jobIDCopy
-	}
-
-	if err := b.store.IncidentVerificationRun().Create(ctx, m); err != nil {
-		return nil, errno.ErrIncidentVerificationRunCreateFailed
-	}
-
-	payload := map[string]any{
-		"run_id":            m.RunID,
-		"actor":             m.Actor,
-		"source":            m.Source,
-		"step_index":        m.StepIndex,
-		"tool":              m.Tool,
-		"observed":          m.Observed,
-		"meets_expectation": m.MeetsExpectation,
-	}
-	if m.JobID != nil {
-		payload["job_id"] = strings.TrimSpace(*m.JobID)
-	}
-	if m.ParamsJSON != nil {
-		payload["params_json"] = *m.ParamsJSON
-	}
-	if len(warnings) > 0 {
-		payload["warnings"] = warnings
-	}
-	audit.AppendIncidentTimelineIfExists(ctx, b.store.DB(ctx), incidentID, "verification_run", m.RunID, payload)
-
-	return &apiv1.CreateIncidentVerificationRunResponse{
-		Run:      conversion.IncidentVerificationRunMToVerificationRunV1(m),
-		Warnings: warnings,
-	}, nil
-}
-
-//nolint:dupl // Keep explicit list flow aligned with actions endpoint behavior.
-func (b *incidentBiz) ListVerificationRuns(
-	ctx context.Context,
-	rq *apiv1.ListIncidentVerificationRunsRequest,
-) (*apiv1.ListIncidentVerificationRunsResponse, error) {
-
-	limit := normalizeOperatorListLimit(rq.GetLimit())
-	page := normalizeOperatorPage(rq.GetPage())
-	offset := (page - 1) * limit
-
-	whr := where.T(ctx).
-		O(int(offset)).
-		L(int(limit)).
-		F("incident_id", strings.TrimSpace(rq.GetIncidentID()))
-
-	total, list, err := b.store.IncidentVerificationRun().List(ctx, whr)
-	if err != nil {
-		return nil, errno.ErrIncidentVerificationRunListFailed
-	}
-
-	runs := make([]*apiv1.VerificationRun, 0, len(list))
-	for _, item := range list {
-		runs = append(runs, conversion.IncidentVerificationRunMToVerificationRunV1(item))
-	}
-
-	return &apiv1.ListIncidentVerificationRunsResponse{
-		TotalCount: total,
-		Runs:       runs,
 	}, nil
 }
 
@@ -977,92 +870,6 @@ func readTimelineRowTime(row map[string]any, key string) time.Time {
 		}
 	}
 	return time.Time{}
-}
-
-func (b *incidentBiz) resolveVerificationJobIDBestEffort(
-	ctx context.Context,
-	incidentID string,
-	actor string,
-	paramsJSON string,
-) string {
-	candidates := verificationJobIDCandidates(actor, paramsJSON)
-	if len(candidates) == 0 {
-		return ""
-	}
-	incidentID = strings.TrimSpace(incidentID)
-	for _, candidate := range candidates {
-		jobID := strings.TrimSpace(candidate)
-		if jobID == "" {
-			continue
-		}
-		job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
-		if err != nil || job == nil {
-			continue
-		}
-		if strings.TrimSpace(job.IncidentID) == incidentID {
-			return jobID
-		}
-	}
-	return ""
-}
-
-func verificationJobIDCandidates(actor string, paramsJSON string) []string {
-	seen := make(map[string]struct{}, 2)
-	out := make([]string, 0, 2)
-
-	appendCandidate := func(candidate string) {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" {
-			return
-		}
-		if _, ok := seen[candidate]; ok {
-			return
-		}
-		seen[candidate] = struct{}{}
-		out = append(out, candidate)
-	}
-
-	appendCandidate(extractJobIDFromActor(actor))
-	appendCandidate(extractJobIDFromVerificationParams(paramsJSON))
-	return out
-}
-
-func extractJobIDFromActor(actor string) string {
-	actor = strings.TrimSpace(actor)
-	if actor == "" {
-		return ""
-	}
-	lower := strings.ToLower(actor)
-	if !strings.HasPrefix(lower, "ai:") {
-		return ""
-	}
-	return strings.TrimSpace(actor[3:])
-}
-
-func extractJobIDFromVerificationParams(paramsJSON string) string {
-	trimmed := strings.TrimSpace(paramsJSON)
-	if trimmed == "" {
-		return ""
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return ""
-	}
-	if value := strings.TrimSpace(anyToString(payload["job_id"])); value != "" {
-		return value
-	}
-	return strings.TrimSpace(anyToString(payload["jobID"]))
-}
-
-func anyToString(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case []byte:
-		return string(typed)
-	default:
-		return ""
-	}
 }
 
 func (b *incidentBiz) Delete(ctx context.Context, rq *apiv1.DeleteIncidentRequest) (*apiv1.DeleteIncidentResponse, error) {
