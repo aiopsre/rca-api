@@ -29,6 +29,15 @@ if TYPE_CHECKING:
 # HM4: Support all three domains - observability, change, knowledge.
 HM3_SUPPORTED_DOMAINS: frozenset[str] = frozenset({"observability", "change", "knowledge"})
 
+# HM11: Domain -> Capability mapping for skill routing.
+# Maps each domain to the capability that skills should declare to serve that domain.
+DOMAIN_CAPABILITY_MAP: dict[str, str] = {
+    "observability": "evidence.plan",  # Primary: metrics/logs/traces investigation
+    # Future capabilities (not yet implemented):
+    # "change": "change.analyze",
+    # "knowledge": "knowledge.lookup",
+}
+
 
 @dataclass
 class DomainTask:
@@ -39,7 +48,7 @@ class DomainTask:
         domain: Domain name (observability, change, knowledge).
         goal: What this task should accomplish.
         priority: Task priority (higher = more important).
-        mode: Execution mode (hybrid, skill_only, tool_only).
+        mode: Execution mode (reserved for future use).
         tool_scope: List of tool names this task can use.
         skill_scope: List of skill capabilities this task can use.
     """
@@ -48,7 +57,7 @@ class DomainTask:
     domain: str  # observability, change, knowledge
     goal: str
     priority: int = 100
-    mode: str = "hybrid"  # hybrid, skill_only, tool_only
+    mode: str = "hybrid"  # reserved for future use
     tool_scope: list[str] = field(default_factory=list)
     skill_scope: list[str] = field(default_factory=list)
 
@@ -194,6 +203,53 @@ def _validate_domain_task(task: dict[str, Any], state: "GraphState | None" = Non
     }
 
 
+def _enrich_task_with_skill_scope(
+    task: dict[str, Any],
+    skill_surface: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Enrich task with skill_scope based on available capabilities.
+
+    HM11: Implements structured routing for skill integration.
+    Checks if the domain has a corresponding capability with available skills.
+
+    Args:
+        task: Domain task dictionary.
+        skill_surface: Skill surface from agent context, containing capability_map.
+
+    Returns:
+        Updated task with mode and skill_scope set appropriately.
+    """
+    domain = task.get("domain", "")
+    capability = DOMAIN_CAPABILITY_MAP.get(domain)
+
+    # No capability mapping for this domain - use native tools only
+    if not capability:
+        task["mode"] = "hybrid"  # Keep hybrid for tool flexibility
+        task["skill_scope"] = []
+        return task
+
+    # No skill surface available - use native tools only
+    if not skill_surface:
+        task["mode"] = "hybrid"
+        task["skill_scope"] = []
+        return task
+
+    # Check if capability has available skills
+    capability_map = skill_surface.get("capability_map", {})
+    available_skills = capability_map.get(capability, [])
+
+    if available_skills:
+        # Skills available for this capability
+        task["skill_scope"] = [capability]
+        task["mode"] = "hybrid"  # Try skill first, fallback to native
+    else:
+        # No skills for this capability
+        task["skill_scope"] = []
+        task["mode"] = "hybrid"
+
+    return task
+
+
 def _build_router_system_prompt() -> str:
     """Build the system prompt for the router agent.
 
@@ -299,8 +355,7 @@ def _get_agent_context(state: "GraphState") -> "ResolvedAgentContext | None":
 def _get_llm(runtime: "OrchestratorRuntime") -> Any:
     """Get LLM instance from runtime.
 
-    Uses the independent graph LLM (HM7-1), not prompt_first skill agent.
-    Falls back to legacy _skill_agent path for backward compatibility.
+    Uses the independent graph LLM (HM7-1).
 
     Args:
         runtime: Orchestrator runtime instance.
@@ -308,23 +363,12 @@ def _get_llm(runtime: "OrchestratorRuntime") -> Any:
     Returns:
         LLM instance or None if not configured.
     """
-    # Primary path: use independent graph LLM (HM7-1)
     get_graph_llm = getattr(runtime, "get_graph_llm", None)
     if callable(get_graph_llm):
         llm = get_graph_llm()
         if llm is not None:
             return llm
-
-    # Fallback: legacy _skill_agent path (for backward compatibility)
-    skill_agent = getattr(runtime, "_skill_agent", None)
-    if skill_agent is None:
-        return None
-    if not bool(getattr(skill_agent, "configured", False)):
-        return None
-    try:
-        return skill_agent._get_llm()  # noqa: SLF001
-    except Exception:  # noqa: BLE001
-        return None
+    return None
 
 
 def _invoke_llm(llm: Any, request: AgentRequest) -> Any:
@@ -446,9 +490,19 @@ def route_domains(
 
     # Validate and set domain tasks
     if parsed_tasks:
-        state.domain_tasks = [_validate_domain_task(t, state) for t in parsed_tasks]
+        validated_tasks = [_validate_domain_task(t, state) for t in parsed_tasks]
     else:
-        state.domain_tasks = [_default_observability_task(state)]
+        validated_tasks = [_default_observability_task(state)]
+
+    # HM11: Enrich tasks with skill_scope based on available capabilities
+    skill_surface = None
+    if agent_context is not None:
+        skill_surface = agent_context.skill_surface.to_dict() if agent_context.skill_surface else None
+
+    state.domain_tasks = [
+        _enrich_task_with_skill_scope(t, skill_surface)
+        for t in validated_tasks
+    ]
 
     # Store route context
     state.route_context = {

@@ -137,8 +137,7 @@ def _get_agent_context(state: "GraphState") -> "ResolvedAgentContext | None":
 def _get_llm(runtime: "OrchestratorRuntime") -> Any:
     """Get LLM instance from runtime.
 
-    Uses the independent graph LLM (HM7-1), not prompt_first skill agent.
-    Falls back to legacy _skill_agent path for backward compatibility.
+    Uses the independent graph LLM (HM7-1).
 
     Args:
         runtime: Orchestrator runtime instance.
@@ -146,23 +145,12 @@ def _get_llm(runtime: "OrchestratorRuntime") -> Any:
     Returns:
         LLM instance or None if not configured.
     """
-    # Primary path: use independent graph LLM (HM7-1)
     get_graph_llm = getattr(runtime, "get_graph_llm", None)
     if callable(get_graph_llm):
         llm = get_graph_llm()
         if llm is not None:
             return llm
-
-    # Fallback: legacy _skill_agent path (for backward compatibility)
-    skill_agent = getattr(runtime, "_skill_agent", None)
-    if skill_agent is None:
-        return None
-    if not bool(getattr(skill_agent, "configured", False)):
-        return None
-    try:
-        return skill_agent._get_llm()  # noqa: SLF001
-    except Exception:  # noqa: BLE001
-        return None
+    return None
 
 
 def _append_empty_finding(state: "GraphState", domain: str, reason: str) -> None:
@@ -593,6 +581,8 @@ def run_observability_agent(
     It reuses the existing run_tool_agent pattern but with middleware
     for domain-specific context injection.
 
+    HM11: Supports skill routing via execute_capability_skill().
+
     Args:
         state: Current graph state.
         cfg: Orchestrator configuration.
@@ -624,7 +614,59 @@ def run_observability_agent(
         )
         return state
 
-    # Get LLM
+    # HM11: Check if skill routing should be attempted
+    skill_scope = list(obs_task.get("skill_scope") or [])
+
+    if skill_scope:
+        # Try skill execution
+        capability = skill_scope[0]  # Currently only one capability supported
+        skill_result = runtime.execute_capability_skill(
+            capability=capability,
+            input_payload={
+                "incident_id": state.incident_id,
+                "incident_context": state.incident_context,
+            },
+            stage_summary={
+                "domain": "observability",
+                "goal": obs_task.get("goal"),
+            },
+        )
+
+        if skill_result.success and not skill_result.fallback_used:
+            # Skill execution succeeded
+            finding = DomainFinding(
+                domain="observability",
+                summary=skill_result.payload.get("summary", "Skill execution completed"),
+                evidence_candidates=skill_result.payload.get("evidence_candidates", []),
+                diagnosis_patch=skill_result.payload.get("diagnosis_patch", {}),
+                session_patch_proposal=skill_result.session_patch,
+                status="ok",
+            )
+            state.domain_findings.append(finding.to_dict())
+
+            report_node_action(
+                state,
+                runtime,
+                node_name="run_observability_agent",
+                tool_name="agent.observability.skill",
+                request_json={
+                    "task": obs_task,
+                    "capability": capability,
+                },
+                response_json={
+                    "finding": finding.to_dict(),
+                    "skill_used": skill_result.selected_executor_binding_key,
+                },
+                started_ms=started_ms,
+                status="ok",
+                count_in_state=False,
+            )
+            return state
+
+        # Skill execution failed or used fallback, continue to native
+        state.add_degrade_reason("skill_fallback_to_native")
+
+    # Native path: Get LLM and FC adapter
     llm = _get_llm(runtime)
     if llm is None:
         state.add_degrade_reason("llm_not_configured")
@@ -755,10 +797,12 @@ def run_observability_agent(
         state,
         runtime,
         node_name="run_observability_agent",
-        tool_name="agent.observability",
+        tool_name="agent.observability.native",
         request_json={
             "task": obs_task,
             "tool_scope": tool_scope if tool_scope else None,
+            "skill_scope": skill_scope if skill_scope else None,
+            "execution_path": "native",
         },
         response_json={
             "finding": finding,

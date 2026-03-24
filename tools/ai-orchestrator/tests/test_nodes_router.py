@@ -9,8 +9,10 @@ from typing import Any
 from unittest import mock
 
 from orchestrator.langgraph.nodes_router import (
+    DOMAIN_CAPABILITY_MAP,
     DomainTask,
     _default_observability_task,
+    _enrich_task_with_skill_scope,
     _parse_domain_tasks,
     _validate_domain_task,
     route_domains,
@@ -40,7 +42,7 @@ class TestDomainTask(unittest.TestCase):
             domain="change",
             goal="Custom goal",
             priority=50,
-            mode="skill_only",
+            mode="custom_mode",
             tool_scope=["tool1", "tool2"],
             skill_scope=["skill-1"],
         )
@@ -48,7 +50,7 @@ class TestDomainTask(unittest.TestCase):
         self.assertEqual(task.domain, "change")
         self.assertEqual(task.goal, "Custom goal")
         self.assertEqual(task.priority, 50)
-        self.assertEqual(task.mode, "skill_only")
+        self.assertEqual(task.mode, "custom_mode")
         self.assertEqual(task.tool_scope, ["tool1", "tool2"])
         self.assertEqual(task.skill_scope, ["skill-1"])
 
@@ -294,6 +296,77 @@ class TestRouteDomainsNode(unittest.TestCase):
         self.assertIn("routed_at", result.route_context)
         self.assertIn("domain_count", result.route_context)
         self.assertIn("domains", result.route_context)
+
+
+class TestEnrichTaskWithSkillScope(unittest.TestCase):
+    """Tests for _enrich_task_with_skill_scope helper (HM11)."""
+
+    def test_observability_with_available_skill(self) -> None:
+        """Test observability task gets skill_scope when skill available."""
+        task = {"task_id": "t1", "domain": "observability", "goal": "Test"}
+        skill_surface = {
+            "capability_map": {
+                "evidence.plan": ["skill-1@v1:executor"],
+            }
+        }
+        result = _enrich_task_with_skill_scope(task, skill_surface)
+
+        self.assertEqual(result["skill_scope"], ["evidence.plan"])
+        self.assertEqual(result["mode"], "hybrid")
+
+    def test_observability_without_available_skill(self) -> None:
+        """Test observability task without skill uses native tools."""
+        task = {"task_id": "t1", "domain": "observability", "goal": "Test"}
+        skill_surface = {"capability_map": {}}  # No evidence.plan skill
+
+        result = _enrich_task_with_skill_scope(task, skill_surface)
+
+        self.assertEqual(result["skill_scope"], [])
+        self.assertEqual(result["mode"], "hybrid")
+
+    def test_domain_without_capability_mapping(self) -> None:
+        """Test domain without capability mapping uses native tools."""
+        task = {"task_id": "t1", "domain": "change", "goal": "Test"}
+        skill_surface = {"capability_map": {"evidence.plan": ["skill-1@v1:executor"]}}
+
+        result = _enrich_task_with_skill_scope(task, skill_surface)
+
+        self.assertEqual(result["skill_scope"], [])
+        self.assertEqual(result["mode"], "hybrid")
+
+    def test_null_skill_surface(self) -> None:
+        """Test null skill_surface uses native tools."""
+        task = {"task_id": "t1", "domain": "observability", "goal": "Test"}
+
+        result = _enrich_task_with_skill_scope(task, None)
+
+        self.assertEqual(result["skill_scope"], [])
+        self.assertEqual(result["mode"], "hybrid")
+
+    def test_preserves_existing_task_fields(self) -> None:
+        """Test existing task fields are preserved."""
+        task = {
+            "task_id": "t1",
+            "domain": "observability",
+            "goal": "Custom goal",
+            "priority": 50,
+            "tool_scope": ["tool1"],
+        }
+        skill_surface = {"capability_map": {"evidence.plan": ["skill-1@v1:executor"]}}
+
+        result = _enrich_task_with_skill_scope(task, skill_surface)
+
+        self.assertEqual(result["task_id"], "t1")
+        self.assertEqual(result["domain"], "observability")
+        self.assertEqual(result["goal"], "Custom goal")
+        self.assertEqual(result["priority"], 50)
+        self.assertEqual(result["tool_scope"], ["tool1"])
+        self.assertEqual(result["skill_scope"], ["evidence.plan"])
+
+    def test_domain_capability_map_constant(self) -> None:
+        """Test DOMAIN_CAPABILITY_MAP has expected entries."""
+        self.assertIn("observability", DOMAIN_CAPABILITY_MAP)
+        self.assertEqual(DOMAIN_CAPABILITY_MAP["observability"], "evidence.plan")
 
 
 if __name__ == "__main__":

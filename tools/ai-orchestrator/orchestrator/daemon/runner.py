@@ -25,7 +25,6 @@ from ..runtime.runtime import OrchestratorRuntime
 from ..sdk.errors import RCAApiError
 from ..sdk.runtime_contract import ClaimStartResponse
 from ..skills import SkillCatalog, apply_session_patch_to_state, load_session_snapshot_into_state
-from ..skills.agent import PromptSkillAgent
 from ..state import GraphState
 from ..tooling import (
     ToolInvoker,
@@ -442,24 +441,6 @@ def _build_resolved_agent_context(
     )
 
 
-def _build_prompt_skill_agent(settings: Settings) -> PromptSkillAgent | None:
-    """Build prompt skill agent for legacy consume_prompt_skill() only.
-
-    DEPRECATED (HM7): This is retained only for backward compatibility.
-    Graph agents use get_graph_llm() instead.
-
-    Returns None if AGENT_* settings are not configured.
-    """
-    if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
-        return None
-    return PromptSkillAgent(
-        model=settings.agent_model,
-        base_url=settings.agent_base_url,
-        api_key=settings.agent_api_key,
-        timeout_seconds=settings.agent_timeout_seconds,
-    )
-
-
 def _build_graph_llm(settings: Settings) -> Any | None:
     """Build LLM instance for graph agents (Route/Domain/Platform agents).
 
@@ -487,6 +468,28 @@ def _build_graph_llm(settings: Settings) -> Any | None:
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+def _build_skill_agent_config(settings: Settings) -> "SkillAgentConfig | None":
+    """Build skill agent config for capability skill coordination.
+
+    Uses the same AGENT_* settings as graph agents for consistency.
+
+    Args:
+        settings: Worker settings.
+
+    Returns:
+        SkillAgentConfig or None if not configured.
+    """
+    if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
+        return None
+    from orchestrator.runtime.skill_coordinator import SkillAgentConfig
+    return SkillAgentConfig(
+        model=settings.agent_model,
+        base_url=settings.agent_base_url,
+        api_key=settings.agent_api_key,
+        timeout_seconds=settings.agent_timeout_seconds,
+    )
 
 
 def _report_skillset_selection_observation(
@@ -750,9 +753,8 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             log_func=_log,
             tool_invoker=tool_invoker,
             skill_catalog=skill_catalog,
-            skills_tool_calling_mode=settings.skills_tool_calling_mode,
-            skill_agent=_build_prompt_skill_agent(settings),
             graph_llm=_build_graph_llm(settings),
+            skill_agent_config=_build_skill_agent_config(settings),
         )
         if not runtime.start():
             if debug:
@@ -982,8 +984,7 @@ def main() -> None:
         f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
     )
     _log(
-        f"orchestrator skills skills_tool_calling_mode={settings.skills_tool_calling_mode} "
-        f"skills_cache_dir={settings.skills_cache_dir} "
+        f"orchestrator skills skills_cache_dir={settings.skills_cache_dir} "
         f"skills_local_paths_set={int(bool(settings.skills_local_paths))} "
         f"graph_llm_configured={int(bool(settings.agent_model and settings.agent_base_url and settings.agent_api_key))}"
     )
