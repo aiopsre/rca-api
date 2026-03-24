@@ -32,7 +32,6 @@ class Settings:
     ds_type: str = "prometheus"
     metrics_ds_type: str = "prometheus"
     logs_ds_type: str = "prometheus"
-    skills_execution_mode: str = "catalog"
     skills_tool_calling_mode: str = "disabled"
     skills_cache_dir: str = "/tmp/rca-ai-orchestrator/skills-cache"
     skills_local_paths: str = ""
@@ -76,7 +75,6 @@ class Settings:
             "ds_type": self.ds_type,
             "metrics_ds_type": self.metrics_ds_type,
             "logs_ds_type": self.logs_ds_type,
-            "skills_execution_mode": self.skills_execution_mode,
             "skills_tool_calling_mode": self.skills_tool_calling_mode,
             "run_query": self.run_query,
             "mcp_scopes_set": bool(self.mcp_scopes),
@@ -141,9 +139,6 @@ def load_settings() -> Settings:
     a3_max_calls = max(0, _env_int("A3_MAX_CALLS", 6))
     a3_max_total_bytes = max(0, _env_int("A3_MAX_TOTAL_BYTES", 2 * 1024 * 1024))
     a3_max_total_latency_ms = max(0, _env_int("A3_MAX_TOTAL_LATENCY_MS", 8000))
-    skills_execution_mode = os.getenv("SKILLS_EXECUTION_MODE", "catalog").strip().lower() or "catalog"
-    if skills_execution_mode not in {"catalog", "prompt_first"}:
-        skills_execution_mode = "catalog"
     skills_tool_calling_mode = os.getenv("SKILLS_TOOL_CALLING_MODE", "disabled").strip().lower() or "disabled"
     if skills_tool_calling_mode not in {"disabled", "evidence_plan_single_hop", "evidence_plan_dual_tool"}:
         skills_tool_calling_mode = "disabled"
@@ -181,7 +176,6 @@ def load_settings() -> Settings:
         a3_max_total_latency_ms=a3_max_total_latency_ms,
         toolset_config_path=os.getenv("TOOLSET_CONFIG_PATH", "").strip(),
         toolset_config_json=os.getenv("TOOLSET_CONFIG_JSON", "").strip(),
-        skills_execution_mode=skills_execution_mode,
         skills_tool_calling_mode=skills_tool_calling_mode,
         skills_cache_dir=os.getenv("SKILLS_CACHE_DIR", "/tmp/rca-ai-orchestrator/skills-cache").strip(),
         skills_local_paths=os.getenv("SKILLS_LOCAL_PATHS", "").strip(),

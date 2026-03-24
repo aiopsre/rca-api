@@ -760,7 +760,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_FakeAgent(),
             )
 
@@ -840,7 +840,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_FakeAgent(),
             )
 
@@ -943,7 +943,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_SelectingAgent(),
             )
 
@@ -1042,7 +1042,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_SelectingAgent(),
             )
 
@@ -1211,7 +1211,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_SelectingAgent(),
             )
 
@@ -1289,7 +1289,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_SelectingAgent(),
             )
 
@@ -1342,7 +1342,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_BrokenAgent(),
             )
 
@@ -1442,7 +1442,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_FakeAgent(),
             )
 
@@ -1630,7 +1630,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_FakeAgent(),
             )
 
@@ -1833,7 +1833,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_ResourceAwareAgent(),
             )
 
@@ -1951,7 +1951,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_ResourceFilterAgent(),
             )
 
@@ -2046,7 +2046,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_FakeAgent(),
             )
@@ -2276,7 +2276,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_dual_tool",
                 skill_agent=_DualToolAgent(),
             )
@@ -2428,7 +2428,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="disabled",
                 skill_agent=_PromptOnlyAgent(),
             )
@@ -2540,7 +2540,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_dual_tool",
                 skill_agent=_BrokenToolAgent(),
             )
@@ -2607,7 +2607,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_BrokenToolAgent(),
             )
@@ -2698,7 +2698,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_PromptOnlyAgent(),
             )
@@ -2918,7 +2918,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_dual_tool",
                 skill_agent=_SelectingAgent(),
             )
@@ -3083,7 +3083,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_dual_tool",
                 skill_agent=_SelectingAgent(),
             )
@@ -3194,7 +3194,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="disabled",
                 skill_agent=_SelectingAgent(),
             )
@@ -3308,7 +3308,7 @@ class SkillCatalogTest(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_SelectingAgent(),
             )
@@ -3557,7 +3557,7 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_FakeAgent(),
             )
 
@@ -3700,7 +3700,7 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skill_agent=_FakeAgent(),
             )
 
@@ -3837,7 +3837,7 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_FakeAgent(),
             )
@@ -3964,7 +3964,7 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_dual_tool",  # Dual tool mode for metrics
                 skill_agent=_FakeAgent(),
             )
@@ -4066,7 +4066,7 @@ class TestSkillExecutionGraphStateIntegration(unittest.TestCase):
                 instance_id="orc-test",
                 heartbeat_interval_seconds=10,
                 skill_catalog=skill_catalog,
-                skills_execution_mode="prompt_first",
+                
                 skills_tool_calling_mode="evidence_plan_single_hop",
                 skill_agent=_FakeAgent(),
             )

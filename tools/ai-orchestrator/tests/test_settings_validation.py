@@ -7,7 +7,6 @@ from orchestrator.daemon.settings import Settings, validate_settings
 def _make_settings(
     *,
     scopes: str = "tenant:default",
-    skills_execution_mode: str = "catalog",
     agent_model: str = "gpt-4o",
     agent_base_url: str = "https://api.openai.com/v1",
     agent_api_key: str = "sk-test",
@@ -38,7 +37,6 @@ def _make_settings(
         a3_max_total_latency_ms=8000,
         toolset_config_path="",
         toolset_config_json="",
-        skills_execution_mode=skills_execution_mode,
         skills_tool_calling_mode="disabled",
         skills_cache_dir="/tmp/rca-ai-orchestrator/skills-cache",
         skills_local_paths="",

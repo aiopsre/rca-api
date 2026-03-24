@@ -176,13 +176,6 @@ skill-bundles/
     └── templates/
 ```
 
-### Skill Modes
-
-| Mode | Description |
-|------|-------------|
-| `prompt_first` | Uses PromptSkillAgent with OpenAI-compatible API |
-| `catalog` | Platform-resolved skills (fallback mode) |
-
 ## Environment Variables
 
 ### Required
@@ -192,14 +185,13 @@ skill-bundles/
 | `BASE_URL` | RCA API base URL | `http://127.0.0.1:5555` |
 | `SCOPES` | Tenant scopes for API requests | (required) |
 
-### LLM Configuration (for prompt_first mode)
+### LLM Configuration (Required for Hybrid Multi-Agent)
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SKILLS_EXECUTION_MODE` | `prompt_first` or `catalog` | `prompt_first` |
-| `AGENT_MODEL` | Model name (e.g., `gpt-4o`) | (required for prompt_first) |
-| `AGENT_BASE_URL` | OpenAI-compatible API URL | (required for prompt_first) |
-| `AGENT_API_KEY` | API key | (required for prompt_first) |
+| `AGENT_MODEL` | Model name (e.g., `gpt-4o`) | (required) |
+| `AGENT_BASE_URL` | OpenAI-compatible API URL | (required) |
+| `AGENT_API_KEY` | API key | (required) |
 | `AGENT_TIMEOUT_SECONDS` | Request timeout | `20.0` |
 
 ### Optional

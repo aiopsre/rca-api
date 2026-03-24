@@ -372,7 +372,6 @@ class OrchestratorRuntime:
         retry_policy: RetryPolicy | None = None,
         tool_invoker: ToolInvoker | ToolInvokerChain | None = None,
         skill_catalog: SkillCatalog | None = None,
-        skills_execution_mode: str = "catalog",
         skills_tool_calling_mode: str = "disabled",
         skill_agent: PromptSkillAgent | None = None,
         tool_catalog_snapshot: ToolCatalogSnapshot | None = None,
@@ -384,7 +383,6 @@ class OrchestratorRuntime:
         self._log_func = log_func
         self._tool_invoker = tool_invoker
         self._skill_catalog = skill_catalog
-        self._skills_execution_mode = str(skills_execution_mode or "catalog").strip().lower() or "catalog"
         self._skills_tool_calling_mode = str(skills_tool_calling_mode or "disabled").strip().lower() or "disabled"
         self._skill_agent = skill_agent
         self._graph_llm = graph_llm
@@ -930,7 +928,8 @@ class OrchestratorRuntime:
         sanitize_output: Callable[[PromptSkillConsumeResult], tuple[PromptSkillConsumeResult, list[str]]],
         apply_result: Callable[[Any, PromptSkillConsumeResult, Callable[[Any, dict[str, Any] | None], None]], None],
     ) -> dict[str, Any] | None:
-        if self._skill_catalog is None or self._skills_execution_mode != "prompt_first":
+        # Legacy prompt_first mode: only available if _skill_agent is configured
+        if self._skill_catalog is None or self._skill_agent is None:
             return None
 
         candidates = self.executor_skill_candidates(capability)
@@ -1138,7 +1137,8 @@ class OrchestratorRuntime:
         sanitize_output: Callable[[PromptSkillConsumeResult], tuple[PromptSkillConsumeResult, list[str]]],
         apply_result: Callable[[Any, PromptSkillConsumeResult, Callable[[Any, dict[str, Any] | None], None]], None],
     ) -> dict[str, Any] | None:
-        if self._skill_catalog is None or self._skills_execution_mode != "prompt_first":
+        # Legacy prompt_first mode: only available if _skill_agent is configured
+        if self._skill_catalog is None or self._skill_agent is None:
             return None
 
         knowledge_candidates = self.knowledge_skill_candidates(capability)

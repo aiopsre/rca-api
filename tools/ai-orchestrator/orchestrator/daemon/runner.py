@@ -443,8 +443,13 @@ def _build_resolved_agent_context(
 
 
 def _build_prompt_skill_agent(settings: Settings) -> PromptSkillAgent | None:
-    if settings.skills_execution_mode != "prompt_first":
-        return None
+    """Build prompt skill agent for legacy consume_prompt_skill() only.
+
+    DEPRECATED (HM7): This is retained only for backward compatibility.
+    Graph agents use get_graph_llm() instead.
+
+    Returns None if AGENT_* settings are not configured.
+    """
     if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
         return None
     return PromptSkillAgent(
@@ -745,7 +750,6 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
             log_func=_log,
             tool_invoker=tool_invoker,
             skill_catalog=skill_catalog,
-            skills_execution_mode=settings.skills_execution_mode,
             skills_tool_calling_mode=settings.skills_tool_calling_mode,
             skill_agent=_build_prompt_skill_agent(settings),
             graph_llm=_build_graph_llm(settings),
@@ -978,12 +982,10 @@ def main() -> None:
         f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
     )
     _log(
-        f"orchestrator skills skills_execution_mode={settings.skills_execution_mode} "
-        f"skills_tool_calling_mode={settings.skills_tool_calling_mode} "
+        f"orchestrator skills skills_tool_calling_mode={settings.skills_tool_calling_mode} "
         f"skills_cache_dir={settings.skills_cache_dir} "
         f"skills_local_paths_set={int(bool(settings.skills_local_paths))} "
-        f"agent_model_set={int(bool(settings.agent_model))} "
-        f"agent_base_url_set={int(bool(settings.agent_base_url))}"
+        f"graph_llm_configured={int(bool(settings.agent_model and settings.agent_base_url and settings.agent_api_key))}"
     )
     _log(
         f"orchestrator mcp mcp_scopes_set={int(bool(settings.mcp_scopes))} "
