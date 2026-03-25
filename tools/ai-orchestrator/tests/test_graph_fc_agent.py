@@ -165,11 +165,10 @@ class TestRunToolAgent:
             {"type": "function", "function": {"name": "test_tool"}}
         ]
 
-        # Mock runtime with no LLM configured (HM7-2: both paths return None)
+        # Mock runtime with no LLM configured (HM8: graph LLM path returns None)
         runtime = MagicMock()
         runtime.get_fc_adapter.return_value = mock_adapter
-        runtime._skill_agent = None
-        runtime.get_graph_llm.return_value = None  # HM7-2: graph LLM path returns None
+        runtime.get_graph_llm.return_value = None  # No graph LLM configured
 
         # Mock config
         cfg = OrchestratorConfig()
@@ -219,14 +218,10 @@ class TestBudgetEnforcement:
         mock_llm = MagicMock()
         mock_llm.bind_tools.return_value = mock_llm_with_tools
 
-        mock_skill_agent = MagicMock()
-        mock_skill_agent.configured = True
-        mock_skill_agent._get_llm.return_value = mock_llm
-
-        # Mock runtime
+        # Mock runtime with graph LLM configured
         runtime = MagicMock()
         runtime.get_tool_catalog_snapshot.return_value = snapshot
-        runtime._skill_agent = mock_skill_agent
+        runtime.get_graph_llm.return_value = mock_llm  # HM8: use get_graph_llm()
         runtime.call_tool.return_value = {"result": "ok"}
         runtime.report_observation = MagicMock()
         runtime.report_tool_call = MagicMock()

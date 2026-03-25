@@ -37,7 +37,6 @@ def _make_settings(
         a3_max_total_latency_ms=8000,
         toolset_config_path="",
         toolset_config_json="",
-        skills_tool_calling_mode="disabled",
         skills_cache_dir="/tmp/rca-ai-orchestrator/skills-cache",
         skills_local_paths="",
         agent_model=agent_model,

@@ -208,23 +208,6 @@ class _FakeRuntime:
             )
         ]
 
-    def consume_prompt_skill(
-        self,
-        *,
-        capability: str,
-        graph_state: object,
-    ) -> dict[str, object] | None:
-        del capability, graph_state
-        return None
-
-    def consume_diagnosis_enrich_skill(
-        self,
-        *,
-        graph_state: object,
-        input_payload: dict[str, object],
-    ) -> dict[str, object] | None:
-        return None
-
     def merge_session_patch(self, graph_state: GraphState, patch: dict[str, object] | None) -> None:
         if not isinstance(patch, dict):
             return

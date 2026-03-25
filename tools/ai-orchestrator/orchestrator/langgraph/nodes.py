@@ -273,13 +273,6 @@ def plan_evidence(
             "conflict_hint": False,
         }
 
-    prompt_skill = getattr(runtime, "consume_prompt_skill", None)
-    prompt_skill_result: dict[str, Any] | None = None
-    if callable(prompt_skill):
-        consumed = prompt_skill(capability="evidence.plan", graph_state=state)
-        if isinstance(consumed, dict):
-            prompt_skill_result = consumed
-
     started_ms = int(time.time() * 1000)
     response_json = {
         "status": "ok",
@@ -291,12 +284,6 @@ def plan_evidence(
     }
     if state.evidence_plan:
         response_json["evidence_plan"] = state.evidence_plan
-    if isinstance(prompt_skill_result, dict):
-        response_json["skill"] = {
-            "status": "applied",
-            "skill_id": str(prompt_skill_result.get("skill_id") or "").strip(),
-            "binding_key": str(prompt_skill_result.get("selected_binding_key") or "").strip(),
-        }
     report_node_action(
         state,
         runtime,

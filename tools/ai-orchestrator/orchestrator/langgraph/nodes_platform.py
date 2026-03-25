@@ -57,8 +57,7 @@ def _get_agent_context(state: "GraphState") -> "ResolvedAgentContext | None":
 def _get_llm(runtime: "OrchestratorRuntime") -> Any:
     """Get LLM instance from runtime.
 
-    Uses the independent graph LLM (HM7-1), not prompt_first skill agent.
-    Falls back to legacy _skill_agent path for backward compatibility.
+    Uses the independent graph LLM (HM7-1).
 
     Args:
         runtime: Orchestrator runtime instance.
@@ -66,23 +65,12 @@ def _get_llm(runtime: "OrchestratorRuntime") -> Any:
     Returns:
         LLM instance or None if not configured.
     """
-    # Primary path: use independent graph LLM (HM7-1)
     get_graph_llm = getattr(runtime, "get_graph_llm", None)
     if callable(get_graph_llm):
         llm = get_graph_llm()
         if llm is not None:
             return llm
-
-    # Fallback: legacy _skill_agent path (for backward compatibility)
-    skill_agent = getattr(runtime, "_skill_agent", None)
-    if skill_agent is None:
-        return None
-    if not bool(getattr(skill_agent, "configured", False)):
-        return None
-    try:
-        return skill_agent._get_llm()  # noqa: SLF001
-    except Exception:  # noqa: BLE001
-        return None
+    return None
 
 
 def _build_messages(system_prompt: str, user_prompt: str) -> list[Any]:

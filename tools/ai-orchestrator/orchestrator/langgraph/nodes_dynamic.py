@@ -89,44 +89,17 @@ def plan_tool_calls(
         state.tool_call_plan = {}
         return state
 
-    # 3. Try to use Skills for planning
-    plan_result: dict[str, Any] | None = None
-    skill_error_reason: str | None = None
-    prompt_skill = getattr(runtime, "consume_prompt_skill", None)
+    # 3. Build the plan (skill-based planning removed in HM8)
+    state.add_degrade_reason(DegradeReason.TOOL_DISCOVERY_EMPTY.value)
 
-    if callable(prompt_skill):
-        try:
-            consumed = prompt_skill(
-                capability="tool.plan",
-                graph_state=state,
-                input_payload={
-                    "available_tools": available_tools,
-                    "incident_id": state.incident_id,
-                    "incident_context": state.incident_context,
-                },
-            )
-            if isinstance(consumed, dict):
-                plan_result = consumed.get("tool_call_plan")
-        except Exception as exc:  # noqa: BLE001
-            plan_result = None
-            skill_error_reason = f"{DegradeReason.SKILL_EXECUTE_FAILED.value}:{str(exc)[:64]}"
+    default_plan = build_default_tool_call_plan(
+        available_tools=available_tools,
+        incident_context=state.incident_context,
+    )
+    state.tool_call_plan = default_plan.to_dict()
 
-    # 4. Build the plan
-    if isinstance(plan_result, dict) and plan_result.get("items"):
-        state.tool_call_plan = plan_result
-    else:
-        # Fallback: generate default plan from available tools with reason tracking
-        reason = skill_error_reason or DegradeReason.TOOL_DISCOVERY_EMPTY.value
-        state.add_degrade_reason(reason)
-
-        default_plan = build_default_tool_call_plan(
-            available_tools=available_tools,
-            incident_context=state.incident_context,
-        )
-        state.tool_call_plan = default_plan.to_dict()
-
-        # Report fallback observation
-        report_node_action(
+    # Report fallback observation
+    report_node_action(
             state,
             runtime,
             node_name="plan_tool_calls",
@@ -746,8 +719,7 @@ def run_tool_agent(
 def _get_llm_for_tool_agent(runtime: "OrchestratorRuntime") -> Any:
     """Get LLM instance for tool agent from runtime.
 
-    Uses the independent graph LLM (HM7-1), not prompt_first skill agent.
-    Falls back to legacy _skill_agent path for backward compatibility.
+    Uses the independent graph LLM (HM7-1).
 
     Args:
         runtime: Orchestrator runtime instance.
@@ -755,23 +727,12 @@ def _get_llm_for_tool_agent(runtime: "OrchestratorRuntime") -> Any:
     Returns:
         LLM instance or None if not configured.
     """
-    # Primary path: use independent graph LLM (HM7-1)
     get_graph_llm = getattr(runtime, "get_graph_llm", None)
     if callable(get_graph_llm):
         llm = get_graph_llm()
         if llm is not None:
             return llm
-
-    # Fallback: legacy _skill_agent path (for backward compatibility)
-    skill_agent = getattr(runtime, "_skill_agent", None)
-    if skill_agent is None:
-        return None
-    if not bool(getattr(skill_agent, "configured", False)):
-        return None
-    try:
-        return skill_agent._get_llm()  # noqa: SLF001
-    except Exception:  # noqa: BLE001
-        return None
+    return None
 
 
 def _build_initial_messages(state: "GraphState") -> list[Any]:

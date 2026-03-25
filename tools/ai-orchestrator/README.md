@@ -232,7 +232,6 @@ skill-bundles/
 |----------|-------------|---------|
 | `SKILLS_CACHE_DIR` | Skill bundle cache | `/tmp/rca-ai-orchestrator/skills-cache` |
 | `SKILLS_LOCAL_PATHS` | Local skill override paths | (empty) |
-| `SKILLS_TOOL_CALLING_MODE` | Controlled tool calling | `disabled` |
 
 ## Health Endpoints
 
