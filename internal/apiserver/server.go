@@ -17,7 +17,7 @@ import (
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/redisx"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/skillartifact"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
-	genericoptions "github.com/onexstack/onexstack/pkg/options"
+	genericoptions "github.com/aiopsre/rca-api/pkg/options"
 	"github.com/onexstack/onexstack/pkg/server"
 	"github.com/onexstack/onexstack/pkg/store/registry"
 	"gorm.io/gorm"
