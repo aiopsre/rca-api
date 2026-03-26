@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
-	"github.com/onexstack/onexstack/pkg/db"
 	gormlogger "github.com/onexstack/onexstack/pkg/logger/slog/gorm"
 )
 
@@ -20,6 +20,7 @@ type MySQLOptions struct {
 	Username              string        `json:"username,omitempty" mapstructure:"username"`
 	Password              string        `json:"-" mapstructure:"password"`
 	Database              string        `json:"database" mapstructure:"database"`
+	Charset               string        `json:"charset,omitempty" mapstructure:"charset"`
 	MaxIdleConnections    int           `json:"max-idle-connections,omitempty" mapstructure:"max-idle-connections,omitempty"`
 	MaxOpenConnections    int           `json:"max-open-connections,omitempty" mapstructure:"max-open-connections"`
 	MaxConnectionLifeTime time.Duration `json:"max-connection-life-time,omitempty" mapstructure:"max-connection-life-time"`
@@ -33,6 +34,7 @@ func NewMySQLOptions() *MySQLOptions {
 		Username:              "",
 		Password:              "",
 		Database:              "",
+		Charset:               "utf8mb4",
 		MaxIdleConnections:    100,
 		MaxOpenConnections:    100,
 		MaxConnectionLifeTime: time.Duration(10) * time.Second,
@@ -56,7 +58,9 @@ func (o *MySQLOptions) AddFlags(fs *pflag.FlagSet, fullPrefix string) {
 		"Password for access to mysql, should be used pair with password.")
 	fs.StringVar(&o.Database, fullPrefix+".database", o.Database, ""+
 		"Database name for the server to use.")
-	fs.IntVar(&o.MaxIdleConnections, fullPrefix+".max-idle-connections", o.MaxOpenConnections, ""+
+	fs.StringVar(&o.Charset, fullPrefix+".charset", o.Charset, ""+
+		"MySQL connection charset used in DSN.")
+	fs.IntVar(&o.MaxIdleConnections, fullPrefix+".max-idle-connections", o.MaxIdleConnections, ""+
 		"Maximum idle connections allowed to connect to .")
 	fs.IntVar(&o.MaxOpenConnections, fullPrefix+".max-open-connections", o.MaxOpenConnections, ""+
 		"Maximum open connections allowed to connect to .")
@@ -68,27 +72,41 @@ func (o *MySQLOptions) AddFlags(fs *pflag.FlagSet, fullPrefix string) {
 
 // DSN return DSN from MySQLOptions.
 func (o *MySQLOptions) DSN() string {
-	return fmt.Sprintf(`%s:%s@tcp(%s)/%s?charset=utf8&parseTime=%t&loc=%s`,
+	charset := o.Charset
+	if charset == "" {
+		charset = "utf8mb4"
+	}
+	return fmt.Sprintf(`%s:%s@tcp(%s)/%s?charset=%s&parseTime=%t&loc=%s`,
 		o.Username,
 		o.Password,
 		o.Addr,
 		o.Database,
+		charset,
 		true,
 		"Local")
 }
 
 // NewDB create mysql store with the given config.
 func (o *MySQLOptions) NewDB() (*gorm.DB, error) {
-	opts := &db.MySQLOptions{
-		Addr:                  o.Addr,
-		Username:              o.Username,
-		Password:              o.Password,
-		Database:              o.Database,
-		MaxIdleConnections:    o.MaxIdleConnections,
-		MaxOpenConnections:    o.MaxOpenConnections,
-		MaxConnectionLifeTime: o.MaxConnectionLifeTime,
-		Logger:                gormlogger.New(slog.Default()),
+	db, err := gorm.Open(mysql.Open(o.DSN()), &gorm.Config{
+		Logger: gormlogger.New(slog.Default()),
+	})
+	if err != nil {
+		return nil, err
 	}
 
-	return db.NewMySQL(opts)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	if o.MaxIdleConnections >= 0 {
+		sqlDB.SetMaxIdleConns(o.MaxIdleConnections)
+	}
+	if o.MaxOpenConnections > 0 {
+		sqlDB.SetMaxOpenConns(o.MaxOpenConnections)
+	}
+	if o.MaxConnectionLifeTime > 0 {
+		sqlDB.SetConnMaxLifetime(o.MaxConnectionLifeTime)
+	}
+	return db, nil
 }
