@@ -16,6 +16,7 @@ from .diagnosis import (
 from .guard import guard, is_finalize_succeeded
 from .helpers import (
     append_evidence,
+    build_incident_context,
     extract_incident_context,
     extract_incident_id,
     extract_input_hints,
@@ -27,6 +28,7 @@ from .helpers import (
     resolve_a3_budget,
     resolve_force_switches,
     select_candidate,
+    select_current_alert_event,
 )
 from .quality_gate import (
     QUALITY_GATE_CONFLICT,
@@ -55,6 +57,28 @@ def load_job_and_start(
     state.force_no_evidence, state.force_conflict = resolve_force_switches(hints, cfg)
     state.a3_max_calls, state.a3_max_total_bytes, state.a3_max_total_latency_ms = resolve_a3_budget(hints, cfg)
     state.started = True
+
+    incident_record = runtime.get_incident(state.incident_id)
+    state.incident_record = dict(incident_record or {})
+    state.incident_context = build_incident_context(state.incident_record, {})
+
+    incident_namespace = str(state.incident_context.get("namespace") or "").strip() or None
+    incident_service = str(state.incident_context.get("service") or "").strip() or None
+    incident_severity = str(state.incident_context.get("severity") or "").strip() or None
+    try:
+        alert_events = runtime.list_alert_events_current(
+            namespace=incident_namespace,
+            service=incident_service,
+            severity=incident_severity,
+            page=1,
+            limit=200,
+        )
+        current_alert_event = select_current_alert_event(alert_events, state.incident_record)
+        state.alert_event_record = dict(current_alert_event or {})
+        if state.alert_event_record:
+            state.incident_context = build_incident_context(state.incident_record, state.alert_event_record)
+    except Exception:  # noqa: BLE001
+        state.alert_event_record = {}
 
     report_node_action(
         state,
@@ -128,11 +152,28 @@ def plan_evidence(
         if not cfg.auto_create_datasource:
             raise RuntimeError("AUTO_CREATE_DATASOURCE=0 is not supported in P0 without preloaded datasource ID")
 
-        incident_context = {"service": "", "namespace": "", "severity": ""}
-        try:
-            incident_context = extract_incident_context(runtime.get_incident(state.incident_id))
-        except Exception:  # noqa: BLE001
-            pass
+        incident_context = state.incident_context or {}
+        if not incident_context:
+            try:
+                incident_record = state.incident_record or runtime.get_incident(state.incident_id)
+                state.incident_record = dict(incident_record or {})
+                namespace = str(state.incident_record.get("namespace") or "").strip() or None
+                service = str(state.incident_record.get("service") or "").strip() or None
+                severity = str(state.incident_record.get("severity") or "").strip() or None
+                try:
+                    alert_events = runtime.list_alert_events_current(
+                        namespace=namespace,
+                        service=service,
+                        severity=severity,
+                        page=1,
+                        limit=200,
+                    )
+                    state.alert_event_record = dict(select_current_alert_event(alert_events, state.incident_record) or {})
+                except Exception:  # noqa: BLE001
+                    state.alert_event_record = {}
+                incident_context = build_incident_context(state.incident_record, state.alert_event_record)
+            except Exception:  # noqa: BLE001
+                incident_context = extract_incident_context(state.incident_record or {})
         state.incident_context = incident_context
 
         metrics_ds_type = str(getattr(cfg, "metrics_ds_type", cfg.ds_type) or cfg.ds_type).strip().lower() or cfg.ds_type

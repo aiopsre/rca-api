@@ -6,6 +6,7 @@ from typing import Any
 
 from ..state import GraphState
 from .config import OrchestratorConfig
+from .llm_logging import log_llm_dialogue
 
 
 def extract_incident_id(job_obj: dict[str, Any]) -> str:
@@ -156,14 +157,217 @@ def query_result_size_bytes(result: dict[str, Any]) -> int:
     return len(compact.encode("utf-8"))
 
 
-def extract_incident_context(incident_obj: dict[str, Any]) -> dict[str, str]:
+def _pick_text(source: dict[str, Any], *keys: str, max_len: int | None = None) -> str:
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        if max_len is not None and max_len >= 0 and len(text) > max_len:
+            text = f"{text[: max_len - 3]}..."
+        return text
+    return ""
+
+
+def _pick_bool(source: dict[str, Any], *keys: str) -> bool | None:
+    if not isinstance(source, dict):
+        return None
+    for key in keys:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(int(value))
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "y", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "n", "off"}:
+                return False
+    return None
+
+
+def _raw_event_summary(raw_event: dict[str, Any]) -> str:
+    if not isinstance(raw_event, dict):
+        return ""
+    parts: list[str] = []
+    message = _pick_text(raw_event, "message", max_len=256)
+    if message:
+        parts.append(f"message={message}")
+    method = _pick_text(raw_event, "http.request.method", "http_request_method")
+    path = _pick_text(raw_event, "http.request.uri_path", "http_request_uri_path")
+    status = _pick_text(raw_event, "http.response.status_code", "http_response_status_code")
+    domain = _pick_text(raw_event, "destination.domain", "destination_domain")
+    upstream = _pick_text(raw_event, "nginx.upstream.address", "nginx_upstream_address")
+    request_time = _pick_text(raw_event, "nginx.request.time", "nginx_request_time")
+    upstream_time = _pick_text(raw_event, "nginx.upstream.response.time", "nginx_upstream_response_time")
+    trace_id = _pick_text(raw_event, "Trace.Id", "trace_id", "trace.id")
+    span_id = _pick_text(raw_event, "Trace.SpanId", "span_id", "trace.span_id")
+    request_id = _pick_text(raw_event, "user_agent.request_id", "user_agent_request_id")
+    if method:
+        parts.append(f"method={method}")
+    if path:
+        parts.append(f"path={path}")
+    if status:
+        parts.append(f"status={status}")
+    if domain:
+        parts.append(f"domain={domain}")
+    if upstream:
+        parts.append(f"upstream={upstream}")
+    if request_time:
+        parts.append(f"request_time={request_time}s")
+    if upstream_time:
+        parts.append(f"upstream_time={upstream_time}s")
+    if trace_id:
+        parts.append(f"trace_id={trace_id}")
+    if span_id:
+        parts.append(f"span_id={span_id}")
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    return "; ".join(parts)
+
+
+def build_incident_context(
+    incident_obj: dict[str, Any],
+    alert_event_obj: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not isinstance(incident_obj, dict):
-        return {"service": "", "namespace": "", "severity": ""}
-    return {
-        "service": str(incident_obj.get("service") or "").strip(),
-        "namespace": str(incident_obj.get("namespace") or "").strip(),
-        "severity": str(incident_obj.get("severity") or "").strip(),
-    }
+        incident_obj = {}
+    if not isinstance(alert_event_obj, dict):
+        alert_event_obj = {}
+
+    context: dict[str, Any] = {}
+
+    def put(key: str, value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, bool):
+            context[key] = value
+            return
+        text = str(value).strip()
+        if text:
+            context[key] = text
+
+    put("incident_id", _pick_text(incident_obj, "incidentID", "incident_id"))
+    put("service", _pick_text(incident_obj, "service"))
+    put("namespace", _pick_text(incident_obj, "namespace"))
+    put("severity", _pick_text(incident_obj, "severity"))
+    put("cluster", _pick_text(incident_obj, "cluster"))
+    put("environment", _pick_text(incident_obj, "environment"))
+    put("workload_kind", _pick_text(incident_obj, "workloadKind", "workload_kind"))
+    put("workload_name", _pick_text(incident_obj, "workloadName", "workload_name"))
+    put("pod", _pick_text(incident_obj, "pod"))
+    put("node", _pick_text(incident_obj, "node"))
+    put("version", _pick_text(incident_obj, "version"))
+    put("source", _pick_text(incident_obj, "source"))
+    put("alert_name", _pick_text(incident_obj, "alertName", "alert_name"))
+    put("fingerprint", _pick_text(incident_obj, "fingerprint"))
+    put("rule_id", _pick_text(incident_obj, "ruleID", "rule_id"))
+    put("status", _pick_text(incident_obj, "status"))
+    put("rca_status", _pick_text(incident_obj, "rcaStatus", "rca_status"))
+    put("root_cause_summary", _pick_text(incident_obj, "rootCauseSummary", "root_cause_summary"))
+    put("root_cause_type", _pick_text(incident_obj, "rootCauseType", "root_cause_type"))
+    put("trace_id", _pick_text(incident_obj, "traceID", "trace_id"))
+    put("log_trace_key", _pick_text(incident_obj, "logTraceKey", "log_trace_key"))
+    put("change_id", _pick_text(incident_obj, "changeID", "change_id"))
+    put("start_at", _pick_text(incident_obj, "startAt", "start_at"))
+    put("end_at", _pick_text(incident_obj, "endAt", "end_at"))
+    put("labels_json", _pick_text(incident_obj, "labelsJSON", "labels_json", max_len=2048))
+    put("annotations_json", _pick_text(incident_obj, "annotationsJSON", "annotations_json", max_len=2048))
+
+    put("alert_event_id", _pick_text(alert_event_obj, "eventID", "event_id"))
+    put("alert_service", _pick_text(alert_event_obj, "service"))
+    put("alert_namespace", _pick_text(alert_event_obj, "namespace"))
+    put("alert_cluster", _pick_text(alert_event_obj, "cluster"))
+    put("alert_workload", _pick_text(alert_event_obj, "workload"))
+    put("alert_status", _pick_text(alert_event_obj, "status"))
+    put("alert_severity", _pick_text(alert_event_obj, "severity"))
+    put("alert_name", _pick_text(alert_event_obj, "alertName", "alert_name"))
+    put("alert_dedup_key", _pick_text(alert_event_obj, "dedupKey", "dedup_key"))
+    put("alert_source", _pick_text(alert_event_obj, "source"))
+    put("alert_last_seen_at", _pick_text(alert_event_obj, "lastSeenAt", "last_seen_at"))
+    put("alert_created_at", _pick_text(alert_event_obj, "createdAt", "created_at"))
+    put("alert_updated_at", _pick_text(alert_event_obj, "updatedAt", "updated_at"))
+    put("alert_starts_at", _pick_text(alert_event_obj, "startsAt", "starts_at"))
+    put("alert_ends_at", _pick_text(alert_event_obj, "endsAt", "ends_at"))
+    put("alert_acked_at", _pick_text(alert_event_obj, "ackedAt", "acked_at"))
+    put("alert_acked_by", _pick_text(alert_event_obj, "ackedBy", "acked_by"))
+    put("alert_is_current", _pick_bool(alert_event_obj, "isCurrent", "is_current"))
+    put("alert_is_silenced", _pick_bool(alert_event_obj, "isSilenced", "is_silenced"))
+    put("alert_silence_id", _pick_text(alert_event_obj, "silenceID", "silence_id"))
+    put("alert_labels_json", _pick_text(alert_event_obj, "labelsJSON", "labels_json", max_len=2048))
+    put("alert_annotations_json", _pick_text(alert_event_obj, "annotationsJSON", "annotations_json", max_len=2048))
+
+    raw_event_json = _pick_text(alert_event_obj, "rawEventJSON", "raw_event_json", max_len=65536)
+    if raw_event_json:
+        try:
+            parsed_raw = json.loads(raw_event_json)
+        except json.JSONDecodeError:
+            parsed_raw = {}
+        if isinstance(parsed_raw, dict):
+            summary = _raw_event_summary(parsed_raw)
+            if summary:
+                context["raw_event_summary"] = summary
+
+    return context
+
+
+def extract_incident_context(incident_obj: dict[str, Any]) -> dict[str, Any]:
+    return build_incident_context(incident_obj, None)
+
+
+def select_current_alert_event(
+    current_alert_events: dict[str, Any] | list[Any] | None,
+    incident_obj: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if isinstance(current_alert_events, dict):
+        candidates = current_alert_events.get("events") or current_alert_events.get("items") or []
+    else:
+        candidates = current_alert_events or []
+    if not isinstance(candidates, list) or not candidates:
+        return {}
+
+    normalized_candidates = [item for item in candidates if isinstance(item, dict)]
+    if not normalized_candidates:
+        return {}
+
+    incident_obj = incident_obj or {}
+    incident_fingerprint = _pick_text(incident_obj, "fingerprint")
+    incident_id = _pick_text(incident_obj, "incidentID", "incident_id")
+
+    def score(item: dict[str, Any]) -> tuple[int, int, int, int]:
+        item_fingerprint = _pick_text(item, "fingerprint")
+        item_incident_id = _pick_text(item, "incidentID", "incident_id")
+        item_is_current = _pick_bool(item, "isCurrent", "is_current") or False
+        exact_fingerprint = 1 if incident_fingerprint and item_fingerprint == incident_fingerprint else 0
+        exact_incident = 1 if incident_id and item_incident_id == incident_id else 0
+        any_fingerprint = 1 if item_fingerprint else 0
+        return (exact_fingerprint, exact_incident, 1 if item_is_current else 0, any_fingerprint)
+
+    normalized_candidates.sort(key=score, reverse=True)
+    return normalized_candidates[0]
+
+
+def append_context_fields(
+    context_parts: list[str],
+    context: dict[str, Any],
+    fields: list[tuple[str, str]],
+) -> None:
+    if not isinstance(context, dict):
+        return
+    for label, key in fields:
+        value = context.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            context_parts.append(f"{label}: {text}")
 
 
 def query_toolcall_response(result: dict[str, Any]) -> dict[str, Any]:
@@ -173,6 +377,52 @@ def query_toolcall_response(result: dict[str, Any]) -> dict[str, Any]:
         "is_truncated": bool(result.get("isTruncated") or result.get("is_truncated")),
         "no_data": query_result_is_no_data(result),
     }
+
+
+def invoke_llm_with_optional_tools(
+    llm: Any,
+    messages: list[Any],
+    openai_tools: list[dict[str, Any]],
+    *,
+    node_name: str,
+    extra: dict[str, Any] | None = None,
+) -> Any:
+    """Invoke an LLM with tools only when the tool list is non-empty.
+
+    OpenAI-compatible backends reject an empty ``tools`` array. For agents that
+    can legitimately run without tools, we must fall back to a plain message
+    invoke instead of binding an empty tool list.
+    """
+    log_llm_dialogue(
+        event="request",
+        node_name=node_name,
+        messages=messages,
+        tools=openai_tools,
+        extra=extra,
+    )
+    if openai_tools:
+        llm = llm.bind_tools(openai_tools)
+    try:
+        response = llm.invoke(messages)
+    except Exception as exc:  # noqa: BLE001
+        log_llm_dialogue(
+            event="error",
+            node_name=node_name,
+            messages=messages,
+            tools=openai_tools,
+            error=exc,
+            extra=extra,
+        )
+        raise
+    log_llm_dialogue(
+        event="response",
+        node_name=node_name,
+        messages=messages,
+        tools=openai_tools,
+        response=response,
+        extra=extra,
+    )
+    return response
 
 
 def select_candidate(candidates: list[Any], query_type: str) -> Any | None:

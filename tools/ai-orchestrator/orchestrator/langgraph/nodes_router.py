@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 from ..constants import TRACE_EVENT_ROUTER_ROUTE
 from ..middleware.base import AgentRequest, AgentResponse
+from .helpers import append_context_fields
+from .llm_logging import log_llm_dialogue
 from .reporting import report_node_action
 
 if TYPE_CHECKING:
@@ -316,14 +318,21 @@ def _build_router_user_prompt(state: "GraphState") -> str:
     if severity:
         context_parts.append(f"Severity: {severity}")
 
-    alert_name = incident_context.get("alert_name")
-    if alert_name:
-        context_parts.append(f"Alert: {alert_name}")
-
-    # Add any additional context
-    for key, value in incident_context.items():
-        if key not in ("service", "namespace", "severity", "alert_name"):
-            context_parts.append(f"{key}: {value}")
+    append_context_fields(
+        context_parts,
+        incident_context,
+        [
+            ("Alert", "alert_name"),
+            ("Fingerprint", "fingerprint"),
+            ("Cluster", "cluster"),
+            ("Workload", "workload_name"),
+            ("Workload Kind", "workload_kind"),
+            ("Incident Status", "status"),
+            ("RCA Status", "rca_status"),
+            ("Root Cause", "root_cause_summary"),
+            ("Raw Event", "raw_event_summary"),
+        ],
+    )
 
     return f"""Analyze this incident and assign investigation tasks:
 
@@ -391,7 +400,31 @@ def _invoke_llm(llm: Any, request: AgentRequest) -> Any:
         HumanMessage(content=request.user_prompt),
     ]
 
-    return llm.invoke(messages)
+    log_llm_dialogue(
+        event="request",
+        node_name="route_domains",
+        messages=messages,
+        extra={"domain": "router"},
+    )
+    try:
+        response = llm.invoke(messages)
+    except Exception as exc:  # noqa: BLE001
+        log_llm_dialogue(
+            event="error",
+            node_name="route_domains",
+            messages=messages,
+            error=exc,
+            extra={"domain": "router"},
+        )
+        raise
+    log_llm_dialogue(
+        event="response",
+        node_name="route_domains",
+        messages=messages,
+        response=response,
+        extra={"domain": "router"},
+    )
+    return response
 
 
 def route_domains(
@@ -435,7 +468,7 @@ def route_domains(
             state=state,
             context=agent_context,
             request=request,
-            config={"mode": "skills_only", "domain": "router"},
+            config={"mode": "skills_only", "domain": "router", "include_incident": False},
         )
     else:
         prepared = request

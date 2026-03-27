@@ -864,6 +864,26 @@ class OrchestratorRuntime:
             raise RuntimeError("incident_id is required")
         return self._execute_with_retry("incident.get", lambda: self._client.get_incident(normalized))
 
+    def list_alert_events_current(
+        self,
+        *,
+        namespace: str | None = None,
+        service: str | None = None,
+        severity: str | None = None,
+        page: int = 1,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return self._execute_with_retry(
+            "alert_events.list_current",
+            lambda: self._client.list_alert_events_current(
+                namespace=namespace,
+                service=service,
+                severity=severity,
+                page=page,
+                limit=limit,
+            ),
+        )
+
     def ensure_datasource(self, ds_base_url: str, ds_type: str = "prometheus") -> str:
         return self._execute_with_retry(
             "datasource.ensure",

@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, Any
 
 from ..constants import TRACE_EVENT_PLATFORM_SPECIAL_SUMMARIZE
 from ..middleware.base import AgentRequest
+from .helpers import append_context_fields
+from .llm_logging import log_llm_dialogue
 from .reporting import report_node_action
 
 if TYPE_CHECKING:
@@ -147,7 +149,7 @@ def _build_platform_special_user_prompt(state: "GraphState") -> str:
     Returns:
         User prompt string.
     """
-    from .quality import ensure_quality_gate
+    from .quality_gate import ensure_quality_gate
 
     incident_context = state.incident_context or {}
     merged_findings = state.merged_findings or {}
@@ -168,9 +170,20 @@ def _build_platform_special_user_prompt(state: "GraphState") -> str:
     if severity:
         context_parts.append(f"Severity: {severity}")
 
-    alert_name = incident_context.get("alert_name")
-    if alert_name:
-        context_parts.append(f"Alert: {alert_name}")
+    append_context_fields(
+        context_parts,
+        incident_context,
+        [
+            ("Alert", "alert_name"),
+            ("Fingerprint", "fingerprint"),
+            ("Cluster", "cluster"),
+            ("Workload", "workload_name"),
+            ("Incident Status", "status"),
+            ("RCA Status", "rca_status"),
+            ("Root Cause", "root_cause_summary"),
+            ("Raw Event", "raw_event_summary"),
+        ],
+    )
 
     # Add merged findings summary
     domain_count = merged_findings.get("domain_count", 0)
@@ -396,7 +409,7 @@ def run_platform_special_agent(
             state=state,
             context=agent_context,
             request=request,
-            config=middleware_config,
+            config={**middleware_config, "include_incident": False},
         )
     else:
         prepared = request
@@ -407,7 +420,39 @@ def run_platform_special_agent(
     try:
         # Invoke LLM (no tools for this agent - pure reasoning)
         messages = _build_messages(prepared.system_prompt, prepared.user_prompt)
-        response = llm.invoke(messages)
+        log_llm_dialogue(
+            event="request",
+            node_name="run_platform_special_agent",
+            messages=messages,
+            extra={
+                "domain": "platform_special",
+                "tool_count": 0,
+            },
+        )
+        try:
+            response = llm.invoke(messages)
+        except Exception as exc:  # noqa: BLE001
+            log_llm_dialogue(
+                event="error",
+                node_name="run_platform_special_agent",
+                messages=messages,
+                error=exc,
+                extra={
+                    "domain": "platform_special",
+                    "tool_count": 0,
+                },
+            )
+            raise
+        log_llm_dialogue(
+            event="response",
+            node_name="run_platform_special_agent",
+            messages=messages,
+            response=response,
+            extra={
+                "domain": "platform_special",
+                "tool_count": 0,
+            },
+        )
 
         # Extract diagnosis patch from response
         content = getattr(response, "content", "") or ""

@@ -15,6 +15,8 @@ class GraphState(BaseModel):
     job_id: str
     instance_id: Optional[str] = None
     incident_id: Optional[str] = None
+    incident_record: Dict[str, Any] = Field(default_factory=dict)
+    alert_event_record: Dict[str, Any] = Field(default_factory=dict)
     datasource_id: Optional[str] = None
     session_id: Optional[str] = None
     session_snapshot: Dict[str, Any] = Field(default_factory=dict)

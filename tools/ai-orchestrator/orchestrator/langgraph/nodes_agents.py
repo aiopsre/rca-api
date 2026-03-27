@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..constants import TRACE_EVENT_DOMAIN_EXECUTE
 from ..middleware.base import AgentRequest, AgentResponse
+from .helpers import append_context_fields, invoke_llm_with_optional_tools
 from .reporting import report_node_action
 
 if TYPE_CHECKING:
@@ -224,10 +225,17 @@ def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) 
     if severity:
         context_parts.append(f"Severity: {severity}")
 
-    # Add any additional context
-    for key, value in incident_context.items():
-        if key not in ("service", "namespace", "severity", "alert_name"):
-            context_parts.append(f"{key}: {value}")
+    append_context_fields(
+        context_parts,
+        incident_context,
+        [
+            ("Alert", "alert_name"),
+            ("Fingerprint", "fingerprint"),
+            ("Cluster", "cluster"),
+            ("Workload", "workload_name"),
+            ("Raw Event", "raw_event_summary"),
+        ],
+    )
 
     return f"""Investigate this incident:
 
@@ -292,10 +300,18 @@ def _build_change_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
     if incident_time:
         context_parts.append(f"Incident Time: {incident_time}")
 
-    # Add any additional context
-    for key, value in incident_context.items():
-        if key not in ("service", "namespace", "severity", "alert_name", "incident_time", "triggered_at"):
-            context_parts.append(f"{key}: {value}")
+    append_context_fields(
+        context_parts,
+        incident_context,
+        [
+            ("Alert", "alert_name"),
+            ("Change ID", "change_id"),
+            ("Version", "version"),
+            ("Cluster", "cluster"),
+            ("Workload", "workload_name"),
+            ("Raw Event", "raw_event_summary"),
+        ],
+    )
 
     return f"""Investigate changes related to this incident:
 
@@ -361,10 +377,16 @@ def _build_knowledge_user_prompt(state: "GraphState", task: dict[str, Any]) -> s
     if error_message:
         context_parts.append(f"Error: {error_message}")
 
-    # Add any additional context
-    for key, value in incident_context.items():
-        if key not in ("service", "namespace", "severity", "alert_name", "incident_time", "triggered_at", "error_message", "error"):
-            context_parts.append(f"{key}: {value}")
+    append_context_fields(
+        context_parts,
+        incident_context,
+        [
+            ("Fingerprint", "fingerprint"),
+            ("Cluster", "cluster"),
+            ("Root Cause", "root_cause_summary"),
+            ("Raw Event", "raw_event_summary"),
+        ],
+    )
 
     return f"""Search knowledge base for this incident:
 
@@ -745,7 +767,7 @@ def run_observability_agent(
             state=state,
             context=agent_context,
             request=request,
-            config=middleware_config,
+            config={**middleware_config, "include_incident": False},
         )
     else:
         prepared = request
@@ -767,10 +789,17 @@ def run_observability_agent(
 
     agent_error: str | None = None
     try:
-        # Invoke LLM with tools
-        llm_with_tools = llm.bind_tools(openai_tools)
         messages = _build_messages(prepared.system_prompt, prepared.user_prompt)
-        response = llm_with_tools.invoke(messages)
+        response = invoke_llm_with_optional_tools(
+            llm,
+            messages,
+            openai_tools,
+            node_name="run_observability_agent",
+            extra={
+                "domain": "observability",
+                "tool_scope_count": len(openai_tools),
+            },
+        )
 
         # Process tool calls if any
         tool_calls = getattr(response, "tool_calls", []) or []
@@ -952,7 +981,7 @@ def run_change_agent(
             state=state,
             context=agent_context,
             request=request,
-            config=middleware_config,
+            config={**middleware_config, "include_incident": False},
         )
     else:
         prepared = request
@@ -972,10 +1001,17 @@ def run_change_agent(
 
     agent_error: str | None = None
     try:
-        # Invoke LLM with tools
-        llm_with_tools = llm.bind_tools(openai_tools)
         messages = _build_messages(prepared.system_prompt, prepared.user_prompt)
-        response = llm_with_tools.invoke(messages)
+        response = invoke_llm_with_optional_tools(
+            llm,
+            messages,
+            openai_tools,
+            node_name="run_change_agent",
+            extra={
+                "domain": "change",
+                "tool_scope_count": len(openai_tools),
+            },
+        )
 
         # Process tool calls if any
         tool_calls = getattr(response, "tool_calls", []) or []
@@ -1154,7 +1190,7 @@ def run_knowledge_agent(
             state=state,
             context=agent_context,
             request=request,
-            config=middleware_config,
+            config={**middleware_config, "include_incident": False},
         )
     else:
         prepared = request
@@ -1174,10 +1210,17 @@ def run_knowledge_agent(
 
     agent_error: str | None = None
     try:
-        # Invoke LLM with tools
-        llm_with_tools = llm.bind_tools(openai_tools)
         messages = _build_messages(prepared.system_prompt, prepared.user_prompt)
-        response = llm_with_tools.invoke(messages)
+        response = invoke_llm_with_optional_tools(
+            llm,
+            messages,
+            openai_tools,
+            node_name="run_knowledge_agent",
+            extra={
+                "domain": "knowledge",
+                "tool_scope_count": len(openai_tools),
+            },
+        )
 
         # Process tool calls if any
         tool_calls = getattr(response, "tool_calls", []) or []
