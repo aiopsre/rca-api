@@ -8,6 +8,7 @@ from typing import Any
 from unittest import mock
 
 from orchestrator.langgraph.nodes_platform import (
+    _build_platform_special_user_prompt,
     _is_platform_special_agent_enabled,
     _parse_diagnosis_patch,
     sanitize_diagnosis_patch,
@@ -222,6 +223,37 @@ class TestRunPlatformSpecialAgent(unittest.TestCase):
                 result = run_platform_special_agent(state, cfg, runtime)
 
         self.assertTrue(any("llm_not_configured" in r for r in result.degrade_reasons))
+
+    def test_platform_agent_prompt_uses_quality_gate(self) -> None:
+        """Test prompt construction pulls in quality gate state."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            evidence_ids=["ev-1", "ev-2"],
+            evidence_meta=[
+                {"source": "metrics", "no_data": False},
+                {"source": "logs", "no_data": False},
+            ],
+            incident_context={
+                "service": "payments",
+                "namespace": "prod",
+                "severity": "high",
+                "alert_name": "latency spike",
+            },
+            merged_findings={
+                "domain_count": 2,
+                "domains": ["observability", "change"],
+            },
+        )
+
+        prompt = _build_platform_special_user_prompt(state)
+
+        self.assertIn("Incident ID: inc-1", prompt)
+        self.assertIn("Service: payments", prompt)
+        self.assertIn("Namespace: prod", prompt)
+        self.assertIn("Severity: high", prompt)
+        self.assertIn("Alert: latency spike", prompt)
+        self.assertIn("Quality gate: pass", prompt)
 
 
 class TestSummarizeDiagnosisAgentized(unittest.TestCase):

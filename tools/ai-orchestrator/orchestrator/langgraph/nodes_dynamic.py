@@ -28,6 +28,7 @@ from .config import OrchestratorConfig
 from .executor import execute_group_concurrent, ToolExecutionResult
 from .helpers import (
     append_evidence,
+    invoke_llm_with_optional_tools,
     query_result_is_no_data,
     query_result_size_bytes,
 )
@@ -577,8 +578,6 @@ def run_tool_agent(
         state.tool_call_results = []
         return state
 
-    llm_with_tools = llm.bind_tools(openai_tools)
-
     # 4. Build initial messages from state context
     messages = _build_initial_messages(state)
 
@@ -595,7 +594,16 @@ def run_tool_agent(
     # 6. Iterative execution loop
     while round_idx < max_rounds:
         try:
-            response = llm_with_tools.invoke(messages)
+            response = invoke_llm_with_optional_tools(
+                llm,
+                messages,
+                openai_tools,
+                node_name="run_tool_agent",
+                extra={
+                    "round_idx": round_idx,
+                    "tool_count": len(openai_tools),
+                },
+            )
         except Exception as exc:  # noqa: BLE001
             state.add_degrade_reason(f"llm_invoke_error:{str(exc)[:64]}")
             break

@@ -936,11 +936,11 @@ def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str
 
 
 def main() -> None:
+    settings = load_settings()
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if settings.debug else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    settings = load_settings()
 
     # Validate configuration
     validation_errors = validate_settings(settings)

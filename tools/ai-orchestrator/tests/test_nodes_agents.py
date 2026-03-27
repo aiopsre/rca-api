@@ -329,8 +329,8 @@ class TestRunObservabilityAgent(unittest.TestCase):
             any("tools_filtered_by_scope" in r for r in result.degrade_reasons)
         )
 
-    def test_agent_reports_error_on_exception(self) -> None:
-        """Test that agent reports error status when exception occurs."""
+    def test_agent_without_tools_invokes_plain_llm(self) -> None:
+        """Test that the agent skips bind_tools when no tools are available."""
         state = GraphState(
             job_id="job-1",
             incident_id="inc-1",
@@ -346,28 +346,21 @@ class TestRunObservabilityAgent(unittest.TestCase):
         mock_adapter.to_openai_tools_for_graph.return_value = []
         runtime.get_fc_adapter.return_value = mock_adapter
 
-        # Mock LLM that raises exception
+        # Mock LLM
         mock_llm = mock.MagicMock()
-        mock_llm.bind_tools.return_value.invoke.side_effect = RuntimeError("LLM failed")
+        mock_llm.invoke.return_value = mock.MagicMock(content="Observed finding", tool_calls=[])
 
         with mock.patch(
             "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
         ):
             result = run_observability_agent(state, cfg, runtime)
 
-        # Should have error finding
+        # Should have finding and use plain invoke path
         self.assertEqual(len(result.domain_findings), 1)
-        self.assertEqual(result.domain_findings[0]["status"], "error")
-        self.assertIn("LLM failed", result.domain_findings[0]["summary"])
-
-        # Should have reported error status
-        report_calls = [
-            call for call in runtime.report_tool_call.call_args_list
-            if call[1].get("node_name") == "run_observability_agent"
-        ]
-        if report_calls:
-            # Check that status was error
-            self.assertEqual(report_calls[0][1].get("status"), "error")
+        self.assertEqual(result.domain_findings[0]["status"], "ok")
+        self.assertEqual(result.domain_findings[0]["summary"], "Observed finding")
+        mock_llm.bind_tools.assert_not_called()
+        mock_llm.invoke.assert_called_once()
 
 
 class TestRunChangeAgent(unittest.TestCase):
@@ -449,6 +442,40 @@ class TestRunChangeAgent(unittest.TestCase):
         self.assertEqual(len(result.domain_findings), 1)
         self.assertEqual(result.domain_findings[0]["domain"], "change")
 
+    def test_change_agent_without_tools_invokes_plain_llm(self) -> None:
+        """Test change agent skips bind_tools when no tools are available."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            domain_tasks=[
+                {
+                    "task_id": "t1",
+                    "domain": "change",
+                    "goal": "Find changes",
+                },
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        mock_adapter = mock.MagicMock()
+        mock_adapter.to_openai_tools_for_graph.return_value = []
+        runtime.get_fc_adapter.return_value = mock_adapter
+
+        mock_llm = mock.MagicMock()
+        mock_llm.invoke.return_value = mock.MagicMock(content="Found changes", tool_calls=[])
+
+        with mock.patch(
+            "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+        ):
+            result = run_change_agent(state, cfg, runtime)
+
+        self.assertEqual(len(result.domain_findings), 1)
+        self.assertEqual(result.domain_findings[0]["status"], "ok")
+        self.assertEqual(result.domain_findings[0]["summary"], "Found changes")
+        mock_llm.bind_tools.assert_not_called()
+        mock_llm.invoke.assert_called_once()
+
 
 class TestRunKnowledgeAgent(unittest.TestCase):
     """Tests for run_knowledge_agent node function."""
@@ -529,6 +556,41 @@ class TestRunKnowledgeAgent(unittest.TestCase):
         # Should have finding
         self.assertEqual(len(result.domain_findings), 1)
         self.assertEqual(result.domain_findings[0]["domain"], "knowledge")
+
+    def test_knowledge_agent_without_tools_invokes_plain_llm(self) -> None:
+        """Test knowledge agent skips bind_tools when no tools are available."""
+        state = GraphState(
+            job_id="job-1",
+            incident_id="inc-1",
+            incident_context={"alert_name": "HighErrorRate"},
+            domain_tasks=[
+                {
+                    "task_id": "t1",
+                    "domain": "knowledge",
+                    "goal": "Find similar incidents",
+                },
+            ],
+        )
+        cfg = OrchestratorConfig()
+        runtime = mock.MagicMock()
+
+        mock_adapter = mock.MagicMock()
+        mock_adapter.to_openai_tools_for_graph.return_value = []
+        runtime.get_fc_adapter.return_value = mock_adapter
+
+        mock_llm = mock.MagicMock()
+        mock_llm.invoke.return_value = mock.MagicMock(content="Found similar incidents", tool_calls=[])
+
+        with mock.patch(
+            "orchestrator.langgraph.nodes_agents._get_llm", return_value=mock_llm
+        ):
+            result = run_knowledge_agent(state, cfg, runtime)
+
+        self.assertEqual(len(result.domain_findings), 1)
+        self.assertEqual(result.domain_findings[0]["status"], "ok")
+        self.assertEqual(result.domain_findings[0]["summary"], "Found similar incidents")
+        mock_llm.bind_tools.assert_not_called()
+        mock_llm.invoke.assert_called_once()
 
 
 class TestMergeEvidenceHybridPath(unittest.TestCase):

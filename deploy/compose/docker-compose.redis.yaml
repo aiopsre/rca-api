@@ -80,6 +80,8 @@ services:
       - --redis.streams.notice_delivery_stream=${REDIS_NOTICE_DELIVERY_STREAM:-rca:notice:delivery_stream}
       - --redis.streams.consumer_group=${REDIS_STREAMS_CONSUMER_GROUP:-notice_delivery_workers}
       - --redis.alerting.enabled=${REDIS_ALERTING_ENABLED:-true}
+    environment:
+      RCA_STRATEGY_CONFIG_JSON: '{"pipelines":{"basic_rca":{"template_id":"basic_rca","toolsets":["default"]}},"toolsets":{"default":{"providers":[{"type":"mcp_http","base_url":"http://rca-apiserver:5555","allow_tools":["query_metrics","query_logs"],"scopes":"evidence.query"}]}}}'
     volumes:
       - ../../configs/rca-apiserver.yaml:/etc/rca/rca-apiserver.yaml:ro
     ports:
@@ -131,6 +133,8 @@ services:
       - --notice-worker-channel-concurrency=${NOTICE_WORKER_CHANNEL_CONCURRENCY:-2}
       - --notice-worker-global-qps=${NOTICE_WORKER_GLOBAL_QPS:-20}
       - --notice-worker-channel-qps=${NOTICE_WORKER_CHANNEL_QPS:-0}
+    environment:
+      RCA_STRATEGY_CONFIG_JSON: '{"pipelines":{"basic_rca":{"template_id":"basic_rca","toolsets":["default"]}},"toolsets":{"default":{"providers":[{"type":"mcp_http","base_url":"http://rca-apiserver:5555","allow_tools":["query_metrics","query_logs"],"scopes":"evidence.query"}]}}}'
     volumes:
       - ../../configs/rca-apiserver.yaml:/etc/rca/rca-apiserver.yaml:ro
 
@@ -149,12 +153,27 @@ services:
       RUN_QUERY: ${ORCH_RUN_QUERY:-0}
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_PUBSUB_ENABLED: ${REDIS_PUBSUB_ENABLED:-true}
+      AGENT_MODEL: qwen3.5-plus
+      AGENT_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-60}
+      RCA_DOMAIN_AGENT_CHANGE_ENABLED: ${RCA_DOMAIN_AGENT_CHANGE_ENABLED:-false}
+      RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED: ${RCA_DOMAIN_AGENT_KNOWLEDGE_ENABLED:-false}
+      DEBUG: "1"
+      PIP_CACHE_DIR: /root/.cache/pip
     command:
       - sh
       - -lc
-      - python -m pip install --no-cache-dir -e . && python -m orchestrator.main
+      - |
+        if [ ! -x .venv/bin/python ]; then
+          python -m venv .venv
+        fi
+        .venv/bin/python -m pip install -e .
+        exec .venv/bin/python -m orchestrator.main
     volumes:
       - ../../tools/ai-orchestrator:/workspace/tools/ai-orchestrator
+      - ai_orchestrator_venv:/workspace/tools/ai-orchestrator/.venv
+      - ai_orchestrator_pip_cache:/root/.cache/pip
 
   mock-webhook:
     image: mendhak/http-https-echo:35
@@ -165,3 +184,5 @@ services:
 volumes:
   mysql_data: {}
   redis_data: {}
+  ai_orchestrator_venv: {}
+  ai_orchestrator_pip_cache: {}

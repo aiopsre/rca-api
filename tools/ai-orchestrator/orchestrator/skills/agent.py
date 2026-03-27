@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..langgraph.llm_logging import log_llm_dialogue
 from ..runtime.tool_registry import get_tool_metadata
 from ..tooling.canonical_names import normalize_tool_name
 from .capabilities import PromptSkillConsumeResult
@@ -665,11 +666,42 @@ class PromptSkillAgent:
             from langchain_core.messages import HumanMessage, SystemMessage
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError("langchain-core is required for prompt-first skills") from exc
-        response = llm.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))),
-            ]
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))),
+        ]
+        log_llm_dialogue(
+            event="request",
+            node_name="prompt_skill_agent",
+            messages=messages,
+            extra={
+                "capability": user_payload.get("capability", ""),
+                "skill_id": user_payload.get("skill_id", ""),
+            },
+        )
+        try:
+            response = llm.invoke(messages)
+        except Exception as exc:  # noqa: BLE001
+            log_llm_dialogue(
+                event="error",
+                node_name="prompt_skill_agent",
+                messages=messages,
+                error=exc,
+                extra={
+                    "capability": user_payload.get("capability", ""),
+                    "skill_id": user_payload.get("skill_id", ""),
+                },
+            )
+            raise
+        log_llm_dialogue(
+            event="response",
+            node_name="prompt_skill_agent",
+            messages=messages,
+            response=response,
+            extra={
+                "capability": user_payload.get("capability", ""),
+                "skill_id": user_payload.get("skill_id", ""),
+            },
         )
         content = getattr(response, "content", response)
         text = _extract_message_text(content)

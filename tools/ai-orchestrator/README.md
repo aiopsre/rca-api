@@ -205,7 +205,7 @@ skill-bundles/
 | `LEASE_HEARTBEAT_INTERVAL_SECONDS` | Lease heartbeat interval | `10` |
 | `RCA_API_SCOPES` | Scopes for MCP shim calls | (empty) |
 | `MCP_VERIFY_REMOTE_TOOLS` | Verify MCP tool registry | `0` |
-| `DEBUG` | Enable debug logging | `0` |
+| `DEBUG` | Enable debug logging, including LLM prompt/response summaries | `0` |
 | `HEALTH_PORT` | Health endpoint port | `8080` |
 | `HEALTH_HOST` | Health endpoint host | `0.0.0.0` |
 
