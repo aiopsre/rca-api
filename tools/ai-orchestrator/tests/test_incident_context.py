@@ -12,7 +12,11 @@ PROJECT_DIR = TESTS_DIR.parent
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from orchestrator.langgraph.helpers import build_incident_context, select_current_alert_event
+from orchestrator.langgraph.helpers import (
+    build_incident_context,
+    render_alert_event_excerpt,
+    select_current_alert_event,
+)
 from orchestrator.langgraph.nodes import load_job_and_start
 from orchestrator.langgraph.nodes_agents import _build_observability_user_prompt
 from orchestrator.langgraph.nodes_platform import _build_platform_special_user_prompt
@@ -22,7 +26,7 @@ from orchestrator.state import GraphState
 
 
 class IncidentContextTests(unittest.TestCase):
-    def test_build_incident_context_merges_incident_alert_and_raw_event_summary(self) -> None:
+    def test_build_incident_context_merges_incident_alert(self) -> None:
         incident = {
             "incidentID": "incident-1",
             "service": "seller.tour.qlcd.com",
@@ -72,10 +76,25 @@ class IncidentContextTests(unittest.TestCase):
         self.assertEqual(context["severity"], "P1")
         self.assertEqual(context["alert_name"], "NginxIngressSlowSpike")
         self.assertEqual(context["alert_event_id"], "event-1")
-        self.assertIn("raw_event_summary", context)
-        self.assertIn("path=/api/v1/seller/buyer_vendor/get_list_pc", context["raw_event_summary"])
-        self.assertNotIn("raw_event_http_request_uri_path", context)
-        self.assertNotIn("raw_event_trace_id", context)
+        self.assertNotIn("raw_event_summary", context)
+
+    def test_render_alert_event_excerpt_uses_raw_payload_without_parsing(self) -> None:
+        alert_event = {
+            "eventID": "event-1",
+            "rawEventJSON": json.dumps(
+                {
+                    "message": "slow nginx request",
+                    "http.request.method": "POST",
+                    "http.request.uri_path": "/api/v1/seller/buyer_vendor/get_list_pc",
+                    "http.response.status_code": "200",
+                }
+            ),
+        }
+
+        excerpt = render_alert_event_excerpt(alert_event, max_len=256)
+
+        self.assertIn("http.request.uri_path", excerpt)
+        self.assertIn("/api/v1/seller/buyer_vendor/get_list_pc", excerpt)
 
     def test_select_current_alert_event_prefers_matching_fingerprint(self) -> None:
         incident = {"incidentID": "incident-1", "fingerprint": "fp-1"}
@@ -142,7 +161,6 @@ class IncidentContextTests(unittest.TestCase):
         self.assertEqual(result.incident_record["incidentID"], "incident-1")
         self.assertEqual(result.alert_event_record["eventID"], "event-1")
         self.assertEqual(result.incident_context["service"], "seller.tour.qlcd.com")
-        self.assertIn("raw_event_summary", result.incident_context)
         runtime.get_job.assert_called_once_with("job-1")
         runtime.get_incident.assert_called_once_with("incident-1")
         runtime.list_alert_events_current.assert_called_once()
@@ -158,7 +176,17 @@ class IncidentContextTests(unittest.TestCase):
                 "alert_name": "NginxIngressSlowSpike",
                 "fingerprint": "fp-1",
                 "cluster": "prod",
-                "raw_event_summary": "method=POST; path=/api/v1/seller/buyer_vendor/get_list_pc; status=200",
+            },
+            alert_event_record={
+                "eventID": "event-1",
+                "rawEventJSON": json.dumps(
+                    {
+                        "message": "slow nginx request",
+                        "http.request.method": "POST",
+                        "http.request.uri_path": "/api/v1/seller/buyer_vendor/get_list_pc",
+                        "http.response.status_code": "200",
+                    }
+                ),
             },
             merged_findings={"domain_count": 1, "domains": ["observability"]},
             evidence_ids=["evidence-1"],
@@ -169,8 +197,9 @@ class IncidentContextTests(unittest.TestCase):
         platform_prompt = _build_platform_special_user_prompt(state)
 
         self.assertIn("Fingerprint: fp-1", router_prompt)
-        self.assertIn("Raw Event: method=POST", router_prompt)
-        self.assertIn("Raw Event: method=POST", observability_prompt)
+        self.assertNotIn("Alert Event Payload:", router_prompt)
+        self.assertIn("Alert Event Payload:", observability_prompt)
+        self.assertIn("Alert Event Payload:", platform_prompt)
         self.assertIn("Alert: NginxIngressSlowSpike", platform_prompt)
         self.assertIn("Quality gate:", platform_prompt)
 

@@ -330,7 +330,6 @@ def _build_router_user_prompt(state: "GraphState") -> str:
             ("Incident Status", "status"),
             ("RCA Status", "rca_status"),
             ("Root Cause", "root_cause_summary"),
-            ("Raw Event", "raw_event_summary"),
         ],
     )
 

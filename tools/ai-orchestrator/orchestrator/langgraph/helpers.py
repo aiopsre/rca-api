@@ -193,46 +193,6 @@ def _pick_bool(source: dict[str, Any], *keys: str) -> bool | None:
     return None
 
 
-def _raw_event_summary(raw_event: dict[str, Any]) -> str:
-    if not isinstance(raw_event, dict):
-        return ""
-    parts: list[str] = []
-    message = _pick_text(raw_event, "message", max_len=256)
-    if message:
-        parts.append(f"message={message}")
-    method = _pick_text(raw_event, "http.request.method", "http_request_method")
-    path = _pick_text(raw_event, "http.request.uri_path", "http_request_uri_path")
-    status = _pick_text(raw_event, "http.response.status_code", "http_response_status_code")
-    domain = _pick_text(raw_event, "destination.domain", "destination_domain")
-    upstream = _pick_text(raw_event, "nginx.upstream.address", "nginx_upstream_address")
-    request_time = _pick_text(raw_event, "nginx.request.time", "nginx_request_time")
-    upstream_time = _pick_text(raw_event, "nginx.upstream.response.time", "nginx_upstream_response_time")
-    trace_id = _pick_text(raw_event, "Trace.Id", "trace_id", "trace.id")
-    span_id = _pick_text(raw_event, "Trace.SpanId", "span_id", "trace.span_id")
-    request_id = _pick_text(raw_event, "user_agent.request_id", "user_agent_request_id")
-    if method:
-        parts.append(f"method={method}")
-    if path:
-        parts.append(f"path={path}")
-    if status:
-        parts.append(f"status={status}")
-    if domain:
-        parts.append(f"domain={domain}")
-    if upstream:
-        parts.append(f"upstream={upstream}")
-    if request_time:
-        parts.append(f"request_time={request_time}s")
-    if upstream_time:
-        parts.append(f"upstream_time={upstream_time}s")
-    if trace_id:
-        parts.append(f"trace_id={trace_id}")
-    if span_id:
-        parts.append(f"span_id={span_id}")
-    if request_id:
-        parts.append(f"request_id={request_id}")
-    return "; ".join(parts)
-
-
 def build_incident_context(
     incident_obj: dict[str, Any],
     alert_event_obj: dict[str, Any] | None = None,
@@ -305,15 +265,6 @@ def build_incident_context(
     put("alert_annotations_json", _pick_text(alert_event_obj, "annotationsJSON", "annotations_json", max_len=2048))
 
     raw_event_json = _pick_text(alert_event_obj, "rawEventJSON", "raw_event_json", max_len=65536)
-    if raw_event_json:
-        try:
-            parsed_raw = json.loads(raw_event_json)
-        except json.JSONDecodeError:
-            parsed_raw = {}
-        if isinstance(parsed_raw, dict):
-            summary = _raw_event_summary(parsed_raw)
-            if summary:
-                context["raw_event_summary"] = summary
 
     return context
 
@@ -368,6 +319,26 @@ def append_context_fields(
         text = str(value).strip()
         if text:
             context_parts.append(f"{label}: {text}")
+
+
+def render_alert_event_excerpt(alert_event_obj: dict[str, Any], max_len: int = 2048) -> str:
+    if not isinstance(alert_event_obj, dict):
+        return ""
+
+    raw_payload = _pick_text(alert_event_obj, "rawEventJSON", "raw_event_json", max_len=65536)
+    if raw_payload:
+        text = raw_payload
+    else:
+        try:
+            text = json.dumps(alert_event_obj, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            text = str(alert_event_obj)
+
+    if max_len >= 0 and len(text) > max_len:
+        if max_len < 4:
+            return text[:max_len]
+        return f"{text[: max_len - 3]}..."
+    return text
 
 
 def query_toolcall_response(result: dict[str, Any]) -> dict[str, Any]:

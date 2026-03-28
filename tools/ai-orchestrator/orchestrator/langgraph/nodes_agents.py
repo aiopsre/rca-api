@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..constants import TRACE_EVENT_DOMAIN_EXECUTE
 from ..middleware.base import AgentRequest, AgentResponse
-from .helpers import append_context_fields, invoke_llm_with_optional_tools
+from .helpers import append_context_fields, invoke_llm_with_optional_tools, render_alert_event_excerpt
 from .reporting import report_node_action
 
 if TYPE_CHECKING:
@@ -233,9 +233,11 @@ def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) 
             ("Fingerprint", "fingerprint"),
             ("Cluster", "cluster"),
             ("Workload", "workload_name"),
-            ("Raw Event", "raw_event_summary"),
         ],
     )
+    alert_excerpt = render_alert_event_excerpt(state.alert_event_record, max_len=1200)
+    if alert_excerpt:
+        context_parts.append(f"Alert Event Payload: {alert_excerpt}")
 
     return f"""Investigate this incident:
 
@@ -309,7 +311,6 @@ def _build_change_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
             ("Version", "version"),
             ("Cluster", "cluster"),
             ("Workload", "workload_name"),
-            ("Raw Event", "raw_event_summary"),
         ],
     )
 
@@ -384,7 +385,6 @@ def _build_knowledge_user_prompt(state: "GraphState", task: dict[str, Any]) -> s
             ("Fingerprint", "fingerprint"),
             ("Cluster", "cluster"),
             ("Root Cause", "root_cause_summary"),
-            ("Raw Event", "raw_event_summary"),
         ],
     )
 

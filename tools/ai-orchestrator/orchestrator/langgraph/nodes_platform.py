@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..constants import TRACE_EVENT_PLATFORM_SPECIAL_SUMMARIZE
 from ..middleware.base import AgentRequest
-from .helpers import append_context_fields
+from .helpers import append_context_fields, render_alert_event_excerpt
 from .llm_logging import log_llm_dialogue
 from .reporting import report_node_action
 
@@ -181,9 +181,12 @@ def _build_platform_special_user_prompt(state: "GraphState") -> str:
             ("Incident Status", "status"),
             ("RCA Status", "rca_status"),
             ("Root Cause", "root_cause_summary"),
-            ("Raw Event", "raw_event_summary"),
         ],
     )
+
+    alert_excerpt = render_alert_event_excerpt(state.alert_event_record, max_len=1200)
+    if alert_excerpt:
+        context_parts.append(f"\nAlert Event Payload: {alert_excerpt}")
 
     # Add merged findings summary
     domain_count = merged_findings.get("domain_count", 0)
