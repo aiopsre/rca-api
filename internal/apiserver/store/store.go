@@ -6,8 +6,9 @@ import (
 	"sync"
 
 	"github.com/google/wire"
-	"github.com/onexstack/onexstack/pkg/store/where"
 	"gorm.io/gorm"
+
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 // ProviderSet defines the dependency injection providers for the store layer.
@@ -48,7 +49,6 @@ type IStore interface {
 	AlertingPolicy() AlertingPolicyStore
 	Playbook() PlaybookStore
 	McpServer() McpServerStore
-	McpServerConfig() McpServerConfigStore
 	ToolMetadata() ToolMetadataStore
 	ToolsetProviderBinding() ToolsetProviderBindingStore
 }
@@ -194,10 +194,6 @@ func (s *store) Playbook() PlaybookStore {
 
 func (s *store) McpServer() McpServerStore {
 	return newMcpServerStore(s)
-}
-
-func (s *store) McpServerConfig() McpServerConfigStore {
-	return newMcpServerConfigStore(s)
 }
 
 func (s *store) ToolMetadata() ToolMetadataStore {
