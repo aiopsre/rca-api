@@ -203,6 +203,166 @@ class IncidentContextTests(unittest.TestCase):
         self.assertIn("Alert: NginxIngressSlowSpike", platform_prompt)
         self.assertIn("Quality gate:", platform_prompt)
 
+    def test_incident_context_has_flags(self) -> None:
+        """Test has_* flags are correctly set."""
+        incident = {
+            "incidentID": "incident-1",
+            "labelsJSON": '{"foo":"bar"}',
+            "traceID": "abc123",
+            "changeID": "change-123",
+        }
+        alert_event = {
+            "eventID": "event-1",
+            "rawEventJSON": json.dumps({"message": "test event"}),
+        }
+
+        context = build_incident_context(incident, alert_event)
+
+        self.assertTrue(context["has_labels_json"])
+        self.assertFalse(context["has_annotations_json"])
+        self.assertTrue(context["has_raw_event"])
+        self.assertTrue(context["has_trace_id"])
+        self.assertTrue(context["has_change_id"])
+
+    def test_incident_context_missing_fields(self) -> None:
+        """Test flags are False when fields are missing."""
+        incident = {"incidentID": "incident-1"}
+        alert_event = {"eventID": "event-1"}
+
+        context = build_incident_context(incident, alert_event)
+
+        self.assertFalse(context.get("has_labels_json", False))
+        self.assertFalse(context.get("has_annotations_json", False))
+        self.assertFalse(context.get("has_raw_event", False))
+        self.assertFalse(context.get("has_trace_id", False))
+        self.assertFalse(context.get("has_change_id", False))
+
+    def test_router_prompt_excludes_raw_payload(self) -> None:
+        """Router should not receive raw alert payload."""
+        from orchestrator.langgraph.prompt_context import build_router_prompt_context
+
+        state = GraphState(
+            job_id="job-1",
+            incident_context={"service": "api"},
+            alert_event_record={"rawEventJSON": '{"sensitive":"data"}'},
+        )
+
+        ctx = build_router_prompt_context(state)
+        self.assertNotIn("raw_alert_excerpt", ctx)
+        self.assertNotIn("alert_event_record", ctx)
+
+    def test_observability_prompt_includes_raw_payload(self) -> None:
+        """Observability should have access to raw alert payload."""
+        from orchestrator.langgraph.prompt_context import build_observability_prompt_context
+
+        state = GraphState(
+            job_id="job-1",
+            incident_context={"service": "api"},
+            alert_event_record={"rawEventJSON": '{"http.request.uri_path":"/api/test"}'},
+        )
+
+        ctx = build_observability_prompt_context(state)
+        self.assertIn("raw_alert_excerpt", ctx)
+        self.assertIn("/api/test", ctx["raw_alert_excerpt"])
+
+    def test_change_prompt_excludes_raw_payload(self) -> None:
+        """Change agent should not receive raw alert payload."""
+        from orchestrator.langgraph.prompt_context import build_change_prompt_context
+
+        state = GraphState(
+            job_id="job-1",
+            incident_context={"service": "api", "start_at": "2026-03-26T00:00:00Z"},
+            alert_event_record={"rawEventJSON": '{"sensitive":"data"}'},
+        )
+
+        ctx = build_change_prompt_context(state)
+        self.assertNotIn("raw_alert_excerpt", ctx)
+        self.assertIn("time_context", ctx)
+
+    def test_knowledge_prompt_uses_search_hints(self) -> None:
+        """Knowledge agent should use search_hints, not raw payload."""
+        from orchestrator.langgraph.prompt_context import build_knowledge_prompt_context
+
+        state = GraphState(
+            job_id="job-1",
+            incident_context={
+                "service": "api",
+                "alert_name": "HighErrorRate",
+                "fingerprint": "fp-123",
+                "root_cause_summary": "Database timeout",
+            },
+            alert_event_record={"rawEventJSON": '{"sensitive":"data"}'},
+        )
+
+        ctx = build_knowledge_prompt_context(state)
+        self.assertNotIn("raw_alert_excerpt", ctx)
+        self.assertIn("search_hints", ctx)
+        self.assertEqual(ctx["search_hints"]["alert_name"], "HighErrorRate")
+        self.assertEqual(ctx["search_hints"]["fingerprint"], "fp-123")
+
+    def test_has_labels_checks_both_incident_and_alert(self) -> None:
+        """has_labels_json should be True if either incident or alert has labels."""
+        # Alert has labels, incident doesn't
+        incident = {"incidentID": "incident-1"}
+        alert_event = {
+            "eventID": "event-1",
+            "labelsJSON": '{"alert_label":"value"}',
+        }
+        context = build_incident_context(incident, alert_event)
+        self.assertTrue(context["has_labels_json"])
+
+        # Incident has labels, alert doesn't
+        incident = {"incidentID": "incident-1", "labelsJSON": '{"incident_label":"value"}'}
+        alert_event = {"eventID": "event-1"}
+        context = build_incident_context(incident, alert_event)
+        self.assertTrue(context["has_labels_json"])
+
+    def test_has_trace_id_from_structured_fields_only(self) -> None:
+        """has_trace_id should only check structured fields, not raw JSON."""
+        # trace_id from incident structured field
+        incident = {"incidentID": "incident-1", "traceID": "abc123"}
+        alert_event = {"eventID": "event-1"}
+        context = build_incident_context(incident, alert_event)
+        self.assertTrue(context["has_trace_id"])
+
+        # trace_id from alert event structured field
+        incident = {"incidentID": "incident-1"}
+        alert_event = {"eventID": "event-1", "traceID": "xyz789"}
+        context = build_incident_context(incident, alert_event)
+        self.assertTrue(context["has_trace_id"])
+
+        # Trace in raw JSON should NOT set has_trace_id (no heuristic matching)
+        incident = {"incidentID": "incident-1"}
+        alert_event = {"eventID": "event-1", "rawEventJSON": '{"Trace.Id":"in-raw-only"}'}
+        context = build_incident_context(incident, alert_event)
+        self.assertFalse(context["has_trace_id"])
+
+    def test_render_alert_event_excerpt_returns_empty_without_raw_event(self) -> None:
+        """render_alert_event_excerpt should return empty string if rawEventJSON is missing."""
+        alert_event = {
+            "eventID": "event-1",
+            "service": "api",
+            "namespace": "default",
+        }
+        excerpt = render_alert_event_excerpt(alert_event)
+        self.assertEqual(excerpt, "")
+
+    def test_last_seen_at_fallback_to_alert(self) -> None:
+        """last_seen_at should fallback to alert_last_seen_at if incident doesn't have it."""
+        incident = {"incidentID": "incident-1"}
+        alert_event = {
+            "eventID": "event-1",
+            "lastSeenAt": "2026-03-26T10:00:00Z",
+        }
+        context = build_incident_context(incident, alert_event)
+        self.assertEqual(context["last_seen_at"], "2026-03-26T10:00:00Z")
+
+        # Incident has its own last_seen_at
+        incident = {"incidentID": "incident-1", "lastSeenAt": "2026-03-26T09:00:00Z"}
+        alert_event = {"eventID": "event-1", "lastSeenAt": "2026-03-26T10:00:00Z"}
+        context = build_incident_context(incident, alert_event)
+        self.assertEqual(context["last_seen_at"], "2026-03-26T09:00:00Z")
+
 
 if __name__ == "__main__":
     unittest.main()

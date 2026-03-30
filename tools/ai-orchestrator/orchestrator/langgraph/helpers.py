@@ -241,6 +241,9 @@ def build_incident_context(
     put("labels_json", _pick_text(incident_obj, "labelsJSON", "labels_json", max_len=2048))
     put("annotations_json", _pick_text(incident_obj, "annotationsJSON", "annotations_json", max_len=2048))
 
+    # last_seen_at from incident (canonical field in summary contract)
+    put("last_seen_at", _pick_text(incident_obj, "lastSeenAt", "last_seen_at"))
+
     put("alert_event_id", _pick_text(alert_event_obj, "eventID", "event_id"))
     put("alert_service", _pick_text(alert_event_obj, "service"))
     put("alert_namespace", _pick_text(alert_event_obj, "namespace"))
@@ -265,6 +268,52 @@ def build_incident_context(
     put("alert_annotations_json", _pick_text(alert_event_obj, "annotationsJSON", "annotations_json", max_len=2048))
 
     raw_event_json = _pick_text(alert_event_obj, "rawEventJSON", "raw_event_json", max_len=65536)
+
+    # Add has_* flags for presence detection
+    # Check both incident-side and alert-side labels/annotations
+    incident_labels = context.get("labels_json")
+    alert_labels = context.get("alert_labels_json")
+    context["has_labels_json"] = bool(
+        (incident_labels and incident_labels.strip()) or
+        (alert_labels and alert_labels.strip())
+    )
+
+    incident_annotations = context.get("annotations_json")
+    alert_annotations = context.get("alert_annotations_json")
+    context["has_annotations_json"] = bool(
+        (incident_annotations and incident_annotations.strip()) or
+        (alert_annotations and alert_annotations.strip())
+    )
+
+    context["has_raw_event"] = bool(raw_event_json and raw_event_json.strip())
+
+    # Check trace_id from structured fields only (schema-agnostic)
+    # Raw JSON substring matching is intentionally avoided to prevent
+    # false positives/negatives from encoded text or nested structures.
+    # If trace info only exists in raw JSON, observability agent can
+    # still access it via raw_alert_excerpt.
+    trace_id = context.get("trace_id")
+    alert_trace_id = _pick_text(alert_event_obj, "traceID", "trace_id")
+    context["has_trace_id"] = bool(trace_id or alert_trace_id)
+
+    # Check change_id presence
+    change_id = context.get("change_id")
+    context["has_change_id"] = bool(change_id)
+
+    # Add triggered_at from incident or alert event
+    triggered_at = (
+        _pick_text(incident_obj, "triggeredAt", "triggered_at")
+        or _pick_text(alert_event_obj, "triggeredAt", "triggered_at")
+        or _pick_text(alert_event_obj, "startsAt", "starts_at")
+    )
+    if triggered_at:
+        context["triggered_at"] = triggered_at
+
+    # Ensure last_seen_at fallback to alert_last_seen_at if not set from incident
+    if not context.get("last_seen_at"):
+        alert_last_seen = context.get("alert_last_seen_at")
+        if alert_last_seen:
+            context["last_seen_at"] = alert_last_seen
 
     return context
 
@@ -322,23 +371,34 @@ def append_context_fields(
 
 
 def render_alert_event_excerpt(alert_event_obj: dict[str, Any], max_len: int = 2048) -> str:
+    """Render an excerpt of the raw alert event payload.
+
+    This function extracts the rawEventJSON field and returns it as-is,
+    without schema-dependent fallbacks. If rawEventJSON is not available,
+    returns an empty string to signal absence of raw payload.
+
+    Args:
+        alert_event_obj: Alert event dictionary.
+        max_len: Maximum length of the excerpt.
+
+    Returns:
+        Raw payload excerpt or empty string if not available.
+    """
     if not isinstance(alert_event_obj, dict):
         return ""
 
     raw_payload = _pick_text(alert_event_obj, "rawEventJSON", "raw_event_json", max_len=65536)
-    if raw_payload:
-        text = raw_payload
-    else:
-        try:
-            text = json.dumps(alert_event_obj, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError):
-            text = str(alert_event_obj)
+    if not raw_payload:
+        # Return empty string instead of falling back to full object dump
+        # This signals that raw payload is not available and avoids
+        # schema-dependent fallback in a layer that should stay schema-agnostic
+        return ""
 
-    if max_len >= 0 and len(text) > max_len:
+    if max_len >= 0 and len(raw_payload) > max_len:
         if max_len < 4:
-            return text[:max_len]
-        return f"{text[: max_len - 3]}..."
-    return text
+            return raw_payload[:max_len]
+        return f"{raw_payload[: max_len - 3]}..."
+    return raw_payload
 
 
 def query_toolcall_response(result: dict[str, Any]) -> dict[str, Any]:

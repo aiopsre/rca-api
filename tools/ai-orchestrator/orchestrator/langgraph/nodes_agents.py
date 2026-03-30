@@ -197,6 +197,10 @@ Be thorough but efficient. Focus on the most relevant data first."""
 def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
     """Build the user prompt for the observability agent.
 
+    Uses incident_context + raw alert payload.
+    This node is the appropriate place to expose request paths, trace
+    identifiers, timing details, and other observability-specific data.
+
     Args:
         state: Current graph state.
         task: Domain task dictionary.
@@ -204,7 +208,10 @@ def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) 
     Returns:
         User prompt string.
     """
-    incident_context = state.incident_context or {}
+    from .prompt_context import build_observability_prompt_context
+
+    ctx = build_observability_prompt_context(state)
+    incident_context = ctx["incident_context"]
     incident_id = state.incident_id or "unknown"
     goal = task.get("goal", "Investigate observability data")
 
@@ -235,9 +242,11 @@ def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) 
             ("Workload", "workload_name"),
         ],
     )
-    alert_excerpt = render_alert_event_excerpt(state.alert_event_record, max_len=1200)
-    if alert_excerpt:
-        context_parts.append(f"Alert Event Payload: {alert_excerpt}")
+
+    # Include raw alert excerpt if available
+    raw_excerpt = ctx.get("raw_alert_excerpt")
+    if raw_excerpt:
+        context_parts.append(f"Alert Event Payload: {raw_excerpt}")
 
     return f"""Investigate this incident:
 
@@ -273,6 +282,10 @@ Focus on changes that occurred around the time of the incident. Be precise with 
 def _build_change_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
     """Build the user prompt for the change agent.
 
+    Uses incident_context + time fields, no raw payload.
+    The change agent should investigate deployment/config changes
+    based on temporal correlation, not raw alert payload structure.
+
     Args:
         state: Current graph state.
         task: Domain task dictionary.
@@ -280,7 +293,11 @@ def _build_change_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
     Returns:
         User prompt string.
     """
-    incident_context = state.incident_context or {}
+    from .prompt_context import build_change_prompt_context
+
+    ctx = build_change_prompt_context(state)
+    incident_context = ctx["incident_context"]
+    time_context = ctx["time_context"]
     incident_id = state.incident_id or "unknown"
     goal = task.get("goal", "Investigate change events")
 
@@ -297,10 +314,11 @@ def _build_change_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
     if namespace:
         context_parts.append(f"Namespace: {namespace}")
 
-    # Add incident time for change correlation
-    incident_time = incident_context.get("incident_time") or incident_context.get("triggered_at")
-    if incident_time:
-        context_parts.append(f"Incident Time: {incident_time}")
+    # Add incident time for change correlation from time_context
+    if time_context.get("start_at"):
+        context_parts.append(f"Incident Start: {time_context['start_at']}")
+    if time_context.get("triggered_at"):
+        context_parts.append(f"Triggered At: {time_context['triggered_at']}")
 
     append_context_fields(
         context_parts,
@@ -348,6 +366,10 @@ Focus on actionable insights that can help resolve the current incident."""
 def _build_knowledge_user_prompt(state: "GraphState", task: dict[str, Any]) -> str:
     """Build the user prompt for the knowledge agent.
 
+    Uses incident_context + alert name/fingerprint/root cause hints.
+    The knowledge agent searches historical incidents and runbooks
+    using semantic identifiers, not raw payload content.
+
     Args:
         state: Current graph state.
         task: Domain task dictionary.
@@ -355,7 +377,11 @@ def _build_knowledge_user_prompt(state: "GraphState", task: dict[str, Any]) -> s
     Returns:
         User prompt string.
     """
-    incident_context = state.incident_context or {}
+    from .prompt_context import build_knowledge_prompt_context
+
+    ctx = build_knowledge_prompt_context(state)
+    incident_context = ctx["incident_context"]
+    search_hints = ctx["search_hints"]
     incident_id = state.incident_id or "unknown"
     goal = task.get("goal", "Search knowledge base")
 
@@ -368,21 +394,20 @@ def _build_knowledge_user_prompt(state: "GraphState", task: dict[str, Any]) -> s
     if service:
         context_parts.append(f"Service: {service}")
 
-    # Add alert name for knowledge matching
-    alert_name = incident_context.get("alert_name")
+    # Add alert name for knowledge matching from search_hints
+    alert_name = search_hints.get("alert_name")
     if alert_name:
         context_parts.append(f"Alert: {alert_name}")
 
-    # Add error patterns if available
-    error_message = incident_context.get("error_message") or incident_context.get("error")
-    if error_message:
-        context_parts.append(f"Error: {error_message}")
+    # Add fingerprint from search_hints
+    fingerprint = search_hints.get("fingerprint")
+    if fingerprint:
+        context_parts.append(f"Fingerprint: {fingerprint}")
 
     append_context_fields(
         context_parts,
         incident_context,
         [
-            ("Fingerprint", "fingerprint"),
             ("Cluster", "cluster"),
             ("Root Cause", "root_cause_summary"),
         ],

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..constants import TRACE_EVENT_PLATFORM_SPECIAL_SUMMARIZE
 from ..middleware.base import AgentRequest
-from .helpers import append_context_fields, render_alert_event_excerpt
+from .helpers import append_context_fields
 from .llm_logging import log_llm_dialogue
 from .reporting import report_node_action
 
@@ -143,16 +143,22 @@ Rules:
 def _build_platform_special_user_prompt(state: "GraphState") -> str:
     """Build the user prompt for the platform special agent.
 
+    Uses incident_context + merged findings + quality gate.
+    Raw alert payload is optional and included if available.
+
     Args:
         state: Current graph state.
 
     Returns:
         User prompt string.
     """
-    from .quality_gate import ensure_quality_gate
+    from .prompt_context import build_platform_special_prompt_context
 
-    incident_context = state.incident_context or {}
-    merged_findings = state.merged_findings or {}
+    ctx = build_platform_special_prompt_context(state)
+    incident_context = ctx["incident_context"]
+    merged_findings = ctx["merged_findings"]
+    quality_gate = ctx["quality_gate"]
+    evidence_count = ctx["evidence_count"]
 
     context_parts = [
         f"Incident ID: {state.incident_id or 'unknown'}",
@@ -184,9 +190,10 @@ def _build_platform_special_user_prompt(state: "GraphState") -> str:
         ],
     )
 
-    alert_excerpt = render_alert_event_excerpt(state.alert_event_record, max_len=1200)
-    if alert_excerpt:
-        context_parts.append(f"\nAlert Event Payload: {alert_excerpt}")
+    # Include raw alert excerpt if available
+    raw_excerpt = ctx.get("raw_alert_excerpt")
+    if raw_excerpt:
+        context_parts.append(f"\nAlert Event Payload: {raw_excerpt}")
 
     # Add merged findings summary
     domain_count = merged_findings.get("domain_count", 0)
@@ -199,11 +206,9 @@ def _build_platform_special_user_prompt(state: "GraphState") -> str:
         context_parts.append(f"\nDomain diagnosis patches:\n{json.dumps(diagnosis_patch, indent=2)}")
 
     # Add evidence summary
-    evidence_ids = state.evidence_ids or []
-    context_parts.append(f"\nEvidence collected: {len(evidence_ids)} items")
+    context_parts.append(f"\nEvidence collected: {evidence_count} items")
 
     # Add quality gate status
-    quality_gate = ensure_quality_gate(state)
     decision = quality_gate.get("decision", "unknown")
     context_parts.append(f"\nQuality gate: {decision}")
 

@@ -295,13 +295,20 @@ Rules:
 def _build_router_user_prompt(state: "GraphState") -> str:
     """Build the user prompt for the router agent.
 
+    Uses only incident_context, no raw payload.
+    The router should make domain routing decisions based on stable
+    summary fields, not raw alert payload content.
+
     Args:
         state: Current graph state.
 
     Returns:
         User prompt string.
     """
-    incident_context = state.incident_context or {}
+    from .prompt_context import build_router_prompt_context
+
+    ctx = build_router_prompt_context(state)
+    incident_context = ctx["incident_context"]
     incident_id = state.incident_id or "unknown"
 
     context_parts = [f"Incident ID: {incident_id}"]
