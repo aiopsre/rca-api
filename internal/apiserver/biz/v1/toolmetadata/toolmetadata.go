@@ -244,7 +244,6 @@ func (b *toolMetadataBiz) Delete(ctx context.Context, rq *v1.DeleteToolMetadataR
 }
 
 // BuildToolMetadataRefs builds ToolMetadataRef slice from tool names and metadata map.
-// This is used by mcpserver.ResolveMcpServerRefs to attach metadata to McpServerRef.
 func BuildToolMetadataRefs(tools []string, metadataMap map[string]*model.ToolMetadataM) []model.ToolMetadataRef {
 	if len(tools) == 0 || len(metadataMap) == 0 {
 		return nil

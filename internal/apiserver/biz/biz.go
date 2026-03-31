@@ -21,6 +21,7 @@ import (
 	rbacv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/rbac"
 	sessionv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	silencev1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/silence"
+	toolsetproviderbindingv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolset_provider_binding"
 	toolmetadatav1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	triggerv1 "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/trigger"
 	"github.com/google/wire"
@@ -49,6 +50,7 @@ type IBiz interface {
 	RBACV1() rbacv1.RBACBiz
 	SessionV1() sessionv1.SessionBiz
 	SilenceV1() silencev1.SilenceBiz
+	ToolsetProviderBindingV1() toolsetproviderbindingv1.ToolsetProviderBindingBiz
 	ToolMetadataV1() toolmetadatav1.ToolMetadataBiz
 	TriggerV1() triggerv1.TriggerBiz
 	NoticeV1() noticev1.NoticeBiz
@@ -89,6 +91,8 @@ type biz struct {
 	sessionBiz                 sessionv1.SessionBiz
 	silenceOnce                sync.Once
 	silenceBiz                 silencev1.SilenceBiz
+	toolsetProviderBindingOnce sync.Once
+	toolsetProviderBindingBiz  toolsetproviderbindingv1.ToolsetProviderBindingBiz
 	toolMetadataOnce           sync.Once
 	toolMetadataBiz            toolmetadatav1.ToolMetadataBiz
 	triggerOnce                sync.Once
@@ -156,7 +160,7 @@ func (b *biz) KBEntryV1() kbv1.KBEntryBiz {
 
 func (b *biz) McpServerV1() mcpserverv1.McpServerBiz {
 	b.mcpServerOnce.Do(func() {
-		b.mcpServerBiz = mcpserverv1.New(b.store, b.ToolMetadataV1())
+		b.mcpServerBiz = mcpserverv1.New(b.store)
 	})
 	return b.mcpServerBiz
 }
@@ -208,6 +212,13 @@ func (b *biz) SilenceV1() silencev1.SilenceBiz {
 		b.silenceBiz = silencev1.New(b.store)
 	})
 	return b.silenceBiz
+}
+
+func (b *biz) ToolsetProviderBindingV1() toolsetproviderbindingv1.ToolsetProviderBindingBiz {
+	b.toolsetProviderBindingOnce.Do(func() {
+		b.toolsetProviderBindingBiz = toolsetproviderbindingv1.New(b.store)
+	})
+	return b.toolsetProviderBindingBiz
 }
 
 func (b *biz) ToolMetadataV1() toolmetadatav1.ToolMetadataBiz {
@@ -265,6 +276,7 @@ func (b *biz) Close() error {
 		errs = appendCloseIfSupported(errs, b.rbacBiz)
 		errs = appendCloseIfSupported(errs, b.sessionBiz)
 		errs = appendCloseIfSupported(errs, b.silenceBiz)
+		errs = appendCloseIfSupported(errs, b.toolsetProviderBindingBiz)
 		errs = appendCloseIfSupported(errs, b.triggerBiz)
 		errs = appendCloseIfSupported(errs, b.noticeBiz)
 		errs = appendCloseIfSupported(errs, b.alertingPolicyBiz)

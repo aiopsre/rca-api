@@ -5,14 +5,12 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/store"
 	"github.com/aiopsre/rca-api/internal/pkg/contextx"
@@ -35,8 +33,6 @@ type McpServerBiz interface {
 	List(ctx context.Context, rq *v1.ListMcpServersRequest) (*v1.ListMcpServersResponse, error)
 	Update(ctx context.Context, rq *v1.UpdateMcpServerRequest) (*v1.UpdateMcpServerResponse, error)
 	Delete(ctx context.Context, rq *v1.DeleteMcpServerRequest) (*v1.DeleteMcpServerResponse, error)
-	// ResolveMcpServerRefs resolves MCP server references for a given pipeline.
-	ResolveMcpServerRefs(ctx context.Context, pipelineID string) ([]model.McpServerRef, error)
 
 	McpServerExpansion
 }
@@ -45,15 +41,14 @@ type McpServerBiz interface {
 type McpServerExpansion interface{}
 
 type mcpServerBiz struct {
-	store           store.IStore
-	toolMetadataBiz toolmetadata.ToolMetadataBiz
+	store store.IStore
 }
 
 var _ McpServerBiz = (*mcpServerBiz)(nil)
 
 // New creates MCP server biz.
-func New(store store.IStore, toolMetadataBiz toolmetadata.ToolMetadataBiz) *mcpServerBiz {
-	return &mcpServerBiz{store: store, toolMetadataBiz: toolMetadataBiz}
+func New(store store.IStore) *mcpServerBiz {
+	return &mcpServerBiz{store: store}
 }
 
 func (b *mcpServerBiz) Create(ctx context.Context, rq *v1.CreateMcpServerRequest) (*v1.CreateMcpServerResponse, error) {
@@ -84,6 +79,9 @@ func (b *mcpServerBiz) Create(ctx context.Context, rq *v1.CreateMcpServerRequest
 	var allowedToolsJSON *string
 	if rq.AllowedToolsJSON != nil && strings.TrimSpace(*rq.AllowedToolsJSON) != "" {
 		v := strings.TrimSpace(*rq.AllowedToolsJSON)
+		if err := validateJSONArrayString(v); err != nil {
+			return nil, errorsx.ErrInvalidArgument
+		}
 		allowedToolsJSON = &v
 	}
 
@@ -181,6 +179,9 @@ func (b *mcpServerBiz) Update(ctx context.Context, rq *v1.UpdateMcpServerRequest
 	if rq.AllowedToolsJSON != nil {
 		v := strings.TrimSpace(*rq.AllowedToolsJSON)
 		if v != "" {
+			if err := validateJSONArrayString(v); err != nil {
+				return nil, errorsx.ErrInvalidArgument
+			}
 			obj.AllowedTools = &v
 		} else {
 			obj.AllowedTools = nil
@@ -218,65 +219,6 @@ func (b *mcpServerBiz) Delete(ctx context.Context, rq *v1.DeleteMcpServerRequest
 		return nil, errno.ErrMcpServerDeleteFailed
 	}
 	return &v1.DeleteMcpServerResponse{}, nil
-}
-
-// ResolveMcpServerRefs resolves MCP server references for a given pipeline.
-// This is used by the orchestrator_skillset package to build McpServerRef array for dispatch.
-func (b *mcpServerBiz) ResolveMcpServerRefs(ctx context.Context, pipelineID string) ([]model.McpServerRef, error) {
-	if strings.TrimSpace(pipelineID) == "" {
-		return nil, nil
-	}
-
-	// Get McpServerConfigM bindings for this pipeline
-	total, configs, err := b.store.McpServerConfig().List(ctx, where.T(ctx).F("pipeline_id", strings.TrimSpace(pipelineID)).F("enabled", true))
-	if err != nil {
-		return nil, errno.ErrMcpServerConfigListFailed
-	}
-	if total == 0 {
-		return nil, nil
-	}
-
-	var refs []model.McpServerRef
-	for _, config := range configs {
-		// Parse McpServerRefsJSON if present
-		if config.McpServerRefsJSON != nil && *config.McpServerRefsJSON != "" {
-			var configRefs []model.McpServerRef
-			if err := json.Unmarshal([]byte(*config.McpServerRefsJSON), &configRefs); err == nil {
-				refs = append(refs, configRefs...)
-			}
-		}
-	}
-
-	// Collect all tool names from refs
-	allTools := make(map[string]struct{})
-	for _, ref := range refs {
-		for _, tool := range ref.AllowedTools {
-			allTools[tool] = struct{}{}
-		}
-	}
-
-	// Batch get tool metadata
-	toolNames := make([]string, 0, len(allTools))
-	for tool := range allTools {
-		toolNames = append(toolNames, tool)
-	}
-
-	metadataMap := make(map[string]*model.ToolMetadataM)
-	if b.toolMetadataBiz != nil && len(toolNames) > 0 {
-		var err error
-		metadataMap, err = b.toolMetadataBiz.BatchGetMap(ctx, toolNames)
-		if err != nil {
-			// Log warning but continue - metadata is optional
-			slog.Warn("failed to get tool metadata", "error", err, "pipeline_id", pipelineID)
-		}
-	}
-
-	// Attach metadata to each ref
-	for i := range refs {
-		refs[i].ToolMetadata = toolmetadata.BuildToolMetadataRefs(refs[i].AllowedTools, metadataMap)
-	}
-
-	return refs, nil
 }
 
 func modelToProto(m *model.McpServerM) *v1.McpServer {
@@ -343,4 +285,21 @@ func toMcpServerGetError(err error) error {
 		return errno.ErrMcpServerNotFound
 	}
 	return errno.ErrMcpServerGetFailed
+}
+
+func validateJSONArrayString(raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(trimmed), &values); err != nil {
+		return errorsx.ErrInvalidArgument
+	}
+	for _, v := range values {
+		if strings.TrimSpace(v) == "" {
+			return errorsx.ErrInvalidArgument
+		}
+	}
+	return nil
 }

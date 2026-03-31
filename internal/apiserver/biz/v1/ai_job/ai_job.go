@@ -16,7 +16,6 @@ import (
 	playbookbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/playbook"
 	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
 	skillsetbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_skillset"
-	toolmetadatabiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/toolmetadata"
 	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
 	"github.com/aiopsre/rca-api/internal/apiserver/model"
 	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
@@ -162,12 +161,11 @@ var _ AIJobBiz = (*aiJobBiz)(nil)
 
 // New creates ai job biz.
 func New(store store.IStore) *aiJobBiz {
-	toolMetadataBiz := toolmetadatabiz.New(store)
 	return &aiJobBiz{
 		store:             store,
 		sessionBiz:        sessionbiz.New(store),
 		skillsetBiz:       skillsetbiz.New(store),
-		mcpServerBiz:      mcpserverbiz.New(store, toolMetadataBiz),
+		mcpServerBiz:      mcpserverbiz.New(store),
 		playbookBiz:       playbookbiz.New(store),
 		operatorReadCache: newOperatorReadCache(defaultOperatorReadCacheTTL),
 	}

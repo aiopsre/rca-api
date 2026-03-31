@@ -16,5 +16,4 @@ func (m *McpServerM) AfterCreate(tx *gorm.DB) error {
 //nolint:gochecknoinits // Model registry hooks are intentionally init-based in this codebase.
 func init() {
 	registry.Register(&McpServerM{})
-	registry.Register(&McpServerConfigM{})
 }

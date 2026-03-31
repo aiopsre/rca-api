@@ -21,6 +21,4 @@ var (
 	ErrMcpServerGetFailed = errorsx.New(http.StatusInternalServerError, "InternalError.McpServerGetFailed", "Failed to retrieve the MCP server.")
 	// ErrMcpServerListFailed indicates MCP server list failure.
 	ErrMcpServerListFailed = errorsx.New(http.StatusInternalServerError, "InternalError.McpServerListFailed", "Failed to list MCP servers.")
-	// ErrMcpServerConfigListFailed indicates MCP server config list failure.
-	ErrMcpServerConfigListFailed = errorsx.New(http.StatusInternalServerError, "InternalError.McpServerConfigListFailed", "Failed to list MCP server configs.")
 )

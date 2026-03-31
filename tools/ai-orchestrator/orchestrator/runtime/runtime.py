@@ -1046,7 +1046,7 @@ class OrchestratorRuntime:
         then falls back to the secondary invoker for tools not allowed by the first.
 
         This is used after claim to add MCP server tool providers resolved from
-        the platform's McpServerConfigM.
+        the platform-side binding snapshot.
 
         Args:
             invoker: Secondary invoker to merge (typically from MCP server refs).

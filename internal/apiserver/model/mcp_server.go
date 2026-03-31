@@ -34,28 +34,6 @@ func (*McpServerM) TableName() string {
 	return TableNameMcpServerM
 }
 
-const TableNameMcpServerConfigM = "mcp_server_configs"
-
-// McpServerConfigM stores dynamic pipeline to MCP server bindings.
-// Similar to SkillsetConfigDynamicM, this enables runtime association
-// between pipelines and external MCP servers.
-//
-//nolint:tagalign // Keep explicit column/index tags aligned with existing model style.
-type McpServerConfigM struct {
-	ID               int64     `json:"id" gorm:"column:id;primaryKey;autoIncrement:true"`
-	PipelineID       string    `json:"pipeline_id" gorm:"column:pipeline_id;type:varchar(64);uniqueIndex:uniq_mcp_server_configs_pipeline_name,priority:1;index:idx_mcp_server_configs_pipeline,priority:1;not null"`
-	McpServerName    string    `json:"mcp_server_name" gorm:"column:mcp_server_name;type:varchar(128);uniqueIndex:uniq_mcp_server_configs_pipeline_name,priority:2;not null"`
-	McpServerRefsJSON *string  `json:"mcp_server_refs_json" gorm:"column:mcp_server_refs_json;type:longtext"`
-	Priority         int       `json:"priority" gorm:"column:priority;not null;default:0"`
-	Enabled          bool      `json:"enabled" gorm:"column:enabled;not null"`
-	CreatedAt        time.Time `json:"created_at" gorm:"column:created_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
-	UpdatedAt        time.Time `json:"updated_at" gorm:"column:updated_at;type:datetime;not null;default:CURRENT_TIMESTAMP"`
-}
-
-func (*McpServerConfigM) TableName() string {
-	return TableNameMcpServerConfigM
-}
-
 // McpServerRef is the reference passed to the orchestrator worker
 // for calling external MCP servers. Auth secrets are not included;
 // the platform manages secrets separately.
