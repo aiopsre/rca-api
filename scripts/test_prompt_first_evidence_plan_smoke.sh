@@ -244,7 +244,6 @@ start_orchestrator() {
       DS_TYPE="${DS_TYPE}" \
       METRICS_DS_TYPE="${METRICS_DS_TYPE}" \
       LOGS_DS_TYPE="${LOGS_DS_TYPE}" \
-      SKILLS_EXECUTION_MODE=prompt_first \
       SKILLS_TOOL_CALLING_MODE=evidence_plan_dual_tool \
       AGENT_MODEL="${AGENT_MODEL}" \
       AGENT_BASE_URL="${AGENT_BASE_URL}" \

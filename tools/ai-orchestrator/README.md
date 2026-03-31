@@ -67,7 +67,6 @@ SCOPES='*' RUN_QUERY=0 python -m orchestrator.main
 
 ```bash
 SCOPES='*' \
-SKILLS_EXECUTION_MODE=prompt_first \
 AGENT_MODEL=gpt-4o \
 AGENT_BASE_URL=https://api.openai.com/v1 \
 AGENT_API_KEY=sk-xxx \

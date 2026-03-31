@@ -211,7 +211,6 @@ start_orchestrator() {
       LONG_POLL_WAIT_SECONDS=2 \
       LEASE_HEARTBEAT_INTERVAL_SECONDS=3 \
       RUN_QUERY=0 \
-      SKILLS_EXECUTION_MODE=prompt_first \
       AGENT_MODEL="${AGENT_MODEL}" \
       AGENT_BASE_URL="${AGENT_BASE_URL}" \
       AGENT_API_KEY="${AGENT_API_KEY}" \
