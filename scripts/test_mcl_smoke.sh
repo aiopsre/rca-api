@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Minimal Closed Loop Smoke Test
 #
-# This script tests the 7 core MCL steps from the curl runbook:
+# This script tests the 8 core MCL steps from the curl runbook:
+# 0. Bootstrap Tempo skill release and tool surface
 # 1. Create notice channel
 # 2. Ingest alert event
 # 3. Trigger AI job
@@ -18,6 +19,9 @@
 #   BASE_URL - API server URL (default: http://127.0.0.1:5555)
 #   SCOPES - Scopes header (default: *)
 #   ORCH_INSTANCE_ID - Orchestrator instance ID (default: mcl-smoke-test)
+#   BOOTSTRAP_TEMPO_SMOKE - Run Tempo skill release bootstrap first (default: 1)
+#   MCL_INGEST_BODY_FILE - Optional path to a JSON file used as the ingest body
+#   MCL_INGEST_BODY_JSON - Optional raw JSON string used as the ingest body
 #
 set -euo pipefail
 
@@ -25,6 +29,7 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 SCOPES="${SCOPES:-*}"
 ORCH_INSTANCE_ID="${ORCH_INSTANCE_ID:-mcl-smoke-test}"
+BOOTSTRAP_TEMPO_SMOKE="${BOOTSTRAP_TEMPO_SMOKE:-1}"
 RAND="${RAND:-$RANDOM}"
 WORKDIR="${WORKDIR:-/tmp/rca-mcl-smoke-${RAND}}"
 
@@ -109,6 +114,35 @@ assert_contains() {
   fi
 }
 
+bootstrap_tempo_smoke() {
+  if [[ "${BOOTSTRAP_TEMPO_SMOKE}" != "1" ]]; then
+    echo "Skipping Tempo smoke bootstrap"
+    return 0
+  fi
+
+  echo "Bootstrapping Tempo skill release + tool surface..."
+  BASE_URL="${BASE_URL}" python3 -m pytest -q tools/ai-orchestrator/tests/smoke/test_tempo_skill_release_smoke.py -k tempo
+  echo "Tempo bootstrap complete"
+  echo ""
+}
+
+load_ingest_body() {
+  local now_epoch
+  now_epoch="$(date -u +%s)"
+  if [[ -n "${MCL_INGEST_BODY_JSON:-}" ]]; then
+    printf '%s' "${MCL_INGEST_BODY_JSON}"
+    return 0
+  fi
+  if [[ -n "${MCL_INGEST_BODY_FILE:-}" ]]; then
+    cat "${MCL_INGEST_BODY_FILE}"
+    return 0
+  fi
+
+  cat <<EOF
+{"idempotencyKey":"idem-mcl-smoke-${RAND}","fingerprint":"mcl-smoke-fp-${RAND}","status":"firing","severity":"P1","service":"mcl-smoke-svc","cluster":"mcl-smoke-cluster","namespace":"default","workload":"mcl-smoke-workload","labelsJSON":"{\"alertname\":\"MCLSmokeTest\",\"service\":\"mcl-smoke-svc\"}","lastSeenAt":{"seconds":${now_epoch},"nanos":0}}
+EOF
+}
+
 # ============================================================================
 # MCL-specific functions
 # ============================================================================
@@ -138,10 +172,7 @@ ingest_alert_event() {
   start_epoch="$((now_epoch - 1800))"
 
   local body
-  body=$(cat <<EOF
-{"idempotencyKey":"idem-mcl-smoke-${RAND}","fingerprint":"mcl-smoke-fp-${RAND}","status":"firing","severity":"P1","service":"mcl-smoke-svc","cluster":"mcl-smoke-cluster","namespace":"default","workload":"mcl-smoke-workload","labelsJSON":"{\"alertname\":\"MCLSmokeTest\",\"service\":\"mcl-smoke-svc\"}","lastSeenAt":{"seconds":${now_epoch},"nanos":0}}
-EOF
-)
+  body="$(load_ingest_body)"
   local resp json incident_id event_id
   resp="$(http_json POST "${BASE_URL}/v1/alert-events:ingest" "$body")"
   assert_2xx "IngestAlertEvent" "$resp"
@@ -330,6 +361,9 @@ main() {
   echo "API server is healthy"
   echo ""
 
+  # Step 0: Bootstrap Tempo skill release and tool surface.
+  bootstrap_tempo_smoke
+
   # Step 1: Create notice channel
   echo "Step 1: Create notice channel..."
   CHANNEL_ID="$(create_notice_channel)"
@@ -399,7 +433,7 @@ main() {
 
 # Cleanup
 cleanup() {
-  if [[ "${KEEP_WORKDIR}" != "1" ]] && [[ -n "${WORKDIR:-}" ]] && [[ -d "${WORKDIR}" ]]; then
+  if [[ "${KEEP_WORKDIR:-0}" != "1" ]] && [[ -n "${WORKDIR:-}" ]] && [[ -d "${WORKDIR}" ]]; then
     rm -rf "${WORKDIR}"
   fi
 }

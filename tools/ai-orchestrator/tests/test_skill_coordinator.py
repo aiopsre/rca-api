@@ -339,6 +339,56 @@ class TestSkillCoordinatorExecuteCapabilitySkill:
         assert result.selected_executor_binding_key == binding_key
         mock_agent.consume_skill.assert_called_once()
 
+    def test_prompt_executor_with_tool_calling_uses_fc_tools(self) -> None:
+        """Test prompt executor uses FC tools when allowed."""
+        binding_key = "test-prompt-fc\x00v1\x00evidence.plan\x00executor"
+        mock_catalog = _make_catalog_with_skill(
+            binding_key=binding_key,
+            capability="evidence.plan",
+            executor_mode="prompt",
+            allowed_tools=("tempo_query", "tempo_get_trace"),
+        )
+        mock_agent = _make_agent_with_selection(
+            selected_executor_binding_key=binding_key,
+        )
+
+        planned_call = MagicMock()
+        planned_call.tool_name = "tempo_query"
+        planned_call.arguments = {"query": "slow request"}
+
+        mock_agent.plan_tool_calls_fc.return_value = [planned_call]
+        consume_result = MagicMock()
+        consume_result.payload = {
+            "summary": "Tempo trace analysis completed",
+            "evidence_candidates": [{"kind": "trace", "trace_id": "trace-1"}],
+            "diagnosis_patch": {},
+        }
+        consume_result.session_patch = {}
+        consume_result.observations = [{"kind": "note", "message": "used tempo_query"}]
+        mock_agent.consume_after_tools.return_value = consume_result
+
+        mock_runtime = MagicMock()
+        mock_runtime.get_fc_adapter.return_value = MagicMock()
+        mock_runtime.call_tool.return_value = {"traces": [{"trace_id": "trace-1"}]}
+
+        coordinator = SkillCoordinator(
+            catalog=mock_catalog,
+            agent=mock_agent,
+            runtime=mock_runtime,
+        )
+
+        result = coordinator.execute_capability_skill(
+            capability="evidence.plan",
+            input_payload={"incident_id": "inc-123"},
+            stage_summary={},
+        )
+
+        assert result.success is True
+        assert result.selected_executor_binding_key == binding_key
+        mock_agent.plan_tool_calls_fc.assert_called_once()
+        mock_runtime.call_tool.assert_called_once_with("tempo_query", {"query": "slow request"})
+        mock_agent.consume_after_tools.assert_called_once()
+
     def test_knowledge_skills_loaded(self) -> None:
         """Test knowledge skills are loaded."""
         knowledge_binding = "knowledge-skill\x00v1\x00evidence.plan\x00knowledge"

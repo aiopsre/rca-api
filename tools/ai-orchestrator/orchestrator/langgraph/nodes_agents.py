@@ -238,6 +238,7 @@ def _build_observability_user_prompt(state: "GraphState", task: dict[str, Any]) 
         [
             ("Alert", "alert_name"),
             ("Fingerprint", "fingerprint"),
+            ("Trace ID", "trace_id"),
             ("Cluster", "cluster"),
             ("Workload", "workload_name"),
         ],
@@ -667,11 +668,16 @@ def run_observability_agent(
     if skill_scope:
         # Try skill execution
         capability = skill_scope[0]  # Currently only one capability supported
+        from .prompt_context import build_observability_prompt_context
+
+        skill_input_context = build_observability_prompt_context(state)
         skill_result = runtime.execute_capability_skill(
             capability=capability,
             input_payload={
                 "incident_id": state.incident_id,
-                "incident_context": state.incident_context,
+                "incident_context": skill_input_context.get("incident_context", {}),
+                "alert_event_record": skill_input_context.get("alert_event_record", {}),
+                "raw_alert_excerpt": skill_input_context.get("raw_alert_excerpt"),
             },
             stage_summary={
                 "domain": "observability",

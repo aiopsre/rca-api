@@ -2649,6 +2649,10 @@ func buildMCPAlertEventOutput(item *v1.AlertEvent) map[string]any {
 	putNonEmpty(out, "alertName", strings.TrimSpace(item.GetAlertName()))
 	putNonEmpty(out, "silenceID", strings.TrimSpace(item.GetSilenceID()))
 	putNonEmpty(out, "ackedBy", strings.TrimSpace(item.GetAckedBy()))
+	putNonEmpty(out, "labelsJSON", strings.TrimSpace(item.GetLabelsJSON()))
+	putNonEmpty(out, "annotationsJSON", strings.TrimSpace(item.GetAnnotationsJSON()))
+	putNonEmpty(out, "rawEventJSON", strings.TrimSpace(item.GetRawEventJSON()))
+	putNonEmpty(out, "generatorURL", strings.TrimSpace(item.GetGeneratorURL()))
 	if ts := timestampToRFC3339(item.GetStartsAt()); ts != "" {
 		out["startsAt"] = ts
 	}

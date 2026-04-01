@@ -76,6 +76,7 @@ class IncidentContextTests(unittest.TestCase):
         self.assertEqual(context["severity"], "P1")
         self.assertEqual(context["alert_name"], "NginxIngressSlowSpike")
         self.assertEqual(context["alert_event_id"], "event-1")
+        self.assertNotIn("trace_id", context)
         self.assertNotIn("raw_event_summary", context)
 
     def test_render_alert_event_excerpt_uses_raw_payload_without_parsing(self) -> None:
@@ -318,7 +319,7 @@ class IncidentContextTests(unittest.TestCase):
         self.assertTrue(context["has_labels_json"])
 
     def test_has_trace_id_from_structured_fields_only(self) -> None:
-        """has_trace_id should only check structured fields, not raw JSON."""
+        """has_trace_id should be derived from structured fields only."""
         # trace_id from incident structured field
         incident = {"incidentID": "incident-1", "traceID": "abc123"}
         alert_event = {"eventID": "event-1"}
@@ -331,11 +332,36 @@ class IncidentContextTests(unittest.TestCase):
         context = build_incident_context(incident, alert_event)
         self.assertTrue(context["has_trace_id"])
 
-        # Trace in raw JSON should NOT set has_trace_id (no heuristic matching)
+        # Trace hidden only inside annotations/raw JSON should no longer be extracted
         incident = {"incidentID": "incident-1"}
         alert_event = {"eventID": "event-1", "rawEventJSON": '{"Trace.Id":"in-raw-only"}'}
         context = build_incident_context(incident, alert_event)
         self.assertFalse(context["has_trace_id"])
+        self.assertNotIn("trace_id", context)
+
+    def test_prompt_builders_surface_trace_id(self) -> None:
+        """Observability prompt should surface trace_id when present."""
+        from orchestrator.langgraph.nodes_agents import _build_observability_user_prompt
+
+        state = GraphState(
+            job_id="job-1",
+            incident_id="incident-1",
+            incident_context={
+                "service": "shop.tour.qlcd.com",
+                "namespace": "ingress-apisix",
+                "severity": "warning",
+                "alert_name": "NginxIngressCallback499",
+                "fingerprint": "mcl-curl-fp-7210",
+                "trace_id": "887e0948feba67a285dc2be7beff77a4",
+            },
+            alert_event_record={
+                "eventID": "event-1",
+                "rawEventJSON": '{"message":"slow request"}',
+            },
+        )
+
+        prompt = _build_observability_user_prompt(state, {"goal": "Investigate callback 499"})
+        self.assertIn("Trace ID: 887e0948feba67a285dc2be7beff77a4", prompt)
 
     def test_render_alert_event_excerpt_returns_empty_without_raw_event(self) -> None:
         """render_alert_event_excerpt should return empty string if rawEventJSON is missing."""

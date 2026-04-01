@@ -269,6 +269,10 @@ def build_incident_context(
 
     raw_event_json = _pick_text(alert_event_obj, "rawEventJSON", "raw_event_json", max_len=65536)
 
+    alert_trace_id = _pick_text(alert_event_obj, "traceID", "trace_id")
+    if not context.get("trace_id") and alert_trace_id:
+        put("trace_id", alert_trace_id)
+
     # Add has_* flags for presence detection
     # Check both incident-side and alert-side labels/annotations
     incident_labels = context.get("labels_json")
@@ -292,9 +296,7 @@ def build_incident_context(
     # false positives/negatives from encoded text or nested structures.
     # If trace info only exists in raw JSON, observability agent can
     # still access it via raw_alert_excerpt.
-    trace_id = context.get("trace_id")
-    alert_trace_id = _pick_text(alert_event_obj, "traceID", "trace_id")
-    context["has_trace_id"] = bool(trace_id or alert_trace_id)
+    context["has_trace_id"] = bool(context.get("trace_id"))
 
     # Check change_id presence
     change_id = context.get("change_id")

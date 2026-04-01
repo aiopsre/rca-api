@@ -248,6 +248,7 @@ class SkillCoordinator:
                     executor_candidate=executor_candidate,
                     input_payload=input_payload,
                     ctx=ctx,
+                    config=config,
                     executor_resources=executor_resources,
                 )
 
@@ -383,6 +384,7 @@ class SkillCoordinator:
         executor_candidate: "SkillCandidate",
         input_payload: dict[str, Any],
         ctx: SkillExecutionContext,
+        config: CapabilityConfig,
         executor_resources: list[dict[str, Any]] | None = None,
     ) -> SkillExecutionResult:
         """Execute prompt executor.
@@ -402,6 +404,57 @@ class SkillCoordinator:
         skill_id = parts[0] if len(parts) > 0 else ""
         skill_version = parts[1] if len(parts) > 1 else ""
 
+        if config.allow_tool_calling:
+            adapter = self._runtime.get_fc_adapter()
+            if adapter is not None and executor_candidate.allowed_tools:
+                try:
+                    planned_tool_calls = self._agent.plan_tool_calls_fc(
+                        capability=ctx.capability,
+                        skill_id=skill_id,
+                        skill_version=skill_version,
+                        skill_document=skill_document,
+                        input_payload=input_payload,
+                        knowledge_context=ctx.knowledge_context,
+                        skill_resources=executor_resources or [],
+                        adapter=adapter,
+                        max_tool_calls=config.max_tool_calls,
+                    )
+                except Exception:
+                    planned_tool_calls = []
+
+                if planned_tool_calls:
+                    tool_results = self._execute_tool_calls(
+                        [
+                            {
+                                "tool": call.tool_name,
+                                "input": call.arguments,
+                            }
+                            for call in planned_tool_calls
+                        ],
+                        config,
+                        executor_candidate,
+                    )
+
+                    result = self._agent.consume_after_tools(
+                        capability=ctx.capability,
+                        skill_id=skill_id,
+                        skill_version=skill_version,
+                        skill_document=skill_document,
+                        input_payload=input_payload,
+                        knowledge_context=ctx.knowledge_context,
+                        skill_resources=executor_resources or [],
+                        tool_results=tool_results,
+                        output_contract=self._build_prompt_output_contract(ctx.capability),
+                    )
+
+                    return SkillExecutionResult(
+                        success=True,
+                        payload=result.payload,
+                        session_patch=result.session_patch,
+                        observations=result.observations,
+                        tool_calls=tool_results,
+                    )
+
         result = self._agent.consume_skill(
             capability=ctx.capability,
             skill_id=skill_id,
@@ -419,6 +472,43 @@ class SkillCoordinator:
             session_patch=result.session_patch,
             observations=result.observations,
         )
+
+    def _build_prompt_output_contract(self, capability: str) -> dict[str, Any]:
+        """Build the output contract for prompt-based executor skills."""
+        if capability == "evidence.plan":
+            return {
+                "payload": {
+                    "summary": "short RCA-oriented summary",
+                    "evidence_candidates": "array of evidence candidate objects",
+                    "diagnosis_patch": {
+                        "summary": "optional string",
+                        "root_cause": {
+                            "summary": "optional string",
+                            "statement": "optional string",
+                        },
+                        "recommendations": "optional list",
+                        "unknowns": "optional list",
+                        "next_steps": "optional list",
+                    },
+                },
+                "session_patch": {
+                    "latest_summary": "optional object",
+                    "pinned_evidence_append": "optional list",
+                    "pinned_evidence_remove": "optional list",
+                    "context_state_patch": "optional object",
+                    "note": "optional string",
+                },
+                "observations": "optional list",
+            }
+        return {
+            "payload": {
+                "summary": "short summary",
+            },
+            "session_patch": {
+                "note": "optional string",
+            },
+            "observations": "optional list",
+        }
 
     def _infer_tool_calling_mode(
         self,

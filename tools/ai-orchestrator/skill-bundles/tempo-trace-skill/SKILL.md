@@ -1,7 +1,7 @@
 ---
 name: Tempo Trace Skill
 description: Prompt-driven Tempo trace analysis skill for RCA; use Tempo MCP tools to fetch and interpret traces.
-compatibility: Prompt-driven skill. Do not use scripts/executor.py. Use tempo_query and tempo_get_trace only.
+compatibility: Prompt-driven skill. Do not use scripts/executor.py. Use tempo_get_trace only.
 ---
 
 # Tempo Trace Skill
@@ -22,11 +22,39 @@ Typical goals:
 
 ## Tool boundaries
 
-- Use only `tempo_query` and `tempo_get_trace`.
-- Prefer `tempo_query` when trace IDs are not yet known.
+- Use only `tempo_get_trace`.
 - Use `tempo_get_trace` when a trace ID is already available.
+- If the incident context or raw alert excerpt exposes a trace ID, use `tempo_get_trace` first.
+- Do not search for traces with `tempo_query` in this skill.
 - Do not invent trace IDs, span names, timestamps, or service names.
 - Do not call tools outside the Tempo MCP surface.
+
+## Supporting knowledge
+
+When the incident begins with an ingress access log, pair this skill with `ingress-access-log-knowledge`.
+
+That knowledge skill explains:
+
+- `Trace.Id` and `Trace.SpanId`
+- `499` client-abort semantics
+- `nginx.request.time` versus `nginx.upstream.response.time`
+- how to turn a raw ingress excerpt into a trace lookup hint
+
+Use the knowledge skill as context, not as a substitute for Tempo trace execution.
+
+## Trace lookup shape
+
+- `tempo_get_trace` only needs `trace_id` for the trace fetch path.
+- Prefer the structured `incident_context.trace_id` when it is present.
+- If `trace_id` is missing, use the raw ingress excerpt to identify it and then fetch the trace.
+
+## References
+
+Load these resources only when they are useful for the current investigation:
+
+- `references/trace-analysis-guidance.md`
+- `references/query-patterns.md`
+- `examples/trace-summary-examples.md`
 
 ## Output expectations
 

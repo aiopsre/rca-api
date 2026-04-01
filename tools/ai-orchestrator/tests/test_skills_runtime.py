@@ -566,7 +566,8 @@ class SkillCatalogTest(unittest.TestCase):
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "evidence-plan" / "SKILL.md"
         frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
         self.assertEqual(frontmatter["name"], "RCA Evidence Planner")
-        self.assertIn("single executor for evidence.plan", frontmatter["description"])
+        self.assertIn("evidence.plan", frontmatter["description"])
+        self.assertIn("output-producing skill", frontmatter["description"])
 
     def test_checked_in_elasticsearch_evidence_bundle_has_valid_frontmatter(self) -> None:
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "elasticsearch-evidence-plan" / "SKILL.md"
@@ -579,6 +580,54 @@ class SkillCatalogTest(unittest.TestCase):
         frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
         self.assertEqual(frontmatter["name"], "Prometheus Evidence Planner Knowledge")
         self.assertIn("Prometheus-backed metrics", frontmatter["description"])
+
+    def test_checked_in_tempo_trace_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "tempo-trace-skill" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "Tempo Trace Skill")
+        self.assertIn("Tempo MCP tools", frontmatter["description"])
+        self.assertIn("Prompt-driven skill", frontmatter["compatibility"])
+
+    def test_checked_in_tempo_trace_bundle_has_supporting_resources(self) -> None:
+        bundle_root = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "tempo-trace-skill"
+        expected_paths = [
+            bundle_root / "references" / "trace-analysis-guidance.md",
+            bundle_root / "references" / "query-patterns.md",
+            bundle_root / "examples" / "trace-summary-examples.md",
+        ]
+        for path in expected_paths:
+            self.assertTrue(path.is_file(), f"missing bundle resource: {path}")
+
+    def test_checked_in_tempo_trace_bundle_references_ingress_log_knowledge(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "tempo-trace-skill" / "SKILL.md"
+        content = skill_path.read_text(encoding="utf-8")
+        self.assertIn("ingress-access-log-knowledge", content)
+        self.assertIn("Trace.Id", content)
+        self.assertIn("nginx.request.time", content)
+
+    def test_checked_in_ingress_access_log_knowledge_bundle_references_tempo_trace_skill(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "ingress-access-log-knowledge" / "SKILL.md"
+        content = skill_path.read_text(encoding="utf-8")
+        self.assertIn("Tempo Trace Skill", content)
+        self.assertIn("Trace.Id", content)
+        self.assertIn("499", content)
+
+    def test_checked_in_ingress_access_log_knowledge_bundle_has_valid_frontmatter(self) -> None:
+        skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "ingress-access-log-knowledge" / "SKILL.md"
+        frontmatter = parse_skill_frontmatter(skill_path.read_text(encoding="utf-8"))
+        self.assertEqual(frontmatter["name"], "Ingress Access Log Schema Knowledge")
+        self.assertIn("ingress access logs", frontmatter["description"].lower())
+        self.assertIn("knowledge-only", frontmatter["compatibility"].lower())
+
+    def test_checked_in_ingress_access_log_knowledge_bundle_has_supporting_resources(self) -> None:
+        bundle_root = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "ingress-access-log-knowledge"
+        expected_paths = [
+            bundle_root / "references" / "ingress-access-log-fields.md",
+            bundle_root / "examples" / "ingress-access-log-interpretation.md",
+            bundle_root / "agents" / "openai.yaml",
+        ]
+        for path in expected_paths:
+            self.assertTrue(path.is_file(), f"missing bundle resource: {path}")
 
     def test_checked_in_diagnosis_script_bundle_has_valid_frontmatter(self) -> None:
         skill_path = REPO_ROOT / "tools" / "ai-orchestrator" / "skill-bundles" / "diagnosis-script-enrich" / "SKILL.md"

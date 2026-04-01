@@ -9,6 +9,7 @@ via consume_prompt_skill() and consume_diagnosis_enrich_skill().
 """
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -102,6 +103,151 @@ def _build_tool_input_contract(tool_name: str) -> dict[str, str]:
         contract["step_seconds"] = f"integer for metrics-like tools"
 
     return contract
+
+
+def _augment_openai_tools_for_skill_document(
+    openai_tools: list[dict[str, Any]],
+    skill_document: str,
+) -> list[dict[str, Any]]:
+    """Augment tool descriptions/schemas from the skill document when needed.
+
+    Prompt-first skills that wrap an MCP server can expose a richer tool
+    description than the runtime registry currently carries. This helper
+    patches the OpenAI tool surface for those prompt-first flows so the LLM
+    sees tool intent and required arguments, even when platform metadata is
+    sparse.
+    """
+    tools = copy.deepcopy([item for item in openai_tools if isinstance(item, dict)])
+    doc = str(skill_document or "").lower()
+
+    tempo_skill = "tempo_get_trace" in doc
+    if not tempo_skill:
+        return tools
+    get_trace_only = "tempo_query" not in doc
+    if get_trace_only:
+        tools = [
+            entry
+            for entry in tools
+            if not (
+                isinstance(entry, dict)
+                and isinstance(entry.get("function"), dict)
+                and _trim(entry["function"].get("name")) == "tempo_query"
+            )
+        ]
+
+    for entry in tools:
+        if not isinstance(entry, dict):
+            continue
+        function = entry.get("function")
+        if not isinstance(function, dict):
+            continue
+        tool_name = _trim(function.get("name"))
+        if tool_name == "tempo_query" and "tempo_query" in doc:
+            description = _trim(function.get("description"))
+            tempo_description = (
+                "Query Tempo traces when a trace ID is not yet known. "
+                "Use this tool to find candidate traces for the incident window. "
+                "Pass the time window via start/end arguments, and keep the query string "
+                "focused on the Tempo search expression only."
+            )
+            function["description"] = (
+                f"{description} {tempo_description}".strip()
+                if description
+                else tempo_description
+            )
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {}
+                function["parameters"] = parameters
+            properties = parameters.get("properties")
+            if not isinstance(properties, dict):
+                properties = {}
+                parameters["properties"] = properties
+            properties.setdefault(
+                "query",
+                {
+                    "type": "string",
+                    "description": "Tempo search expression used to search candidate traces.",
+                },
+            )
+            properties.setdefault(
+                "start",
+                {
+                    "type": "string",
+                    "description": "Optional start time for the Tempo search window.",
+                },
+            )
+            properties.setdefault(
+                "end",
+                {
+                    "type": "string",
+                    "description": "Optional end time for the Tempo search window.",
+                },
+            )
+            properties.setdefault(
+                "limit",
+                {
+                    "type": "number",
+                    "description": "Optional maximum number of traces to return.",
+                },
+            )
+            required = parameters.get("required")
+            if not isinstance(required, list):
+                required = []
+            if "query" not in required:
+                required.append("query")
+            parameters["required"] = required
+            parameters.setdefault("additionalProperties", False)
+        elif tool_name == "tempo_get_trace":
+            description = _trim(function.get("description"))
+            tempo_description = (
+                "Fetch a Tempo trace by trace ID when the trace ID is already known. "
+                "Use this tool to inspect spans and dependency timing."
+            )
+            function["description"] = (
+                f"{description} {tempo_description}".strip()
+                if description
+                else tempo_description
+            )
+            parameters = function.get("parameters")
+            if not isinstance(parameters, dict):
+                parameters = {}
+                function["parameters"] = parameters
+            properties = parameters.get("properties")
+            if not isinstance(properties, dict):
+                properties = {}
+                parameters["properties"] = properties
+            properties.setdefault(
+                "trace_id",
+                {
+                    "type": "string",
+                    "description": "Tempo trace identifier.",
+                },
+            )
+            required = parameters.get("required")
+            if not isinstance(required, list):
+                required = []
+            if "trace_id" not in required:
+                required.append("trace_id")
+            parameters["required"] = required
+            parameters.setdefault("additionalProperties", False)
+    return tools
+
+
+def _tempo_tool_usage_hints(skill_document: str) -> list[str]:
+    doc = str(skill_document or "").lower()
+    if "tempo_get_trace" not in doc:
+        return []
+    if "tempo_query" not in doc:
+        return [
+            "Use tempo_get_trace only when a trace_id is already available.",
+            "Do not search for traces with tempo_query in this skill.",
+        ]
+    return [
+        "For tempo_query, keep query to the Tempo search expression only.",
+        "Pass the time window via start and end tool arguments; do not embed @timestamp filters in query.",
+        "Use tempo_get_trace only after you already know a trace_id.",
+    ]
 
 
 class SkillSelectionResult:
@@ -301,7 +447,7 @@ class PromptSkillAgent:
         system_prompt = (
             "You are applying a prompt-first RCA skill.\n"
             "Read the skill document and return strict JSON only.\n"
-            "Do not call tools.\n"
+            "If the runtime exposes tools for this skill, use them when they are needed to investigate evidence.\n"
             "Return only payload, session_patch, and observations.\n"
             "Respect the provided output_contract exactly."
         )
@@ -443,7 +589,10 @@ class PromptSkillAgent:
 
         # FC3A: Get OpenAI tools from the adapter (single source of truth)
         # Use per-surface filtering for Skills visibility
-        openai_tools = adapter.to_openai_tools_for_skills()
+        openai_tools = _augment_openai_tools_for_skill_document(
+            adapter.to_openai_tools_for_skills(),
+            skill_document,
+        )
         if not openai_tools:
             return []
 
@@ -453,7 +602,8 @@ class PromptSkillAgent:
 
         system_prompt = (
             "You are planning a bounded sequence of tool calls for a prompt-first RCA skill.\n"
-            "Use the provided tools to gather information.\n"
+            "Use the provided tools to gather evidence whenever the skill is about external systems, traces, logs, metrics, or similar RCA evidence.\n"
+            "Prefer at least one tool call when relevant tools are available.\n"
             "If no tool call is needed, return without calling any tools.\n"
             "Never call more than max_tool_calls tools.\n"
             "Do not call the same tool twice.\n"
@@ -463,6 +613,7 @@ class PromptSkillAgent:
             "skill_id": skill_id,
             "skill_version": skill_version,
             "skill_document": skill_document,
+            "tool_usage_hints": _tempo_tool_usage_hints(skill_document),
             "input": input_payload,
             "knowledge_context": [item for item in (knowledge_context or []) if isinstance(item, dict)],
             "skill_resources": [item for item in (skill_resources or []) if isinstance(item, dict)],
@@ -474,10 +625,49 @@ class PromptSkillAgent:
         except Exception as exc:
             raise RuntimeError("langchain-core is required for prompt-first skills") from exc
 
-        response = llm_with_tools.invoke([
+        messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=json.dumps(user_payload, ensure_ascii=False, separators=(",", ":"))),
-        ])
+        ]
+        log_llm_dialogue(
+            event="request",
+            node_name="prompt_skill_agent",
+            messages=messages,
+            tools=openai_tools,
+            extra={
+                "capability": capability,
+                "skill_id": skill_id,
+                "mode": "plan_tool_calls_fc",
+            },
+        )
+        try:
+            response = llm_with_tools.invoke(messages)
+        except Exception as exc:  # noqa: BLE001
+            log_llm_dialogue(
+                event="error",
+                node_name="prompt_skill_agent",
+                messages=messages,
+                tools=openai_tools,
+                error=exc,
+                extra={
+                    "capability": capability,
+                    "skill_id": skill_id,
+                    "mode": "plan_tool_calls_fc",
+                },
+            )
+            raise
+        log_llm_dialogue(
+            event="response",
+            node_name="prompt_skill_agent",
+            messages=messages,
+            tools=openai_tools,
+            response=response,
+            extra={
+                "capability": capability,
+                "skill_id": skill_id,
+                "mode": "plan_tool_calls_fc",
+            },
+        )
 
         # FC3A: Use adapter's normalize_tool_calls() - single source of truth
         tool_calls = getattr(response, "tool_calls", []) or []
