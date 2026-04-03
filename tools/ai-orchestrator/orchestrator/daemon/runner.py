@@ -1,0 +1,1065 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+import logging
+import sys
+import threading
+import time
+from typing import Any
+
+from .. import WORKER_VERSION
+from ..graph import OrchestratorConfig
+from ..langgraph.registry import (
+    UnknownPipelineError,
+    get_template_builder,
+    list_template_ids,
+    normalize_pipeline,
+)
+from ..middleware.chain import MiddlewareChain
+from ..middleware.observation import ObservationMiddleware
+from ..middleware.session import SessionMiddleware
+from ..middleware.skills import SkillsMiddleware
+from ..middleware.tool_surface import ToolSurfaceMiddleware
+from ..runtime.resolved_context import ResolvedAgentContext, SkillSurface, ToolSurface
+from ..runtime.runtime import OrchestratorRuntime
+from ..sdk.errors import RCAApiError
+from ..sdk.runtime_contract import ClaimStartResponse
+from ..skills import SkillCatalog, apply_session_patch_to_state, load_session_snapshot_into_state
+from ..state import GraphState
+from ..tooling import (
+    ToolInvoker,
+    ToolInvokerChain,
+    ToolsetConfig,
+    build_tool_invoker,
+    build_tool_invoker_chain,
+    build_tool_invoker_from_resolved_providers,
+    load_toolset_config,
+    load_toolset_config_from_env,
+)
+from ..tools_rca_api import RCAApiClient
+from .health import detect_pubsub_ready
+from .health_server import HealthServer, start_health_server
+from .metrics import (
+    WORKER_JOBS_TOTAL,
+    WORKER_JOBS_IN_PROGRESS,
+    WORKER_JOB_DURATION_SECONDS,
+    WORKER_POLL_ERRORS_TOTAL,
+)
+from .settings import Settings, load_settings, validate_settings
+
+_logger = logging.getLogger("orchestrator.runner")
+
+_TOOLSET_CONFIG_CACHE_LOCK = threading.Lock()
+_TOOLSET_CONFIG_CACHE_KEY: tuple[str, str] | None = None
+_TOOLSET_CONFIG_CACHE_VALUE: ToolsetConfig | None = None
+_TOOLSET_CONFIG_CACHE_ERROR: Exception | None = None
+_TEMPLATE_REGISTRY_LOCK = threading.Lock()
+_TEMPLATE_REGISTRY_LAST_ATTEMPT_TS = 0.0
+_TEMPLATE_REGISTRY_REFRESH_SECONDS = 60.0
+
+
+def _log(msg: str) -> None:
+    _logger.info(msg)
+
+
+def _extract_jobs(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    jobs = payload.get("jobs")
+    if isinstance(jobs, list):
+        return [j for j in jobs if isinstance(j, dict)]
+    return []
+
+
+def _extract_job_id(job_obj: dict[str, Any]) -> str:
+    return str(job_obj.get("jobID") or job_obj.get("job_id") or "").strip()
+
+
+def _extract_pipeline(job_payload: dict[str, Any]) -> str:
+    if not isinstance(job_payload, dict):
+        return ""
+
+    candidates: list[dict[str, Any]] = [job_payload]
+    data = job_payload.get("data")
+    if isinstance(data, dict):
+        candidates.append(data)
+        nested = data.get("job")
+        if isinstance(nested, dict):
+            candidates.append(nested)
+
+    nested_job = job_payload.get("job")
+    if isinstance(nested_job, dict):
+        candidates.append(nested_job)
+
+    for candidate in candidates:
+        if "pipeline" in candidate:
+            value = candidate.get("pipeline")
+            if value is None:
+                return ""
+            return str(value).strip()
+    return ""
+
+
+def _new_client(settings: Settings) -> RCAApiClient:
+    return RCAApiClient(
+        settings.base_url,
+        settings.scopes,
+        instance_id=settings.instance_id,
+        timeout_s=10.0,
+        mcp_scopes=settings.mcp_scopes,
+        mcp_verify_remote_tools=settings.mcp_verify_remote_tools,
+    )
+
+
+def _load_toolset_config_cached(settings: Settings) -> ToolsetConfig:
+    global _TOOLSET_CONFIG_CACHE_KEY
+    global _TOOLSET_CONFIG_CACHE_VALUE
+    global _TOOLSET_CONFIG_CACHE_ERROR
+
+    cache_key = (settings.toolset_config_path.strip(), settings.toolset_config_json.strip())
+    with _TOOLSET_CONFIG_CACHE_LOCK:
+        if _TOOLSET_CONFIG_CACHE_KEY == cache_key:
+            if _TOOLSET_CONFIG_CACHE_ERROR is not None:
+                raise _TOOLSET_CONFIG_CACHE_ERROR
+            if _TOOLSET_CONFIG_CACHE_VALUE is None:
+                raise RuntimeError("toolset config cache is empty")
+            return _TOOLSET_CONFIG_CACHE_VALUE
+
+    try:
+        loaded = load_toolset_config_from_env(settings)
+    except Exception as exc:  # noqa: BLE001
+        with _TOOLSET_CONFIG_CACHE_LOCK:
+            _TOOLSET_CONFIG_CACHE_KEY = cache_key
+            _TOOLSET_CONFIG_CACHE_VALUE = None
+            _TOOLSET_CONFIG_CACHE_ERROR = exc
+        raise
+
+    with _TOOLSET_CONFIG_CACHE_LOCK:
+        _TOOLSET_CONFIG_CACHE_KEY = cache_key
+        _TOOLSET_CONFIG_CACHE_VALUE = loaded
+        _TOOLSET_CONFIG_CACHE_ERROR = None
+    return loaded
+
+
+def _select_tool_invoker(
+    settings: Settings,
+    client: RCAApiClient,
+    pipeline: str,
+) -> tuple[ToolInvoker | ToolInvokerChain, list[str], str]:
+    if settings.toolset_config_path.strip() or settings.toolset_config_json.strip():
+        config = _load_toolset_config_cached(settings)
+        toolset_ids = config.get_toolset_chain(pipeline)
+        invoker = build_tool_invoker_chain(config, toolset_ids)
+        return invoker, toolset_ids, "local_override"
+    raise RuntimeError("resolve_toolset API is deprecated; use claim provider snapshot (resolved_tool_providers) instead")
+
+
+def _supports_strategy_resolve(client: RCAApiClient) -> bool:
+    return callable(getattr(client, "resolve_strategy", None))
+
+
+def _resolve_strategy_via_server(client: RCAApiClient, pipeline: str) -> dict[str, Any]:
+    resolved = client.resolve_strategy(pipeline)
+    if not isinstance(resolved, dict):
+        raise RuntimeError("resolve_strategy returned invalid payload")
+    strategy = resolved.get("strategy")
+    if isinstance(strategy, dict):
+        return strategy
+    return resolved
+
+
+def _build_tool_invoker_chain_from_toolsets_payload(
+    *,
+    normalized_pipeline: str,
+    toolsets_payload: list[Any],
+    payload_name: str,
+    default_base_url: str = "",
+) -> tuple[ToolInvokerChain, list[str]]:
+    toolset_ids: list[str] = []
+    toolsets: dict[str, dict[str, Any]] = {}
+    for index, toolset_item in enumerate(toolsets_payload, start=1):
+        if not isinstance(toolset_item, dict):
+            raise RuntimeError(f"{payload_name} payload has invalid toolsets[{index}] type")
+        toolset_id = _extract_toolset_id(toolset_item)
+        if not toolset_id:
+            raise RuntimeError(f"{payload_name} payload missing toolset_id at toolsets[{index}]")
+        if toolset_id in toolsets:
+            raise RuntimeError(f"{payload_name} payload duplicated toolset_id={toolset_id}")
+        providers = toolset_item.get("providers")
+        if not isinstance(providers, list) or not providers:
+            raise RuntimeError(f"{payload_name} payload has empty providers: toolset={toolset_id}")
+        normalized_providers = [
+            _normalize_server_provider_payload(provider, default_base_url=default_base_url) for provider in providers
+        ]
+        toolset_ids.append(toolset_id)
+        toolsets[toolset_id] = {"providers": normalized_providers}
+
+    config = load_toolset_config(
+        {
+            "pipelines": {normalized_pipeline: toolset_ids},
+            "toolsets": toolsets,
+        }
+    )
+    invoker = build_tool_invoker_chain(config, toolset_ids)
+    return invoker, toolset_ids
+
+
+def _extract_template_id(strategy_payload: dict[str, Any]) -> str:
+    for key in ("templateID", "templateId", "template_id"):
+        value = str(strategy_payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_server_provider_payload(provider_payload: Any, *, default_base_url: str) -> dict[str, Any]:
+    if not isinstance(provider_payload, dict):
+        raise RuntimeError("toolset provider entry must be an object")
+    normalized = dict(provider_payload)
+    provider_type = str(normalized.get("type") or "").strip().lower()
+    if provider_type == "mcp_http":
+        base_url = str(normalized.get("base_url") or normalized.get("baseURL") or "").strip()
+        if not base_url:
+            normalized["baseURL"] = str(default_base_url or "").strip().rstrip("/")
+    return normalized
+
+
+def _report_toolset_selection_observation(
+    *,
+    runtime: OrchestratorRuntime,
+    job_id: str,
+    pipeline: str,
+    template_id: str,
+    template_builder: Any,
+    toolsets: list[str],
+    toolset_source: str,
+    tool_invoker: ToolInvoker | ToolInvokerChain | None,
+) -> None:
+    report_observation = getattr(runtime, "report_observation", None)
+    if not callable(report_observation):
+        return
+
+    providers: list[dict[str, Any]] = []
+    available_tools: list[str] = []
+    if tool_invoker is not None:
+        provider_summaries = getattr(tool_invoker, "provider_summaries", None)
+        if callable(provider_summaries):
+            try:
+                raw = provider_summaries()
+                if isinstance(raw, list):
+                    providers = [item for item in raw if isinstance(item, dict)]
+            except Exception:  # noqa: BLE001
+                providers = []
+        list_allowed_tools = getattr(tool_invoker, "allowed_tools", None)
+        if callable(list_allowed_tools):
+            try:
+                raw_tools = list_allowed_tools()
+                if isinstance(raw_tools, list):
+                    available_tools = [str(item).strip() for item in raw_tools if str(item).strip()]
+            except Exception:  # noqa: BLE001
+                available_tools = []
+
+    template_name = str(getattr(template_builder, "__name__", type(template_builder).__name__) or "unknown")
+    try:
+        report_observation(
+            tool="toolset.select",
+            node_name="runner.pre_graph",
+            params={
+                "pipeline": normalize_pipeline(pipeline),
+                "template": template_name,
+            },
+            response={
+                "status": "ok",
+                "template_id": str(template_id).strip(),
+                "toolsets": [str(item).strip() for item in toolsets if str(item).strip()],
+                "source": str(toolset_source).strip(),
+                "providers": providers,
+                "available_tools": available_tools,
+            },
+            evidence_ids=[],
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} pre-graph toolset observation failed: {exc}")
+
+
+def _extract_skillset_ids(strategy_payload: dict[str, Any]) -> list[str]:
+    raw = (
+        strategy_payload.get("skillsetIDs")
+        or strategy_payload.get("skillsetIds")
+        or strategy_payload.get("skillset_ids")
+        or []
+    )
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _parse_skills_local_paths(raw: str) -> list[str]:
+    return [item.strip() for item in str(raw or "").split(",") if item.strip()]
+
+
+def _build_skill_catalog(
+    *,
+    settings: Settings,
+    client: RCAApiClient,
+    pipeline: str,
+    strategy_payload: dict[str, Any] | None,
+) -> tuple[SkillCatalog | None, list[str], str]:
+    local_override_paths = _parse_skills_local_paths(settings.skills_local_paths)
+    strategy_skillsets = _extract_skillset_ids(strategy_payload or {})
+    if not strategy_skillsets:
+        return None, [], ""
+
+    resolved_payload: dict[str, Any] = {"skillsets": []}
+    if strategy_skillsets:
+        resolved_payload = client.resolve_skillsets(pipeline)
+        if not isinstance(resolved_payload, dict):
+            raise RuntimeError("resolve_skillsets returned invalid payload")
+    raw_skillsets = resolved_payload.get("skillsets")
+    if raw_skillsets is None:
+        raw_skillsets = []
+    if not isinstance(raw_skillsets, list):
+        raise RuntimeError("resolve_skillsets payload missing skillsets list")
+
+    skill_catalog = SkillCatalog.from_resolved_skillsets(
+        skillsets_payload=raw_skillsets,
+        cache_dir=settings.skills_cache_dir,
+        local_override_paths=local_override_paths,
+    )
+    if not skill_catalog.has_skills():
+        return None, strategy_skillsets, "empty"
+    if local_override_paths and strategy_skillsets:
+        source = "strategy_resolve+local_override"
+    elif local_override_paths:
+        source = "local_override"
+    else:
+        source = "strategy_resolve"
+    selected_skillsets = skill_catalog.skillset_ids() or strategy_skillsets
+    return skill_catalog, selected_skillsets, source
+
+
+def _build_resolved_agent_context(
+    claim_response: ClaimStartResponse,
+    *,
+    job_id: str,
+    pipeline: str,
+    template_id: str,
+    session_snapshot: dict[str, Any],
+    skill_catalog: SkillCatalog | None,
+) -> ResolvedAgentContext | None:
+    """Build ResolvedAgentContext from claim response and local context.
+
+    This function builds the unified agent context for hybrid multi-agent.
+    It prefers the platform-provided agent_context_json when available,
+    otherwise falls back to building locally from claim response fields.
+
+    Key principle: worker-loaded values (template_id, session_snapshot) take
+    precedence over platform values if platform values are empty.
+
+    Args:
+        claim_response: The claim/start API response.
+        job_id: The job ID.
+        pipeline: The pipeline name.
+        template_id: The template ID (resolved on worker side).
+        session_snapshot: The session snapshot (loaded on worker side).
+        skill_catalog: The skill catalog (may be None).
+
+    Returns:
+        ResolvedAgentContext instance, or None if feature is disabled.
+    """
+    # Try to parse platform-provided agent_context_json
+    platform_context: ResolvedAgentContext | None = None
+    if claim_response.has_agent_context():
+        try:
+            platform_context = ResolvedAgentContext.from_json(claim_response.agent_context_json)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"job={job_id} failed to parse agent_context_json: {exc}")
+
+    # If we have platform context, merge with worker values
+    if platform_context is not None:
+        # Worker values take precedence if platform values are empty
+        final_template_id = platform_context.template_id.strip() if platform_context.template_id else ""
+        if not final_template_id:
+            final_template_id = template_id.strip() if template_id else ""
+
+        # Merge session_snapshot: use worker's if platform's is empty
+        final_session_snapshot = dict(platform_context.session_snapshot or {})
+        if not final_session_snapshot:
+            final_session_snapshot = dict(session_snapshot or {})
+
+        return ResolvedAgentContext(
+            job_id=platform_context.job_id or job_id,
+            pipeline=platform_context.pipeline or pipeline,
+            template_id=final_template_id,
+            session_snapshot=final_session_snapshot,
+            tool_surface=platform_context.tool_surface,
+            skill_surface=platform_context.skill_surface,
+            platform_hints=platform_context.platform_hints,
+            run_policies=platform_context.run_policies,
+        )
+
+    # Fallback: build locally from claim response fields
+    tool_surface = ToolSurface(tool_catalog_snapshot={})
+    if claim_response.has_resolved_tool_providers():
+        # Build tool catalog snapshot from resolved providers
+        tools: list[dict[str, Any]] = []
+        for provider in claim_response.resolved_tool_providers or []:
+            for tool_meta in provider.get("toolMetadata") or []:
+                if isinstance(tool_meta, dict):
+                    tools.append({
+                        "name": tool_meta.get("toolName", ""),
+                        "kind": tool_meta.get("kind", ""),
+                        "domain": tool_meta.get("domain", ""),
+                        "tool_class": tool_meta.get("toolClass", "fc_selectable"),
+                        "allowed_for_prompt_skill": tool_meta.get("allowedForPromptSkill", True),
+                        "allowed_for_graph_agent": tool_meta.get("allowedForGraphAgent", True),
+                    })
+        tool_surface = ToolSurface(tool_catalog_snapshot={"tools": tools})
+
+    skill_surface = SkillSurface(skill_ids=[], capability_map={})
+    if skill_catalog is not None:
+        skill_surface = SkillSurface(
+            skill_ids=skill_catalog.skill_ids(),
+            capability_map=skill_catalog.capability_map(),
+        )
+
+    return ResolvedAgentContext(
+        job_id=job_id,
+        pipeline=pipeline,
+        template_id=template_id,
+        session_snapshot=dict(session_snapshot or {}),
+        tool_surface=tool_surface,
+        skill_surface=skill_surface,
+        platform_hints={},
+        run_policies={},
+    )
+
+
+def _build_graph_llm(settings: Settings) -> Any | None:
+    """Build LLM instance for graph agents (Route/Domain/Platform agents).
+
+    This is independent of prompt_first skill agent.
+    Uses AGENT_* settings for configuration.
+
+    Args:
+        settings: Worker settings.
+
+    Returns:
+        LLM instance (ChatOpenAI) or None if not configured.
+    """
+    if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
+        return None
+    try:
+        from langchain_openai import ChatOpenAI
+    except ImportError:
+        return None
+    try:
+        return ChatOpenAI(
+            model=settings.agent_model,
+            base_url=settings.agent_base_url,
+            api_key=settings.agent_api_key,
+            timeout=settings.agent_timeout_seconds,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_skill_agent_config(settings: Settings) -> "SkillAgentConfig | None":
+    """Build skill agent config for capability skill coordination.
+
+    Uses the same AGENT_* settings as graph agents for consistency.
+
+    Args:
+        settings: Worker settings.
+
+    Returns:
+        SkillAgentConfig or None if not configured.
+    """
+    if not (settings.agent_model and settings.agent_base_url and settings.agent_api_key):
+        return None
+    from orchestrator.runtime.skill_coordinator import SkillAgentConfig
+    return SkillAgentConfig(
+        model=settings.agent_model,
+        base_url=settings.agent_base_url,
+        api_key=settings.agent_api_key,
+        timeout_seconds=settings.agent_timeout_seconds,
+    )
+
+
+def _report_skillset_selection_observation(
+    *,
+    runtime: OrchestratorRuntime,
+    job_id: str,
+    pipeline: str,
+    skill_catalog: SkillCatalog | None,
+    skillsets: list[str],
+    skillset_source: str,
+) -> None:
+    if skill_catalog is None:
+        return
+    report_observation = getattr(runtime, "report_observation", None)
+    if not callable(report_observation):
+        return
+    try:
+        report_observation(
+            tool="skillset.select",
+            node_name="runner.pre_graph",
+            params={"pipeline": normalize_pipeline(pipeline)},
+            response={
+                "status": "ok",
+                "skillsets": [str(item).strip() for item in skillsets if str(item).strip()],
+                "source": str(skillset_source).strip(),
+                "skills": skill_catalog.describe(),
+            },
+            evidence_ids=[],
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"job={job_id} pre-graph skillset observation failed: {exc}")
+
+
+def _apply_session_patch_if_needed(runtime: OrchestratorRuntime, state: GraphState) -> GraphState:
+    patch = state.session_patch if isinstance(state.session_patch, dict) else {}
+    if not patch:
+        return state
+    request_kwargs = {
+        "latest_summary": patch.get("latest_summary") if isinstance(patch.get("latest_summary"), dict) else None,
+        "pinned_evidence_append": patch.get("pinned_evidence_append")
+        if isinstance(patch.get("pinned_evidence_append"), list)
+        else None,
+        "pinned_evidence_remove": patch.get("pinned_evidence_remove")
+        if isinstance(patch.get("pinned_evidence_remove"), list)
+        else None,
+        "context_state_patch": patch.get("context_state_patch") if isinstance(patch.get("context_state_patch"), dict) else None,
+        "actor": str(patch.get("actor") or "").strip() or None,
+        "note": str(patch.get("note") or "").strip() or None,
+        "source": str(patch.get("source") or "").strip() or None,
+    }
+    response = _patch_session_context_with_single_retry(
+        runtime=runtime,
+        state=state,
+        request_kwargs=request_kwargs,
+    )
+    apply_session_patch_to_state(state, response)
+    return state
+
+
+def _patch_session_context_with_single_retry(
+    *,
+    runtime: OrchestratorRuntime,
+    state: GraphState,
+    request_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    session_revision = str(state.session_snapshot.get("session_revision") or "").strip() or None
+    try:
+        return runtime.patch_job_session_context(
+            session_revision=session_revision,
+            **request_kwargs,
+        )
+    except RCAApiError as exc:
+        if not _is_session_revision_conflict(exc):
+            raise
+        refreshed_snapshot = runtime.get_job_session_context()
+        apply_session_patch_to_state(state, refreshed_snapshot)
+        refreshed_revision = str(state.session_snapshot.get("session_revision") or "").strip() or None
+        return runtime.patch_job_session_context(
+            session_revision=refreshed_revision,
+            **request_kwargs,
+        )
+
+
+def _is_session_revision_conflict(exc: RCAApiError) -> bool:
+    if not isinstance(exc, RCAApiError):
+        return False
+    if int(exc.http_status or 0) != 409:
+        return False
+    envelope_code = str(exc.envelope_code or "").strip().lower()
+    return "sessioncontextrevisionconflict" in envelope_code
+
+
+def _extract_toolset_id(toolset_payload: dict[str, Any]) -> str:
+    for key in ("toolsetID", "toolsetId", "toolset_id"):
+        value = str(toolset_payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _build_template_registration_payload() -> list[dict[str, str]]:
+    payload: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw_template_id in list_template_ids():
+        template_id = str(raw_template_id or "").strip()
+        if not template_id or template_id in seen:
+            continue
+        seen.add(template_id)
+        payload.append(
+            {
+                "templateID": template_id,
+                "version": "",
+            }
+        )
+    return payload
+
+
+def _register_templates_if_due(
+    *,
+    settings: Settings,
+    client: RCAApiClient,
+    force: bool = False,
+) -> None:
+    global _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS
+
+    now = time.time()
+    with _TEMPLATE_REGISTRY_LOCK:
+        if not force and _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS > 0:
+            if (now - _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS) < _TEMPLATE_REGISTRY_REFRESH_SECONDS:
+                return
+        _TEMPLATE_REGISTRY_LAST_ATTEMPT_TS = now
+
+    try:
+        templates = _build_template_registration_payload()
+        if not templates:
+            return
+        client.register_templates(settings.instance_id, templates)
+        if settings.debug:
+            _log(
+                "[DEBUG] template registry refreshed "
+                f"instance_id={settings.instance_id} template_count={len(templates)}"
+            )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"template registry refresh failed: {exc}")
+
+
+def _build_middleware_chain(
+    *,
+    settings: Settings,
+    context: ResolvedAgentContext | None = None,
+) -> MiddlewareChain | None:
+    """Build middleware chain for hybrid multi-agent (Phase HM2).
+
+    The middleware chain is built per-job and includes:
+    - SessionMiddleware: Injects session and incident context
+    - SkillsMiddleware: Injects skill IDs and capability map
+    - ToolSurfaceMiddleware: Controls visible tools per-surface
+    - ObservationMiddleware: Records agent interactions
+
+    Args:
+        settings: Worker settings.
+        context: Resolved agent context for the job (optional).
+
+    Returns:
+        MiddlewareChain instance, or None if middleware is disabled.
+    """
+    if not settings.rca_hybrid_middleware_enabled:
+        return None
+
+    chain = MiddlewareChain()
+    chain.add(SessionMiddleware())
+    chain.add(SkillsMiddleware())
+    chain.add(ToolSurfaceMiddleware())
+    chain.add(ObservationMiddleware())
+    return chain
+
+
+def _invoke_graph(settings: Settings, graph_cfg: OrchestratorConfig, job_id: str, debug: bool) -> None:
+    client = _new_client(settings)
+    selected_pipeline = ""
+    selected_template_id = ""
+    template_builder = None
+    tool_invoker = None
+    skill_catalog = None
+    selected_toolsets: list[str] = []
+    selected_toolset_source = ""
+    selected_skillsets: list[str] = []
+    selected_skillset_source = ""
+    selection_error_message = ""
+    prefetched_job: dict[str, Any] = {}
+    job_status = "error"
+    job_start_time = time.time()
+    WORKER_JOBS_IN_PROGRESS.inc()
+
+    try:
+        prefetched_job = client.get_job(job_id)
+        selected_pipeline = _extract_pipeline(prefetched_job if isinstance(prefetched_job, dict) else {})
+        if _supports_strategy_resolve(client):
+            strategy_payload = _resolve_strategy_via_server(client, selected_pipeline)
+            selected_template_id = _extract_template_id(strategy_payload)
+            if not selected_template_id:
+                raise RuntimeError("resolve_strategy payload missing template_id")
+            template_builder = get_template_builder(selected_template_id)
+
+            # Toolset IDs are extracted for observation only
+            # The actual invoker will be built from claim response
+            toolsets_payload = strategy_payload.get("toolsets")
+            if isinstance(toolsets_payload, list):
+                for item in toolsets_payload:
+                    if isinstance(item, dict):
+                        tid = _extract_toolset_id(item)
+                        if tid:
+                            selected_toolsets.append(tid)
+            selected_toolset_source = "claim_snapshot_pending"
+
+            skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
+                settings=settings,
+                client=client,
+                pipeline=selected_pipeline,
+                strategy_payload=strategy_payload,
+            )
+        else:
+            selected_template_id = normalize_pipeline(selected_pipeline)
+            template_builder = get_template_builder(selected_template_id)
+            selected_toolset_source = "claim_snapshot_pending"
+
+            skill_catalog, selected_skillsets, selected_skillset_source = _build_skill_catalog(
+                settings=settings,
+                client=client,
+                pipeline=selected_pipeline,
+                strategy_payload=None,
+            )
+    except UnknownPipelineError as exc:
+        _log(
+            f"job={job_id} template selection failed: "
+            f"pipeline={selected_pipeline or '<empty>'} template_id={selected_template_id or '<empty>'} error={exc}"
+        )
+        selection_error_message = f"template_selection_failed: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        if selected_pipeline:
+            _log(
+                "job="
+                f"{job_id} strategy/toolset selection failed: pipeline={normalize_pipeline(selected_pipeline)} "
+                f"template_id={selected_template_id or '<empty>'} toolsets={selected_toolsets or ['<empty>']} "
+                f"error={exc}"
+            )
+            if _supports_strategy_resolve(client):
+                selection_error_message = f"strategy_selection_failed: {exc}"
+            else:
+                selection_error_message = f"toolset_selection_failed: {exc}"
+        else:
+            _log(f"job={job_id} prefetch job for strategy/template selection failed: {exc}")
+            selection_error_message = f"template_selection_prefetch_failed: {exc}"
+
+    try:
+        runtime = OrchestratorRuntime(
+            client=client,
+            job_id=job_id,
+            instance_id=settings.instance_id,
+            heartbeat_interval_seconds=settings.lease_heartbeat_interval_seconds,
+            log_func=_log,
+            tool_invoker=tool_invoker,
+            skill_catalog=skill_catalog,
+            graph_llm=_build_graph_llm(settings),
+            skill_agent_config=_build_skill_agent_config(settings),
+        )
+        if not runtime.start():
+            if debug:
+                _log(f"[DEBUG] skip job={job_id}: claim failed (already claimed by another instance)")
+            return
+
+        # Set tool invoker from claim response after successful claim
+        # Use getattr to handle test fakes that don't have these methods
+        get_claim_response = getattr(runtime, "get_claim_response", None)
+        set_tool_invoker = getattr(runtime, "set_tool_invoker", None)
+        if callable(get_claim_response) and callable(set_tool_invoker):
+            claim_response = get_claim_response()
+
+            # Use resolved_tool_providers (canonical path)
+            if claim_response is not None and claim_response.has_resolved_tool_providers():
+                try:
+                    provider_invoker = build_tool_invoker_from_resolved_providers(
+                        claim_response.resolved_tool_providers,
+                        platform_base_url=settings.base_url,
+                    )
+                    if provider_invoker is not None:
+                        set_tool_invoker(provider_invoker)
+                        selected_toolset_source = "claim_resolved_providers"
+                        if debug:
+                            provider_tools = provider_invoker.allowed_tools()
+                            _log(
+                                f"[DEBUG] job={job_id} set resolved tool providers "
+                                f"tools={provider_tools[:8]}... count={len(provider_tools)}"
+                            )
+                except Exception as provider_exc:  # noqa: BLE001
+                    _log(f"job={job_id} resolved tool providers invoker build failed: {provider_exc}")
+
+        # Build tool catalog snapshot after setting invoker
+        # This provides an immutable snapshot for function calling
+        if settings.fc_runtime_snapshot_enabled:
+            try:
+                snapshot = runtime.build_tool_catalog_snapshot_from_invoker()
+                runtime.set_tool_catalog_snapshot(snapshot)
+                if debug:
+                    _log(
+                        f"[DEBUG] job={job_id} built tool catalog snapshot "
+                        f"toolset_ids={list(snapshot.toolset_ids)} "
+                        f"tool_count={len(snapshot.tools)}"
+                    )
+            except Exception as snapshot_exc:  # noqa: BLE001
+                _log(f"job={job_id} tool catalog snapshot build failed: {snapshot_exc}")
+
+        if selection_error_message:
+            try:
+                runtime.finalize(
+                    status="failed",
+                    diagnosis_json=None,
+                    error_message=selection_error_message,
+                    evidence_ids=[],
+                )
+            except Exception as finalize_exc:  # noqa: BLE001
+                _log(f"job={job_id} finalize after template/toolset selection failure error: {finalize_exc}")
+            runtime.shutdown()
+            return
+
+        if template_builder is None:
+            _log(f"job={job_id} template selection failed: pipeline={selected_pipeline or '<empty>'} error=empty_builder")
+            try:
+                runtime.finalize(
+                    status="failed",
+                    diagnosis_json=None,
+                    error_message="template_selection_failed: empty_builder",
+                    evidence_ids=[],
+                )
+            except Exception as finalize_exc:  # noqa: BLE001
+                _log(f"job={job_id} finalize after empty template builder error: {finalize_exc}")
+            runtime.shutdown()
+            return
+
+        _report_toolset_selection_observation(
+            runtime=runtime,
+            job_id=job_id,
+            pipeline=selected_pipeline,
+            template_id=selected_template_id,
+            template_builder=template_builder,
+            toolsets=selected_toolsets,
+            toolset_source=selected_toolset_source,
+            tool_invoker=runtime.tool_invoker,  # P2 FIX: Use runtime's invoker, not stale local variable
+        )
+        _report_skillset_selection_observation(
+            runtime=runtime,
+            job_id=job_id,
+            pipeline=selected_pipeline,
+            skill_catalog=skill_catalog,
+            skillsets=selected_skillsets,
+            skillset_source=selected_skillset_source,
+        )
+
+        if debug:
+            selected_toolsets_text = ",".join(selected_toolsets) if selected_toolsets else "<none>"
+            selected_skillsets_text = ",".join(selected_skillsets) if selected_skillsets else "<none>"
+            _log(
+                f"[DEBUG] job={job_id} selected pipeline={selected_pipeline or 'basic_rca'} "
+                f"template_id={selected_template_id or '<empty>'} "
+                f"template={template_builder.__name__} toolsets={selected_toolsets_text} "
+                f"skillsets={selected_skillsets_text}"
+            )
+
+        try:
+            state = GraphState(job_id=job_id, instance_id=settings.instance_id, started=True)
+            if isinstance(prefetched_job, dict):
+                state.session_id = (
+                    str(prefetched_job.get("sessionID") or prefetched_job.get("session_id") or "").strip() or None
+                )
+            try:
+                session_snapshot = runtime.get_job_session_context()
+                load_session_snapshot_into_state(state, session_snapshot)
+            except Exception as exc:  # noqa: BLE001
+                if debug:
+                    _log(f"[DEBUG] job={job_id} session snapshot load skipped: {exc}")
+
+            # Build ResolvedAgentContext for hybrid multi-agent (Phase HM1)
+            # Must be built AFTER session_snapshot is loaded into state
+            resolved_agent_context: ResolvedAgentContext | None = None
+            if settings.rca_agent_context_enabled:
+                try:
+                    resolved_agent_context = _build_resolved_agent_context(
+                        claim_response=claim_response,
+                        job_id=job_id,
+                        pipeline=selected_pipeline,
+                        template_id=selected_template_id,
+                        session_snapshot=state.session_snapshot,
+                        skill_catalog=skill_catalog,
+                    )
+                    if resolved_agent_context is not None:
+                        state.agent_context = resolved_agent_context.to_dict()
+                        if debug:
+                            _log(
+                                f"[DEBUG] job={job_id} built resolved agent context "
+                                f"pipeline={resolved_agent_context.pipeline} "
+                                f"template_id={resolved_agent_context.template_id} "
+                                f"skill_count={len(resolved_agent_context.skill_surface.skill_ids)}"
+                            )
+                except Exception as context_exc:  # noqa: BLE001
+                    _log(f"job={job_id} resolved agent context build failed: {context_exc}")
+
+            # Build MiddlewareChain for hybrid multi-agent (Phase HM2)
+            middleware_chain = _build_middleware_chain(
+                settings=settings,
+                context=resolved_agent_context,
+            )
+            if middleware_chain is not None:
+                graph_cfg.middleware_chain = middleware_chain
+                graph_cfg.middleware_enabled = True
+                if debug:
+                    _log(f"[DEBUG] job={job_id} built middleware chain enabled=True")
+            else:
+                graph_cfg.middleware_enabled = False
+
+            compiled_graph = template_builder(runtime, graph_cfg)
+            final_state = compiled_graph.invoke(state)
+        finally:
+            runtime.shutdown()
+
+        if isinstance(final_state, dict):
+            final_state = GraphState.model_validate(final_state)
+
+        # MCL: session_patch writeback removed from main path
+
+        if debug:
+            _log(
+                "[DEBUG] "
+                f"job={job_id} finalized={final_state.finalized} "
+                f"started={final_state.started} evidence_ids={final_state.evidence_ids} "
+                f"last_error={final_state.last_error!r}"
+            )
+
+        job_status = "success"
+    finally:
+        duration = time.time() - job_start_time
+        WORKER_JOBS_TOTAL.labels(status=job_status).inc()
+        WORKER_JOB_DURATION_SECONDS.labels(pipeline=selected_pipeline or "unknown").observe(duration)
+        WORKER_JOBS_IN_PROGRESS.dec()
+
+
+def main() -> None:
+    settings = load_settings()
+    logging.basicConfig(
+        level=logging.DEBUG if settings.debug else logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    # Validate configuration
+    validation_errors = validate_settings(settings)
+    if validation_errors:
+        _log("ERROR: Configuration validation failed:")
+        for error in validation_errors:
+            _log(f"  - {error}")
+        _log("Exiting due to configuration errors.")
+        sys.exit(1)
+
+    _log(f"orchestrator worker version={WORKER_VERSION}")
+    pubsub_enabled, subscribe_ready = detect_pubsub_ready(settings.base_url, settings.scopes)
+    redis_enabled = pubsub_enabled
+    _log(
+        f"orchestrator redis profile enabled={int(redis_enabled)} "
+        f"pubsub={int(pubsub_enabled)} subscribe_ready={int(subscribe_ready)} "
+        "fallback=db_watermark_longpoll"
+    )
+    _log(
+        f"orchestrator config base_url={settings.base_url} "
+        f"instance_id={settings.instance_id} "
+        f"concurrency={settings.concurrency} "
+        f"poll_interval_ms={settings.poll_interval_ms} "
+        f"lease_heartbeat_interval_seconds={settings.lease_heartbeat_interval_seconds} "
+        f"long_poll_wait_seconds={settings.long_poll_wait_seconds} "
+        f"pull_limit={settings.pull_limit} "
+        f"debug={int(settings.debug)}"
+    )
+    _log(
+        f"orchestrator features run_query={int(settings.run_query)} "
+        f"force_no_evidence={int(settings.force_no_evidence)} "
+        f"force_conflict={int(settings.force_conflict)} "
+        f"ds_type={settings.ds_type} "
+        f"metrics_ds_type={settings.metrics_ds_type} "
+        f"logs_ds_type={settings.logs_ds_type} "
+        f"auto_create_datasource={int(settings.auto_create_datasource)}"
+    )
+    _log(
+        f"orchestrator a3 limits a3_max_calls={settings.a3_max_calls} "
+        f"a3_max_total_bytes={settings.a3_max_total_bytes} "
+        f"a3_max_total_latency_ms={settings.a3_max_total_latency_ms}"
+    )
+    _log(
+        f"orchestrator skills skills_cache_dir={settings.skills_cache_dir} "
+        f"skills_local_paths_set={int(bool(settings.skills_local_paths))} "
+        f"graph_llm_configured={int(bool(settings.agent_model and settings.agent_base_url and settings.agent_api_key))}"
+    )
+    _log(
+        f"orchestrator mcp mcp_scopes_set={int(bool(settings.mcp_scopes))} "
+        f"mcp_verify_remote_tools={int(settings.mcp_verify_remote_tools)}"
+    )
+    _log(
+        f"orchestrator health health_port={settings.health_port} "
+        f"health_host={settings.health_host}"
+    )
+
+    # Start health server
+    health_server = start_health_server(port=settings.health_port, host=settings.health_host)
+    if health_server:
+        health_server.set_ready(True)
+
+    poll_client = _new_client(settings)
+    _register_templates_if_due(settings=settings, client=poll_client, force=True)
+    graph_cfg = OrchestratorConfig(
+        run_query=settings.run_query,
+        force_no_evidence=settings.force_no_evidence,
+        force_conflict=settings.force_conflict,
+        ds_base_url=settings.ds_base_url,
+        ds_type=settings.ds_type,
+        metrics_ds_type=settings.metrics_ds_type,
+        logs_ds_type=settings.logs_ds_type,
+        auto_create_datasource=settings.auto_create_datasource,
+        a3_max_calls=settings.a3_max_calls,
+        a3_max_total_bytes=settings.a3_max_total_bytes,
+        a3_max_total_latency_ms=settings.a3_max_total_latency_ms,
+    )
+
+    sleep_s = settings.poll_interval_ms / 1000.0
+    wait_seconds = 0
+    while True:
+        try:
+            _register_templates_if_due(settings=settings, client=poll_client, force=False)
+            listed = poll_client.list_jobs(
+                status="queued",
+                limit=settings.pull_limit,
+                offset=0,
+                wait_seconds=wait_seconds,
+            )
+            jobs = _extract_jobs(listed)
+            if settings.debug:
+                _log(f"[DEBUG] pulled queued jobs: wait_seconds={wait_seconds} count={len(jobs)}")
+
+            if not jobs:
+                wait_seconds = settings.long_poll_wait_seconds
+                if wait_seconds <= 0:
+                    time.sleep(sleep_s)
+                continue
+
+            wait_seconds = 0
+            if settings.concurrency <= 1:
+                for job in jobs:
+                    job_id = _extract_job_id(job)
+                    if not job_id:
+                        continue
+                    if settings.debug:
+                        _log(f"[DEBUG] invoking graph for job={job_id}")
+                    _invoke_graph(settings, graph_cfg, job_id, settings.debug)
+            else:
+                max_workers = min(settings.concurrency, len(jobs))
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = []
+                    for job in jobs:
+                        job_id = _extract_job_id(job)
+                        if not job_id:
+                            continue
+                        futures.append(pool.submit(_invoke_graph, settings, graph_cfg, job_id, settings.debug))
+                    for future in futures:
+                        future.result()
+        except Exception as exc:  # noqa: BLE001
+            _log(f"poll loop error: {exc}")
+            WORKER_POLL_ERRORS_TOTAL.inc()
+            time.sleep(sleep_s)

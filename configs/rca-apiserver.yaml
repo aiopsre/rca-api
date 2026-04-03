@@ -35,6 +35,7 @@ otel:
     time-format: "2006-01-02 15:04:05"
     output: stdout # 支持 stdout, stderr, or file path
 coredb:
+  type: mysql # 数据库方言（mysql|mariadb）
   addr: 192.168.39.1:3306 # MySQL 的访问地址
   username: root # MySQL 用户名
   password: "Az123456_" # MySQL 密码
@@ -42,3 +43,97 @@ coredb:
   max-connection-life-time: 10s # 单个数据库连接的最大存活时间，超过这个时间，连接会被关闭并重建
   max-idle-connections: 100 # 连接池中允许空闲连接的最大数量
   max-open-connections: 100 # 连接池中允许同时打开的最大连接数（包括正在用的和空闲的）
+
+redis:
+  enabled: true
+  addr: "192.168.39.2:6379"
+  db: 0
+  password: "Az123456_"
+  fail_open: true
+  pubsub:
+    enabled: true
+    topic_ai_job_signal: "rca:ai_job_queue_signal"
+  limiter:
+    enabled: true
+    mode: "both"
+    global_qps: 20
+    channel_qps: 0
+    burst: 20
+  streams:
+    enabled: false
+    notice_delivery_stream: "rca:notice:delivery_stream"
+    consumer_group: "notice_delivery_workers"
+    reclaim_idle_seconds: 60
+  alerting:
+    enabled: true
+
+alerting:
+  ingest_policy:
+    dedup_window_seconds: 0
+    burst:
+      window_seconds: 0
+      threshold: 0
+    redis_backend:
+      enabled: false
+      key_prefix: "rca:alert"
+  rollout:
+    enabled: false
+    allowed_namespaces: []
+    allowed_services: []
+    mode: observe
+
+ai_job_longpoll:
+  poll_interval: 1s
+  watermark_cache_ttl: 1s
+  max_polling_waiters: 200
+  db_error_window: 20
+  db_error_rate_threshold: 0.5
+  db_error_min_samples: 6
+
+notice_worker:
+  poll_interval: 1s
+  batch_size: 16
+  lock_timeout: 60s
+  channel_concurrency: 2
+  global_qps: 20
+  channel_qps: 0
+  redis:
+    key_prefix: "rca:notice"
+    conc_ttl: 60s
+    window_ttl: 2s
+
+skill_artifact:
+  endpoint: "http://192.168.39.3:9000"
+  bucket: "rca-skills-dev"
+  access_key: "DinhU1xMXtZer97oAHqV"
+  secret_key: "CXkeqbA6z4jSc9PwD1smh5Q0VEOBnaJluGZWtLYH"
+  region: "us-east-1"
+  path_style: true
+  tls: false
+  skip_tls_verify: true
+  private_bucket: true
+  object_key_pattern: "skills/{skill_id}/{version}/bundle.zip"
+  upload_mode: "api_upload"
+  download_mode: "presigned_url"
+  presign_ttl: 15m
+
+# MCP 治理策略（C5）：按 tool 维度覆盖 enabled/riskLevel/limits
+# mcp:
+#   isolation:
+#     mode: filter # filter | deny | not_found
+#   tools:
+#     search_incidents:
+#       enabled: true
+#       riskLevel: readonly
+#       limits:
+#         maxLimit: 100
+#         maxTimeRangeSeconds: 86400
+#         maxResponseBytes: 8192
+
+mcp:
+  isolation:
+    mode: filter
+  tools:
+    query_logs:
+      enabled: false
+      riskLevel: readonly

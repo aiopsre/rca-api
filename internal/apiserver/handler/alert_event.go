@@ -8,9 +8,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 
-	"zk8s.com/rca-api/internal/apiserver/pkg/authz"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 func (h *Handler) IngestAlertEvent(c *gin.Context) {
@@ -82,6 +82,7 @@ func (h *Handler) listAlertEvents(c *gin.Context, current bool) {
 	core.WriteResponse(c, resp, err)
 }
 
+//nolint:dupl // Action handlers intentionally mirror ack pattern used by notice actions.
 func (h *Handler) AckAlertEvent(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeAlertAck); err != nil {
 		core.WriteResponse(c, nil, err)
@@ -128,10 +129,12 @@ func normalizeColonAction(action string) string {
 	return strings.TrimPrefix(action, ":")
 }
 
+//nolint:gochecknoinits // Route registration follows repository-wide registrar pattern.
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
 		root := v1.Group("", mws...)
 		root.POST("/alert-events:action", handler.AlertEventsPostAction)
+		root.POST("/alerts/ingest/:adapter", handler.IngestAlertEventByAdapter)
 		root.GET("/alert-events:action", handler.AlertEventsGetAction)
 		root.POST("/alert-events/:eventID/ack", handler.AckAlertEvent)
 	})

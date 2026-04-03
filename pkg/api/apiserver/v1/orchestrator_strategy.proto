@@ -1,0 +1,25 @@
+// Orchestrator strategy resolve API messages.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "apiserver/v1/orchestrator_toolset.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+message OrchestratorStrategy {
+  string pipeline = 1;
+  string templateID = 2;
+  repeated OrchestratorToolset toolsets = 3;  // legacy compatibility
+  repeated string skillsetIDs = 4;
+  repeated string toolsetIDs = 5;             // new canonical field
+}
+
+message ResolveOrchestratorStrategyRequest {
+  // @gotags: form:"pipeline"
+  optional string pipeline = 1;
+}
+
+message ResolveOrchestratorStrategyResponse {
+  OrchestratorStrategy strategy = 1;
+}

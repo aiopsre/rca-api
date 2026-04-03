@@ -1,24 +1,33 @@
 package ai_job
 
-//go:generate mockgen -destination mock_ai_job.go -package ai_job zk8s.com/rca-api/internal/apiserver/biz/v1/ai_job AIJobBiz
+//go:generate mockgen -destination mock_ai_job.go -package ai_job github.com/aiopsre/rca-api/internal/apiserver/biz/v1/ai_job AIJobBiz
 
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/audit"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/contextx"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	mcpserverbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/mcpserver"
+	playbookbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/playbook"
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
+	skillsetbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/orchestrator_skillset"
+	internalstrategyconfig "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/internal_strategy_config"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/audit"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	noticepkg "github.com/aiopsre/rca-api/internal/apiserver/pkg/notice"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 const (
@@ -36,11 +45,21 @@ const (
 	defaultTrigger   = "manual"
 	defaultCreatedBy = "system"
 
-	defaultListLimit = int64(20)
-	defaultToolLimit = int64(50)
+	defaultListLimit        = int64(20)
+	defaultToolLimit        = int64(50)
+	defaultAIJobLeaseTTL    = 30 * time.Second
+	defaultAIJobReclaimScan = 100
 
 	maxToolCallResponseBytes = 256 * 1024
 	toolCallPreviewBytes     = 4096
+
+	rootCauseTypeMissingEvidence  = "missing_evidence"
+	rootCauseTypeConflictEvidence = "conflict_evidence"
+	maxMissingEvidenceItems       = 20
+
+	defaultRunTraceTriggerSource = "legacy_direct"
+	defaultRunTraceSchemaVersion = "v1"
+	humanReviewConfidenceGate    = 0.6
 )
 
 var (
@@ -61,38 +80,108 @@ type AIJobBiz interface {
 	Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error)
 	Get(ctx context.Context, rq *v1.GetAIJobRequest) (*v1.GetAIJobResponse, error)
 	List(ctx context.Context, rq *v1.ListAIJobsRequest) (*v1.ListAIJobsResponse, error)
+	QueueSignalVersion(ctx context.Context) (int64, error)
 	ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobsRequest) (*v1.ListIncidentAIJobsResponse, error)
 	Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error)
+	Renew(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error)
 	Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.CancelAIJobResponse, error)
 	Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error)
 	CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error)
 	ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequest) (*v1.ListAIToolCallsResponse, error)
+	SearchToolCalls(ctx context.Context, rq *SearchToolCallsRequest) (*SearchToolCallsResponse, error)
+	RecordToolCallAudit(ctx context.Context, rq *RecordToolCallAuditRequest) (string, error)
 
 	AIJobExpansion
 }
 
-//nolint:modernize // Keep explicit empty interface as a placeholder expansion point.
-type AIJobExpansion interface{}
+type AIJobExpansion interface {
+	GetJobSessionContext(ctx context.Context, rq *GetJobSessionContextRequest) (*GetJobSessionContextResponse, error)
+	PatchJobSessionContext(ctx context.Context, rq *PatchJobSessionContextRequest) (*PatchJobSessionContextResponse, error)
+	GetTraceReadModel(ctx context.Context, rq *GetTraceReadModelRequest) (*GetTraceReadModelResponse, error)
+	ListTraceReadModels(ctx context.Context, rq *ListTraceReadModelsRequest) (*ListTraceReadModelsResponse, error)
+	CompareTraceReadModels(ctx context.Context, rq *CompareTraceReadModelsRequest) (*CompareTraceReadModelsResponse, error)
+	GetSessionWorkbench(ctx context.Context, rq *GetSessionWorkbenchRequest) (*GetSessionWorkbenchResponse, error)
+	GetSessionWorkbenchViewer(
+		ctx context.Context,
+		rq *GetSessionWorkbenchViewerRequest,
+	) (*GetSessionWorkbenchViewerResponse, error)
+	ListOperatorInbox(ctx context.Context, rq *ListOperatorInboxRequest) (*ListOperatorInboxResponse, error)
+	GetOperatorDashboard(ctx context.Context, rq *GetOperatorDashboardRequest) (*GetOperatorDashboardResponse, error)
+	GetOperatorDashboardTrends(
+		ctx context.Context,
+		rq *GetOperatorDashboardTrendsRequest,
+	) (*GetOperatorDashboardTrendsResponse, error)
+	GetOperatorTeamDashboard(ctx context.Context, rq *GetOperatorTeamDashboardRequest) (*GetOperatorTeamDashboardResponse, error)
+}
 
 type aiJobBiz struct {
-	store store.IStore
+	store             store.IStore
+	sessionBiz        sessionbiz.SessionBiz
+	skillsetBiz       skillsetbiz.SkillsetBiz
+	mcpServerBiz      mcpserverbiz.McpServerBiz
+	playbookBiz       playbookbiz.PlaybookBiz
+	operatorReadCache *operatorReadCache
+}
+
+// RecordToolCallAuditRequest writes one audit row to ai_tool_calls without AI job status gating.
+// It is used by MCP read-only tool shim to reuse ToolCall audit storage.
+type RecordToolCallAuditRequest struct {
+	JobID             string
+	Seq               int64
+	NodeName          string
+	ToolName          string
+	RequestJSON       string
+	ResponseJSON      *string
+	ResponseSizeBytes int64
+	Status            string
+	LatencyMs         int64
+	ErrorMessage      *string
+}
+
+// SearchToolCallsRequest filters MCP tool-call audits by optional dimensions.
+type SearchToolCallsRequest struct {
+	ToolPrefix string
+	ToolName   string
+	JobID      string
+	IncidentID string
+	RequestID  string
+	TimeFrom   *time.Time
+	TimeTo     *time.Time
+	Offset     int64
+	Limit      int64
+}
+
+// SearchToolCallsResponse returns paginated tool-call audits.
+type SearchToolCallsResponse struct {
+	TotalCount int64
+	ToolCalls  []*v1.AIToolCall
 }
 
 var _ AIJobBiz = (*aiJobBiz)(nil)
 
 // New creates ai job biz.
 func New(store store.IStore) *aiJobBiz {
-	return &aiJobBiz{store: store}
+	return &aiJobBiz{
+		store:             store,
+		sessionBiz:        sessionbiz.New(store),
+		skillsetBiz:       skillsetbiz.New(store),
+		mcpServerBiz:      mcpserverbiz.New(store),
+		playbookBiz:       playbookbiz.New(store),
+		operatorReadCache: newOperatorReadCache(defaultOperatorReadCacheTTL),
+	}
 }
 
 //nolint:gocognit,gocyclo,nestif // Existing transactional flow is kept for P0 compatibility.
 func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJobResponse, error) {
 	jobID := ""
+	runSessionID := ""
+	createdNew := false
 	incidentID := strings.TrimSpace(rq.GetIncidentID())
 	idempotencyKey := trimOptional(rq.IdempotencyKey)
 
 	err := b.store.TX(ctx, func(txCtx context.Context) error {
-		if _, err := b.getIncident(txCtx, incidentID); err != nil {
+		incident, err := b.getIncident(txCtx, incidentID)
+		if err != nil {
 			return err
 		}
 
@@ -103,6 +192,21 @@ func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJo
 					return errno.ErrAIJobIdempotencyConflict
 				}
 				jobID = existing.JobID
+				runSessionID = trimOptional(existing.SessionID)
+				if runSessionID == "" {
+					runSessionID = b.ensureIncidentSessionIDBestEffort(txCtx, incident)
+					if runSessionID != "" {
+						existing.SessionID = &runSessionID
+						if updateErr := b.store.AIJob().Update(txCtx, existing); updateErr != nil {
+							slog.WarnContext(txCtx, "ai job idempotent session backfill skipped",
+								"job_id", jobID,
+								"incident_id", incidentID,
+								"error", updateErr,
+							)
+							runSessionID = ""
+						}
+					}
+				}
 				return nil
 			}
 			if err != nil && !errorsx.Is(err, gorm.ErrRecordNotFound) {
@@ -124,15 +228,21 @@ func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJo
 		createdBy := normalizeCreatedBy(ctx, rq.CreatedBy)
 		pipeline := normalizePipeline(rq.Pipeline)
 		trigger := normalizeTrigger(rq.Trigger)
+		sessionID := b.ensureIncidentSessionIDBestEffort(txCtx, incident)
+		runSessionID = sessionID
 
 		job := &model.AIJobM{
 			IncidentID:     incidentID,
+			SessionID:      nil,
 			Pipeline:       pipeline,
 			Trigger:        trigger,
 			Status:         jobStatusQueued,
 			TimeRangeStart: start,
 			TimeRangeEnd:   end,
 			CreatedBy:      createdBy,
+		}
+		if sessionID != "" {
+			job.SessionID = &sessionID
 		}
 		if rq.InputHintsJSON != nil {
 			v := strings.TrimSpace(rq.GetInputHintsJSON())
@@ -153,17 +263,31 @@ func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJo
 			}
 			return errno.ErrAIJobCreateFailed
 		}
-
-		incident, err := b.getIncident(txCtx, incidentID)
-		if err != nil {
-			return err
+		createdNew = true
+		if runTraceJSON := b.buildRunTraceJSON(ctx, job, nil, nil); runTraceJSON != "" {
+			rows, updateErr := b.store.AIJob().UpdateStatus(txCtx, job.JobID, []string{jobStatusQueued}, map[string]any{
+				"run_trace_json": runTraceJSON,
+			})
+			if updateErr != nil || rows == 0 {
+				slog.WarnContext(txCtx, "ai job run trace init skipped",
+					"job_id", job.JobID,
+					"incident_id", incidentID,
+					"error", updateErr,
+				)
+			} else {
+				job.RunTraceJSON = &runTraceJSON
+			}
 		}
+
 		incident.RCAStatus = incidentRCAStatusRunning
 		if err := b.store.Incident().Update(txCtx, incident); err != nil {
 			return errno.ErrIncidentUpdateFailed
 		}
 
 		jobID = job.JobID
+		if _, err := b.store.AIJobQueueSignal().Bump(txCtx, time.Now().UTC()); err != nil {
+			return errno.ErrAIJobCreateFailed
+		}
 		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), incidentID, "ai_job_queued", jobID, map[string]any{
 			"status":  jobStatusQueued,
 			"trigger": trigger,
@@ -172,6 +296,12 @@ func (b *aiJobBiz) Run(ctx context.Context, rq *v1.RunAIJobRequest) (*v1.RunAIJo
 	})
 	if err != nil {
 		return nil, err
+	}
+	if !createdNew && jobID == "" {
+		return nil, errno.ErrAIJobCreateFailed
+	}
+	if runSessionID != "" && jobID != "" {
+		b.setSessionActiveRunBestEffort(ctx, runSessionID, jobID, "ai_job_run")
 	}
 
 	return &v1.RunAIJobResponse{JobID: jobID}, nil
@@ -185,6 +315,7 @@ func (b *aiJobBiz) Get(ctx context.Context, rq *v1.GetAIJobRequest) (*v1.GetAIJo
 	return &v1.GetAIJobResponse{Job: conversion.AIJobMToAIJobV1(job)}, nil
 }
 
+//nolint:gocognit,nestif // List includes reclaim + queue-read flow and keeps explicit branches.
 func (b *aiJobBiz) List(ctx context.Context, rq *v1.ListAIJobsRequest) (*v1.ListAIJobsResponse, error) {
 	limit := rq.GetLimit()
 	if limit <= 0 {
@@ -193,6 +324,18 @@ func (b *aiJobBiz) List(ctx context.Context, rq *v1.ListAIJobsRequest) (*v1.List
 	status := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
 	if status == "" {
 		status = jobStatusQueued
+	}
+	if status == jobStatusQueued {
+		now := time.Now().UTC()
+		reclaimed, err := b.store.AIJob().ReclaimExpiredRunning(ctx, now, defaultAIJobReclaimScan)
+		if err != nil {
+			return nil, errno.ErrAIJobListFailed
+		}
+		if reclaimed > 0 {
+			if _, err := b.store.AIJobQueueSignal().Bump(ctx, now); err != nil {
+				return nil, errno.ErrAIJobListFailed
+			}
+		}
 	}
 
 	total, list, err := b.store.AIJob().ListByStatus(ctx, status, int(rq.GetOffset()), int(limit), true)
@@ -207,6 +350,14 @@ func (b *aiJobBiz) List(ctx context.Context, rq *v1.ListAIJobsRequest) (*v1.List
 		TotalCount: total,
 		Jobs:       out,
 	}, nil
+}
+
+func (b *aiJobBiz) QueueSignalVersion(ctx context.Context) (int64, error) {
+	version, err := b.store.AIJobQueueSignal().GetVersion(ctx)
+	if err != nil {
+		return 0, errno.ErrAIJobListFailed
+	}
+	return version, nil
 }
 
 func (b *aiJobBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobsRequest) (*v1.ListIncidentAIJobsResponse, error) {
@@ -228,30 +379,38 @@ func (b *aiJobBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentAIJobs
 	}, nil
 }
 
-//nolint:gocognit // Existing state transition logic is intentionally explicit.
+//nolint:gocognit,gocyclo,nestif // Existing state transition logic is intentionally explicit.
 func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var pipeline string
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
 		}
-		if job.Status == jobStatusRunning {
-			return nil
-		}
-		if job.Status != jobStatusQueued {
+		pipeline = job.Pipeline
+		if isTerminalStatus(job.Status) {
 			return errno.ErrAIJobInvalidTransition
 		}
 
 		now := time.Now().UTC()
-		rows, err := b.store.AIJob().UpdateStatus(txCtx, jobID, []string{jobStatusQueued}, map[string]any{
-			"status":     jobStatusRunning,
-			"started_at": now,
-		})
+		rows, err := b.store.AIJob().ClaimQueued(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
 		if err != nil {
 			return errno.ErrAIJobStartFailed
 		}
 		if rows == 0 {
+			renewRows, renewErr := b.store.AIJob().RenewLease(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
+			if renewErr != nil {
+				return errno.ErrAIJobStartFailed
+			}
+			if renewRows == 1 {
+				b.refreshRunTraceOnStartBestEffort(txCtx, jobID, leaseOwner, now)
+				return nil
+			}
 			return errno.ErrAIJobInvalidTransition
 		}
 
@@ -263,14 +422,87 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 		if err := b.store.Incident().Update(txCtx, incident); err != nil {
 			return errno.ErrIncidentUpdateFailed
 		}
+		if _, err := b.store.AIJobQueueSignal().Bump(txCtx, now); err != nil {
+			return errno.ErrAIJobStartFailed
+		}
+		b.refreshRunTraceOnStartBestEffort(txCtx, jobID, leaseOwner, now)
 
 		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_running", jobID, map[string]any{
-			"status": jobStatusRunning,
+			"status":      jobStatusRunning,
+			"lease_owner": leaseOwner,
 		})
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Resolve skillsets and MCP servers for the pipeline
+	resp := &v1.StartAIJobResponse{}
+	if pipeline != "" {
+		skillsetsResp, skillsetErr := b.skillsetBiz.Resolve(ctx, &v1.ResolveOrchestratorSkillsetsRequest{
+			Pipeline: &pipeline,
+		})
+		if skillsetErr == nil && skillsetsResp != nil && len(skillsetsResp.Skillsets) > 0 {
+			if data, marshalErr := json.Marshal(skillsetsResp); marshalErr == nil {
+				skillsetsJSON := string(data)
+				resp.SkillsetsJSON = &skillsetsJSON
+			}
+		}
+
+		// Resolve structured tool providers from toolset_provider_bindings
+		// Resolve toolsetIDs from strategy config (correct path), NOT from skillsets
+		var toolsetIDs []string
+		configBiz := internalstrategyconfig.New(b.store)
+		toolsetItems, _, toolsetErr := configBiz.ResolveToolsetByPipeline(ctx, pipeline)
+		if toolsetErr == nil && len(toolsetItems) > 0 {
+			for _, item := range toolsetItems {
+				if item != nil && item.ToolsetName != "" {
+					toolsetIDs = append(toolsetIDs, item.ToolsetName)
+				}
+			}
+		}
+
+		// Use provider resolver to build resolvedToolProviders
+		providerResolver := NewProviderResolver(b.store)
+		providerSnapshot, resolveErr := providerResolver.Resolve(ctx, toolsetIDs, pipeline)
+		if resolveErr == nil && providerSnapshot != nil && len(providerSnapshot.Providers) > 0 {
+			resp.ResolvedToolProviders = providerSnapshot.ToProto()
+		}
+
+		// Build agent context JSON for hybrid multi-agent
+		// Note: template_id is resolved on worker side via strategy resolve
+		// so we pass empty string here - worker will fill it in
+		if agentContextJSON := b.buildAgentContextJSON(
+			ctx,
+			jobID,
+			pipeline,
+			"", // template_id resolved on worker side
+			toolsetIDs,
+			providerSnapshot,
+			skillsetsResp,
+		); agentContextJSON != "" {
+			resp.AgentContextJSON = &agentContextJSON
+		}
+	}
+
+	return resp, nil
+}
+
+func (b *aiJobBiz) Renew(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.StartAIJobResponse, error) {
+	jobID := strings.TrimSpace(rq.GetJobID())
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	rows, err := b.store.AIJob().RenewLease(ctx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
+	if err != nil {
+		return nil, errno.ErrAIJobStartFailed
+	}
+	if rows == 0 {
+		return nil, errno.ErrAIJobInvalidTransition
 	}
 	return &v1.StartAIJobResponse{}, nil
 }
@@ -279,8 +511,12 @@ func (b *aiJobBiz) Start(ctx context.Context, rq *v1.StartAIJobRequest) (*v1.Sta
 func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.CancelAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	reason := trimOptional(rq.Reason)
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
@@ -295,18 +531,33 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 
 		now := time.Now().UTC()
 		updates := map[string]any{
-			"status":      jobStatusCanceled,
-			"finished_at": now,
+			"status":           jobStatusCanceled,
+			"finished_at":      now,
+			"lease_owner":      nil,
+			"lease_expires_at": nil,
+			"heartbeat_at":     nil,
 		}
 		if reason != "" {
 			updates["error_message"] = reason
 		}
-		rows, err := b.store.AIJob().UpdateStatus(txCtx, jobID, []string{jobStatusQueued, jobStatusRunning}, updates)
+		leaseOwnerFilter := leaseOwner
+		rows, err := b.store.AIJob().UpdateStatusWithLeaseOwner(
+			txCtx,
+			jobID,
+			[]string{jobStatusQueued, jobStatusRunning},
+			&leaseOwnerFilter,
+			updates,
+		)
 		if err != nil {
 			return errno.ErrAIJobCancelFailed
 		}
 		if rows == 0 {
 			return errno.ErrAIJobInvalidTransition
+		}
+		if job.Status == jobStatusQueued {
+			if _, err := b.store.AIJobQueueSignal().Bump(txCtx, now); err != nil {
+				return errno.ErrAIJobCancelFailed
+			}
 		}
 
 		incident, err := b.getIncident(txCtx, job.IncidentID)
@@ -335,8 +586,14 @@ func (b *aiJobBiz) Cancel(ctx context.Context, rq *v1.CancelAIJobRequest) (*v1.C
 func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*v1.FinalizeAIJobResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
 	targetStatus := strings.ToLower(strings.TrimSpace(rq.GetStatus()))
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var noticeReq *noticepkg.DispatchRequest
+	var sessionPatch *sessionFinalizePatch
 
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
@@ -359,8 +616,11 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 
 		now := time.Now().UTC()
 		updates := map[string]any{
-			"status":      targetStatus,
-			"finished_at": now,
+			"status":           targetStatus,
+			"finished_at":      now,
+			"lease_owner":      nil,
+			"lease_expires_at": nil,
+			"heartbeat_at":     nil,
 		}
 		if rq.OutputSummary != nil {
 			updates["output_summary"] = strings.TrimSpace(rq.GetOutputSummary())
@@ -376,15 +636,32 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 
 		incidentRCAStatus := incidentRCAStatusFailed
 		evidenceIDs := normalizeStringSlice(rq.GetEvidenceIDs())
+		var diagnosis *diagnosisPayload
+		diagnosisJSON := ""
+		sessionID := trimOptional(job.SessionID)
+		if sessionID == "" {
+			sessionID = b.ensureIncidentSessionIDBestEffort(txCtx, incident)
+			if sessionID != "" {
+				updates["session_id"] = sessionID
+			}
+		}
 
 		if targetStatus == jobStatusSucceeded {
-			diagnosis, diagnosisJSON, err := validateAndNormalizeDiagnosisJSON(rq.GetDiagnosisJSON())
+			diagnosis, diagnosisJSON, err = validateAndNormalizeDiagnosisJSON(rq.GetDiagnosisJSON())
 			if err != nil {
 				return err
 			}
 
 			derivedEvidenceIDs := collectDiagnosisEvidenceIDs(diagnosis)
 			evidenceIDs = mergeStringSlices(evidenceIDs, derivedEvidenceIDs)
+			if diagnosis.RootCause != nil && diagnosis.RootCause.Type == rootCauseTypeConflictEvidence {
+				if err := b.ensureIncidentEvidenceExists(txCtx, incident.IncidentID, evidenceIDs); err != nil {
+					return err
+				}
+			}
+
+			// MCL: verification_plan and playbook injection removed from active path
+			// diagnosis_json now only contains the core diagnosis payload
 
 			updates["output_json"] = diagnosisJSON
 			if rq.OutputSummary == nil {
@@ -420,24 +697,98 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 			}
 			refsJSON := buildEvidenceRefsJSON(jobID, evidenceIDs)
 			incident.EvidenceRefsJSON = &refsJSON
+
+			diagnosisConfidence := 0.0
+			if diagnosis.RootCause != nil {
+				diagnosisConfidence = diagnosis.RootCause.Confidence
+			}
+			noticeReq = &noticepkg.DispatchRequest{
+				EventType:           noticepkg.EventTypeDiagnosisWritten,
+				JobID:               jobID,
+				DiagnosisConfidence: diagnosisConfidence,
+				DiagnosisEvidenceID: append([]string(nil), evidenceIDs...),
+				OccurredAt:          now,
+			}
 		}
 
 		if len(evidenceIDs) > 0 {
 			evidenceIDsJSON := mustMarshalStringSlice(evidenceIDs)
 			updates["evidence_ids_json"] = evidenceIDsJSON
 		}
+		outputSummary := trimOptional(rq.OutputSummary)
+		if summaryValue, ok := updates["output_summary"].(string); ok {
+			outputSummary = strings.TrimSpace(summaryValue)
+		}
 
-		rows, err := b.store.AIJob().UpdateStatus(txCtx, jobID, fromStatuses, updates)
+		runWindowStart := job.CreatedAt.UTC()
+		if job.StartedAt != nil && !job.StartedAt.IsZero() {
+			runWindowStart = job.StartedAt.UTC()
+		}
+		runWindowStart = runWindowStart.Add(-1 * time.Second)
+		decisionTraceJSON := buildDecisionTraceJSON(
+			targetStatus,
+			outputSummary,
+			diagnosis,
+			evidenceIDs,
+			trimOptional(rq.ErrorMessage),
+		)
+		if decisionTraceJSON != "" {
+			updates["decision_trace_json"] = decisionTraceJSON
+		}
+
+		toolCallCount, err := b.countToolCallsByJob(txCtx, jobID)
+		if err != nil {
+			slog.WarnContext(txCtx, "run trace tool call count skipped",
+				"job_id", jobID,
+				"incident_id", job.IncidentID,
+				"error", err,
+			)
+		}
+		evidenceCount := int64(len(normalizeStringSlice(evidenceIDs)))
+		runTraceJSON := b.buildRunTraceJSON(ctx, job, job.RunTraceJSON, &runTraceOverrides{
+			Status:        strPtr(targetStatus),
+			FinishedAt:    &now,
+			WorkerID:      strPtr(leaseOwner),
+			ToolCallCount: &toolCallCount,
+			EvidenceCount: &evidenceCount,
+			ErrorSummary:  strPtr(trimOptional(rq.ErrorMessage)),
+		})
+		if runTraceJSON != "" {
+			updates["run_trace_json"] = runTraceJSON
+		}
+
+		sessionPatch = b.buildSessionFinalizePatch(
+			sessionID,
+			jobID,
+			job.IncidentID,
+			targetStatus,
+			now,
+			outputSummary,
+			diagnosis,
+			evidenceIDs,
+		)
+
+		leaseOwnerFilter := leaseOwner
+		rows, err := b.store.AIJob().UpdateStatusWithLeaseOwner(txCtx, jobID, fromStatuses, &leaseOwnerFilter, updates)
 		if err != nil {
 			return errno.ErrAIJobFinalizeFailed
 		}
 		if rows == 0 {
 			return errno.ErrAIJobInvalidTransition
 		}
+		if targetStatus == jobStatusCanceled && job.Status == jobStatusQueued {
+			if _, err := b.store.AIJobQueueSignal().Bump(txCtx, now); err != nil {
+				return errno.ErrAIJobFinalizeFailed
+			}
+		}
 
 		incident.RCAStatus = incidentRCAStatus
 		if err := b.store.Incident().Update(txCtx, incident); err != nil {
 			return errno.ErrIncidentUpdateFailed
+		}
+		if noticeReq != nil {
+			incidentCopy := *incident
+			noticeReq.Incident = &incidentCopy
 		}
 
 		audit.AppendIncidentTimelineIfExists(txCtx, b.store.DB(txCtx), job.IncidentID, "ai_job_finalized", jobID, map[string]any{
@@ -449,16 +800,35 @@ func (b *aiJobBiz) Finalize(ctx context.Context, rq *v1.FinalizeAIJobRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	if sessionPatch != nil {
+		b.applySessionFinalizePatchBestEffort(ctx, sessionPatch, jobID, targetStatus)
+	}
+
+	if noticeReq != nil {
+		noticepkg.DispatchBestEffort(ctx, b.store, *noticeReq)
+	}
+	// MCL: KB best-effort writeback removed from active path
+	cachex.InvalidateTraceReadModels(ctx, jobID)
+	if sessionPatch != nil {
+		cachex.InvalidateSessionReadModels(ctx, sessionPatch.SessionID)
+		cachex.InvalidateOperatorReadModels(ctx)
+	}
 
 	return &v1.FinalizeAIJobResponse{}, nil
 }
 
+// MCL: Removed unused verification/playbook/KB functions (buildVerificationPlan, mirrorVerificationPlanToToolCall, injectVerificationPlanIntoDiagnosis, injectPlaybookIntoDiagnosis, playbookRootCauseTypeFromDiagnosis, mirrorPlaybookToToolCall, runKBBestEffort, etc.)
+
 //nolint:gocognit,gocyclo,nestif // Existing tool-call write path is intentionally explicit for P0.
 func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRequest) (*v1.CreateAIToolCallResponse, error) {
 	jobID := strings.TrimSpace(rq.GetJobID())
+	leaseOwner, err := leaseOwnerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
 	outID := ""
 
-	err := b.store.TX(ctx, func(txCtx context.Context) error {
+	err = b.store.TX(ctx, func(txCtx context.Context) error {
 		job, err := b.store.AIJob().Get(txCtx, where.T(txCtx).F("job_id", jobID))
 		if err != nil {
 			return toAIJobGetError(err)
@@ -466,12 +836,10 @@ func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRe
 		if isTerminalStatus(job.Status) {
 			return errno.ErrAIToolCallStatusConflict
 		}
+
+		now := time.Now().UTC()
 		if job.Status == jobStatusQueued {
-			now := time.Now().UTC()
-			rows, err := b.store.AIJob().UpdateStatus(txCtx, jobID, []string{jobStatusQueued}, map[string]any{
-				"status":     jobStatusRunning,
-				"started_at": now,
-			})
+			rows, err := b.store.AIJob().ClaimQueued(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
 			if err != nil {
 				return errno.ErrAIJobStartFailed
 			}
@@ -486,6 +854,17 @@ func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRe
 			incident.RCAStatus = incidentRCAStatusRunning
 			if err := b.store.Incident().Update(txCtx, incident); err != nil {
 				return errno.ErrIncidentUpdateFailed
+			}
+			if _, err := b.store.AIJobQueueSignal().Bump(txCtx, now); err != nil {
+				return errno.ErrAIJobStartFailed
+			}
+		} else if job.Status == jobStatusRunning {
+			renewRows, renewErr := b.store.AIJob().RenewLease(txCtx, jobID, leaseOwner, now, defaultAIJobLeaseTTL)
+			if renewErr != nil {
+				return errno.ErrAIJobStartFailed
+			}
+			if renewRows == 0 {
+				return errno.ErrAIToolCallStatusConflict
 			}
 		}
 
@@ -545,6 +924,58 @@ func (b *aiJobBiz) CreateToolCall(ctx context.Context, rq *v1.CreateAIToolCallRe
 	return &v1.CreateAIToolCallResponse{ToolCallID: outID}, nil
 }
 
+//nolint:gocognit,gocyclo // Validation+persist path is intentionally explicit for audit safety.
+func (b *aiJobBiz) RecordToolCallAudit(ctx context.Context, rq *RecordToolCallAuditRequest) (string, error) {
+	if rq == nil {
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+
+	jobID := strings.TrimSpace(rq.JobID)
+	nodeName := strings.TrimSpace(rq.NodeName)
+	toolName := strings.TrimSpace(rq.ToolName)
+	requestJSON := strings.TrimSpace(rq.RequestJSON)
+	status := strings.ToLower(strings.TrimSpace(rq.Status))
+	if jobID == "" || rq.Seq <= 0 || nodeName == "" || toolName == "" || requestJSON == "" {
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+	if status != "ok" && status != "error" && status != "timeout" && status != "canceled" {
+		return "", errno.ErrAIToolCallInvalidStatus
+	}
+	if rq.LatencyMs < 0 {
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+
+	call := &model.AIToolCallM{
+		JobID:             jobID,
+		Seq:               rq.Seq,
+		NodeName:          nodeName,
+		ToolName:          toolName,
+		RequestJSON:       requestJSON,
+		ResponseSizeBytes: rq.ResponseSizeBytes,
+		Status:            status,
+		LatencyMs:         rq.LatencyMs,
+	}
+	if rq.ResponseJSON != nil {
+		v := strings.TrimSpace(*rq.ResponseJSON)
+		call.ResponseJSON = &v
+	}
+	if rq.ErrorMessage != nil {
+		v := strings.TrimSpace(*rq.ErrorMessage)
+		call.ErrorMessage = &v
+	}
+
+	if err := b.store.AIToolCall().Create(ctx, call); err != nil {
+		if isDuplicateKeyError(err) {
+			existing, getErr := b.store.AIToolCall().Get(ctx, where.T(ctx).F("job_id", jobID, "seq", rq.Seq))
+			if getErr == nil {
+				return existing.ToolCallID, nil
+			}
+		}
+		return "", errno.ErrAIToolCallCreateFailed
+	}
+	return call.ToolCallID, nil
+}
+
 func (b *aiJobBiz) ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequest) (*v1.ListAIToolCallsResponse, error) {
 	limit := rq.GetLimit()
 	if limit <= 0 {
@@ -563,6 +994,61 @@ func (b *aiJobBiz) ListToolCalls(ctx context.Context, rq *v1.ListAIToolCallsRequ
 		out = append(out, conversion.AIToolCallMToAIToolCallV1(item))
 	}
 	return &v1.ListAIToolCallsResponse{
+		TotalCount: total,
+		ToolCalls:  out,
+	}, nil
+}
+
+//nolint:gocognit,gocyclo // Search filters are intentionally explicit and composable.
+func (b *aiJobBiz) SearchToolCalls(
+	ctx context.Context,
+	rq *SearchToolCallsRequest,
+) (*SearchToolCallsResponse, error) {
+
+	if rq == nil {
+		return nil, errno.ErrAIToolCallListFailed
+	}
+
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultToolLimit
+	}
+
+	whr := where.T(ctx).O(int(rq.Offset)).L(int(limit))
+	if jobID := strings.TrimSpace(rq.JobID); jobID != "" {
+		whr = whr.F("job_id", jobID)
+	}
+
+	if toolName := strings.TrimSpace(rq.ToolName); toolName != "" {
+		whr = whr.F("tool_name", toolName)
+	} else if toolPrefix := strings.TrimSpace(rq.ToolPrefix); toolPrefix != "" {
+		whr = whr.Q("tool_name LIKE ?", toolPrefix+"%")
+	}
+
+	if incidentID := strings.TrimSpace(rq.IncidentID); incidentID != "" {
+		whr = whr.Q("request_json LIKE ?", `%"incident_id":"`+incidentID+`"%`)
+	}
+	if requestID := strings.TrimSpace(rq.RequestID); requestID != "" {
+		whr = whr.Q("request_json LIKE ?", `%"request_id":"`+requestID+`"%`)
+	}
+
+	if rq.TimeFrom != nil {
+		whr = whr.Q("created_at >= ?", rq.TimeFrom.UTC())
+	}
+	if rq.TimeTo != nil {
+		whr = whr.Q("created_at <= ?", rq.TimeTo.UTC())
+	}
+
+	total, list, err := b.store.AIToolCall().List(ctx, whr)
+	if err != nil {
+		return nil, errno.ErrAIToolCallListFailed
+	}
+
+	out := make([]*v1.AIToolCall, 0, len(list))
+	for _, item := range list {
+		out = append(out, conversion.AIToolCallMToAIToolCallV1(item))
+	}
+	return &SearchToolCallsResponse{
 		TotalCount: total,
 		ToolCalls:  out,
 	}, nil
@@ -594,6 +1080,624 @@ func normalizeCreatedBy(ctx context.Context, createdBy *string) string {
 	return defaultCreatedBy
 }
 
+func leaseOwnerFromContext(ctx context.Context) (string, error) {
+	owner := strings.TrimSpace(contextx.OrchestratorInstanceID(ctx))
+	if owner == "" {
+		return "", errorsx.ErrInvalidArgument
+	}
+	return owner, nil
+}
+
+type sessionFinalizePatch struct {
+	SessionID          string
+	LatestSummaryJSON  *string
+	PinnedEvidenceJSON *string
+	ActiveRunID        *string
+}
+
+func (b *aiJobBiz) ensureIncidentSessionIDBestEffort(ctx context.Context, incident *model.IncidentM) string {
+	if b == nil || b.sessionBiz == nil || incident == nil {
+		return ""
+	}
+	incidentID := strings.TrimSpace(incident.IncidentID)
+	if incidentID == "" {
+		return ""
+	}
+
+	title := sessionTitleFromIncident(incident)
+	resp, err := b.sessionBiz.EnsureIncidentSession(ctx, &sessionbiz.EnsureIncidentSessionRequest{
+		IncidentID: incidentID,
+		Title:      title,
+	})
+	if err != nil {
+		slog.WarnContext(ctx, "ai job session ensure skipped",
+			"incident_id", incidentID,
+			"error", err,
+		)
+		return ""
+	}
+	if resp == nil || resp.Session == nil {
+		return ""
+	}
+	return strings.TrimSpace(resp.Session.SessionID)
+}
+
+func (b *aiJobBiz) setSessionActiveRunBestEffort(ctx context.Context, sessionID string, jobID string, phase string) {
+	if b == nil || b.sessionBiz == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	jobID = strings.TrimSpace(jobID)
+	if sessionID == "" || jobID == "" {
+		return
+	}
+
+	if _, err := b.sessionBiz.Update(ctx, &sessionbiz.UpdateSessionContextRequest{
+		SessionID:   sessionID,
+		ActiveRunID: &jobID,
+	}); err != nil {
+		slog.WarnContext(ctx, "ai job session active_run update skipped",
+			"phase", phase,
+			"session_id", sessionID,
+			"job_id", jobID,
+			"error", err,
+		)
+	}
+}
+
+func (b *aiJobBiz) buildSessionFinalizePatch(
+	sessionID string,
+	jobID string,
+	incidentID string,
+	targetStatus string,
+	now time.Time,
+	outputSummary string,
+	diagnosis *diagnosisPayload,
+	evidenceIDs []string,
+) *sessionFinalizePatch {
+
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+
+	patch := &sessionFinalizePatch{
+		SessionID: sessionID,
+	}
+	empty := ""
+	patch.ActiveRunID = &empty
+	if targetStatus != jobStatusSucceeded {
+		return patch
+	}
+
+	latestSummaryJSON := buildSessionLatestSummaryJSON(now, jobID, incidentID, outputSummary, diagnosis, evidenceIDs)
+	if latestSummaryJSON != "" {
+		patch.LatestSummaryJSON = &latestSummaryJSON
+	}
+	if len(evidenceIDs) > 0 {
+		pinnedEvidenceJSON := buildSessionPinnedEvidenceJSON(now, jobID, evidenceIDs)
+		if pinnedEvidenceJSON != "" {
+			patch.PinnedEvidenceJSON = &pinnedEvidenceJSON
+		}
+	}
+	return patch
+}
+
+func (b *aiJobBiz) applySessionFinalizePatchBestEffort(
+	ctx context.Context,
+	patch *sessionFinalizePatch,
+	jobID string,
+	targetStatus string,
+) {
+	if b == nil || b.sessionBiz == nil || patch == nil {
+		return
+	}
+	if strings.TrimSpace(patch.SessionID) == "" {
+		return
+	}
+
+	if _, err := b.sessionBiz.Update(ctx, &sessionbiz.UpdateSessionContextRequest{
+		SessionID:          patch.SessionID,
+		LatestSummaryJSON:  patch.LatestSummaryJSON,
+		PinnedEvidenceJSON: patch.PinnedEvidenceJSON,
+		ActiveRunID:        patch.ActiveRunID,
+	}); err != nil {
+		slog.WarnContext(ctx, "ai job finalize session patch skipped",
+			"session_id", patch.SessionID,
+			"job_id", strings.TrimSpace(jobID),
+			"status", targetStatus,
+			"error", err,
+		)
+	}
+}
+
+func sessionTitleFromIncident(incident *model.IncidentM) *string {
+	if incident == nil {
+		return nil
+	}
+	if v := strings.TrimSpace(incident.Service); v != "" {
+		return &v
+	}
+	if v := strings.TrimSpace(incident.WorkloadName); v != "" {
+		return &v
+	}
+	return nil
+}
+
+func buildSessionLatestSummaryJSON(
+	now time.Time,
+	jobID string,
+	incidentID string,
+	outputSummary string,
+	diagnosis *diagnosisPayload,
+	evidenceIDs []string,
+) string {
+	rootCauseType := ""
+	confidence := 0.0
+	derivedSummary := strings.TrimSpace(outputSummary)
+	if diagnosis != nil {
+		if diagnosis.RootCause != nil {
+			rootCauseType = strings.TrimSpace(diagnosis.RootCause.Type)
+			if rootCauseType == "" {
+				rootCauseType = strings.TrimSpace(diagnosis.RootCause.Category)
+			}
+			confidence = diagnosis.RootCause.Confidence
+			if derivedSummary == "" {
+				derivedSummary = strings.TrimSpace(diagnosis.RootCause.Summary)
+			}
+			if derivedSummary == "" {
+				derivedSummary = strings.TrimSpace(diagnosis.RootCause.Statement)
+			}
+		}
+		if derivedSummary == "" {
+			derivedSummary = strings.TrimSpace(diagnosis.Summary)
+		}
+	}
+
+	payload := map[string]any{
+		"job_id":          strings.TrimSpace(jobID),
+		"incident_id":     strings.TrimSpace(incidentID),
+		"root_cause_type": rootCauseType,
+		"summary":         derivedSummary,
+		"confidence":      confidence,
+		"updated_at":      now.UTC().Format(time.RFC3339Nano),
+		"evidence_refs":   normalizeStringSlice(evidenceIDs),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func buildSessionPinnedEvidenceJSON(now time.Time, jobID string, evidenceIDs []string) string {
+	normalizedEvidenceIDs := normalizeStringSlice(evidenceIDs)
+	if len(normalizedEvidenceIDs) == 0 {
+		return ""
+	}
+
+	payload := map[string]any{
+		"refs":       normalizedEvidenceIDs,
+		"source":     "ai_job_finalize",
+		"job_id":     strings.TrimSpace(jobID),
+		"updated_at": now.UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+type runTracePayload struct {
+	SchemaVersion     string  `json:"schema_version,omitempty"`
+	RunID             string  `json:"run_id"`
+	JobID             string  `json:"job_id"`
+	SessionID         string  `json:"session_id,omitempty"`
+	IncidentID        string  `json:"incident_id"`
+	TriggerType       string  `json:"trigger_type,omitempty"`
+	TriggerSource     string  `json:"trigger_source,omitempty"`
+	Initiator         string  `json:"initiator,omitempty"`
+	Pipeline          string  `json:"pipeline"`
+	WorkerID          string  `json:"worker_id,omitempty"`
+	WorkerVersion     string  `json:"worker_version,omitempty"`
+	Status            string  `json:"status"`
+	StartedAt         *string `json:"started_at,omitempty"`
+	FinishedAt        *string `json:"finished_at,omitempty"`
+	ToolCallCount     int64   `json:"tool_call_count"`
+	EvidenceCount     int64   `json:"evidence_count"`
+	ErrorSummary      string  `json:"error_summary,omitempty"`
+	UpdatedAt         string  `json:"updated_at,omitempty"`
+}
+
+type runTraceOverrides struct {
+	Status        *string
+	StartedAt     *time.Time
+	FinishedAt    *time.Time
+	WorkerID      *string
+	WorkerVersion *string
+	ToolCallCount *int64
+	EvidenceCount *int64
+	ErrorSummary  *string
+	TriggerType   *string
+	TriggerSource *string
+	Initiator     *string
+}
+
+type decisionTracePayload struct {
+	SchemaVersion       string   `json:"schema_version,omitempty"`
+	Status              string   `json:"status"`
+	RootCauseType       string   `json:"root_cause_type,omitempty"`
+	RootCauseSummary    string   `json:"root_cause_summary,omitempty"`
+	Confidence          float64  `json:"confidence"`
+	EvidenceRefs        []string `json:"evidence_refs"`
+	MissingFacts        []string `json:"missing_facts"`
+	Conflicts           []string `json:"conflicts"`
+	HumanReviewRequired bool     `json:"human_review_required"`
+	ErrorSummary        string   `json:"error_summary,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+}
+
+func (b *aiJobBiz) refreshRunTraceOnStartBestEffort(
+	ctx context.Context,
+	jobID string,
+	leaseOwner string,
+	now time.Time,
+) {
+	if b == nil {
+		return
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return
+	}
+	job, err := b.store.AIJob().Get(ctx, where.T(ctx).F("job_id", jobID))
+	if err != nil {
+		slog.WarnContext(ctx, "ai job run trace start refresh skipped",
+			"job_id", jobID,
+			"error", err,
+		)
+		return
+	}
+
+	startedAt := now.UTC()
+	if job.StartedAt != nil && !job.StartedAt.IsZero() {
+		startedAt = job.StartedAt.UTC()
+	}
+	runTraceJSON := b.buildRunTraceJSON(ctx, job, job.RunTraceJSON, &runTraceOverrides{
+		Status:    strPtr(jobStatusRunning),
+		StartedAt: &startedAt,
+		WorkerID:  strPtr(leaseOwner),
+	})
+	if runTraceJSON == "" {
+		return
+	}
+	rows, updateErr := b.store.AIJob().UpdateStatus(ctx, jobID, []string{jobStatusRunning}, map[string]any{
+		"run_trace_json": runTraceJSON,
+	})
+	if updateErr != nil || rows == 0 {
+		slog.WarnContext(ctx, "ai job run trace start persist skipped",
+			"job_id", jobID,
+			"rows", rows,
+			"error", updateErr,
+		)
+	}
+}
+
+func (b *aiJobBiz) buildRunTraceJSON(
+	ctx context.Context,
+	job *model.AIJobM,
+	existingRaw *string,
+	overrides *runTraceOverrides,
+) string {
+	if job == nil {
+		return ""
+	}
+
+	trace := parseRunTraceJSON(existingRaw)
+	if trace == nil {
+		trace = &runTracePayload{
+			SchemaVersion: defaultRunTraceSchemaVersion,
+		}
+	}
+	trace.RunID = strings.TrimSpace(job.JobID)
+	trace.JobID = strings.TrimSpace(job.JobID)
+	trace.IncidentID = strings.TrimSpace(job.IncidentID)
+	trace.SessionID = trimOptional(job.SessionID)
+	trace.Pipeline = strings.TrimSpace(job.Pipeline)
+	if trace.Pipeline == "" {
+		trace.Pipeline = defaultPipeline
+	}
+
+	if trace.TriggerType == "" {
+		trace.TriggerType = inferRunTraceTriggerType(job.Trigger)
+	}
+	if ctxTriggerType := normalizeRunTraceTriggerType(contextx.TriggerType(ctx)); ctxTriggerType != "" {
+		trace.TriggerType = ctxTriggerType
+	}
+	if trace.TriggerSource == "" {
+		trace.TriggerSource = inferRunTraceTriggerSource(trace.TriggerType, job.Trigger)
+	}
+	if ctxTriggerSource := strings.TrimSpace(contextx.TriggerSource(ctx)); ctxTriggerSource != "" {
+		trace.TriggerSource = ctxTriggerSource
+	}
+	if trace.Initiator == "" {
+		trace.Initiator = strings.TrimSpace(job.CreatedBy)
+	}
+	if ctxTriggerInitiator := strings.TrimSpace(contextx.TriggerInitiator(ctx)); ctxTriggerInitiator != "" {
+		trace.Initiator = ctxTriggerInitiator
+	}
+
+	trace.Status = strings.ToLower(strings.TrimSpace(job.Status))
+	if trace.Status == "" {
+		trace.Status = jobStatusQueued
+	}
+	trace.StartedAt = timeToRFC3339Ptr(job.StartedAt)
+	trace.FinishedAt = timeToRFC3339Ptr(job.FinishedAt)
+	trace.WorkerID = trimOptional(job.LeaseOwner)
+	trace.ErrorSummary = trimOptional(job.ErrorMessage)
+	if trace.ToolCallCount < 0 {
+		trace.ToolCallCount = 0
+	}
+	if trace.EvidenceCount < 0 {
+		trace.EvidenceCount = 0
+	}
+
+	updatedAt := time.Now().UTC()
+	if overrides != nil {
+		if overrides.Status != nil {
+			trace.Status = strings.ToLower(strings.TrimSpace(*overrides.Status))
+		}
+		if overrides.StartedAt != nil {
+			trace.StartedAt = timeToRFC3339Ptr(overrides.StartedAt)
+			updatedAt = overrides.StartedAt.UTC()
+		}
+		if overrides.FinishedAt != nil {
+			trace.FinishedAt = timeToRFC3339Ptr(overrides.FinishedAt)
+			updatedAt = overrides.FinishedAt.UTC()
+		}
+		if overrides.WorkerID != nil {
+			trace.WorkerID = strings.TrimSpace(*overrides.WorkerID)
+		}
+		if overrides.WorkerVersion != nil {
+			trace.WorkerVersion = strings.TrimSpace(*overrides.WorkerVersion)
+		}
+		if overrides.ToolCallCount != nil && *overrides.ToolCallCount >= 0 {
+			trace.ToolCallCount = *overrides.ToolCallCount
+		}
+		if overrides.EvidenceCount != nil && *overrides.EvidenceCount >= 0 {
+			trace.EvidenceCount = *overrides.EvidenceCount
+		}
+		if overrides.ErrorSummary != nil {
+			trace.ErrorSummary = strings.TrimSpace(*overrides.ErrorSummary)
+		}
+		if overrides.TriggerType != nil {
+			trace.TriggerType = normalizeRunTraceTriggerType(*overrides.TriggerType)
+		}
+		if overrides.TriggerSource != nil {
+			trace.TriggerSource = strings.TrimSpace(*overrides.TriggerSource)
+		}
+		if overrides.Initiator != nil {
+			trace.Initiator = strings.TrimSpace(*overrides.Initiator)
+		}
+	}
+	trace.UpdatedAt = updatedAt.Format(time.RFC3339Nano)
+
+	raw, err := json.Marshal(trace)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func parseRunTraceJSON(raw *string) *runTracePayload {
+	trimmed := trimOptional(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var payload runTracePayload
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil
+	}
+	return &payload
+}
+
+func parseDecisionTraceJSON(raw *string) *decisionTracePayload {
+	trimmed := trimOptional(raw)
+	if trimmed == "" {
+		return nil
+	}
+	var payload decisionTracePayload
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil
+	}
+	return &payload
+}
+
+func inferRunTraceTriggerType(jobTrigger string) string {
+	switch strings.ToLower(strings.TrimSpace(jobTrigger)) {
+	case "manual":
+		return "manual"
+	case "on_ingest":
+		return "alert"
+	case "on_escalation":
+		return "incident"
+	case "scheduled":
+		return "scheduled"
+	case "cron":
+		return "cron"
+	case "change":
+		return "change"
+	default:
+		return strings.ToLower(strings.TrimSpace(jobTrigger))
+	}
+}
+
+func normalizeRunTraceTriggerType(triggerType string) string {
+	triggerType = strings.ToLower(strings.TrimSpace(triggerType))
+	switch triggerType {
+	case "manual", "alert", "incident", "scheduled", "replay", "follow_up":
+		return triggerType
+	default:
+		return triggerType
+	}
+}
+
+func inferRunTraceTriggerSource(triggerType string, jobTrigger string) string {
+	if triggerType == "" {
+		triggerType = inferRunTraceTriggerType(jobTrigger)
+	}
+	switch triggerType {
+	case "manual":
+		return "manual_api"
+	case "alert":
+		return "alert_ingest"
+	case "incident":
+		return "incident_update"
+	case "scheduled":
+		return "incident_scheduler"
+	case "replay":
+		return "replay_router"
+	case "follow_up":
+		return "follow_up_router"
+	case "cron":
+		return "cron_router"
+	case "change":
+		return "change_router"
+	default:
+		return defaultRunTraceTriggerSource
+	}
+}
+
+func timeToRFC3339Ptr(ts *time.Time) *string {
+	if ts == nil || ts.IsZero() {
+		return nil
+	}
+	value := ts.UTC().Format(time.RFC3339Nano)
+	return &value
+}
+
+func (b *aiJobBiz) countToolCallsByJob(ctx context.Context, jobID string) (int64, error) {
+	total, _, err := b.store.AIToolCall().List(ctx, where.T(ctx).O(0).L(1).F("job_id", strings.TrimSpace(jobID)))
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+func buildDecisionTraceJSON(
+	status string,
+	outputSummary string,
+	diagnosis *diagnosisPayload,
+	evidenceIDs []string,
+	errorSummary string,
+) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	rootCauseType := ""
+	rootCauseSummary := strings.TrimSpace(outputSummary)
+	confidence := 0.0
+
+	if diagnosis != nil {
+		if diagnosis.RootCause != nil {
+			rootCauseType = strings.TrimSpace(diagnosis.RootCause.Type)
+			if rootCauseType == "" {
+				rootCauseType = strings.TrimSpace(diagnosis.RootCause.Category)
+			}
+			confidence = normalizeDecisionTraceConfidence(diagnosis.RootCause.Confidence)
+			if rootCauseSummary == "" {
+				rootCauseSummary = strings.TrimSpace(diagnosis.RootCause.Summary)
+			}
+			if rootCauseSummary == "" {
+				rootCauseSummary = strings.TrimSpace(diagnosis.RootCause.Statement)
+			}
+		}
+		if rootCauseSummary == "" {
+			rootCauseSummary = strings.TrimSpace(diagnosis.Summary)
+		}
+	}
+
+	missingFacts := collectDecisionMissingFacts(diagnosis)
+	conflicts := collectDecisionConflicts(diagnosis)
+	errorSummary = strings.TrimSpace(errorSummary)
+
+	humanReviewRequired := status != jobStatusSucceeded
+	if !humanReviewRequired {
+		if confidence < humanReviewConfidenceGate {
+			humanReviewRequired = true
+		}
+		if len(missingFacts) > 0 || len(conflicts) > 0 {
+			humanReviewRequired = true
+		}
+		if rootCauseType == rootCauseTypeMissingEvidence || rootCauseType == rootCauseTypeConflictEvidence {
+			humanReviewRequired = true
+		}
+	}
+	if errorSummary != "" {
+		humanReviewRequired = true
+	}
+
+	payload := decisionTracePayload{
+		SchemaVersion:       defaultRunTraceSchemaVersion,
+		Status:              status,
+		RootCauseType:       rootCauseType,
+		RootCauseSummary:    rootCauseSummary,
+		Confidence:          confidence,
+		EvidenceRefs:        normalizeStringSlice(evidenceIDs),
+		MissingFacts:        missingFacts,
+		Conflicts:           conflicts,
+		HumanReviewRequired: humanReviewRequired,
+		ErrorSummary:        errorSummary,
+		UpdatedAt:           time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+func collectDecisionMissingFacts(diagnosis *diagnosisPayload) []string {
+	if diagnosis == nil {
+		return nil
+	}
+	out := make([]string, 0, len(diagnosis.MissingEvidence)+len(diagnosis.Hypotheses))
+	out = append(out, diagnosis.MissingEvidence...)
+	for _, hypothesis := range diagnosis.Hypotheses {
+		out = append(out, hypothesis.MissingEvidence...)
+	}
+	return normalizeStringSlice(out)
+}
+
+func collectDecisionConflicts(diagnosis *diagnosisPayload) []string {
+	if diagnosis == nil || diagnosis.RootCause == nil {
+		return nil
+	}
+	if strings.TrimSpace(diagnosis.RootCause.Type) != rootCauseTypeConflictEvidence {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	if summary := strings.TrimSpace(diagnosis.RootCause.Summary); summary != "" {
+		out = append(out, summary)
+	}
+	if statement := strings.TrimSpace(diagnosis.RootCause.Statement); statement != "" {
+		out = append(out, statement)
+	}
+	if len(out) == 0 {
+		out = append(out, "conflicting evidence detected")
+	}
+	return normalizeStringSlice(out)
+}
+
+func normalizeDecisionTraceConfidence(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
 func normalizePipeline(v *string) string {
 	if v == nil {
 		return defaultPipeline
@@ -621,6 +1725,14 @@ func trimOptional(v *string) string {
 	return strings.TrimSpace(*v)
 }
 
+func strPtr(v string) *string {
+	value := strings.TrimSpace(v)
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
 func toAIJobGetError(err error) error {
 	if errorsx.Is(err, gorm.ErrRecordNotFound) {
 		return errno.ErrAIJobNotFound
@@ -637,23 +1749,7 @@ func isDuplicateKeyError(err error) bool {
 }
 
 func normalizeStringSlice(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, item := range in {
-		trimmed := strings.TrimSpace(item)
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
+	return runtimecontract.NormalizeStringList(in)
 }
 
 func mergeStringSlices(left, right []string) []string {
@@ -663,6 +1759,26 @@ func mergeStringSlices(left, right []string) []string {
 func mustMarshalStringSlice(in []string) string {
 	raw, _ := json.Marshal(normalizeStringSlice(in))
 	return string(raw)
+}
+
+func (b *aiJobBiz) ensureIncidentEvidenceExists(ctx context.Context, incidentID string, evidenceIDs []string) error {
+	normalized := normalizeStringSlice(evidenceIDs)
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	total, _, err := b.store.Evidence().List(ctx, where.T(ctx).
+		O(0).
+		L(len(normalized)).
+		F("incident_id", incidentID).
+		Q("evidence_id IN ?", normalized))
+	if err != nil {
+		return errno.ErrAIJobInvalidDiagnosis
+	}
+	if total != int64(len(normalized)) {
+		return errno.ErrAIJobInvalidDiagnosis
+	}
+	return nil
 }
 
 func normalizeToolCallResponse(raw string, responseRef string) (*string, int64) {
@@ -700,6 +1816,38 @@ func normalizeToolCallResponse(raw string, responseRef string) (*string, int64) 
 	return &v, size
 }
 
+func parseToolCallResponse(toolCall *model.AIToolCallM) map[string]any {
+	if toolCall == nil || toolCall.ResponseJSON == nil {
+		return nil
+	}
+	return parseJSONObject(*toolCall.ResponseJSON)
+}
+
+func parseJSONObject(raw string) map[string]any {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func anyToString(in any) string {
+	switch value := in.(type) {
+	case string:
+		return value
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return ""
+		}
+		return strings.Trim(string(raw), `"`)
+	}
+}
+
 func isTerminalStatus(status string) bool {
 	switch status {
 	case jobStatusSucceeded, jobStatusFailed, jobStatusCanceled:
@@ -707,6 +1855,50 @@ func isTerminalStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+//nolint:gocyclo // Keep explicit type branches for robust parsing.
+func extractDiagnosisRootCauseConfidence(raw string) float64 {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0.7
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return 0.7
+	}
+	rootCause, _ := payload["root_cause"].(map[string]any)
+	if rootCause == nil {
+		return 0.7
+	}
+
+	normalize := func(v float64) float64 {
+		if v <= 0 {
+			return 0.7
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+
+	switch confidence := rootCause["confidence"].(type) {
+	case float64:
+		return normalize(confidence)
+	case float32:
+		return normalize(float64(confidence))
+	case int:
+		return normalize(float64(confidence))
+	case int64:
+		return normalize(float64(confidence))
+	case string:
+		var parsed float64
+		if err := json.Unmarshal([]byte(confidence), &parsed); err == nil {
+			return normalize(parsed)
+		}
+	}
+	return 0.7
 }
 
 type diagnosisRootCause struct {
@@ -725,6 +1917,12 @@ type diagnosisHypothesis struct {
 	MissingEvidence      []string `json:"missing_evidence"`
 }
 
+type diagnosisPattern struct {
+	Type   string  `json:"type"`
+	Value  string  `json:"value"`
+	Weight float64 `json:"weight"`
+}
+
 type diagnosisPayload struct {
 	SchemaVersion   string                `json:"schema_version,omitempty"`
 	GeneratedAt     string                `json:"generated_at,omitempty"`
@@ -734,6 +1932,7 @@ type diagnosisPayload struct {
 	MissingEvidence []string              `json:"missing_evidence,omitempty"`
 	Timeline        []map[string]any      `json:"timeline"`
 	Hypotheses      []diagnosisHypothesis `json:"hypotheses"`
+	Patterns        []diagnosisPattern    `json:"patterns,omitempty"`
 	Observations    []map[string]any      `json:"observations,omitempty"`
 	Recommendations []map[string]any      `json:"recommendations"`
 	Unknowns        []string              `json:"unknowns"`
@@ -757,7 +1956,6 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 	}
 
 	diagnosis.MissingEvidence = normalizeStringSlice(diagnosis.MissingEvidence)
-	missingEvidenceCount := len(diagnosis.MissingEvidence)
 
 	if diagnosis.RootCause != nil {
 		diagnosis.RootCause.Type = strings.ToLower(strings.TrimSpace(diagnosis.RootCause.Type))
@@ -792,8 +1990,13 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 				return nil, "", errno.ErrAIJobInvalidDiagnosis
 			}
 		}
-		if diagnosis.RootCause.Type == "missing_evidence" && diagnosis.RootCause.Confidence > 0.3 {
-			return nil, "", errno.ErrAIJobInvalidDiagnosis
+		if diagnosis.RootCause.Type == rootCauseTypeMissingEvidence || diagnosis.RootCause.Type == rootCauseTypeConflictEvidence {
+			if diagnosis.RootCause.Confidence > 0.3 {
+				return nil, "", errno.ErrAIJobInvalidDiagnosis
+			}
+			if len(diagnosis.MissingEvidence) == 0 || len(diagnosis.MissingEvidence) > maxMissingEvidenceItems {
+				return nil, "", errno.ErrAIJobInvalidDiagnosis
+			}
 		}
 	}
 
@@ -804,7 +2007,6 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 		}
 		h.SupportingEvidenceID = normalizeStringSlice(h.SupportingEvidenceID)
 		h.MissingEvidence = normalizeStringSlice(h.MissingEvidence)
-		missingEvidenceCount += len(h.MissingEvidence)
 		if len(h.SupportingEvidenceID) == 0 && len(h.MissingEvidence) == 0 {
 			return nil, "", errno.ErrAIJobInvalidDiagnosis
 		}
@@ -819,10 +2021,6 @@ func validateAndNormalizeDiagnosisJSON(raw string) (*diagnosisPayload, string, e
 			}
 		}
 	}
-	if diagnosis.RootCause != nil && diagnosis.RootCause.Type == "missing_evidence" && missingEvidenceCount == 0 {
-		return nil, "", errno.ErrAIJobInvalidDiagnosis
-	}
-
 	normalized, err := json.Marshal(diagnosis)
 	if err != nil {
 		return nil, "", errno.ErrAIJobInvalidDiagnosis
@@ -852,6 +2050,157 @@ func buildEvidenceRefsJSON(jobID string, evidenceIDs []string) string {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return `{"job_id":"","evidence_ids":[]}`
+	}
+	return string(raw)
+}
+
+// AgentContext represents the unified agent context for hybrid multi-agent.
+type AgentContext struct {
+	JobID            string         `json:"job_id"`
+	Pipeline         string         `json:"pipeline"`
+	TemplateID       string         `json:"template_id"`
+	SessionSnapshot  map[string]any `json:"session_snapshot,omitempty"`
+	ToolSurface      map[string]any `json:"tool_surface,omitempty"`
+	SkillSurface     map[string]any `json:"skill_surface,omitempty"`
+	PlatformHints    map[string]any `json:"platform_hints,omitempty"`
+	RunPolicies      map[string]any `json:"run_policies,omitempty"`
+}
+
+// buildAgentContextJSON builds the unified agent context JSON for hybrid multi-agent.
+func (b *aiJobBiz) buildAgentContextJSON(
+	ctx context.Context,
+	jobID string,
+	pipeline string,
+	templateID string,
+	toolsetIDs []string,
+	providerSnapshot *ResolvedProviderSnapshot,
+	skillsetsResp *v1.ResolveOrchestratorSkillsetsResponse,
+) string {
+	// template_id is resolved on worker side via strategy resolve.
+	// Go side should NOT fallback to pipeline - leave empty if unknown.
+	actualTemplateID := strings.TrimSpace(templateID)
+
+	// Build tool surface from provider snapshot
+	toolSurface := map[string]any{
+		"toolset_ids": toolsetIDs,
+		"tools":       []map[string]any{},
+	}
+	if providerSnapshot != nil && len(providerSnapshot.ToolCatalog) > 0 {
+		tools := make([]map[string]any, 0, len(providerSnapshot.ToolCatalog))
+		for _, meta := range providerSnapshot.ToolCatalog {
+			if meta == nil {
+				continue
+			}
+			tools = append(tools, map[string]any{
+				"name":                    meta.ToolName,
+				"kind":                    meta.Kind,
+				"domain":                  meta.Domain,
+				"read_only":               meta.ReadOnly,
+				"risk_level":              meta.RiskLevel,
+				"tool_class":              meta.ToolClass,
+				"allowed_for_prompt_skill": meta.AllowedForPromptSkill,
+				"allowed_for_graph_agent":  meta.AllowedForGraphAgent,
+				"aliases":                 meta.Aliases,
+			})
+		}
+		toolSurface["tools"] = tools
+	}
+
+	// Build skill surface from skillsets response
+	skillSurface := map[string]any{
+		"skill_ids":         []string{},
+		"capability_map":    map[string][]string{},
+		"domain_tags":       []string{}, // HM4-5: New field
+		"surface_mode":      "",         // HM4-5: New field
+		"resource_priority": 100,        // HM4-5: New field with default
+	}
+	if skillsetsResp != nil && len(skillsetsResp.Skillsets) > 0 {
+		skillIDs := make([]string, 0, len(skillsetsResp.Skillsets))
+		capabilityMap := make(map[string][]string)
+		// HM4-5: Collect domain_tags from all skills
+		allDomainTags := make(map[string]struct{})
+		var globalSurfaceMode string
+		minResourcePriority := 100
+
+		for _, skillset := range skillsetsResp.Skillsets {
+			if skillset == nil {
+				continue
+			}
+			if skillset.SkillsetID != "" {
+				skillIDs = append(skillIDs, skillset.SkillsetID)
+			}
+			for _, skill := range skillset.Skills {
+				if skill == nil || skill.SkillID == "" {
+					continue
+				}
+				skillID := skill.SkillID
+				// capability is a single string field, not a list
+				if skill.Capability != "" {
+					capName := skill.Capability
+					capabilityMap[capName] = append(capabilityMap[capName], skillID)
+				}
+				// HM4-5: Collect domain tags
+				for _, tag := range skill.DomainTags {
+					tag = strings.TrimSpace(tag)
+					if tag != "" {
+						allDomainTags[tag] = struct{}{}
+					}
+				}
+				// HM4-5: Use first non-empty surface_mode
+				if globalSurfaceMode == "" && skill.SurfaceMode != nil && *skill.SurfaceMode != "" {
+					globalSurfaceMode = *skill.SurfaceMode
+				}
+				// HM4-5: Use minimum resource_priority (lower = higher priority)
+				if skill.ResourcePriority != nil && int(*skill.ResourcePriority) < minResourcePriority {
+					minResourcePriority = int(*skill.ResourcePriority)
+				}
+			}
+		}
+		skillSurface["skill_ids"] = skillIDs
+		skillSurface["capability_map"] = capabilityMap
+
+		// HM4-5: Add collected domain_tags
+		domainTags := make([]string, 0, len(allDomainTags))
+		for tag := range allDomainTags {
+			domainTags = append(domainTags, tag)
+		}
+		skillSurface["domain_tags"] = domainTags
+		if globalSurfaceMode != "" {
+			skillSurface["surface_mode"] = globalSurfaceMode
+		}
+		skillSurface["resource_priority"] = minResourcePriority
+	}
+
+	// Platform hints (currently minimal, will be extended in future phases)
+	platformHints := map[string]any{
+		"incident_id": "", // Will be populated from job context in future phases
+	}
+
+	// Run policies (currently minimal, will be extended in future phases)
+	runPolicies := map[string]any{
+		"verification_enabled": true,
+		"quality_gate_enabled": true,
+	}
+
+	agentContext := AgentContext{
+		JobID:           strings.TrimSpace(jobID),
+		Pipeline:        strings.TrimSpace(pipeline),
+		TemplateID:      actualTemplateID, // Use actualTemplateID, not templateID
+		SessionSnapshot: map[string]any{},
+		ToolSurface:     toolSurface,
+		SkillSurface:    skillSurface,
+		PlatformHints:   platformHints,
+		RunPolicies:     runPolicies,
+	}
+
+	raw, err := json.Marshal(agentContext)
+	if err != nil {
+		slog.WarnContext(ctx, "failed to marshal agent context JSON",
+			"job_id", jobID,
+			"pipeline", pipeline,
+			"error", err,
+		)
+		return ""
 	}
 	return string(raw)
 }

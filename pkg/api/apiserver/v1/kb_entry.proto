@@ -1,0 +1,169 @@
+// KB Entry API 定义：知识库条目的请求和响应消息
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// KBEntry 表示知识库条目（可复用的根因知识条目）
+message KBEntry {
+  // id 表示数据库主键 ID
+  int64 id = 1;
+
+  // kbID 表示知识库条目业务 ID（如 kb-xxxxxx）
+  string kbID = 2;
+
+  // namespace 表示 K8s 命名空间
+  string namespace = 3;
+
+  // service 表示服务名（微服务维度）
+  string service = 4;
+
+  // rootCauseType 表示根因类型
+  string rootCauseType = 5;
+
+  // rootCauseSummary 表示根因摘要（一句话结论）
+  string rootCauseSummary = 6;
+
+  // patternsJSON 表示模式匹配规则 JSON
+  string patternsJSON = 7;
+
+  // patternsHash 表示模式哈希（用于去重）
+  string patternsHash = 8;
+
+  // evidenceSignatureJSON 表示证据签名 JSON（可选）
+  optional string evidenceSignatureJSON = 9;
+
+  // confidence 表示置信度（0-1）
+  double confidence = 10;
+
+  // hitCount 表示命中次数
+  int64 hitCount = 11;
+
+  // lastHitAt 表示最后命中时间（可选）
+  optional google.protobuf.Timestamp lastHitAt = 12;
+
+  // createdAt 表示创建时间
+  google.protobuf.Timestamp createdAt = 13;
+
+  // updatedAt 表示更新时间
+  google.protobuf.Timestamp updatedAt = 14;
+}
+
+// CreateKBEntryRequest 表示创建知识库条目请求
+message CreateKBEntryRequest {
+  // kbID 表示知识库条目业务 ID（可选，自动生成）
+  optional string kbID = 1;
+
+  // namespace 表示 K8s 命名空间
+  string namespace = 2;
+
+  // service 表示服务名
+  string service = 3;
+
+  // rootCauseType 表示根因类型
+  string rootCauseType = 4;
+
+  // rootCauseSummary 表示根因摘要
+  string rootCauseSummary = 5;
+
+  // patternsJSON 表示模式匹配规则 JSON
+  string patternsJSON = 6;
+
+  // patternsHash 表示模式哈希（可选，自动计算）
+  optional string patternsHash = 7;
+
+  // evidenceSignatureJSON 表示证据签名 JSON（可选）
+  optional string evidenceSignatureJSON = 8;
+
+  // confidence 表示置信度（可选，默认 0.7）
+  optional double confidence = 9;
+}
+
+// CreateKBEntryResponse 表示创建知识库条目响应
+message CreateKBEntryResponse {
+  // kbEntry 表示创建的知识库条目
+  KBEntry kbEntry = 1;
+}
+
+// GetKBEntryRequest 表示获取知识库条目请求
+message GetKBEntryRequest {
+  // kbID 表示要获取的知识库条目 ID
+  // @gotags: uri:"kbID"
+  string kbID = 1;
+}
+
+// GetKBEntryResponse 表示获取知识库条目响应
+message GetKBEntryResponse {
+  // kbEntry 表示返回的知识库条目信息
+  KBEntry kbEntry = 1;
+}
+
+// UpdateKBEntryRequest 表示更新知识库条目请求
+message UpdateKBEntryRequest {
+  // kbID 表示要更新的知识库条目 ID
+  // @gotags: uri:"kbID"
+  string kbID = 1;
+
+  // rootCauseSummary 表示更新后的根因摘要（可选）
+  optional string rootCauseSummary = 2;
+
+  // patternsJSON 表示更新后的模式匹配规则 JSON（可选）
+  optional string patternsJSON = 3;
+
+  // patternsHash 表示更新后的模式哈希（可选，自动计算）
+  optional string patternsHash = 4;
+
+  // evidenceSignatureJSON 表示更新后的证据签名 JSON（可选）
+  optional string evidenceSignatureJSON = 5;
+
+  // confidence 表示更新后的置信度（可选）
+  optional double confidence = 6;
+}
+
+// UpdateKBEntryResponse 表示更新知识库条目响应
+message UpdateKBEntryResponse {
+  // kbEntry 表示更新后的知识库条目
+  KBEntry kbEntry = 1;
+}
+
+// DeleteKBEntryRequest 表示删除知识库条目请求
+message DeleteKBEntryRequest {
+  // kbID 表示要删除的知识库条目 ID
+  // @gotags: uri:"kbID"
+  string kbID = 1;
+}
+
+// DeleteKBEntryResponse 表示删除知识库条目响应
+message DeleteKBEntryResponse {}
+
+// ListKBEntriesRequest 表示获取知识库条目列表请求
+message ListKBEntriesRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // namespace 表示可选的命名空间过滤
+  optional string namespace = 3;
+
+  // service 表示可选的服务过滤
+  optional string service = 4;
+
+  // rootCauseType 表示可选的根因类型过滤
+  optional string rootCauseType = 5;
+}
+
+// ListKBEntriesResponse 表示获取知识库条目列表响应
+message ListKBEntriesResponse {
+  // totalCount 表示总条目数
+  int64 totalCount = 1;
+
+  // kbEntries 表示知识库条目列表
+  repeated KBEntry kbEntries = 2;
+}

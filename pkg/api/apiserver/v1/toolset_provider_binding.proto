@@ -1,0 +1,81 @@
+// ToolsetProviderBinding API definition: toolset-to-provider binding management.
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// ToolsetProviderBinding represents one binding between a toolset and an MCP server provider.
+message ToolsetProviderBinding {
+  int64 id = 1;
+  string toolsetName = 2;
+  string mcpServerID = 3;
+  optional string allowedToolsJSON = 4;
+  int32 priority = 5;
+  bool enabled = 6;
+  google.protobuf.Timestamp createdAt = 7;
+  google.protobuf.Timestamp updatedAt = 8;
+}
+
+message CreateToolsetProviderBindingRequest {
+  string toolsetName = 1;
+  string mcpServerID = 2;
+  optional string allowedToolsJSON = 3;
+  optional int32 priority = 4;
+  optional bool enabled = 5;
+}
+
+message CreateToolsetProviderBindingResponse {
+  ToolsetProviderBinding toolsetProviderBinding = 1;
+}
+
+message GetToolsetProviderBindingRequest {
+  // @gotags: uri:"toolsetName"
+  string toolsetName = 1;
+  // @gotags: uri:"mcpServerID"
+  string mcpServerID = 2;
+}
+
+message GetToolsetProviderBindingResponse {
+  ToolsetProviderBinding toolsetProviderBinding = 1;
+}
+
+message ListToolsetProviderBindingsRequest {
+  // @gotags: form:"offset"
+  int64 offset = 1;
+  // @gotags: form:"limit"
+  int64 limit = 2;
+  optional string toolsetName = 3;
+  optional string mcpServerID = 4;
+  optional bool enabled = 5;
+}
+
+message ListToolsetProviderBindingsResponse {
+  int64 totalCount = 1;
+  repeated ToolsetProviderBinding toolsetProviderBindings = 2;
+}
+
+message UpdateToolsetProviderBindingRequest {
+  // @gotags: uri:"toolsetName"
+  string toolsetName = 1;
+  // @gotags: uri:"mcpServerID"
+  string mcpServerID = 2;
+  optional string allowedToolsJSON = 3;
+  optional int32 priority = 4;
+  optional bool enabled = 5;
+}
+
+message UpdateToolsetProviderBindingResponse {
+  ToolsetProviderBinding toolsetProviderBinding = 1;
+}
+
+message DeleteToolsetProviderBindingRequest {
+  // @gotags: uri:"toolsetName"
+  string toolsetName = 1;
+  // @gotags: uri:"mcpServerID"
+  string mcpServerID = 2;
+}
+
+message DeleteToolsetProviderBindingResponse {}

@@ -5,7 +5,7 @@ package apiserver.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
 
 // AIJob represents one RCA orchestration run.
 message AIJob {
@@ -38,6 +38,8 @@ message AIJob {
   optional google.protobuf.Timestamp finishedAt = 15;
   // createdBy is actor identifier: system|user:{id}|ai:{job_id}.
   string createdBy = 16;
+  // sessionID is the reusable RCA session identifier associated with this run.
+  optional string sessionID = 17;
 }
 
 // RunAIJobRequest creates one AI job for an incident.
@@ -120,7 +122,77 @@ message StartAIJobRequest {
 }
 
 // StartAIJobResponse indicates transition result.
-message StartAIJobResponse {}
+message StartAIJobResponse {
+  // skillsetsJSON contains resolved skillset configuration for the job's pipeline.
+  // Follows the ResolveOrchestratorSkillsetsResponse format.
+  optional string skillsetsJSON = 1;
+  // resolvedToolProviders is the canonical field containing structured provider snapshot.
+  // This is materialized at claim time from toolset_provider_bindings + mcp_servers + tool_metadata.
+  repeated ResolvedToolProvider resolvedToolProviders = 2;
+  // agentContextJSON is the unified agent context snapshot for hybrid multi-agent.
+  // Contains job_id, pipeline, template_id, session_snapshot, tool_surface, skill_surface,
+  // platform_hints, and run_policies.
+  optional string agentContextJSON = 3;
+  // Reserved: field 4 was playbookConfigJSON (dynamic playbook config feature removed).
+  // MCL (2026-03-23): Static T6 playbook injection has also been removed from Finalize.
+  // diagnosis_json now contains only the core diagnosis payload without playbook injection.
+  reserved 4;
+  // Reserved: field 5 was verificationTemplateJSON (verification removed from MCL active path).
+  // MCL (2026-03-23): run_verification node removed from basic_rca graph.
+  reserved 5;
+}
+
+// ResolvedToolProvider represents a fully resolved tool provider with all metadata.
+// This is the single source of truth for worker tool execution.
+message ResolvedToolProvider {
+  // providerID is a unique identifier for this provider instance within the job.
+  string providerID = 1;
+  // mcpServerID references the mcp_servers table.
+  string mcpServerID = 2;
+  // name is the display name of the provider.
+  string name = 3;
+  // providerType indicates the provider type (e.g., mcp_http).
+  string providerType = 4;
+  // serverKind is builtin or external.
+  string serverKind = 5;
+  // baseURL is the endpoint for the provider.
+  string baseURL = 6;
+  // allowedTools is the filtered list of tools available for this job.
+  repeated string allowedTools = 7;
+  // toolMetadata contains metadata for each allowed tool.
+  repeated ToolMetadataRef toolMetadata = 8;
+  // priority determines execution order (lower = higher priority).
+  int32 priority = 9;
+  // scopes contains optional scope information.
+  optional string scopes = 10;
+  // timeoutSec is the timeout for calls to this provider.
+  optional int32 timeoutSec = 11;
+}
+
+// ToolMetadataRef is a lightweight reference to tool metadata.
+// Used to pass tool classification info to the orchestrator.
+message ToolMetadataRef {
+  // toolName is the canonical dotted name (e.g., incident.get).
+  string toolName = 1;
+  // kind is the tool category (e.g., metrics, logs, traces, incident).
+  string kind = 2;
+  // domain is the logical domain (e.g., observability, platform).
+  string domain = 3;
+  // readOnly indicates whether the tool only reads data.
+  bool readOnly = 4;
+  // riskLevel is low, medium, or high.
+  string riskLevel = 5;
+  // toolClass is fc_selectable (A-class) or runtime_owned (B-class).
+  string toolClass = 6;
+  // aliases contains legacy underscore names for backward compatibility.
+  repeated string aliases = 7;
+  // allowedForPromptSkill indicates visibility to prompt-first Skills.
+  // Optional to preserve explicit false values in JSON serialization.
+  optional bool allowedForPromptSkill = 8;
+  // allowedForGraphAgent indicates visibility to LangGraph FC agent.
+  // Optional to preserve explicit false values in JSON serialization.
+  optional bool allowedForGraphAgent = 9;
+}
 
 // CancelAIJobRequest transitions job to canceled.
 message CancelAIJobRequest {

@@ -5,15 +5,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"zk8s.com/rca-api/internal/pkg/errno"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
 )
 
 const (
 	scopeHeader = "X-Scopes"
 
-	ScopeAlertRead   = "alert.read"
-	ScopeAlertIngest = "alert.ingest"
-	ScopeAlertAck    = "alert.ack"
+	ScopeIncidentRead  = "incident.read"
+	ScopeIncidentWrite = "incident.write"
+
+	ScopeAlertRead      = "alert.read"
+	ScopeAlertEventRead = "alert_event.read"
+	ScopeAlertIngest    = "alert.ingest"
+	ScopeAlertAck       = "alert.ack"
 
 	ScopeDatasourceRead  = "datasource.read"
 	ScopeDatasourceAdmin = "datasource.admin"
@@ -22,9 +26,17 @@ const (
 	ScopeEvidenceRead    = "evidence.read"
 	ScopeAIRun           = "ai.run"
 	ScopeAIRead          = "ai.read"
+	ScopeSessionReview   = "session.review"
+	ScopeSessionAssign   = "session.assignment"
+	ScopeConfigAdmin     = "config.admin"
+	ScopeRBACAdmin       = "rbac.admin"
+	ScopeAIJobRead       = "ai_job.read"
+	ScopeToolCallRead    = "toolcall.read"
 	ScopeAICancel        = "ai.cancel"
 	ScopeSilenceRead     = "silence.read"
 	ScopeSilenceAdmin    = "silence.admin"
+	ScopeNoticeRead      = "notice.read"
+	ScopeNoticeAdmin     = "notice.admin"
 )
 
 // RequireAnyScope verifies caller scopes from X-Scopes header.

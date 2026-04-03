@@ -1,0 +1,44 @@
+// Orchestrator skillset resolve API messages (read-only distribution).
+syntax = "proto3";
+
+package apiserver.v1;
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// OrchestratorSkillRelease defines one resolved skill release entry.
+message OrchestratorSkillRelease {
+  string skillID = 1;
+  string version = 2;
+  string bundleDigest = 3;
+  string artifactURL = 4;
+  optional string manifestJSON = 5;
+  string status = 6;
+  string capability = 7;
+  repeated string allowedTools = 8;
+  int32 priority = 9;
+  bool enabled = 10;
+  string role = 11;
+  string executorMode = 12;
+  // HM4-5: New fields for hybrid multi-agent routing
+  repeated string domainTags = 13;           // Domain tags for routing (e.g., "observability", "change")
+  optional string surfaceMode = 14;          // Surface visibility mode (e.g., "skills_only", "hybrid")
+  optional int32 resourcePriority = 15;      // Resource loading priority (lower = higher priority)
+}
+
+// OrchestratorSkillset is one resolved skillset definition.
+message OrchestratorSkillset {
+  string skillsetID = 1;
+  repeated OrchestratorSkillRelease skills = 2;
+}
+
+// ResolveOrchestratorSkillsetsRequest resolves skillsets by pipeline.
+message ResolveOrchestratorSkillsetsRequest {
+  // @gotags: form:"pipeline"
+  optional string pipeline = 1;
+}
+
+// ResolveOrchestratorSkillsetsResponse returns normalized pipeline and resolved skillsets.
+message ResolveOrchestratorSkillsetsResponse {
+  string pipeline = 1;
+  repeated OrchestratorSkillset skillsets = 2;
+}

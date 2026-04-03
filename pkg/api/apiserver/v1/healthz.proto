@@ -3,7 +3,7 @@ syntax = "proto3"; // Specifies the syntax version used by this file.
 
 package apiserver.v1;
 
-option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
 
 // ServiceStatus represents the health status of the service.
 enum ServiceStatus {

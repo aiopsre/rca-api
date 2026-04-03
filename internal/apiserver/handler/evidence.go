@@ -6,38 +6,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/onexstack/onexstack/pkg/core"
 
-	"zk8s.com/rca-api/internal/apiserver/pkg/authz"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/authz"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/runtimecontract"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
-
-func (h *Handler) QueryEvidenceMetrics(c *gin.Context) {
-	if err := authz.RequireAnyScope(c, authz.ScopeEvidenceQuery); err != nil {
-		core.WriteResponse(c, nil, err)
-		return
-	}
-	core.HandleJSONRequest(c, h.biz.EvidenceV1().QueryMetrics, h.val.ValidateQueryMetricsRequest)
-}
-
-func (h *Handler) QueryEvidenceLogs(c *gin.Context) {
-	if err := authz.RequireAnyScope(c, authz.ScopeEvidenceQuery); err != nil {
-		core.WriteResponse(c, nil, err)
-		return
-	}
-	core.HandleJSONRequest(c, h.biz.EvidenceV1().QueryLogs, h.val.ValidateQueryLogsRequest)
-}
-
-func (h *Handler) QueryEvidenceAction(c *gin.Context) {
-	action := strings.TrimPrefix(strings.TrimSpace(c.Param("action")), ":")
-	switch action {
-	case "queryMetrics":
-		h.QueryEvidenceMetrics(c)
-	case "queryLogs":
-		h.QueryEvidenceLogs(c)
-	default:
-		core.WriteResponse(c, nil, errno.ErrPageNotFound)
-	}
-}
 
 func (h *Handler) SaveIncidentEvidence(c *gin.Context) {
 	if err := authz.RequireAnyScope(c, authz.ScopeEvidenceSave); err != nil {
@@ -57,6 +29,7 @@ func (h *Handler) SaveIncidentEvidence(c *gin.Context) {
 			req.IdempotencyKey = &headerKey
 		}
 	}
+	req = *runtimecontract.EvidencePublishRequestFromAPI(&req).ToAPIRequest()
 
 	resp, err := h.biz.EvidenceV1().Save(c.Request.Context(), &req)
 	core.WriteResponse(c, resp, err)
@@ -97,7 +70,6 @@ func (h *Handler) GetEvidence(c *gin.Context) {
 func init() {
 	Register(func(v1 *gin.RouterGroup, handler *Handler, mws ...gin.HandlerFunc) {
 		root := v1.Group("", mws...)
-		root.POST("/evidence:action", handler.QueryEvidenceAction)
 		root.GET("/evidence/:evidenceID", handler.GetEvidence)
 
 		rg := v1.Group("/incidents", mws...)

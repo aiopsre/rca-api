@@ -3,8 +3,8 @@ package conversion
 import (
 	"github.com/onexstack/onexstack/pkg/core"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 // AlertEventMToAlertEventV1 converts model alert event to API object.

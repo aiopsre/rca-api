@@ -3,20 +3,24 @@ package ai_job
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/onexstack/onexstack/pkg/errorsx"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
@@ -52,7 +56,7 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, runResp1.JobID, runResp2.JobID)
 
-	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
 		JobID:        runResp1.JobID,
 		Seq:          2,
 		NodeName:     "logs_specialist",
@@ -65,7 +69,7 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
 		JobID:       runResp1.JobID,
 		Seq:         1,
 		NodeName:    "metrics_specialist",
@@ -88,7 +92,7 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.Equal(t, int64(1), toolCalls.ToolCalls[0].Seq)
 	require.Equal(t, int64(2), toolCalls.ToolCalls[1].Seq)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:         runResp1.JobID,
 		Status:        "succeeded",
 		OutputSummary: ptrAIString("db connection pool exhausted"),
@@ -130,6 +134,690 @@ func TestAIJobRunToolCallFinalize_Success(t *testing.T) {
 	require.Equal(t, "db", *updatedIncident.RootCauseType)
 }
 
+func TestAIJobRun_BindsExistingIncidentSession(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	sessionSvc := sessionbiz.New(s)
+	ensureResp, err := sessionSvc.EnsureIncidentSession(context.Background(), &sessionbiz.EnsureIncidentSessionRequest{
+		IncidentID: incident.IncidentID,
+		Title:      ptrAIString("incident/" + incident.IncidentID),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ensureResp.Session)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	require.Equal(t, ensureResp.Session.SessionID, strings.TrimSpace(*job.SessionID))
+
+	sessionObj, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", ensureResp.Session.SessionID))
+	require.NoError(t, err)
+	require.NotNil(t, sessionObj.ActiveRunID)
+	require.Equal(t, runResp.JobID, strings.TrimSpace(*sessionObj.ActiveRunID))
+}
+
+func TestAIJobRun_EnsuresIncidentSessionWhenMissing(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	require.NotEmpty(t, strings.TrimSpace(*job.SessionID))
+
+	sessionObj, err := s.SessionContext().GetByIncidentID(context.Background(), incident.IncidentID)
+	require.NoError(t, err)
+	require.Equal(t, strings.TrimSpace(*job.SessionID), sessionObj.SessionID)
+	require.Equal(t, sessionbiz.SessionTypeIncident, sessionObj.SessionType)
+	require.Equal(t, incident.IncidentID, sessionObj.BusinessKey)
+	require.NotNil(t, sessionObj.ActiveRunID)
+	require.Equal(t, runResp.JobID, strings.TrimSpace(*sessionObj.ActiveRunID))
+}
+
+func TestAIJobFinalize_UpdatesSessionContextAndClearsActiveRun(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionObj, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", strings.TrimSpace(*job.SessionID)))
+	require.NoError(t, err)
+	require.NotNil(t, sessionObj.LatestSummaryJSON)
+	require.NotNil(t, sessionObj.PinnedEvidenceJSON)
+	require.Nil(t, sessionObj.ActiveRunID)
+
+	var latest map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*sessionObj.LatestSummaryJSON), &latest))
+	require.Equal(t, "db_pool_exhausted", strings.TrimSpace(anyToString(latest["root_cause_type"])))
+	require.Equal(t, "database pool saturation confirmed", strings.TrimSpace(anyToString(latest["summary"])))
+	require.Equal(t, 0.82, latest["confidence"])
+	refsAny, ok := latest["evidence_refs"].([]any)
+	require.True(t, ok)
+	require.Len(t, refsAny, 2)
+
+	var pinned map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*sessionObj.PinnedEvidenceJSON), &pinned))
+	require.Equal(t, "ai_job_finalize", strings.TrimSpace(anyToString(pinned["source"])))
+	refsAny, ok = pinned["refs"].([]any)
+	require.True(t, ok)
+	require.Len(t, refsAny, 2)
+}
+
+func TestAIJobSessionRuntime_GetAndPatch(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	sessionResp, err := biz.GetJobSessionContext(context.Background(), &GetJobSessionContextRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+	require.NotEmpty(t, sessionResp.SessionID)
+	require.NotEmpty(t, sessionResp.SessionRevision)
+
+	patchResp, err := biz.PatchJobSessionContext(context.Background(), &PatchJobSessionContextRequest{
+		JobID:           runResp.JobID,
+		SessionRevision: ptrAIString(sessionResp.SessionRevision),
+		LatestSummary:   rawJSONPtr(`{"summary":"claude skill summary"}`),
+		PinnedEvidenceAppend: []map[string]any{
+			{"evidence_id": "evidence-1", "source": "claude_skill"},
+		},
+		ContextStatePatch: rawJSONPtr(`{"claude_skill":{"last_skill":"analysis"}}`),
+		Actor:             ptrAIString("ai:job-session-runtime"),
+		Note:              ptrAIString("session patch"),
+		Source:            ptrAIString("claude_agent_skill"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, "claude skill summary", anyToString(patchResp.LatestSummary["summary"]))
+	require.Len(t, patchResp.PinnedEvidence, 1)
+	require.Equal(t, "analysis", anyToString(patchResp.ContextState["claude_skill"].(map[string]any)["last_skill"]))
+
+	sessionObj, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", sessionResp.SessionID))
+	require.NoError(t, err)
+	require.Contains(t, trimOptional(sessionObj.LatestSummaryJSON), "claude skill summary")
+	require.Contains(t, trimOptional(sessionObj.ContextStateJSON), "claude_skill")
+
+	sessionSvc := sessionbiz.New(s)
+	historyResp, err := sessionSvc.ListHistory(context.Background(), &sessionbiz.ListSessionHistoryRequest{
+		SessionID: sessionResp.SessionID,
+		Offset:    0,
+		Limit:     20,
+	})
+	require.NoError(t, err)
+	foundContextPatched := false
+	for _, item := range historyResp.Events {
+		if item != nil && item.EventType == sessionbiz.SessionHistoryEventContextPatched {
+			foundContextPatched = true
+			break
+		}
+	}
+	require.True(t, foundContextPatched)
+
+	_, err = biz.PatchJobSessionContext(context.Background(), &PatchJobSessionContextRequest{
+		JobID:           runResp.JobID,
+		SessionRevision: ptrAIString(sessionResp.SessionRevision),
+		LatestSummary:   rawJSONPtr(`{"summary":"stale"}`),
+	})
+	require.ErrorIs(t, err, errno.ErrSessionContextRevisionConflict)
+}
+
+func TestAIJobRunTraceAndDecisionTrace_MinimalStructuredPersistence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+	runCtx := contextx.WithTriggerType(context.Background(), "manual")
+	runCtx = contextx.WithTriggerSource(runCtx, "manual_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:tester")
+
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+		CreatedBy:      ptrAIString("user:tester"),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+
+	var queuedTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &queuedTrace))
+	require.Equal(t, "manual", strings.TrimSpace(anyToString(queuedTrace["trigger_type"])))
+	require.Equal(t, "manual_api", strings.TrimSpace(anyToString(queuedTrace["trigger_source"])))
+	require.Equal(t, "user:tester", strings.TrimSpace(anyToString(queuedTrace["initiator"])))
+	require.Equal(t, "queued", strings.TrimSpace(anyToString(queuedTrace["status"])))
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+
+	var runningTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &runningTrace))
+	require.Equal(t, "running", strings.TrimSpace(anyToString(runningTrace["status"])))
+	require.NotEmpty(t, strings.TrimSpace(anyToString(runningTrace["started_at"])))
+	require.Equal(t, "test-instance", strings.TrimSpace(anyToString(runningTrace["worker_id"])))
+
+	_, err = biz.CreateToolCall(orchestratorCtx(), &v1.CreateAIToolCallRequest{
+		JobID:        runResp.JobID,
+		Seq:          1,
+		NodeName:     "diagnosis",
+		ToolName:     "evidence.queryMetrics",
+		RequestJSON:  `{"q":"cpu"}`,
+		ResponseJSON: ptrAIString(`{"series":1}`),
+		Status:       "ok",
+		LatencyMs:    5,
+		EvidenceIDs:  []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-1", "evidence-2"},
+	})
+	require.NoError(t, err)
+
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+	require.NotNil(t, job.DecisionTraceJSON)
+
+	var finalizedTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &finalizedTrace))
+	require.Equal(t, "succeeded", strings.TrimSpace(anyToString(finalizedTrace["status"])))
+	require.NotEmpty(t, strings.TrimSpace(anyToString(finalizedTrace["finished_at"])))
+	require.Equal(t, 1, parseAnyInt(t, finalizedTrace["tool_call_count"]))
+	require.Equal(t, 2, parseAnyInt(t, finalizedTrace["evidence_count"]))
+	require.Equal(t, "manual", strings.TrimSpace(anyToString(finalizedTrace["trigger_type"])))
+	require.Equal(t, "manual_api", strings.TrimSpace(anyToString(finalizedTrace["trigger_source"])))
+
+	var decisionTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.DecisionTraceJSON), &decisionTrace))
+	require.Equal(t, "succeeded", strings.TrimSpace(anyToString(decisionTrace["status"])))
+	require.Equal(t, "db_pool_exhausted", strings.TrimSpace(anyToString(decisionTrace["root_cause_type"])))
+	require.Equal(t, "database pool saturation confirmed", strings.TrimSpace(anyToString(decisionTrace["root_cause_summary"])))
+	require.Equal(t, 0.82, decisionTrace["confidence"])
+	require.Equal(t, false, decisionTrace["human_review_required"])
+
+	evidenceRefsAny, ok := decisionTrace["evidence_refs"].([]any)
+	require.True(t, ok)
+	require.Len(t, evidenceRefsAny, 2)
+}
+
+func TestAIJobRunTrace_UsesReplayTriggerContext(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runCtx := contextx.WithTriggerType(context.Background(), "replay")
+	runCtx = contextx.WithTriggerSource(runCtx, "replay_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:replay")
+
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("replay"),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+		CreatedBy:      ptrAIString("user:replay"),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.RunTraceJSON)
+
+	var runTrace map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &runTrace))
+	require.Equal(t, "replay", strings.TrimSpace(anyToString(runTrace["trigger_type"])))
+	require.Equal(t, "replay_api", strings.TrimSpace(anyToString(runTrace["trigger_source"])))
+	require.Equal(t, "user:replay", strings.TrimSpace(anyToString(runTrace["initiator"])))
+}
+
+func TestAIJobRunTrace_UsesCronAndChangeTriggerContext(t *testing.T) {
+	cases := []struct {
+		name          string
+		triggerType   string
+		triggerSource string
+		createdBy     string
+	}{
+		{
+			name:          "cron",
+			triggerType:   "cron",
+			triggerSource: "cron_router",
+			createdBy:     "system:cron",
+		},
+		{
+			name:          "change",
+			triggerType:   "change",
+			triggerSource: "change_router",
+			createdBy:     "system:change",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newAIJobTestDB(t)
+			s := store.NewStore(db)
+			biz := New(s)
+			incident := createTestIncident(t, s)
+
+			end := time.Now().UTC().Truncate(time.Second)
+			start := end.Add(-15 * time.Minute)
+			runCtx := contextx.WithTriggerType(context.Background(), tc.triggerType)
+			runCtx = contextx.WithTriggerSource(runCtx, tc.triggerSource)
+			runCtx = contextx.WithTriggerInitiator(runCtx, tc.createdBy)
+
+			runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+				IncidentID:     incident.IncidentID,
+				Trigger:        ptrAIString(tc.triggerType),
+				TimeRangeStart: timestamppb.New(start),
+				TimeRangeEnd:   timestamppb.New(end),
+				CreatedBy:      ptrAIString(tc.createdBy),
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, runResp.JobID)
+
+			job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+			require.NoError(t, err)
+			require.NotNil(t, job.RunTraceJSON)
+
+			var runTrace map[string]any
+			require.NoError(t, json.Unmarshal([]byte(*job.RunTraceJSON), &runTrace))
+			require.Equal(t, tc.triggerType, strings.TrimSpace(anyToString(runTrace["trigger_type"])))
+			require.Equal(t, tc.triggerSource, strings.TrimSpace(anyToString(runTrace["trigger_source"])))
+			require.Equal(t, tc.createdBy, strings.TrimSpace(anyToString(runTrace["initiator"])))
+		})
+	}
+}
+
+func TestAIJobTraceReadModel_GetAndList(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	runCtxReplay := contextx.WithTriggerType(context.Background(), "replay")
+	runCtxReplay = contextx.WithTriggerSource(runCtxReplay, "replay_api")
+	runCtxReplay = contextx.WithTriggerInitiator(runCtxReplay, "user:replay")
+	replayResp, err := biz.Run(runCtxReplay, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("replay"),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, replayResp.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: replayResp.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  replayResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-r1","evidence-r2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-r1","evidence-r2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-r1", "evidence-r2"},
+	})
+	require.NoError(t, err)
+
+	runCtxFollowUp := contextx.WithTriggerType(context.Background(), "follow_up")
+	runCtxFollowUp = contextx.WithTriggerSource(runCtxFollowUp, "follow_up_api")
+	runCtxFollowUp = contextx.WithTriggerInitiator(runCtxFollowUp, "user:follow-up")
+	followResp, err := biz.Run(runCtxFollowUp, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("follow_up"),
+		TimeRangeStart: timestamppb.New(start.Add(10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(end.Add(10 * time.Minute)),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, followResp.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: followResp.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         followResp.JobID,
+		Status:        "failed",
+		ErrorMessage:  ptrAIString("follow up evidence missing"),
+		OutputSummary: ptrAIString("follow up failed"),
+	})
+	require.NoError(t, err)
+
+	replayTrace, err := biz.GetTraceReadModel(context.Background(), &GetTraceReadModelRequest{JobID: replayResp.JobID})
+	require.NoError(t, err)
+	require.NotNil(t, replayTrace)
+	require.NotNil(t, replayTrace.RunTrace)
+	require.NotNil(t, replayTrace.DecisionTrace)
+	require.Equal(t, "replay", replayTrace.RunTrace.TriggerType)
+	require.Equal(t, "replay_api", replayTrace.RunTrace.TriggerSource)
+	require.Equal(t, "db_pool_exhausted", replayTrace.DecisionTrace.RootCauseType)
+
+	incidentSummaries, err := biz.ListTraceReadModels(context.Background(), &ListTraceReadModelsRequest{
+		IncidentID: ptrAIString(incident.IncidentID),
+		Limit:      10,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, incidentSummaries.TotalCount, int64(2))
+	require.Len(t, incidentSummaries.Summaries, 2)
+	require.Equal(t, followResp.JobID, incidentSummaries.Summaries[0].JobID)
+	require.Equal(t, "follow_up", incidentSummaries.Summaries[0].TriggerType)
+	require.Equal(t, replayResp.JobID, incidentSummaries.Summaries[1].JobID)
+	require.Equal(t, "replay", incidentSummaries.Summaries[1].TriggerType)
+
+	replayJob, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", replayResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, replayJob.SessionID)
+	sessionSummaries, err := biz.ListTraceReadModels(context.Background(), &ListTraceReadModelsRequest{
+		SessionID: replayJob.SessionID,
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, sessionSummaries.TotalCount, int64(2))
+}
+
+func TestAIJobTraceReadModel_CompareReplayRuns(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+
+	leftCtx := contextx.WithTriggerType(context.Background(), "replay")
+	leftCtx = contextx.WithTriggerSource(leftCtx, "replay_api")
+	leftCtx = contextx.WithTriggerInitiator(leftCtx, "user:replay")
+	leftRun, err := biz.Run(leftCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("replay"),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, leftRun.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: leftRun.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  leftRun.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"connection pool saturated",
+				"statement":"peak load exceeded pool size",
+				"confidence":0.82,
+				"evidence_ids":["evidence-l1","evidence-l2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"pool limit reached",
+					"confidence":0.82,
+					"supporting_evidence_ids":["evidence-l1","evidence-l2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-l1", "evidence-l2"},
+	})
+	require.NoError(t, err)
+
+	rightCtx := contextx.WithTriggerType(context.Background(), "follow_up")
+	rightCtx = contextx.WithTriggerSource(rightCtx, "follow_up_api")
+	rightCtx = contextx.WithTriggerInitiator(rightCtx, "user:follow-up")
+	rightRun, err := biz.Run(rightCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("follow_up"),
+		TimeRangeStart: timestamppb.New(start.Add(10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(end.Add(10 * time.Minute)),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, rightRun.JobID)
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: rightRun.JobID})
+	require.NoError(t, err)
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  rightRun.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"upstream timeout dominates latency",
+			"root_cause":{
+				"type":"dependency_timeout",
+				"category":"dependency",
+				"summary":"upstream timeout dominates latency",
+				"statement":"dependency timeout ratio increased",
+				"confidence":0.67,
+				"evidence_ids":["evidence-r1","evidence-r2"]
+			},
+			"hypotheses":[
+				{
+					"statement":"dependency timeout dominates",
+					"confidence":0.67,
+					"supporting_evidence_ids":["evidence-r1","evidence-r2"],
+					"missing_evidence":[]
+				}
+			]
+		}`),
+		EvidenceIDs: []string{"evidence-r1", "evidence-r2"},
+	})
+	require.NoError(t, err)
+
+	compareResp, err := biz.CompareTraceReadModels(context.Background(), &CompareTraceReadModelsRequest{
+		LeftJobID:  leftRun.JobID,
+		RightJobID: rightRun.JobID,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, compareResp)
+	require.True(t, compareResp.SameIncident)
+	require.True(t, compareResp.SameSession)
+	require.True(t, compareResp.ChangedRootCause)
+	require.True(t, compareResp.ChangedConfidence)
+	require.Equal(t, "replay", compareResp.Left.TriggerType)
+	require.Equal(t, "follow_up", compareResp.Right.TriggerType)
+	require.Equal(t, "database pool saturation confirmed", compareResp.Left.RootCauseSummary)
+	require.Equal(t, "upstream timeout dominates latency", compareResp.Right.RootCauseSummary)
+	require.NotEmpty(t, compareResp.Left.EvidenceRefs)
+	require.NotEmpty(t, compareResp.Right.EvidenceRefs)
+}
+
+func TestAIJobTraceReadModel_CompareRejectsUnrelatedRuns(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	leftRun, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentA.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	rightRun, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incidentB.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.CompareTraceReadModels(context.Background(), &CompareTraceReadModelsRequest{
+		LeftJobID:  leftRun.JobID,
+		RightJobID: rightRun.JobID,
+	})
+	require.Error(t, err)
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+}
+
+func TestAIJobFinalize_SessionPatchFailureIsBestEffort(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.JobID)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	require.NoError(t, db.Exec("DROP TABLE session_contexts").Error)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"service dependency timeout spike",
+			"root_cause":{
+				"category":"dependency",
+				"statement":"downstream timeout rate increased",
+				"confidence":0.5,
+				"evidence_ids":["evidence-1"]
+			}
+		}`),
+	})
+	require.NoError(t, err)
+
+	jobResp, err := biz.Get(context.Background(), &v1.GetAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", jobResp.Job.Status)
+}
+
+// MCL: TestAIJobFinalize_InjectsPlaybookAndMirrorsToToolCall removed - playbook injection removed from active path
+
 func TestAIJobFinalize_RejectsInvalidDiagnosis(t *testing.T) {
 	db := newAIJobTestDB(t)
 	s := store.NewStore(db)
@@ -146,10 +834,10 @@ func TestAIJobFinalize_RejectsInvalidDiagnosis(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -182,10 +870,10 @@ func TestAIJobFinalize_MissingEvidenceTemplate(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -253,10 +941,10 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithHighConfidence(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
 	require.NoError(t, err)
 
-	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
 		JobID:  runResp.JobID,
 		Status: "succeeded",
 		DiagnosisJSON: ptrAIString(`{
@@ -275,6 +963,389 @@ func TestAIJobFinalize_RejectsMissingEvidenceWithHighConfidence(t *testing.T) {
 					"confidence":0.2,
 					"supporting_evidence_ids":["evidence-1"],
 					"missing_evidence":["logs"]
+				}
+			]
+		}`),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsMissingEvidenceWithoutTopLevelMissingEvidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"invalid missing evidence diagnosis",
+			"root_cause":{
+				"type":"missing_evidence",
+				"category":"unknown",
+				"summary":"insufficient evidence",
+				"statement":"",
+				"confidence":0.2,
+				"evidence_ids":["evidence-1"]
+			},
+			"missing_evidence":[],
+			"hypotheses":[
+				{
+					"statement":"need more logs",
+					"confidence":0.2,
+					"supporting_evidence_ids":["evidence-1"],
+					"missing_evidence":["logs"]
+				}
+			]
+		}`),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsMissingEvidenceWithTooManyMissingEvidenceItems(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	missing := make([]string, 0, maxMissingEvidenceItems+1)
+	for i := 0; i < maxMissingEvidenceItems+1; i++ {
+		missing = append(missing, fmt.Sprintf("missing-%d", i))
+	}
+	missingJSON, err := json.Marshal(missing)
+	require.NoError(t, err)
+
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid missing evidence diagnosis",
+		"root_cause":{
+			"type":"missing_evidence",
+			"category":"unknown",
+			"summary":"insufficient evidence",
+			"statement":"",
+			"confidence":0.2,
+			"evidence_ids":["evidence-1"]
+		},
+		"missing_evidence":%s
+	}`, string(missingJSON))
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_ConflictEvidenceTemplate(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-20 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceIDMetrics := createTestEvidence(t, s, incident.IncidentID, "metrics", "metrics spike")
+	evidenceIDLogs := createTestEvidence(t, s, incident.IncidentID, "logs", "logs do not corroborate")
+
+	diagnosis := fmt.Sprintf(`{
+		"schema_version":"1.0",
+		"generated_at":"2026-02-07T00:00:00Z",
+		"incident_id":"%s",
+		"summary":"Evidence signals conflict: metrics indicate degradation while logs/traces do not corroborate within the same window.",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs/traces conflict within aligned time window",
+			"statement":"",
+			"confidence":0.25,
+			"evidence_ids":["%s","%s"]
+		},
+		"missing_evidence":[
+			"align metrics/logs/traces time window and re-query within the same interval",
+			"collect upstream/downstream traces or confirm tracing sampling/drop"
+		],
+		"hypotheses":[
+			{
+				"statement":"Current evidence is conflicting and insufficient for a decisive root cause.",
+				"confidence":0.25,
+				"supporting_evidence_ids":["%s","%s"],
+				"missing_evidence":[
+					"align metrics/logs/traces time window and re-query within the same interval"
+				]
+			}
+		],
+		"recommendations":[{"type":"readonly_check","action":"collect more evidence","risk":"low"}],
+		"unknowns":["root cause remains uncertain due to conflicting evidence"],
+		"next_steps":["re-run after aligned window evidence collection"]
+	}`, incident.IncidentID, evidenceIDMetrics, evidenceIDLogs, evidenceIDMetrics, evidenceIDLogs)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.NoError(t, err)
+
+	updatedIncident, err := s.Incident().Get(context.Background(), where.T(context.Background()).F("incident_id", incident.IncidentID))
+	require.NoError(t, err)
+	require.Equal(t, incidentRCAStatusDone, updatedIncident.RCAStatus)
+	require.NotNil(t, updatedIncident.RootCauseType)
+	require.Equal(t, "conflict_evidence", *updatedIncident.RootCauseType)
+	require.NotNil(t, updatedIncident.DiagnosisJSON)
+	require.NotNil(t, updatedIncident.EvidenceRefsJSON)
+
+	var diagnosisObj map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.DiagnosisJSON), &diagnosisObj))
+	root, ok := diagnosisObj["root_cause"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "conflict_evidence", root["type"])
+	require.Equal(t, 0.25, root["confidence"])
+	topMissing, ok := diagnosisObj["missing_evidence"].([]any)
+	require.True(t, ok)
+	require.Len(t, topMissing, 2)
+
+	var refs map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*updatedIncident.EvidenceRefsJSON), &refs))
+	refsIDsAny, ok := refs["evidence_ids"].([]any)
+	require.True(t, ok)
+	refsIDs := make([]string, 0, len(refsIDsAny))
+	for _, item := range refsIDsAny {
+		if value, ok := item.(string); ok {
+			refsIDs = append(refsIDs, value)
+		}
+	}
+	require.Contains(t, refsIDs, evidenceIDMetrics)
+	require.Contains(t, refsIDs, evidenceIDLogs)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithHighConfidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "metrics spike")
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid conflict diagnosis",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs conflict",
+			"statement":"definitive root cause",
+			"confidence":0.5,
+			"evidence_ids":["%s"]
+		},
+		"missing_evidence":["collect traces in same time window"],
+		"hypotheses":[
+			{
+				"statement":"evidence conflicts",
+				"confidence":0.2,
+				"supporting_evidence_ids":["%s"],
+				"missing_evidence":["collect traces in same time window"]
+			}
+		]
+	}`, evidenceID, evidenceID)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithoutMissingEvidence(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "logs", "logs sample")
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid conflict diagnosis",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs conflict",
+			"statement":"",
+			"confidence":0.2,
+			"evidence_ids":["%s"]
+		},
+		"missing_evidence":[],
+		"hypotheses":[
+			{
+				"statement":"evidence conflicts",
+				"confidence":0.2,
+				"supporting_evidence_ids":["%s"],
+				"missing_evidence":[]
+			}
+		]
+	}`, evidenceID, evidenceID)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithTooManyMissingEvidenceItems(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	missing := make([]string, 0, maxMissingEvidenceItems+1)
+	for i := 0; i < maxMissingEvidenceItems+1; i++ {
+		missing = append(missing, fmt.Sprintf("missing-%d", i))
+	}
+	missingJSON, err := json.Marshal(missing)
+	require.NoError(t, err)
+
+	diagnosis := fmt.Sprintf(`{
+		"summary":"invalid conflict diagnosis",
+		"root_cause":{
+			"type":"conflict_evidence",
+			"category":"unknown",
+			"summary":"metrics vs logs conflict",
+			"statement":"",
+			"confidence":0.2,
+			"evidence_ids":["evidence-1"]
+		},
+		"missing_evidence":%s
+	}`, string(missingJSON))
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:         runResp.JobID,
+		Status:        "succeeded",
+		DiagnosisJSON: ptrAIString(diagnosis),
+	})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidDiagnosis, err)
+}
+
+func TestAIJobFinalize_RejectsConflictEvidenceWithUnknownEvidenceID(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"invalid conflict diagnosis",
+			"root_cause":{
+				"type":"conflict_evidence",
+				"category":"unknown",
+				"summary":"metrics vs logs conflict",
+				"statement":"",
+				"confidence":0.2,
+				"evidence_ids":["evidence-not-found"]
+			},
+			"missing_evidence":["collect traces in same time window"],
+			"hypotheses":[
+				{
+					"statement":"evidence conflicts",
+					"confidence":0.2,
+					"supporting_evidence_ids":["evidence-not-found"],
+					"missing_evidence":["collect traces in same time window"]
 				}
 			]
 		}`),
@@ -308,7 +1379,7 @@ func TestAIJobList_QueuedOrderAndPagination(t *testing.T) {
 		TimeRangeEnd:   timestamppb.New(end),
 	})
 	require.NoError(t, err)
-	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: jobB.JobID})
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: jobB.JobID})
 	require.NoError(t, err)
 
 	jobC, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
@@ -348,8 +1419,212 @@ func TestAIJobList_QueuedOrderAndPagination(t *testing.T) {
 	require.Equal(t, resp.Jobs[1].JobID, page2.Jobs[0].JobID)
 }
 
+func TestAIJobFinalize_DiagnosisWrittenTriggersNoticeDelivery(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	require.NoError(t, s.NoticeChannel().Create(context.Background(), &model.NoticeChannelM{
+		Name:        "notice-diagnosis-written",
+		Type:        "webhook",
+		Enabled:     true,
+		EndpointURL: "http://127.0.0.1:19999/hook",
+		TimeoutMs:   1000,
+	}))
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-30 * time.Minute)
+
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.GetJobID()})
+	require.NoError(t, err)
+
+	_, err = biz.Finalize(orchestratorCtx(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.GetJobID(),
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"db pool exhausted",
+			"root_cause":{
+				"category":"db",
+				"statement":"connection pool saturated",
+				"confidence":0.9,
+				"evidence_ids":["evidence-1","evidence-2"]
+			},
+			"timeline":[{"t":"2026-02-01T10:00:00Z","event":"alert_fired","ref":"alert-1"}],
+			"hypotheses":[
+				{
+					"statement":"db pool limit reached",
+					"confidence":0.9,
+					"supporting_evidence_ids":["evidence-1","evidence-2"],
+					"missing_evidence":[]
+				}
+			],
+			"recommendations":[{"type":"readonly_check","action":"check pool config","risk":"low"}],
+			"unknowns":[],
+			"next_steps":["increase max open connections"]
+		}`),
+	})
+	require.NoError(t, err)
+
+	total, deliveries, err := s.NoticeDelivery().List(context.Background(),
+		where.T(context.Background()).P(0, 20).F("incident_id", incident.IncidentID).F("event_type", "diagnosis_written"))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), total)
+	require.Equal(t, "pending", deliveries[0].Status)
+	require.Equal(t, int64(0), deliveries[0].Attempts)
+	require.NotNil(t, deliveries[0].JobID)
+	require.Equal(t, runResp.GetJobID(), *deliveries[0].JobID)
+}
+
+func TestAIJobStart_MultiOwnerClaimAndRenew(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidTransition, err)
+
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+func TestAIJobStart_SameOwnerIdempotent(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+func TestAIJobWriteOps_MissingOwnerRejected(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	_, err = biz.Start(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.Renew(context.Background(), &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.CreateToolCall(context.Background(), &v1.CreateAIToolCallRequest{
+		JobID:       runResp.JobID,
+		Seq:         1,
+		NodeName:    "metrics_specialist",
+		ToolName:    "evidence.queryMetrics",
+		RequestJSON: `{"q":"up"}`,
+		Status:      "ok",
+		LatencyMs:   8,
+	})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.Finalize(context.Background(), &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "failed",
+	})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+
+	_, err = biz.Cancel(context.Background(), &v1.CancelAIJobRequest{
+		JobID: runResp.JobID,
+	})
+	require.Equal(t, errorsx.ErrInvalidArgument, err)
+}
+
+func TestAIJobList_ReclaimExpiredLeaseToQueued(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	expiredAt := time.Now().UTC().Add(-2 * time.Minute)
+	require.NoError(t, s.DB(context.Background()).
+		Model(&model.AIJobM{}).
+		Where("job_id = ?", runResp.JobID).
+		Update("lease_expires_at", expiredAt).Error)
+
+	resp, err := biz.List(context.Background(), &v1.ListAIJobsRequest{
+		Status: "queued",
+		Offset: 0,
+		Limit:  20,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	reclaimed, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "queued", reclaimed.Status)
+	require.Nil(t, reclaimed.LeaseOwner)
+	require.Nil(t, reclaimed.LeaseExpiresAt)
+
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
 func newAIJobTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
+	store.ResetForTest()
 	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
@@ -394,7 +1669,15 @@ CREATE TABLE incidents (
 	created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 )`).Error)
-	require.NoError(t, db.AutoMigrate(&model.AIJobM{}, &model.AIToolCallM{}))
+	require.NoError(t, db.AutoMigrate(
+		&model.AIJobM{},
+		&model.AIJobQueueSignalM{},
+		&model.AIToolCallM{},
+		&model.EvidenceM{},
+		&model.SessionContextM{},
+		&model.SessionHistoryEventM{},
+	))
+	require.NoError(t, db.AutoMigrate(&model.NoticeChannelM{}, &model.NoticeDeliveryM{}))
 	return db
 }
 
@@ -419,4 +1702,373 @@ func createTestIncident(t *testing.T, s store.IStore) *model.IncidentM {
 	return incident
 }
 
+func createTestEvidence(t *testing.T, s store.IStore, incidentID string, evidenceType string, summary string) string {
+	t.Helper()
+	now := time.Now().UTC().Truncate(time.Second)
+	resultJSON := `{"source":"unit-test"}`
+	evidence := &model.EvidenceM{
+		IncidentID:      incidentID,
+		Type:            evidenceType,
+		QueryText:       "mock://unit-test",
+		QueryHash:       "unit-test-query-hash",
+		TimeRangeStart:  now.Add(-5 * time.Minute),
+		TimeRangeEnd:    now,
+		ResultJSON:      resultJSON,
+		ResultSizeBytes: int64(len(resultJSON)),
+		CreatedBy:       "system",
+	}
+	if strings.TrimSpace(summary) != "" {
+		evidence.Summary = &summary
+	}
+	require.NoError(t, s.Evidence().Create(context.Background(), evidence))
+	require.NotEmpty(t, evidence.EvidenceID)
+	return evidence.EvidenceID
+}
+
+func parseAnyInt(t *testing.T, value any) int {
+	t.Helper()
+	switch v := value.(type) {
+	case int:
+		return v
+	case int8:
+		return int(v)
+	case int16:
+		return int(v)
+	case int32:
+		return int(v)
+	case int64:
+		return int(v)
+	case float32:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		require.Failf(t, "parseAnyInt", "unsupported integer value type: %T", value)
+		return 0
+	}
+}
+
+func orchestratorCtx() context.Context {
+	return contextx.WithOrchestratorInstanceID(context.Background(), "test-instance")
+}
+
 func ptrAIString(v string) *string { return &v }
+
+func rawJSONPtr(v string) *json.RawMessage {
+	raw := json.RawMessage(v)
+	return &raw
+}
+
+// =============================================================================
+// Contract Tests for Claim / Renew / Finalize Lease Behavior
+// =============================================================================
+
+// TestClaimStartContract_Idempotent verifies that the same owner can call Start multiple times
+// and the operation is idempotent (returns success without side effects).
+func TestClaimStartContract_Idempotent(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-idempotent")
+
+	// First start should succeed
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Verify job is in running state
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "running", job.Status)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-idempotent", *job.LeaseOwner)
+
+	// Second start with same owner should also succeed (idempotent)
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Job should still be in running state with same owner
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "running", job.Status)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-idempotent", *job.LeaseOwner)
+}
+
+// TestClaimStartContract_Conflict verifies that a different owner cannot claim an already claimed job.
+func TestClaimStartContract_Conflict(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+
+	// Owner A claims the job
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Owner B tries to claim - should fail with conflict
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Error(t, err)
+	require.Equal(t, errno.ErrAIJobInvalidTransition, err)
+
+	// Verify job still owned by owner A
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-a", *job.LeaseOwner)
+}
+
+// TestRenewHeartbeatContract_OwnerCheck verifies that only the lease owner can renew.
+func TestRenewHeartbeatContract_OwnerCheck(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerA := contextx.WithOrchestratorInstanceID(context.Background(), "orc-a")
+	ownerB := contextx.WithOrchestratorInstanceID(context.Background(), "orc-b")
+
+	// Owner A claims the job
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Owner B tries to renew - should fail
+	_, err = biz.Start(ownerB, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.Error(t, err)
+
+	// Owner A renews (calls Start again) - should succeed
+	_, err = biz.Start(ownerA, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+}
+
+// TestFinalizeContract_ClearsLease verifies that finalize clears the lease.
+func TestFinalizeContract_ClearsLease(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-finalize")
+
+	// Claim the job
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Verify lease exists
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.LeaseOwner)
+	require.Equal(t, "orc-finalize", *job.LeaseOwner)
+
+	// Finalize the job
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"test diagnosis",
+			"root_cause":{"category":"unknown","statement":"","confidence":0.2}
+		}`),
+	})
+	require.NoError(t, err)
+
+	// Verify lease is cleared
+	job, err = s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", job.Status)
+	require.Nil(t, job.LeaseOwner)
+	require.Nil(t, job.LeaseExpiresAt)
+}
+
+// TestFinalizeContract_SessionPatchBuild verifies buildSessionFinalizePatch output structure.
+func TestFinalizeContract_SessionPatchBuild(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	// Create a session for the incident
+	session := &model.SessionContextM{
+		SessionType: "incident",
+		BusinessKey: incident.IncidentID,
+		Status:      "active",
+	}
+	require.NoError(t, s.SessionContext().Create(context.Background(), session))
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-session")
+
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "test evidence")
+
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"test diagnosis summary",
+			"root_cause":{"category":"db","statement":"root cause statement","confidence":0.5,"evidence_ids":["` + evidenceID + `"]}
+		}`),
+		EvidenceIDs: []string{evidenceID},
+	})
+	require.NoError(t, err)
+
+	// Verify session context was updated
+	updatedSession, err := s.SessionContext().Get(context.Background(), where.T(context.Background()).F("session_id", session.SessionID))
+	require.NoError(t, err)
+	require.NotNil(t, updatedSession.LatestSummaryJSON)
+	require.Contains(t, *updatedSession.LatestSummaryJSON, "test diagnosis summary")
+}
+
+// TestFinalizeContract_EvidenceIDsAssociation verifies evidence_ids_json is correctly written.
+func TestFinalizeContract_EvidenceIDsAssociation(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-evidence")
+
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	evidenceID1 := createTestEvidence(t, s, incident.IncidentID, "metrics", "evidence 1")
+	evidenceID2 := createTestEvidence(t, s, incident.IncidentID, "logs", "evidence 2")
+
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:       runResp.JobID,
+		Status:      "succeeded",
+		EvidenceIDs: []string{evidenceID1, evidenceID2, evidenceID1}, // Include duplicate
+		DiagnosisJSON: ptrAIString(`{
+			"summary":"test",
+			"root_cause":{"category":"db","statement":"test","confidence":0.5,"evidence_ids":["` + evidenceID1 + `"]}
+		}`),
+	})
+	require.NoError(t, err)
+
+	// Verify evidence_ids_json is stored and deduplicated
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.EvidenceIDsJSON)
+
+	var storedIDs []string
+	require.NoError(t, json.Unmarshal([]byte(*job.EvidenceIDsJSON), &storedIDs))
+	// Should contain both evidence IDs, deduplicated
+	require.Len(t, storedIDs, 2)
+	require.Contains(t, storedIDs, evidenceID1)
+	require.Contains(t, storedIDs, evidenceID2)
+}
+
+// TestFinalizeContract_DiagnosisJSONNormalization verifies diagnosis_json is normalized.
+func TestFinalizeContract_DiagnosisJSONNormalization(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-10 * time.Minute)
+	runResp, err := biz.Run(context.Background(), &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+
+	ownerCtx := contextx.WithOrchestratorInstanceID(context.Background(), "orc-diagnosis")
+
+	_, err = biz.Start(ownerCtx, &v1.StartAIJobRequest{JobID: runResp.JobID})
+	require.NoError(t, err)
+
+	// Diagnosis with extra whitespace and fields - confidence 0.5 requires at least 1 evidence_id
+	evidenceID := createTestEvidence(t, s, incident.IncidentID, "metrics", "test evidence")
+	_, err = biz.Finalize(ownerCtx, &v1.FinalizeAIJobRequest{
+		JobID:  runResp.JobID,
+		Status: "succeeded",
+		DiagnosisJSON: ptrAIString(`{
+			"summary": "  normalized summary  ",
+			"root_cause": {
+				"category": "  DB  ",
+				"statement": "  pool exhausted  ",
+				"confidence": 0.5,
+				"evidence_ids": ["` + evidenceID + `"]
+			}
+		}`),
+		EvidenceIDs: []string{evidenceID},
+	})
+	require.NoError(t, err)
+
+	// Verify diagnosis_json is normalized (only category is trimmed/lowercased)
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.JobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.OutputJSON)
+
+	var diagnosis map[string]any
+	require.NoError(t, json.Unmarshal([]byte(*job.OutputJSON), &diagnosis))
+	// Note: summary is NOT normalized (original whitespace preserved)
+	require.Equal(t, "  normalized summary  ", diagnosis["summary"])
+
+	rootCause, ok := diagnosis["root_cause"].(map[string]any)
+	require.True(t, ok)
+	// Category IS normalized (trimmed and lowercased)
+	require.Equal(t, "db", rootCause["category"])
+	// Statement is NOT normalized (original whitespace preserved)
+	require.Equal(t, "  pool exhausted  ", rootCause["statement"])
+}

@@ -1,67 +1,68 @@
 package evidence
 
-//go:generate mockgen -destination mock_evidence.go -package evidence zk8s.com/rca-api/internal/apiserver/biz/v1/evidence EvidenceBiz
+//go:generate mockgen -destination mock_evidence.go -package evidence github.com/aiopsre/rca-api/internal/apiserver/biz/v1/evidence EvidenceBiz
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
-	"net"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/clients"
-	"zk8s.com/rca-api/internal/apiserver/pkg/conversion"
-	"zk8s.com/rca-api/internal/apiserver/pkg/metrics"
-	"zk8s.com/rca-api/internal/apiserver/pkg/policy"
-	"zk8s.com/rca-api/internal/apiserver/store"
-	"zk8s.com/rca-api/internal/pkg/contextx"
-	"zk8s.com/rca-api/internal/pkg/errno"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
-	"zk8s.com/rca-api/pkg/store/where"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/conversion"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/policy"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 const (
-	defaultQueryStepSeconds = int64(30)
-	defaultLogsLimit        = int64(200)
-	defaultListLimit        = int64(20)
-	defaultEvidenceCreator  = "system"
+	defaultListLimit       = int64(20)
+	defaultEvidenceCreator = "system"
 )
 
-// EvidenceDatasourceClient defines read-only datasource query primitives.
-type EvidenceDatasourceClient interface {
-	QueryPrometheusRange(ctx context.Context, ds *model.DatasourceM, promql string, start, end time.Time, stepSeconds int64) (map[string]any, int64, error)
-	QueryLokiRange(ctx context.Context, ds *model.DatasourceM, queryText string, start, end time.Time, limit int64) (map[string]any, int64, error)
-	QueryElasticsearch(ctx context.Context, ds *model.DatasourceM, queryText string, queryJSON *string, start, end time.Time, limit int64) (map[string]any, int64, error)
-}
-
 // EvidenceBiz defines evidence use-cases.
+//
+//nolint:interfacebloat // Query/save/get/list/search are intentionally grouped in one biz entrypoint.
 type EvidenceBiz interface {
-	QueryMetrics(ctx context.Context, rq *v1.QueryMetricsRequest) (*v1.QueryMetricsResponse, error)
-	QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*v1.QueryLogsResponse, error)
 	Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1.SaveEvidenceResponse, error)
 	Get(ctx context.Context, rq *v1.GetEvidenceRequest) (*v1.GetEvidenceResponse, error)
 	ListByIncident(ctx context.Context, rq *v1.ListIncidentEvidenceRequest) (*v1.ListIncidentEvidenceResponse, error)
+	Search(ctx context.Context, rq *SearchEvidenceRequest) (*SearchEvidenceResponse, error)
 
 	EvidenceExpansion
 }
 
+//nolint:modernize // Keep explicit empty interface as placeholder expansion point.
 type EvidenceExpansion interface{}
 
 type evidenceBiz struct {
 	store      store.IStore
 	guardrails policy.EvidenceGuardrails
-	limiter    *policy.DatasourceRateLimiter
-	client     EvidenceDatasourceClient
+}
+
+type SearchEvidenceRequest struct {
+	Offset        int64
+	Limit         int64
+	IncidentID    *string
+	DatasourceRef *string
+	Type          *string
+	TimeFrom      *time.Time
+	TimeTo        *time.Time
+}
+
+type SearchEvidenceResponse struct {
+	TotalCount int64
+	Evidence   []*v1.Evidence
 }
 
 var _ EvidenceBiz = (*evidenceBiz)(nil)
@@ -69,202 +70,18 @@ var _ EvidenceBiz = (*evidenceBiz)(nil)
 // New creates evidence biz with default guardrails.
 func New(store store.IStore) *evidenceBiz {
 	guardrails := policy.DefaultEvidenceGuardrails()
-	return NewWithDeps(store, guardrails, clients.NewDatasourceHTTPClient())
-}
-
-// NewWithDeps creates evidence biz with injected dependencies for tests.
-func NewWithDeps(store store.IStore, guardrails policy.EvidenceGuardrails, client EvidenceDatasourceClient) *evidenceBiz {
 	return &evidenceBiz{
 		store:      store,
 		guardrails: guardrails,
-		limiter:    policy.NewDatasourceRateLimiter(guardrails),
-		client:     client,
 	}
 }
 
-func (b *evidenceBiz) QueryMetrics(ctx context.Context, rq *v1.QueryMetricsRequest) (*v1.QueryMetricsResponse, error) {
-	startedAt := time.Now()
-	outcome := "ok"
-	datasourceType := "prometheus"
-	defer func() {
-		if metrics.M != nil {
-			metrics.M.RecordEvidenceQuery(ctx, "metrics", datasourceType, outcome, time.Since(startedAt))
-		}
-	}()
-
-	datasource, err := b.getActiveDatasource(ctx, rq.GetDatasourceID())
-	if err != nil {
-		outcome = "failed"
-		return nil, err
-	}
-	if datasource.Type != "prometheus" {
-		outcome = "failed"
-		return nil, errno.ErrDatasourceUnsupportedType
-	}
-	if !b.limiter.Allow(rq.GetDatasourceID()) {
-		outcome = "rate_limited"
-		return nil, errno.ErrEvidenceRateLimited
-	}
-
-	start := rq.GetTimeRangeStart().AsTime()
-	end := rq.GetTimeRangeEnd().AsTime()
-	if err := b.validateTimeRange(start, end, b.guardrails.MaxMetricsRange); err != nil {
-		outcome = "invalid_argument"
-		return nil, err
-	}
-
-	step := rq.GetStepSeconds()
-	if step <= 0 {
-		step = defaultQueryStepSeconds
-	}
-	if step > 300 {
-		outcome = "invalid_argument"
-		return nil, errorsx.ErrInvalidArgument
-	}
-
-	timeout := b.guardrails.ClampDatasourceTimeout(datasource.TimeoutMs)
-	queryCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	result, rowCount, err := b.client.QueryPrometheusRange(queryCtx, datasource, strings.TrimSpace(rq.GetPromql()), start, end, step)
-	if err != nil {
-		mapped := toDatasourceQueryError(err)
-		if mapped == errno.ErrEvidenceQueryTimeout {
-			outcome = "timeout"
-		} else {
-			outcome = "dependency_error"
-		}
-		return nil, mapped
-	}
-
-	resultJSON, sizeBytes, truncated := b.normalizeResult(result, b.guardrails.MaxResultBytes)
-	if rowCount > b.guardrails.MaxMetricsRows {
-		truncated = true
-		resultJSON = b.truncatedResultJSON(resultJSON, "max_metrics_rows_exceeded")
-		sizeBytes = int64(len(resultJSON))
-	}
-
-	slog.InfoContext(ctx, "evidence metrics query done",
-		"request_id", contextx.RequestID(ctx),
-		"incident_id", "",
-		"job_id", "",
-		"tool_call_id", "",
-		"datasource_id", rq.GetDatasourceID(),
-		"row_count", rowCount,
-		"truncated", truncated,
-	)
-
-	return &v1.QueryMetricsResponse{
-		QueryResultJSON: resultJSON,
-		ResultSizeBytes: sizeBytes,
-		RowCount:        rowCount,
-		IsTruncated:     truncated,
-	}, nil
-}
-
-func (b *evidenceBiz) QueryLogs(ctx context.Context, rq *v1.QueryLogsRequest) (*v1.QueryLogsResponse, error) {
-	startedAt := time.Now()
-	outcome := "ok"
-	datasourceType := "logs"
-	defer func() {
-		if metrics.M != nil {
-			metrics.M.RecordEvidenceQuery(ctx, "logs", datasourceType, outcome, time.Since(startedAt))
-		}
-	}()
-
-	datasource, err := b.getActiveDatasource(ctx, rq.GetDatasourceID())
-	if err != nil {
-		outcome = "failed"
-		return nil, err
-	}
-	if datasource.Type != "loki" && datasource.Type != "elasticsearch" {
-		outcome = "failed"
-		return nil, errno.ErrDatasourceUnsupportedType
-	}
-	datasourceType = datasource.Type
-	if !b.limiter.Allow(rq.GetDatasourceID()) {
-		outcome = "rate_limited"
-		return nil, errno.ErrEvidenceRateLimited
-	}
-
-	start := rq.GetTimeRangeStart().AsTime()
-	end := rq.GetTimeRangeEnd().AsTime()
-	if err := b.validateTimeRange(start, end, b.guardrails.MaxLogsRange); err != nil {
-		outcome = "invalid_argument"
-		return nil, err
-	}
-
-	limit := rq.GetLimit()
-	if limit <= 0 {
-		limit = defaultLogsLimit
-	}
-	if limit > b.guardrails.MaxLogsLimit {
-		outcome = "invalid_argument"
-		return nil, errorsx.ErrInvalidArgument
-	}
-
-	timeout := b.guardrails.ClampDatasourceTimeout(datasource.TimeoutMs)
-	queryCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	var result map[string]any
-	var rowCount int64
-	if datasource.Type == "loki" {
-		result, rowCount, err = b.client.QueryLokiRange(queryCtx, datasource, strings.TrimSpace(rq.GetQueryText()), start, end, limit)
-	} else {
-		var queryJSON *string
-		if rq.QueryJSON != nil {
-			raw := strings.TrimSpace(rq.GetQueryJSON())
-			queryJSON = &raw
-		}
-		result, rowCount, err = b.client.QueryElasticsearch(queryCtx, datasource, strings.TrimSpace(rq.GetQueryText()), queryJSON, start, end, limit)
-	}
-	if err != nil {
-		mapped := toDatasourceQueryError(err)
-		if mapped == errno.ErrEvidenceQueryTimeout {
-			outcome = "timeout"
-		} else {
-			outcome = "dependency_error"
-		}
-		return nil, mapped
-	}
-
-	resultJSON, sizeBytes, truncated := b.normalizeResult(result, b.guardrails.MaxResultBytes)
-	if rowCount > b.guardrails.MaxLogsRows {
-		truncated = true
-		resultJSON = b.truncatedResultJSON(resultJSON, "max_logs_rows_exceeded")
-		sizeBytes = int64(len(resultJSON))
-	}
-
-	slog.InfoContext(ctx, "evidence logs query done",
-		"request_id", contextx.RequestID(ctx),
-		"incident_id", "",
-		"job_id", "",
-		"tool_call_id", "",
-		"datasource_id", rq.GetDatasourceID(),
-		"row_count", rowCount,
-		"truncated", truncated,
-	)
-
-	return &v1.QueryLogsResponse{
-		QueryResultJSON: resultJSON,
-		ResultSizeBytes: sizeBytes,
-		RowCount:        rowCount,
-		IsTruncated:     truncated,
-	}, nil
-}
-
+//nolint:gocognit,gocyclo // Save flow keeps idempotency and guardrails explicit.
 func (b *evidenceBiz) Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1.SaveEvidenceResponse, error) {
 	start := rq.GetTimeRangeStart().AsTime()
 	end := rq.GetTimeRangeEnd().AsTime()
 	if err := b.validateTimeRange(start, end, b.guardrails.MaxMetricsRange); err != nil {
 		return nil, err
-	}
-
-	if rq.DatasourceID != nil && strings.TrimSpace(rq.GetDatasourceID()) != "" {
-		if _, err := b.getActiveDatasource(ctx, rq.GetDatasourceID()); err != nil {
-			return nil, err
-		}
 	}
 
 	idempotencyKey := ""
@@ -339,7 +156,7 @@ func (b *evidenceBiz) Save(ctx context.Context, rq *v1.SaveEvidenceRequest) (*v1
 		"incident_id", rq.GetIncidentID(),
 		"job_id", rq.GetJobID(),
 		"tool_call_id", "",
-		"datasource_id", rq.GetDatasourceID(),
+		"datasource_ref", rq.GetDatasourceID(),
 		"evidence_id", m.EvidenceID,
 		"idempotency_key", idempotencyKey,
 	)
@@ -385,18 +202,51 @@ func (b *evidenceBiz) ListByIncident(ctx context.Context, rq *v1.ListIncidentEvi
 	}, nil
 }
 
-func (b *evidenceBiz) getActiveDatasource(ctx context.Context, datasourceID string) (*model.DatasourceM, error) {
-	m, err := b.store.Datasource().Get(ctx, where.T(ctx).F("datasource_id", strings.TrimSpace(datasourceID)))
+func (b *evidenceBiz) Search(ctx context.Context, rq *SearchEvidenceRequest) (*SearchEvidenceResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	whr := where.T(ctx).P(int(rq.Offset), int(limit))
+	if v := trimOptionalString(rq.IncidentID); v != "" {
+		whr = whr.F("incident_id", v)
+	}
+	if v := trimOptionalString(rq.DatasourceRef); v != "" {
+		whr = whr.F("datasource_id", v)
+	}
+	if v := trimOptionalString(rq.Type); v != "" {
+		whr = whr.F("type", strings.ToLower(v))
+	}
+	if rq.TimeFrom != nil {
+		whr = whr.C(clause.Expr{
+			SQL:  "time_range_start >= ?",
+			Vars: []any{rq.TimeFrom.UTC()},
+		})
+	}
+	if rq.TimeTo != nil {
+		whr = whr.C(clause.Expr{
+			SQL:  "time_range_end <= ?",
+			Vars: []any{rq.TimeTo.UTC()},
+		})
+	}
+
+	total, list, err := b.store.Evidence().List(ctx, whr)
 	if err != nil {
-		if errorsx.Is(err, gorm.ErrRecordNotFound) {
-			return nil, errno.ErrDatasourceNotFound
-		}
-		return nil, errno.ErrDatasourceGetFailed
+		return nil, errno.ErrEvidenceListFailed
 	}
-	if !m.IsEnabled {
-		return nil, errno.ErrDatasourceDisabled
+
+	out := make([]*v1.Evidence, 0, len(list))
+	for _, item := range list {
+		out = append(out, conversion.EvidenceMToEvidenceV1(item))
 	}
-	return m, nil
+	return &SearchEvidenceResponse{
+		TotalCount: total,
+		Evidence:   out,
+	}, nil
 }
 
 func (b *evidenceBiz) validateTimeRange(start, end time.Time, maxRange time.Duration) error {
@@ -412,15 +262,6 @@ func (b *evidenceBiz) validateTimeRange(start, end time.Time, maxRange time.Dura
 	return nil
 }
 
-func (b *evidenceBiz) normalizeResult(result map[string]any, maxBytes int) (string, int64, bool) {
-	raw, err := json.Marshal(result)
-	if err != nil {
-		msg := fmt.Sprintf(`{"error":"marshal result failed: %s"}`, err.Error())
-		return msg, int64(len(msg)), false
-	}
-	return b.normalizeRawResult(string(raw), maxBytes)
-}
-
 func (b *evidenceBiz) normalizeRawResult(result string, maxBytes int) (string, int64, bool) {
 	raw := []byte(result)
 	size := int64(len(raw))
@@ -434,46 +275,17 @@ func (b *evidenceBiz) normalizeRawResult(result string, maxBytes int) (string, i
 		"reason":    "max_result_bytes_exceeded",
 		"preview":   preview,
 	}
-	out, _ := json.Marshal(wrapped)
+	out, err := json.Marshal(wrapped)
+	if err != nil {
+		fallback := `{"truncated":true,"reason":"marshal_failed"}`
+		return fallback, size, true
+	}
 	return string(out), size, true
 }
 
-func (b *evidenceBiz) truncatedResultJSON(existing string, reason string) string {
-	wrapped := map[string]any{
-		"truncated": true,
-		"reason":    reason,
-		"preview":   existing,
-	}
-	out, _ := json.Marshal(wrapped)
-	return string(out)
-}
-
-func toDatasourceQueryError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	// Context timeout.
-	if errors.Is(err, context.DeadlineExceeded) {
-		return errno.ErrEvidenceQueryTimeout
-	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return errno.ErrEvidenceQueryTimeout
-	}
-
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) && urlErr.Timeout() {
-		return errno.ErrEvidenceQueryTimeout
-	}
-
-	return errno.ErrEvidenceQueryFailed
-}
-
-func hashQuery(datasourceID string, typ string, queryText string, queryJSON string, start time.Time, end time.Time) string {
+func hashQuery(datasourceRef string, typ string, queryText string, queryJSON string, start time.Time, end time.Time) string {
 	payload := strings.Join([]string{
-		strings.TrimSpace(datasourceID),
+		strings.TrimSpace(datasourceRef),
 		strings.TrimSpace(strings.ToLower(typ)),
 		strings.TrimSpace(queryText),
 		strings.TrimSpace(queryJSON),
@@ -497,4 +309,11 @@ func isDuplicateKeyError(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	return strings.Contains(lower, "duplicate") || strings.Contains(lower, "unique constraint")
+}
+
+func trimOptionalString(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
 }

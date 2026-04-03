@@ -5,6 +5,7 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:5555}"
 CURL="${CURL:-curl}"
 SCOPES="${SCOPES:-*}"
 AUTO_CREATE_INCIDENT="${AUTO_CREATE_INCIDENT:-1}"
+ORCHESTRATOR_INSTANCE_ID="${ORCHESTRATOR_INSTANCE_ID:-test-instance}"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -13,15 +14,20 @@ http_json() {
   local method="$1"; shift
   local url="$1"; shift
   local body="${1:-}"
+  local -a headers
+  headers=(-H "X-Scopes: ${SCOPES}")
+  if [[ "${method}" == "POST" ]] && [[ "${url}" =~ /v1/ai/jobs/[^/]+/(start|tool-calls|finalize|cancel|heartbeat)$ ]]; then
+    headers+=(-H "X-Orchestrator-Instance-ID: ${ORCHESTRATOR_INSTANCE_ID}")
+  fi
 
   if [[ -n "$body" ]]; then
     $CURL -sS -i -X "$method" "$url" \
       -H 'Content-Type: application/json' \
-      -H "X-Scopes: ${SCOPES}" \
+      "${headers[@]}" \
       -d "$body"
   else
     $CURL -sS -i -X "$method" "$url" \
-      -H "X-Scopes: ${SCOPES}"
+      "${headers[@]}"
   fi
 }
 

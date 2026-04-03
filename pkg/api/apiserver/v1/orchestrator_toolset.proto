@@ -1,0 +1,46 @@
+// Orchestrator toolset resolve API messages (read-only distribution).
+syntax = "proto3";
+
+package apiserver.v1;
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// OrchestratorToolsetProvider defines one provider entry in a resolved toolset.
+message OrchestratorToolsetProvider {
+  // type is one of mcp_http|skills.
+  string type = 1;
+  // allowTools is allowlist enforced by orchestrator tool invoker.
+  repeated string allowTools = 2;
+  optional string name = 3;
+  optional string baseURL = 4;
+  optional string scopes = 5;
+  optional double timeoutSeconds = 6;
+  optional string module = 7;
+  optional string function = 8;
+}
+
+// OrchestratorToolset is one resolved toolset definition.
+message OrchestratorToolset {
+  // toolsetID is business identifier referenced by pipelines mapping.
+  string toolsetID = 1;
+  repeated OrchestratorToolsetProvider providers = 2;
+}
+
+// ResolveToolsetRequest resolves toolset by pipeline (pipeline-only signal).
+message ResolveToolsetRequest {
+  // @gotags: form:"pipeline"
+  optional string pipeline = 1;
+}
+
+// ResolveToolsetResponse returns normalized pipeline and resolved toolset.
+//
+// DEPRECATED FOR EXECUTION (Phase 10E):
+// - For worker execution, use StartAIJobResponse.resolved_tool_providers instead.
+// - This API is retained for governance/observation queries (e.g., admin UI).
+// - The providers[] field in toolset should NOT be used to build ToolInvoker.
+// - New pipelines should use toolset_provider_bindings table for provider resolution.
+message ResolveToolsetResponse {
+  string pipeline = 1;
+  OrchestratorToolset toolset = 2;
+  repeated OrchestratorToolset toolsets = 3;
+}

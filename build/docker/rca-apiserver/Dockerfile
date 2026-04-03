@@ -3,6 +3,10 @@
 # =============================================================================
 # 1) Base Images Preparation (Pre-defined base environments)
 # =============================================================================
+# Builder image must be declared in global scope so it can be referenced by FROM.
+ARG BUILDER_IMAGE=golang:1.25.6
+ARG ENV=prod
+
 # Define arguments for use in subsequent stages
 ARG UID=65532
 ARG GID=65532
@@ -30,7 +34,7 @@ FROM gcr.io/distroless/base-debian12:nonroot AS base-distroless-prep
 # Current configuration mode: auto
 # [Mode: auto] Dynamic selection based on build argument ENV
 # Default is prod
-ARG ENV=prod
+ARG ENV
 
 # Define Routing Table
 FROM base-distroless-prep AS mode-auto-prod
@@ -43,7 +47,7 @@ FROM mode-auto-${ENV} AS final-base
 # =============================================================================
 # 3) Builder Stage (Build stage, remains unchanged)
 # =============================================================================
-ARG BUILDER_IMAGE=golang:1.25.0
+ARG BUILDER_IMAGE
 FROM ${BUILDER_IMAGE} AS builder
 
 ARG OS

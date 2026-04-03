@@ -1,0 +1,94 @@
+job:
+  tick_seconds: 60
+  metrics_addr: "127.0.0.1:19558"
+  max_docs_per_rule: 1000
+
+es:
+  urls:
+    - "http://127.0.0.1:9200"
+  username: ""
+  password: ""
+  timeout_ms: 5000
+  max_retries: 2
+
+rca:
+  base_url: "http://127.0.0.1:5655"
+  timeout_ms: 5000
+
+fields:
+  timestamp: "@timestamp"
+  trace_id: "Trace.Id"
+  request_id: "user_agent.request_id"
+  msg: "Msg"
+  message: "message"
+
+indices:
+  ingress: "logstash-prod-ingress*"
+  microsvc: "logstash-prod-microsvc*"
+
+rules:
+  - id: ingress_5xx_spike
+    enabled: true
+    kind: ingress_5xx_spike
+    index_ref: ingress
+    window_seconds: 300
+    cooldown_seconds: 300
+    selector:
+      query_string: "event.runenv:prod AND event.svcType:ingress AND http.response.status_code:[500 TO 599]"
+    group_by:
+      - destination.domain
+      - http.request.uri_path
+      - nginx.upstream.address
+    trigger:
+      type: count_gte
+      value: 20
+    samples: 3
+    rca_event:
+      severity: P1
+      summary_template: "Ingress 5xx spike: {{count}} hits domain={{domain}} path={{path}}"
+      hints:
+        include_es_query: true
+
+  - id: ingress_slow_spike
+    enabled: true
+    kind: ingress_slow_spike
+    index_ref: ingress
+    window_seconds: 300
+    cooldown_seconds: 300
+    selector:
+      query_string: "event.runenv:prod AND event.svcType:ingress AND nginx.upstream.response.time:[2 TO *]"
+    group_by:
+      - destination.domain
+      - http.request.uri_path
+      - nginx.upstream.address
+    trigger:
+      type: count_gte
+      value: 20
+    samples: 3
+    rca_event:
+      severity: P2
+      summary_template: "Ingress slow spike: {{count}} hits domain={{domain}} path={{path}}"
+      hints:
+        include_es_query: true
+
+  - id: microsvc_error_cluster
+    enabled: true
+    kind: microsvc_error_cluster
+    index_ref: microsvc
+    window_seconds: 300
+    cooldown_seconds: 600
+    selector:
+      query_string: "Level:ERROR AND event.runenv:(green OR blue)"
+    group_by:
+      - k8s.ns
+      - event.dataset
+      - msg_template_hash
+    trigger:
+      type: count_gte
+      value: 50
+    samples: 3
+    rca_event:
+      severity: P2
+      summary_template: "Microsvc ERROR cluster: {{count}} hits ns={{namespace}} svc={{service}}"
+      hints:
+        include_es_query: true

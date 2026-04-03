@@ -6,8 +6,8 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
-	"zk8s.com/rca-api/internal/apiserver/pkg/silenceutil"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/silenceutil"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const (

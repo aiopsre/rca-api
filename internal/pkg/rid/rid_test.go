@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"zk8s.com/rca-api/internal/pkg/rid"
+	"github.com/aiopsre/rca-api/internal/pkg/rid"
 )
 
 // Mock Salt function used for testing

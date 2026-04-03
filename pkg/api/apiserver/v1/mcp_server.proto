@@ -1,0 +1,149 @@
+// McpServer API 定义：MCP 服务器的请求和响应消息
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// McpServer 表示一个外部 MCP 服务器注册信息
+// External MCP servers are called by the orchestrator via MCP protocol.
+message McpServer {
+  // mcpServerID 表示 MCP 服务器业务 ID
+  string mcpServerID = 1;
+
+  // name 表示 MCP 服务器名称（唯一标识）
+  string name = 2;
+  // displayName 表示显示名称
+  optional string displayName = 3;
+  // description 表示描述信息
+  optional string description = 4;
+  // baseURL 表示 MCP 服务器地址
+  string baseURL = 5;
+  // authType 表示认证类型（none/bearer/basic/apikey）
+  string authType = 6;
+  // authSecretRef 表示认证密钥引用
+  optional string authSecretRef = 7;
+  // allowedToolsJSON 表示允许的工具列表（JSON array）
+  optional string allowedToolsJSON = 8;
+  // timeoutSec 表示超时时间（秒）
+  int32 timeoutSec = 9;
+  // scopes 表示权限范围
+  optional string scopes = 10;
+  // status 表示状态（active/inactive）
+  string status = 11;
+  // createdBy 表示创建者
+  optional string createdBy = 12;
+  // createdAt 表示创建时间
+  google.protobuf.Timestamp createdAt = 13;
+  // updatedAt 表示更新时间
+  google.protobuf.Timestamp updatedAt = 14;
+}
+
+// CreateMcpServerRequest 表示创建 MCP 服务器请求
+message CreateMcpServerRequest {
+  // name 表示 MCP 服务器名称（必填）
+  string name = 1;
+  // displayName 表示显示名称
+  optional string displayName = 2;
+  // description 表示描述信息
+  optional string description = 3;
+  // baseURL 表示 MCP 服务器地址（必填）
+  string baseURL = 4;
+  // authType 表示认证类型（默认 none）
+  optional string authType = 5;
+  // authSecretRef 表示认证密钥引用
+  optional string authSecretRef = 6;
+  // allowedToolsJSON 表示允许的工具列表（JSON array）
+  optional string allowedToolsJSON = 7;
+  // timeoutSec 表示超时时间（秒，默认 10）
+  optional int32 timeoutSec = 8;
+  // scopes 表示权限范围
+  optional string scopes = 9;
+}
+
+// CreateMcpServerResponse 表示创建 MCP 服务器响应
+message CreateMcpServerResponse {
+  // mcpServer 表示创建的 MCP 服务器信息
+  McpServer mcpServer = 1;
+}
+
+// GetMcpServerRequest 表示获取 MCP 服务器请求
+message GetMcpServerRequest {
+  // mcpServerID 表示要获取的 MCP 服务器 ID
+  // @gotags: uri:"mcpServerID"
+  string mcpServerID = 1;
+}
+
+// GetMcpServerResponse 表示获取 MCP 服务器响应
+message GetMcpServerResponse {
+  // mcpServer 表示返回的 MCP 服务器信息
+  McpServer mcpServer = 1;
+}
+
+// ListMcpServersRequest 表示获取 MCP 服务器列表请求
+message ListMcpServersRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // name 表示可选的名称过滤
+  optional string name = 3;
+  // status 表示可选的状态过滤
+  optional string status = 4;
+}
+
+// ListMcpServersResponse 表示获取 MCP 服务器列表响应
+message ListMcpServersResponse {
+  // totalCount 表示总数
+  int64 totalCount = 1;
+  // mcpServers 表示 MCP 服务器列表
+  repeated McpServer mcpServers = 2;
+}
+
+// UpdateMcpServerRequest 表示更新 MCP 服务器请求
+message UpdateMcpServerRequest {
+  // mcpServerID 表示要更新的 MCP 服务器 ID
+  // @gotags: uri:"mcpServerID"
+  string mcpServerID = 1;
+
+  // displayName 表示显示名称
+  optional string displayName = 2;
+  // description 表示描述信息
+  optional string description = 3;
+  // baseURL 表示 MCP 服务器地址
+  optional string baseURL = 4;
+  // authType 表示认证类型
+  optional string authType = 5;
+  // authSecretRef 表示认证密钥引用
+  optional string authSecretRef = 6;
+  // allowedToolsJSON 表示允许的工具列表（JSON array）
+  optional string allowedToolsJSON = 7;
+  // timeoutSec 表示超时时间（秒）
+  optional int32 timeoutSec = 8;
+  // scopes 表示权限范围
+  optional string scopes = 9;
+  // status 表示状态
+  optional string status = 10;
+}
+
+// UpdateMcpServerResponse 表示更新 MCP 服务器响应
+message UpdateMcpServerResponse {
+  // mcpServer 表示更新后的 MCP 服务器信息
+  McpServer mcpServer = 1;
+}
+
+// DeleteMcpServerRequest 表示删除 MCP 服务器请求
+message DeleteMcpServerRequest {
+  // mcpServerID 表示要删除的 MCP 服务器 ID
+  // @gotags: uri:"mcpServerID"
+  string mcpServerID = 1;
+}
+
+// DeleteMcpServerResponse 表示删除 MCP 服务器响应
+message DeleteMcpServerResponse {}

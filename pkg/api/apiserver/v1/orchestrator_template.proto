@@ -1,0 +1,32 @@
+// Orchestrator template registry API messages (register + list).
+syntax = "proto3";
+
+package apiserver.v1;
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+message OrchestratorTemplate {
+  string templateID = 1;
+  string version = 2;
+}
+
+message RegisterOrchestratorTemplatesRequest {
+  string instanceID = 1;
+  repeated OrchestratorTemplate templates = 2;
+}
+
+message RegisterOrchestratorTemplatesResponse {
+  int32 count = 1;
+}
+
+message ListOrchestratorTemplatesRequest {}
+
+message OrchestratorTemplateEntry {
+  string templateID = 1;
+  string version = 2;
+  repeated string instances = 3;
+}
+
+message ListOrchestratorTemplatesResponse {
+  repeated OrchestratorTemplateEntry templates = 1;
+}

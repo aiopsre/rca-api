@@ -8,7 +8,7 @@ import (
 	genericvalidation "github.com/onexstack/onexstack/pkg/validation"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const maxAlertEventListLimit = int64(200)

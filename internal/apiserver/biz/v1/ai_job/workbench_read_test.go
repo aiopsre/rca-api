@@ -1,0 +1,968 @@
+package ai_job
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	sessionbiz "github.com/aiopsre/rca-api/internal/apiserver/biz/v1/session"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/pkg/store/where"
+)
+
+func TestGetSessionWorkbench_AggregatesAndSuggestsReviewHints(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	manualJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		DiagnosisJSON: `{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"database pool saturation confirmed",
+				"statement":"database pool saturation confirmed",
+				"confidence":0.91,
+				"evidence_ids":["ev-manual-1","ev-manual-2"]
+			},
+			"hypotheses":[{"statement":"pool limit reached","confidence":0.91,"supporting_evidence_ids":["ev-manual-1","ev-manual-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-manual-1", "ev-manual-2"},
+	})
+	followJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "replay",
+		TriggerSource: "replay_api",
+		Initiator:     "user:replay",
+		ErrorMessage:  "worker timeout while replaying evidence collection",
+	})
+	require.NotEqual(t, manualJobID, followJobID)
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", followJobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	resp, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{
+		SessionID:   sessionID,
+		RecentLimit: 10,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.Session)
+	require.Equal(t, sessionID, resp.Session.SessionID)
+	require.NotNil(t, resp.Incident)
+	require.Equal(t, incident.IncidentID, resp.Incident.IncidentID)
+
+	require.NotNil(t, resp.LatestRun)
+	require.Equal(t, followJobID, resp.LatestRun.JobID)
+	require.Equal(t, "replay", resp.LatestRun.TriggerType)
+	require.GreaterOrEqual(t, len(resp.RecentRuns), 2)
+	require.GreaterOrEqual(t, resp.RecentTotalCount, int64(2))
+
+	require.NotNil(t, resp.LatestDecision)
+	require.Equal(t, "failed", resp.LatestDecision.Status)
+	require.NotNil(t, resp.LatestCompare)
+	require.Equal(t, manualJobID, resp.LatestCompare.LeftJobID)
+	require.Equal(t, followJobID, resp.LatestCompare.RightJobID)
+	require.True(t, resp.LatestCompare.ChangedRootCause)
+
+	require.NotNil(t, resp.ReviewFlags)
+	require.True(t, resp.ReviewFlags.HumanReviewRequired)
+	require.True(t, resp.ReviewFlags.HasPinnedEvidence)
+	require.GreaterOrEqual(t, resp.ReviewFlags.PinnedEvidenceCount, int64(2))
+
+	require.Contains(t, resp.NextActionHints, workbenchHintNeedHumanReview)
+	require.Contains(t, resp.NextActionHints, workbenchHintReviewCompare)
+	require.NotNil(t, resp.DrillDown)
+	require.Equal(t, "/v1/ai/jobs/"+followJobID+"/trace", resp.DrillDown.LatestTracePath)
+	require.Equal(
+		t,
+		"/v1/ai/jobs:trace-compare?left_job_id="+manualJobID+"&right_job_id="+followJobID,
+		resp.DrillDown.LatestComparePath,
+	)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.DrillDown.HistoryPath)
+	require.NotNil(t, resp.DrillDown.LatestDecision)
+	require.Equal(t, followJobID, resp.DrillDown.LatestDecision.JobID)
+	require.True(t, resp.DrillDown.LatestDecision.DecisionDetailAvailable)
+	require.Contains(t, resp.DrillDown.LatestDecision.RelatedEvidenceRefs, "ev-manual-1")
+	require.NotNil(t, resp.DrillDown.LatestCompare)
+	require.True(t, resp.DrillDown.LatestCompare.CompareAvailable)
+	require.Equal(t, manualJobID, resp.DrillDown.LatestCompare.LeftJobID)
+	require.Equal(t, followJobID, resp.DrillDown.LatestCompare.RightJobID)
+	require.NotNil(t, resp.DrillDown.PinnedEvidence)
+	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/evidence", resp.DrillDown.PinnedEvidence.IncidentEvidencePath)
+	require.NotNil(t, resp.DrillDown.History)
+	require.Equal(t, defaultSessionWorkbenchHistoryLimit, resp.DrillDown.History.RecentLimit)
+	require.Equal(t, "desc", resp.DrillDown.History.Order)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history?order=desc&offset=0&limit=5", resp.DrillDown.History.RecentPath)
+	require.Equal(t, "/v1/operator/assignment_history?session_id="+sessionID, resp.DrillDown.AssignmentHistoryPath)
+	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/ai/jobs/"+followJobID+"/trace")
+	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/sessions/"+sessionID+"/history")
+	require.Contains(t, resp.DrillDown.RecommendedNextView, "/v1/operator/assignment_history?session_id="+sessionID)
+}
+
+func TestGetSessionWorkbench_InProgressHint(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	incident := createTestIncident(t, s)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	runCtx := contextx.WithTriggerType(context.Background(), "manual")
+	runCtx = contextx.WithTriggerSource(runCtx, "manual_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:manual")
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incident.IncidentID,
+		Trigger:        ptrAIString("manual"),
+		CreatedBy:      ptrAIString("user:manual"),
+		TimeRangeStart: timestamppb.New(now.Add(-10 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(now),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.GetJobID())
+
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", runResp.GetJobID()))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	resp, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotNil(t, resp.LatestRun)
+	require.Equal(t, jobStatusQueued, resp.LatestRun.Status)
+	require.Contains(t, resp.NextActionHints, workbenchHintRunInProgress)
+	require.NotNil(t, resp.DrillDown)
+	require.NotNil(t, resp.DrillDown.LatestDecision)
+	require.Equal(t, runResp.GetJobID(), resp.DrillDown.LatestDecision.JobID)
+	require.False(t, resp.DrillDown.LatestDecision.DecisionDetailAvailable)
+	require.NotNil(t, resp.DrillDown.LatestCompare)
+	require.False(t, resp.DrillDown.LatestCompare.CompareAvailable)
+}
+
+func TestGetSessionWorkbench_ReviewStateAffectsHints(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	failedJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		ErrorMessage:  "diagnosis confidence too low",
+	})
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", failedJobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+
+	initial, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Contains(t, initial.NextActionHints, workbenchHintNeedHumanReview)
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewNote:  ptrAIString("human confirmed"),
+		ReviewedBy:  ptrAIString("user:alice"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignNote: ptrAIString("manual handoff"),
+	})
+	require.NoError(t, err)
+
+	confirmed, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, sessionbiz.SessionReviewStateConfirmed, confirmed.Session.ReviewState)
+	require.Equal(t, "user:alice", confirmed.Session.ReviewedBy)
+	require.Equal(t, "user:oncall-a", confirmed.Session.Assignee)
+	require.Equal(t, "user:lead-a", confirmed.Session.AssignedBy)
+	require.Equal(t, "manual handoff", confirmed.Session.AssignNote)
+	require.NotContains(t, confirmed.NextActionHints, workbenchHintNeedHumanReview)
+	require.NotNil(t, confirmed.DrillDown)
+	require.NotNil(t, confirmed.DrillDown.LatestAssignment)
+	require.Equal(t, "user:oncall-a", confirmed.DrillDown.LatestAssignment.Assignee)
+	require.Equal(t, "user:lead-a", confirmed.DrillDown.LatestAssignment.AssignedBy)
+	require.Equal(t, "manual handoff", confirmed.DrillDown.LatestAssignment.Note)
+	require.Equal(t, "/v1/operator/assignment_history?session_id="+sessionID, confirmed.DrillDown.AssignmentHistoryPath)
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewNote:  ptrAIString("reject current diagnosis"),
+		ReviewedBy:  ptrAIString("user:alice"),
+	})
+	require.NoError(t, err)
+
+	rejected, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, sessionbiz.SessionReviewStateRejected, rejected.Session.ReviewState)
+	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderFollowUp)
+	require.Contains(t, rejected.NextActionHints, workbenchHintConsiderReplay)
+}
+
+func TestGetSessionWorkbench_IncludesRecentHistorySummary(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	failedJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		ErrorMessage:  "needs history summary",
+	})
+	sessionID := mustSessionIDByJob(t, s, failedJobID)
+
+	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID: sessionID,
+		EventType: sessionbiz.SessionHistoryEventReviewStarted,
+		Actor:     ptrAIString("user:reviewer"),
+		Note:      ptrAIString("start review"),
+	})
+	require.NoError(t, err)
+
+	resp, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.HistoryPath)
+	require.NotEmpty(t, resp.RecentHistory)
+	require.Equal(t, sessionbiz.SessionHistoryEventReviewStarted, resp.RecentHistory[0].EventType)
+	require.NotNil(t, resp.DrillDown)
+	require.NotNil(t, resp.DrillDown.History)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/history", resp.DrillDown.History.HistoryPath)
+	require.Equal(t, int64(1), resp.DrillDown.History.RecentReturned)
+	require.Equal(t, "", resp.DrillDown.History.NextPagePath)
+	require.Equal(t, "/v1/operator/assignment_history?session_id="+sessionID, resp.DrillDown.AssignmentHistoryPath)
+}
+
+func TestGetSessionWorkbench_SLAEscalationState(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	failedJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		ErrorMessage:  "needs assignment follow-up",
+	})
+	sessionID := mustSessionIDByJob(t, s, failedJobID)
+
+	oldAssignedAt := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err := sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionID,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignedAt: &oldAssignedAt,
+	})
+	require.NoError(t, err)
+
+	escalated, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, "escalated", escalated.Session.EscalationState)
+	require.EqualValues(t, 2, escalated.Session.EscalationLevel)
+	require.NotEmpty(t, escalated.Session.SlaDueAt)
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionID,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewNote:  ptrAIString("handled manually"),
+		ReviewedBy:  ptrAIString("user:reviewer"),
+	})
+	require.NoError(t, err)
+
+	cleared, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.Equal(t, "none", cleared.Session.EscalationState)
+	require.EqualValues(t, 0, cleared.Session.EscalationLevel)
+}
+
+func TestListOperatorInbox_SortsAndFilters(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentC := createTestIncident(t, s)
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "requires manual investigation",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "follow_up",
+		TriggerSource: "follow_up_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "follow-up still inconclusive",
+	})
+	jobC := runAndFinalizeWorkbenchJob(t, biz, incidentC.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:c",
+		DiagnosisJSON: `{
+			"summary":"healthy after mitigation",
+			"root_cause":{
+				"type":"dependency_timeout",
+				"category":"dependency",
+				"summary":"healthy after mitigation",
+				"statement":"resolved",
+				"confidence":0.92,
+				"evidence_ids":["ev-c-1","ev-c-2"]
+			},
+			"hypotheses":[{"statement":"mitigated","confidence":0.92,"supporting_evidence_ids":["ev-c-1","ev-c-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-c-1", "ev-c-2"},
+	})
+
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+	sessionC := mustSessionIDByJob(t, s, jobC)
+
+	_, err := sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionA,
+		ReviewState: sessionbiz.SessionReviewStateInReview,
+		ReviewedBy:  ptrAIString("user:reviewer-a"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionB,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewedBy:  ptrAIString("user:reviewer-b"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionC,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewedBy:  ptrAIString("user:reviewer-c"),
+	})
+	require.NoError(t, err)
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignNote: ptrAIString("handoff to oncall-a"),
+		AssignedAt: &assignedAtPending,
+	})
+	require.NoError(t, err)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: ptrAIString("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
+	})
+	require.NoError(t, err)
+
+	listResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		Offset: 0,
+		Limit:  20,
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, listResp.TotalCount, int64(3))
+	require.GreaterOrEqual(t, len(listResp.Items), 3)
+	require.Equal(t, sessionA, listResp.Items[0].SessionID)
+	require.Equal(t, sessionbiz.SessionReviewStateInReview, listResp.Items[0].ReviewState)
+	require.Equal(t, "user:oncall-a", listResp.Items[0].Assignee)
+	require.Equal(t, "user:lead-a", listResp.Items[0].AssignedBy)
+	require.Equal(t, "handoff to oncall-a", listResp.Items[0].AssignNote)
+	require.Equal(t, "pending", listResp.Items[0].EscalationState)
+	require.Equal(t, sessionbiz.SessionReviewStateRejected, listResp.Items[1].ReviewState)
+	require.Equal(t, "escalated", listResp.Items[1].EscalationState)
+
+	reviewStateConfirmed := sessionbiz.SessionReviewStateConfirmed
+	confirmedResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		ReviewState: &reviewStateConfirmed,
+		Offset:      0,
+		Limit:       20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), confirmedResp.TotalCount)
+	require.Equal(t, sessionC, confirmedResp.Items[0].SessionID)
+	require.Equal(t, false, confirmedResp.Items[0].NeedsReview)
+
+	needsReview := true
+	needsReviewResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		NeedsReview: &needsReview,
+		Offset:      0,
+		Limit:       20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), needsReviewResp.TotalCount)
+	returnedIDs := []string{needsReviewResp.Items[0].SessionID, needsReviewResp.Items[1].SessionID}
+	require.Contains(t, returnedIDs, sessionA)
+	require.Contains(t, returnedIDs, sessionB)
+
+	assignee := "user:oncall-a"
+	assigneeResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		Assignee: &assignee,
+		Offset:   0,
+		Limit:    20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), assigneeResp.TotalCount)
+	require.Equal(t, sessionA, assigneeResp.Items[0].SessionID)
+	require.Equal(t, "user:oncall-a", assigneeResp.Items[0].Assignee)
+
+	escalationPending := "pending"
+	pendingResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		EscalationState: &escalationPending,
+		Offset:          0,
+		Limit:           20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), pendingResp.TotalCount)
+	require.Equal(t, sessionA, pendingResp.Items[0].SessionID)
+
+	escalationEscalated := "escalated"
+	escalatedResp, err := biz.ListOperatorInbox(context.Background(), &ListOperatorInboxRequest{
+		EscalationState: &escalationEscalated,
+		Offset:          0,
+		Limit:           20,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), escalatedResp.TotalCount)
+	require.Equal(t, sessionB, escalatedResp.Items[0].SessionID)
+}
+
+func TestGetOperatorDashboard_AggregatesOverviewAndPreview(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentC := createTestIncident(t, s)
+	incidentD := createTestIncident(t, s)
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "requires manual review",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "follow_up",
+		TriggerSource: "follow_up_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "follow-up still inconclusive",
+	})
+	jobC := runAndFinalizeWorkbenchJob(t, biz, incidentC.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:c",
+		DiagnosisJSON: `{
+			"summary":"healthy after mitigation",
+			"root_cause":{
+				"type":"dependency_timeout",
+				"category":"dependency",
+				"summary":"healthy after mitigation",
+				"statement":"resolved",
+				"confidence":0.92,
+				"evidence_ids":["ev-c-1","ev-c-2"]
+			},
+			"hypotheses":[{"statement":"mitigated","confidence":0.92,"supporting_evidence_ids":["ev-c-1","ev-c-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-c-1", "ev-c-2"},
+	})
+	now := time.Now().UTC().Truncate(time.Second)
+	runCtx := contextx.WithTriggerType(context.Background(), "manual")
+	runCtx = contextx.WithTriggerSource(runCtx, "manual_api")
+	runCtx = contextx.WithTriggerInitiator(runCtx, "user:d")
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incidentD.IncidentID,
+		Trigger:        ptrAIString("manual"),
+		CreatedBy:      ptrAIString("user:d"),
+		TimeRangeStart: timestamppb.New(now.Add(-20 * time.Minute)),
+		TimeRangeEnd:   timestamppb.New(now),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.GetJobID())
+
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+	sessionC := mustSessionIDByJob(t, s, jobC)
+	sessionD := mustSessionIDByJob(t, s, runResp.GetJobID())
+
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionA,
+		ReviewState: sessionbiz.SessionReviewStateInReview,
+		ReviewedBy:  ptrAIString("user:reviewer-a"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionB,
+		ReviewState: sessionbiz.SessionReviewStateRejected,
+		ReviewedBy:  ptrAIString("user:reviewer-b"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.UpdateReviewState(context.Background(), &sessionbiz.UpdateReviewStateRequest{
+		SessionID:   sessionC,
+		ReviewState: sessionbiz.SessionReviewStateConfirmed,
+		ReviewedBy:  ptrAIString("user:reviewer-c"),
+	})
+	require.NoError(t, err)
+
+	assignedAtPending := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionA,
+		Assignee:   "user:oncall-a",
+		AssignedBy: ptrAIString("user:lead-a"),
+		AssignedAt: &assignedAtPending,
+	})
+	require.NoError(t, err)
+	assignedAtEscalated := time.Now().UTC().Add(-5 * time.Hour).Truncate(time.Second)
+	_, err = sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-b",
+		AssignedBy: ptrAIString("user:lead-b"),
+		AssignedAt: &assignedAtEscalated,
+	})
+	require.NoError(t, err)
+
+	resp, err := biz.GetOperatorDashboard(context.Background(), &GetOperatorDashboardRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.NotEmpty(t, resp.AsOf)
+	require.NotNil(t, resp.Overview)
+	require.EqualValues(t, 4, resp.Overview.TotalSessions)
+	require.EqualValues(t, 2, resp.Overview.NeedsReviewCount)
+	require.EqualValues(t, 1, resp.Overview.InReviewCount)
+	require.EqualValues(t, 1, resp.Overview.ConfirmedCount)
+	require.EqualValues(t, 1, resp.Overview.RejectedCount)
+	require.EqualValues(t, 2, resp.Overview.AssignedCount)
+	require.EqualValues(t, 2, resp.Overview.UnassignedCount)
+
+	require.NotNil(t, resp.Escalation)
+	require.EqualValues(t, 1, resp.Escalation.PendingEscalationCount)
+	require.EqualValues(t, 1, resp.Escalation.EscalatedCount)
+	require.EqualValues(t, 2, resp.Escalation.NormalCount)
+
+	require.NotNil(t, resp.Distribution)
+	require.EqualValues(t, 4, resp.Distribution.BySessionType[sessionbiz.SessionTypeIncident])
+	require.EqualValues(t, 3, resp.Distribution.ByLatestTriggerType["manual"])
+	require.EqualValues(t, 1, resp.Distribution.ByLatestTriggerType["follow_up"])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStateInReview])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStateRejected])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStateConfirmed])
+	require.EqualValues(t, 1, resp.Distribution.ByReviewState[sessionbiz.SessionReviewStatePending])
+
+	require.NotNil(t, resp.Activity)
+	require.EqualValues(t, 1, resp.Activity.ActiveRunCount)
+	require.EqualValues(t, 4, resp.Activity.RecentlyUpdatedCount)
+	require.EqualValues(t, 0, resp.Activity.RecentReplayCount)
+	require.EqualValues(t, 1, resp.Activity.RecentFollowUpCount)
+	require.EqualValues(t, 1440, resp.Activity.RecentWindowMinutes)
+
+	require.NotNil(t, resp.QueuePreview)
+	require.NotEmpty(t, resp.QueuePreview.InReview)
+	require.Equal(t, sessionA, resp.QueuePreview.InReview[0].SessionID)
+	require.NotEmpty(t, resp.QueuePreview.Escalated)
+	require.Equal(t, sessionB, resp.QueuePreview.Escalated[0].SessionID)
+	require.GreaterOrEqual(t, len(resp.QueuePreview.NeedsReview), 2)
+	require.Equal(t, sessionA, resp.QueuePreview.NeedsReview[0].SessionID)
+	previewIDs := []string{resp.QueuePreview.NeedsReview[0].SessionID, resp.QueuePreview.NeedsReview[1].SessionID}
+	require.Contains(t, previewIDs, sessionB)
+	require.NotContains(t, previewIDs, sessionC)
+	require.NotContains(t, previewIDs, sessionD)
+
+	require.NotNil(t, resp.Navigation)
+	require.Equal(t, "/v1/operator/inbox", resp.Navigation.InboxPath)
+	require.Equal(t, "/v1/operator/inbox?review_state=in_review", resp.Navigation.RecommendedFilters["in_review"])
+	require.Equal(t, "/v1/operator/inbox?escalation_state=escalated", resp.Navigation.RecommendedFilters["escalated"])
+}
+
+func TestOperatorAccessControl_WorkbenchAndInbox(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentA.Namespace = "payments"
+	incidentA.Service = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentA))
+	incidentB.Namespace = "checkout"
+	incidentB.Service = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentB))
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "requires team follow-up",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "requires owner follow-up",
+	})
+
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+	_, err := sessionSvc.UpdateAssignment(context.Background(), &sessionbiz.UpdateAssignmentRequest{
+		SessionID:  sessionB,
+		Assignee:   "user:oncall-self",
+		AssignedBy: ptrAIString("user:lead"),
+	})
+	require.NoError(t, err)
+
+	teamCtx := contextx.WithOperatorTeams(contextx.WithUserID(context.Background(), "operator:team-payments"), []string{"namespace:payments"})
+	teamWorkbench, err := biz.GetSessionWorkbench(teamCtx, &GetSessionWorkbenchRequest{SessionID: sessionA})
+	require.NoError(t, err)
+	require.Equal(t, sessionA, teamWorkbench.Session.SessionID)
+
+	_, err = biz.GetSessionWorkbench(teamCtx, &GetSessionWorkbenchRequest{SessionID: sessionB})
+	require.ErrorIs(t, err, errno.ErrPermissionDenied)
+
+	inboxResp, err := biz.ListOperatorInbox(teamCtx, &ListOperatorInboxRequest{Offset: 0, Limit: 20})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, inboxResp.TotalCount)
+	require.Equal(t, sessionA, inboxResp.Items[0].SessionID)
+
+	selfCtx := contextx.WithUserID(context.Background(), "oncall-self")
+	selfWorkbench, err := biz.GetSessionWorkbench(selfCtx, &GetSessionWorkbenchRequest{SessionID: sessionB})
+	require.NoError(t, err)
+	require.Equal(t, sessionB, selfWorkbench.Session.SessionID)
+}
+
+func TestGetSessionWorkbenchViewer_IncludesEvidenceVerificationCompareAndHistory(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+	incident := createTestIncident(t, s)
+
+	manualJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "succeeded",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:manual",
+		DiagnosisJSON: `{
+			"summary":"database pool saturation confirmed",
+			"root_cause":{
+				"type":"db_pool_exhausted",
+				"category":"db",
+				"summary":"database pool saturation confirmed",
+				"statement":"database pool saturation confirmed",
+				"confidence":0.91,
+				"evidence_ids":["ev-manual-1","ev-manual-2"]
+			},
+			"hypotheses":[{"statement":"pool limit reached","confidence":0.91,"supporting_evidence_ids":["ev-manual-1","ev-manual-2"],"missing_evidence":[]}]
+		}`,
+		EvidenceIDs: []string{"ev-manual-1", "ev-manual-2"},
+	})
+	replayJobID := runAndFinalizeWorkbenchJob(t, biz, incident.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "replay",
+		TriggerSource: "replay_api",
+		Initiator:     "user:replay",
+		ErrorMessage:  "replay failed for test",
+	})
+	sessionID := mustSessionIDByJob(t, s, replayJobID)
+
+	_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID:  sessionID,
+		EventType:  sessionbiz.SessionHistoryEventReviewStarted,
+		Actor:      ptrAIString("user:reviewer"),
+		JobID:      ptrAIString(replayJobID),
+		ReasonCode: ptrAIString("viewer_test"),
+	})
+	require.NoError(t, err)
+	_, err = sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+		SessionID: sessionID,
+		EventType: sessionbiz.SessionHistoryEventReplayRequested,
+		Actor:     ptrAIString("user:replay"),
+		JobID:     ptrAIString(manualJobID),
+	})
+	require.NoError(t, err)
+
+	workbench, err := biz.GetSessionWorkbench(context.Background(), &GetSessionWorkbenchRequest{SessionID: sessionID})
+	require.NoError(t, err)
+	require.NotNil(t, workbench.DrillDown)
+	require.Equal(t, "/v1/sessions/"+sessionID+"/workbench/viewer", workbench.DrillDown.ViewerPath)
+	require.Equal(
+		t,
+		"/v1/sessions/"+sessionID+"/workbench/viewer?view=evidence",
+		workbench.DrillDown.EvidenceViewerPath,
+	)
+	require.Equal(
+		t,
+		"/v1/sessions/"+sessionID+"/workbench/viewer?history_scope=session&limit=5&offset=0&order=desc&view=history",
+		workbench.DrillDown.HistoryViewerPath,
+	)
+
+	viewer, err := biz.GetSessionWorkbenchViewer(context.Background(), &GetSessionWorkbenchViewerRequest{
+		SessionID:    sessionID,
+		View:         ptrAIString(workbenchViewerTabCompare),
+		LeftJobID:    ptrAIString(manualJobID),
+		RightJobID:   ptrAIString(replayJobID),
+		HistoryScope: ptrAIString(workbenchViewerHistoryScopeJob),
+		JobID:        ptrAIString(replayJobID),
+		HistoryLimit: 10,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, viewer)
+	require.Equal(t, sessionID, viewer.SessionID)
+	require.Equal(t, workbenchViewerTabCompare, viewer.Selected)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabEvidence)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabCompare)
+	require.Contains(t, viewer.Tabs, workbenchViewerTabHistory)
+
+	require.NotNil(t, viewer.Evidence)
+	require.Equal(t, incident.IncidentID, viewer.Evidence.IncidentID)
+	require.Equal(t, "/v1/incidents/"+incident.IncidentID+"/evidence", viewer.Evidence.EvidencePath)
+	require.NotEmpty(t, viewer.Evidence.Items)
+	require.NotEmpty(t, viewer.Evidence.RelatedJobIDs)
+
+	require.NotNil(t, viewer.Compare)
+	require.NotNil(t, viewer.Compare.Latest)
+	require.True(t, viewer.Compare.Latest.CompareAvailable)
+	require.Equal(t, manualJobID, viewer.Compare.Latest.LeftJobID)
+	require.Equal(t, replayJobID, viewer.Compare.Latest.RightJobID)
+	require.NotNil(t, viewer.Compare.SelectedPair)
+	require.Equal(t, manualJobID, viewer.Compare.SelectedPair.LeftJobID)
+	require.Equal(t, replayJobID, viewer.Compare.SelectedPair.RightJobID)
+	require.NotEmpty(t, viewer.Compare.Paths)
+
+	require.NotNil(t, viewer.History)
+	require.Equal(t, workbenchViewerHistoryScopeJob, viewer.History.Scope)
+	require.Equal(t, int64(1), viewer.History.TotalCount)
+	require.Len(t, viewer.History.Events, 1)
+	require.Equal(t, replayJobID, viewer.History.Events[0].JobID)
+}
+
+func TestGetOperatorDashboardTrends_AggregatesWindowAndFilters(t *testing.T) {
+	db := newAIJobTestDB(t)
+	s := store.NewStore(db)
+	biz := New(s)
+	sessionSvc := sessionbiz.New(s)
+
+	incidentA := createTestIncident(t, s)
+	incidentB := createTestIncident(t, s)
+	incidentA.Namespace = "payments"
+	incidentB.Namespace = "checkout"
+	require.NoError(t, s.Incident().Update(context.Background(), incidentA))
+	require.NoError(t, s.Incident().Update(context.Background(), incidentB))
+
+	jobA := runAndFinalizeWorkbenchJob(t, biz, incidentA.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:a",
+		ErrorMessage:  "needs trend test",
+	})
+	jobB := runAndFinalizeWorkbenchJob(t, biz, incidentB.IncidentID, workbenchRunSpec{
+		Status:        "failed",
+		TriggerType:   "manual",
+		TriggerSource: "manual_api",
+		Initiator:     "user:b",
+		ErrorMessage:  "needs trend test",
+	})
+	sessionA := mustSessionIDByJob(t, s, jobA)
+	sessionB := mustSessionIDByJob(t, s, jobB)
+
+	now := time.Now().UTC().Truncate(time.Second)
+	events := []struct {
+		sessionID string
+		eventType string
+		actor     string
+		createdAt time.Time
+	}{
+		{sessionA, sessionbiz.SessionHistoryEventReplayRequested, "user:alice", now.Add(-48 * time.Hour)},
+		{sessionA, sessionbiz.SessionHistoryEventReviewStarted, "user:alice", now.Add(-24 * time.Hour)},
+		{sessionB, sessionbiz.SessionHistoryEventFollowUpRequested, "user:bob", now.Add(-23 * time.Hour)},
+		{sessionB, sessionbiz.SessionHistoryEventEscalationEscalated, "system:sla", now.Add(-23 * time.Hour)},
+	}
+	for _, item := range events {
+		item := item
+		_, err := sessionSvc.AppendHistoryEvent(context.Background(), &sessionbiz.AppendSessionHistoryEventRequest{
+			SessionID: item.sessionID,
+			EventType: item.eventType,
+			Actor:     ptrAIString(item.actor),
+			CreatedAt: &item.createdAt,
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := biz.GetOperatorDashboardTrends(context.Background(), &GetOperatorDashboardTrendsRequest{
+		Window:  ptrAIString("7d"),
+		GroupBy: ptrAIString("operator"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Equal(t, "7d", resp.Window)
+	require.Equal(t, operatorDashboardTrendGroupByOperator, resp.GroupBy)
+	require.NotNil(t, resp.Summary)
+	require.EqualValues(t, 1, resp.Summary.ReplayCount)
+	require.EqualValues(t, 1, resp.Summary.FollowUpCount)
+	require.EqualValues(t, 1, resp.Summary.ReviewStartedCount)
+	require.EqualValues(t, 1, resp.Summary.SLAEscalatedCount)
+	require.EqualValues(t, 4, resp.Summary.TotalCount)
+	require.Len(t, resp.ByDay, 7)
+	require.NotEmpty(t, resp.Grouped)
+	require.NotNil(t, resp.Navigation)
+	require.Equal(t, "/v1/operator/dashboard", resp.Navigation.DashboardPath)
+	require.Equal(t, "/v1/operator/inbox", resp.Navigation.InboxPath)
+
+	filtered, err := biz.GetOperatorDashboardTrends(context.Background(), &GetOperatorDashboardTrendsRequest{
+		Window:   ptrAIString("7d"),
+		GroupBy:  ptrAIString("team"),
+		TeamID:   ptrAIString("namespace:payments"),
+		Operator: ptrAIString("alice"),
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, filtered.Summary.ReplayCount)
+	require.EqualValues(t, 1, filtered.Summary.ReviewStartedCount)
+	require.EqualValues(t, 0, filtered.Summary.FollowUpCount)
+	require.EqualValues(t, 0, filtered.Summary.SLAEscalatedCount)
+	require.EqualValues(t, 2, filtered.Summary.TotalCount)
+	require.NotNil(t, filtered.Applied)
+	require.Equal(t, "alice", filtered.Applied.Operator)
+	require.Equal(t, "namespace:payments", filtered.Applied.TeamID)
+}
+
+type workbenchRunSpec struct {
+	Status        string
+	TriggerType   string
+	TriggerSource string
+	Initiator     string
+	DiagnosisJSON string
+	EvidenceIDs   []string
+	ErrorMessage  string
+}
+
+func runAndFinalizeWorkbenchJob(
+	t *testing.T,
+	biz *aiJobBiz,
+	incidentID string,
+	spec workbenchRunSpec,
+) string {
+	t.Helper()
+	end := time.Now().UTC().Truncate(time.Second)
+	start := end.Add(-15 * time.Minute)
+	runCtx := contextx.WithTriggerType(context.Background(), spec.TriggerType)
+	runCtx = contextx.WithTriggerSource(runCtx, spec.TriggerSource)
+	runCtx = contextx.WithTriggerInitiator(runCtx, spec.Initiator)
+	runResp, err := biz.Run(runCtx, &v1.RunAIJobRequest{
+		IncidentID:     incidentID,
+		Trigger:        ptrAIString(spec.TriggerType),
+		CreatedBy:      ptrAIString(spec.Initiator),
+		TimeRangeStart: timestamppb.New(start),
+		TimeRangeEnd:   timestamppb.New(end),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, runResp.GetJobID())
+
+	_, err = biz.Start(orchestratorCtx(), &v1.StartAIJobRequest{JobID: runResp.GetJobID()})
+	require.NoError(t, err)
+	status := strings.TrimSpace(spec.Status)
+	if status == "" {
+		status = "succeeded"
+	}
+	if status == "succeeded" {
+		_, _, validateErr := validateAndNormalizeDiagnosisJSON(spec.DiagnosisJSON)
+		require.NoError(t, validateErr)
+	}
+	for _, evidenceID := range spec.EvidenceIDs {
+		ensureWorkbenchEvidence(t, biz, incidentID, evidenceID)
+	}
+	finalizeReq := &v1.FinalizeAIJobRequest{
+		JobID:       runResp.GetJobID(),
+		Status:      status,
+		EvidenceIDs: spec.EvidenceIDs,
+	}
+	if diagnosis := strings.TrimSpace(spec.DiagnosisJSON); diagnosis != "" {
+		finalizeReq.DiagnosisJSON = &diagnosis
+	}
+	if errorMessage := strings.TrimSpace(spec.ErrorMessage); errorMessage != "" {
+		finalizeReq.ErrorMessage = &errorMessage
+	}
+	_, err = biz.Finalize(orchestratorCtx(), finalizeReq)
+	require.NoError(t, err)
+	return runResp.GetJobID()
+}
+
+func ensureWorkbenchEvidence(
+	t *testing.T,
+	biz *aiJobBiz,
+	incidentID string,
+	evidenceID string,
+) {
+	t.Helper()
+	evidenceID = strings.TrimSpace(evidenceID)
+	if evidenceID == "" {
+		return
+	}
+	now := time.Now().UTC()
+	resultJSON := `{"source":"workbench_test"}`
+	require.NoError(t, biz.store.Evidence().Create(context.Background(), &model.EvidenceM{
+		EvidenceID:      evidenceID,
+		IncidentID:      incidentID,
+		Type:            "logs",
+		QueryText:       "mock://workbench-test",
+		QueryHash:       "workbench-test-query-hash",
+		TimeRangeStart:  now.Add(-5 * time.Minute),
+		TimeRangeEnd:    now,
+		ResultJSON:      resultJSON,
+		ResultSizeBytes: int64(len(resultJSON)),
+		CreatedBy:       "system",
+	}))
+}
+
+func mustSessionIDByJob(t *testing.T, s store.IStore, jobID string) string {
+	t.Helper()
+	job, err := s.AIJob().Get(context.Background(), where.T(context.Background()).F("job_id", jobID))
+	require.NoError(t, err)
+	require.NotNil(t, job.SessionID)
+	sessionID := strings.TrimSpace(*job.SessionID)
+	require.NotEmpty(t, sessionID)
+	return sessionID
+}

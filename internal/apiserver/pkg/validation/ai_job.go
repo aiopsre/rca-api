@@ -7,7 +7,7 @@ import (
 
 	"github.com/onexstack/onexstack/pkg/errorsx"
 
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 const (
@@ -26,6 +26,14 @@ const (
 	maxToolCallRefLength            = 1024
 	maxAIIdempotencyLength          = 128
 	maxAIWindowRange                = 24 * time.Hour
+	maxSessionActionReasonLength    = 256
+	maxSessionActionNoteLength      = 1024
+	maxSessionActionSourceLength    = 128
+	maxSessionActionInitiatorLength = 128
+	maxSessionReviewReasonCodeLen   = 64
+	maxSessionAssigneeLength        = 128
+	defaultOperatorInboxListLimit   = int64(20)
+	maxOperatorInboxListLimit       = int64(100)
 )
 
 var (
@@ -36,6 +44,10 @@ var (
 	}
 	allowedAIJobTriggers = map[string]struct{}{
 		"manual":        {},
+		"replay":        {},
+		"follow_up":     {},
+		"cron":          {},
+		"change":        {},
 		"on_ingest":     {},
 		"on_escalation": {},
 		"scheduled":     {},
@@ -49,7 +61,68 @@ var (
 		"timeout":  {},
 		"canceled": {},
 	}
+	allowedSessionOperatorActionTriggerTypes = map[string]struct{}{
+		"replay":    {},
+		"follow_up": {},
+	}
+	allowedSessionReviewStates = map[string]struct{}{
+		"pending":   {},
+		"in_review": {},
+		"confirmed": {},
+		"rejected":  {},
+	}
+	allowedSessionTypes = map[string]struct{}{
+		"incident": {},
+		"alert":    {},
+		"service":  {},
+		"change":   {},
+	}
+	allowedSessionEscalationStates = map[string]struct{}{
+		"none":      {},
+		"pending":   {},
+		"escalated": {},
+	}
 )
+
+type SessionOperatorActionRequest struct {
+	SessionID    string
+	TriggerType  string
+	Pipeline     *string
+	Reason       *string
+	OperatorNote *string
+	Source       *string
+	Initiator    *string
+}
+
+type SessionReviewActionRequest struct {
+	SessionID   string
+	ReviewState string
+	Note        *string
+	ReviewedBy  *string
+	ReasonCode  *string
+}
+
+type SessionAssignmentActionRequest struct {
+	SessionID  string
+	Assignee   *string
+	AssignedBy *string
+	Note       *string
+}
+
+type SessionOperatorInboxRequest struct {
+	ReviewState     *string
+	NeedsReview     *bool
+	SessionType     *string
+	Assignee        *string
+	TeamID          *string
+	EscalationState *string
+	Offset          int64
+	Limit           int64
+	ScanLimit       int64
+	Shard           *int64
+	ShardCount      *int64
+	AsyncRefresh    *bool
+}
 
 func (v *Validator) ValidateRunAIJobRequest(ctx context.Context, rq *v1.RunAIJobRequest) error {
 	_ = ctx
@@ -236,6 +309,154 @@ func (v *Validator) ValidateListAIToolCallsRequest(ctx context.Context, rq *v1.L
 		return errorsx.ErrInvalidArgument
 	}
 	if rq.Seq != nil && rq.GetSeq() <= 0 {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateSessionOperatorActionRequest(ctx context.Context, rq *SessionOperatorActionRequest) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if strings.TrimSpace(rq.SessionID) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	triggerType := strings.ToLower(strings.TrimSpace(rq.TriggerType))
+	if _, ok := allowedSessionOperatorActionTriggerTypes[triggerType]; !ok {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Pipeline, maxAIPipelineLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Reason, maxSessionActionReasonLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.OperatorNote, maxSessionActionNoteLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Source, maxSessionActionSourceLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Initiator, maxSessionActionInitiatorLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateSessionReviewActionRequest(ctx context.Context, rq *SessionReviewActionRequest) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if strings.TrimSpace(rq.SessionID) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	state := strings.ToLower(strings.TrimSpace(rq.ReviewState))
+	if _, ok := allowedSessionReviewStates[state]; !ok {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Note, maxSessionActionNoteLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.ReviewedBy, maxSessionActionInitiatorLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.ReasonCode, maxSessionReviewReasonCodeLen) {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateSessionAssignmentActionRequest(
+	ctx context.Context,
+	rq *SessionAssignmentActionRequest,
+) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if strings.TrimSpace(rq.SessionID) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.Assignee == nil || strings.TrimSpace(*rq.Assignee) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Assignee, maxSessionAssigneeLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.AssignedBy, maxSessionActionInitiatorLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Note, maxSessionActionNoteLength) {
+		return errorsx.ErrInvalidArgument
+	}
+	normalizedAssignee := strings.TrimSpace(*rq.Assignee)
+	rq.Assignee = &normalizedAssignee
+	return nil
+}
+
+func (v *Validator) ValidateSessionOperatorInboxRequest(ctx context.Context, rq *SessionOperatorInboxRequest) error {
+	_ = ctx
+	if rq == nil {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.Offset < 0 {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.Limit <= 0 {
+		rq.Limit = defaultOperatorInboxListLimit
+	}
+	if rq.Limit > maxOperatorInboxListLimit {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.ReviewState != nil {
+		reviewState := strings.ToLower(strings.TrimSpace(*rq.ReviewState))
+		if _, ok := allowedSessionReviewStates[reviewState]; !ok {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.ReviewState = &reviewState
+	}
+	if rq.SessionType != nil {
+		sessionType := strings.ToLower(strings.TrimSpace(*rq.SessionType))
+		if _, ok := allowedSessionTypes[sessionType]; !ok {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.SessionType = &sessionType
+	}
+	if rq.Assignee != nil {
+		assignee := strings.TrimSpace(*rq.Assignee)
+		if assignee == "" || len(assignee) > maxSessionAssigneeLength {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.Assignee = &assignee
+	}
+	if rq.TeamID != nil {
+		teamID := strings.TrimSpace(*rq.TeamID)
+		if teamID == "" || len(teamID) > maxSessionActionSourceLength {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.TeamID = &teamID
+	}
+	if rq.EscalationState != nil {
+		escalationState := strings.ToLower(strings.TrimSpace(*rq.EscalationState))
+		if _, ok := allowedSessionEscalationStates[escalationState]; !ok {
+			return errorsx.ErrInvalidArgument
+		}
+		rq.EscalationState = &escalationState
+	}
+	if rq.ScanLimit < 0 || rq.ScanLimit > 5000 {
+		return errorsx.ErrInvalidArgument
+	}
+	shard := int64(0)
+	if rq.Shard != nil {
+		shard = *rq.Shard
+	}
+	shardCount := int64(1)
+	if rq.ShardCount != nil {
+		shardCount = *rq.ShardCount
+	}
+	if shardCount <= 0 || shard < 0 || shard >= shardCount {
 		return errorsx.ErrInvalidArgument
 	}
 	return nil

@@ -2,11 +2,13 @@ package store
 
 import (
 	"context"
+	"flag"
 	"sync"
 
 	"github.com/google/wire"
-	"github.com/onexstack/onexstack/pkg/store/where"
 	"gorm.io/gorm"
+
+	"github.com/aiopsre/rca-api/pkg/store/where"
 )
 
 // ProviderSet defines the dependency injection providers for the store layer.
@@ -31,11 +33,24 @@ type IStore interface {
 	Fake() FakeStore
 	Incident() IncidentStore
 	AlertEvent() AlertEventStore
-	Datasource() DatasourceStore
 	Evidence() EvidenceStore
 	AIJob() AIJobStore
+	AIJobQueueSignal() AIJobQueueSignalStore
 	AIToolCall() AIToolCallStore
+	KBEntry() KBEntryStore
 	Silence() SilenceStore
+	NoticeChannel() NoticeChannelStore
+	NoticeDelivery() NoticeDeliveryStore
+	IncidentActionLog() IncidentActionLogStore
+	SessionContext() SessionContextStore
+	SessionHistoryEvent() SessionHistoryEventStore
+	InternalStrategyConfig() InternalStrategyConfigStore
+	RBAC() RBACStore
+	AlertingPolicy() AlertingPolicyStore
+	Playbook() PlaybookStore
+	McpServer() McpServerStore
+	ToolMetadata() ToolMetadataStore
+	ToolsetProviderBinding() ToolsetProviderBindingStore
 }
 
 // txKey is the context key for storing the transaction *gorm.DB instance.
@@ -58,6 +73,19 @@ func NewStore(db *gorm.DB) *store {
 	once.Do(func() { S = &store{db} })
 
 	return S
+}
+
+// ResetForTest resets package-level singleton state.
+// It should only be used by tests that require strict store isolation.
+func ResetForTest() {
+	// Safety guard: this function must never be called from production code.
+	// In normal binaries, the "test" flags are not registered, so we can detect
+	// that we're not running under `go test`.
+	if flag.Lookup("test.v") == nil {
+		panic("store.ResetForTest must only be called from tests")
+	}
+	once = sync.Once{}
+	S = nil
 }
 
 // DB returns the database instance. If a transaction exists in the context,
@@ -104,10 +132,6 @@ func (s *store) AlertEvent() AlertEventStore {
 	return newAlertEventStore(s)
 }
 
-func (s *store) Datasource() DatasourceStore {
-	return newDatasourceStore(s)
-}
-
 func (s *store) Evidence() EvidenceStore {
 	return newEvidenceStore(s)
 }
@@ -116,10 +140,66 @@ func (s *store) AIJob() AIJobStore {
 	return newAIJobStore(s)
 }
 
+func (s *store) AIJobQueueSignal() AIJobQueueSignalStore {
+	return newAIJobQueueSignalStore(s)
+}
+
 func (s *store) AIToolCall() AIToolCallStore {
 	return newAIToolCallStore(s)
 }
 
+func (s *store) KBEntry() KBEntryStore {
+	return newKBEntryStore(s)
+}
+
 func (s *store) Silence() SilenceStore {
 	return newSilenceStore(s)
+}
+
+func (s *store) NoticeChannel() NoticeChannelStore {
+	return newNoticeChannelStore(s)
+}
+
+func (s *store) NoticeDelivery() NoticeDeliveryStore {
+	return newNoticeDeliveryStore(s)
+}
+
+func (s *store) IncidentActionLog() IncidentActionLogStore {
+	return newIncidentActionLogStore(s)
+}
+
+func (s *store) SessionContext() SessionContextStore {
+	return newSessionContextStore(s)
+}
+
+func (s *store) SessionHistoryEvent() SessionHistoryEventStore {
+	return newSessionHistoryEventStore(s)
+}
+
+func (s *store) InternalStrategyConfig() InternalStrategyConfigStore {
+	return newInternalStrategyConfigStore(s)
+}
+
+func (s *store) RBAC() RBACStore {
+	return newRBACStore(s)
+}
+
+func (s *store) AlertingPolicy() AlertingPolicyStore {
+	return newAlertingPolicyStore(s)
+}
+
+func (s *store) Playbook() PlaybookStore {
+	return newPlaybookStore(s)
+}
+
+func (s *store) McpServer() McpServerStore {
+	return newMcpServerStore(s)
+}
+
+func (s *store) ToolMetadata() ToolMetadataStore {
+	return newToolMetadataStore(s)
+}
+
+func (s *store) ToolsetProviderBinding() ToolsetProviderBindingStore {
+	return newToolsetProviderBindingStore(s)
 }

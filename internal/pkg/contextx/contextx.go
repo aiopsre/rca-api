@@ -22,6 +22,18 @@ const (
 	traceIDKey contextKey = "traceID"
 	// loggerKey is the context key for storing and retrieving a structured logger.
 	loggerKey contextKey = "logger"
+	// orchestratorInstanceIDKey stores orchestrator instance identity for job lease ownership.
+	orchestratorInstanceIDKey contextKey = "orchestratorInstanceID"
+	// triggerTypeKey stores normalized trigger type for run trace linkage.
+	triggerTypeKey contextKey = "triggerType"
+	// triggerSourceKey stores trigger source for run trace linkage.
+	triggerSourceKey contextKey = "triggerSource"
+	// triggerInitiatorKey stores trigger initiator for run trace linkage.
+	triggerInitiatorKey contextKey = "triggerInitiator"
+	// operatorTeamsKey stores caller team scope list resolved by auth middleware.
+	operatorTeamsKey contextKey = "operatorTeams"
+	// operatorScopesKey stores caller scope list resolved by auth middleware.
+	operatorScopesKey contextKey = "operatorScopes"
 )
 
 // WithUserID returns a new context with the given user ID.
@@ -118,4 +130,113 @@ func Logger(ctx context.Context) *slog.Logger {
 // If no logger is found, it returns slog.Default().
 func L(ctx context.Context) *slog.Logger {
 	return Logger(ctx)
+}
+
+// WithOrchestratorInstanceID returns a new context with orchestrator instance id.
+func WithOrchestratorInstanceID(ctx context.Context, instanceID string) context.Context {
+	return context.WithValue(ctx, orchestratorInstanceIDKey, instanceID)
+}
+
+// OrchestratorInstanceID retrieves orchestrator instance id from context.
+// Returns empty string when missing.
+func OrchestratorInstanceID(ctx context.Context) string {
+	val, ok := ctx.Value(orchestratorInstanceIDKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithTriggerType returns a new context with normalized trigger type.
+func WithTriggerType(ctx context.Context, triggerType string) context.Context {
+	return context.WithValue(ctx, triggerTypeKey, triggerType)
+}
+
+// TriggerType retrieves trigger type from context.
+func TriggerType(ctx context.Context) string {
+	val, ok := ctx.Value(triggerTypeKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithTriggerSource returns a new context with trigger source.
+func WithTriggerSource(ctx context.Context, triggerSource string) context.Context {
+	return context.WithValue(ctx, triggerSourceKey, triggerSource)
+}
+
+// TriggerSource retrieves trigger source from context.
+func TriggerSource(ctx context.Context) string {
+	val, ok := ctx.Value(triggerSourceKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithTriggerInitiator returns a new context with trigger initiator.
+func WithTriggerInitiator(ctx context.Context, triggerInitiator string) context.Context {
+	return context.WithValue(ctx, triggerInitiatorKey, triggerInitiator)
+}
+
+// TriggerInitiator retrieves trigger initiator from context.
+func TriggerInitiator(ctx context.Context) string {
+	val, ok := ctx.Value(triggerInitiatorKey).(string)
+	if !ok {
+		return ""
+	}
+	return val
+}
+
+// WithOperatorTeams returns a new context with operator team scope list.
+func WithOperatorTeams(ctx context.Context, teams []string) context.Context {
+	if len(teams) == 0 {
+		return context.WithValue(ctx, operatorTeamsKey, []string{})
+	}
+	out := make([]string, 0, len(teams))
+	for _, team := range teams {
+		if team == "" {
+			continue
+		}
+		out = append(out, team)
+	}
+	return context.WithValue(ctx, operatorTeamsKey, out)
+}
+
+// OperatorTeams retrieves operator team scope list from context.
+func OperatorTeams(ctx context.Context) []string {
+	val, ok := ctx.Value(operatorTeamsKey).([]string)
+	if !ok || len(val) == 0 {
+		return nil
+	}
+	out := make([]string, len(val))
+	copy(out, val)
+	return out
+}
+
+// WithOperatorScopes returns a new context with operator scopes list.
+func WithOperatorScopes(ctx context.Context, scopes []string) context.Context {
+	if len(scopes) == 0 {
+		return context.WithValue(ctx, operatorScopesKey, []string{})
+	}
+	out := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope == "" {
+			continue
+		}
+		out = append(out, scope)
+	}
+	return context.WithValue(ctx, operatorScopesKey, out)
+}
+
+// OperatorScopes retrieves operator scopes list from context.
+func OperatorScopes(ctx context.Context) []string {
+	val, ok := ctx.Value(operatorScopesKey).([]string)
+	if !ok || len(val) == 0 {
+		return nil
+	}
+	out := make([]string, len(val))
+	copy(out, val)
+	return out
 }

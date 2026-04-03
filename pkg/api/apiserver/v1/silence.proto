@@ -5,7 +5,7 @@ package apiserver.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
 
 // SilenceMatcher defines one exact-match condition in P1-1.
 message SilenceMatcher {

@@ -4,14 +4,8 @@ import (
 	"github.com/onexstack/onexstack/pkg/store/registry"
 	"gorm.io/gorm"
 
-	"zk8s.com/rca-api/internal/pkg/rid"
+	"github.com/aiopsre/rca-api/internal/pkg/rid"
 )
-
-// AfterCreate generates datasource business ID.
-func (m *DatasourceM) AfterCreate(tx *gorm.DB) error {
-	m.DatasourceID = rid.DatasourceID.New(uint64(m.ID))
-	return tx.Model(m).UpdateColumn("datasource_id", m.DatasourceID).Error
-}
 
 // AfterCreate generates evidence business ID.
 func (m *EvidenceM) AfterCreate(tx *gorm.DB) error {
@@ -20,6 +14,5 @@ func (m *EvidenceM) AfterCreate(tx *gorm.DB) error {
 }
 
 func init() {
-	registry.Register(&DatasourceM{})
 	registry.Register(&EvidenceM{})
 }

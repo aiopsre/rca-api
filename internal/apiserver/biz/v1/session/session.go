@@ -1,0 +1,1907 @@
+package session
+
+import (
+	"context"
+	"encoding/json"
+	"hash/fnv"
+	"log/slog"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/onexstack/onexstack/pkg/errorsx"
+	"gorm.io/gorm"
+
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/cachex"
+	"github.com/aiopsre/rca-api/internal/apiserver/store"
+	"github.com/aiopsre/rca-api/internal/pkg/contextx"
+	"github.com/aiopsre/rca-api/internal/pkg/errno"
+	"github.com/aiopsre/rca-api/pkg/store/where"
+)
+
+const (
+	SessionTypeIncident = "incident"
+	SessionTypeAlert    = "alert"
+	SessionTypeService  = "service"
+	SessionTypeChange   = "change"
+)
+
+const (
+	SessionStatusActive   = "active"
+	SessionStatusResolved = "resolved"
+	SessionStatusArchived = "archived"
+)
+
+const (
+	SessionReviewStatePending   = "pending"
+	SessionReviewStateInReview  = "in_review"
+	SessionReviewStateConfirmed = "confirmed"
+	SessionReviewStateRejected  = "rejected"
+)
+
+const (
+	sessionContextStateReviewKey = "review"
+	sessionContextStateAssignKey = "assignment"
+	sessionContextStateSLAKey    = "sla"
+)
+
+const (
+	SessionEscalationStateNone      = "none"
+	SessionEscalationStatePending   = "pending"
+	SessionEscalationStateEscalated = "escalated"
+	defaultSessionSLAWindow         = 2 * time.Hour
+)
+
+const (
+	SessionHistoryEventReviewStarted       = "review_started"
+	SessionHistoryEventReviewConfirmed     = "review_confirmed"
+	SessionHistoryEventReviewRejected      = "review_rejected"
+	SessionHistoryEventAssigned            = "assigned"
+	SessionHistoryEventReassigned          = "reassigned"
+	SessionHistoryEventReplayRequested     = "replay_requested"
+	SessionHistoryEventFollowUpRequested   = "follow_up_requested"
+	SessionHistoryEventEscalationPending   = "escalation_pending"
+	SessionHistoryEventEscalationEscalated = "escalation_escalated"
+	SessionHistoryEventEscalationCleared   = "escalation_cleared"
+	SessionHistoryEventContextPatched      = "context_patched"
+
+	defaultSessionHistoryListLimit = int64(20)
+	maxSessionHistoryListLimit     = int64(100)
+	maxSessionSLABatchLimit        = int64(5000)
+	maxAssignmentHistorySessionIDs = int64(1000)
+	defaultSessionHistoryActor     = "system"
+	defaultSLAHistoryActor         = "system:sla"
+)
+
+var allowedSessionTypes = map[string]struct{}{
+	SessionTypeIncident: {},
+	SessionTypeAlert:    {},
+	SessionTypeService:  {},
+	SessionTypeChange:   {},
+}
+
+var allowedSessionStatuses = map[string]struct{}{
+	SessionStatusActive:   {},
+	SessionStatusResolved: {},
+	SessionStatusArchived: {},
+}
+
+var allowedSessionReviewStates = map[string]struct{}{
+	SessionReviewStatePending:   {},
+	SessionReviewStateInReview:  {},
+	SessionReviewStateConfirmed: {},
+	SessionReviewStateRejected:  {},
+}
+
+var allowedSessionHistoryEventTypes = map[string]struct{}{
+	SessionHistoryEventReviewStarted:       {},
+	SessionHistoryEventReviewConfirmed:     {},
+	SessionHistoryEventReviewRejected:      {},
+	SessionHistoryEventAssigned:            {},
+	SessionHistoryEventReassigned:          {},
+	SessionHistoryEventReplayRequested:     {},
+	SessionHistoryEventFollowUpRequested:   {},
+	SessionHistoryEventEscalationPending:   {},
+	SessionHistoryEventEscalationEscalated: {},
+	SessionHistoryEventEscalationCleared:   {},
+	SessionHistoryEventContextPatched:      {},
+}
+
+// SessionBiz defines internal session context operations.
+//
+//nolint:interfacebloat // Keep minimal create/get/update/internal helper in one entrypoint.
+type SessionBiz interface {
+	ResolveOrCreate(ctx context.Context, rq *ResolveOrCreateRequest) (*ResolveOrCreateResponse, error)
+	EnsureIncidentSession(ctx context.Context, rq *EnsureIncidentSessionRequest) (*ResolveOrCreateResponse, error)
+	Get(ctx context.Context, rq *GetSessionContextRequest) (*GetSessionContextResponse, error)
+	Update(ctx context.Context, rq *UpdateSessionContextRequest) (*UpdateSessionContextResponse, error)
+	UpdateReviewState(ctx context.Context, rq *UpdateReviewStateRequest) (*UpdateReviewStateResponse, error)
+	UpdateAssignment(ctx context.Context, rq *UpdateAssignmentRequest) (*UpdateAssignmentResponse, error)
+	AppendHistoryEvent(ctx context.Context, rq *AppendSessionHistoryEventRequest) (*AppendSessionHistoryEventResponse, error)
+	ListHistory(ctx context.Context, rq *ListSessionHistoryRequest) (*ListSessionHistoryResponse, error)
+	ListAssignmentHistory(
+		ctx context.Context,
+		rq *ListSessionAssignmentHistoryRequest,
+	) (*ListSessionAssignmentHistoryResponse, error)
+	ListGlobalAssignmentHistory(
+		ctx context.Context,
+		rq *ListGlobalAssignmentHistoryRequest,
+	) (*ListGlobalAssignmentHistoryResponse, error)
+	SyncSLAState(ctx context.Context, rq *SyncSessionSLAStateRequest) (*SyncSessionSLAStateResponse, error)
+	TouchSLAOnAction(ctx context.Context, rq *TouchSessionSLAOnActionRequest) (*SyncSessionSLAStateResponse, error)
+	SyncSLABatch(ctx context.Context, rq *SyncSessionSLABatchRequest) (*SyncSessionSLABatchResponse, error)
+
+	SessionExpansion
+}
+
+//nolint:modernize // Keep explicit empty interface as placeholder expansion point.
+type SessionExpansion interface{}
+
+type sessionBiz struct {
+	store       store.IStore
+	slaBatchMu  sync.Mutex
+	slaBatchRun map[string]struct{}
+}
+
+type ResolveOrCreateRequest struct {
+	SessionType      string
+	BusinessKey      string
+	IncidentID       *string
+	Title            *string
+	Status           *string
+	ContextStateJSON *string
+}
+
+type ResolveOrCreateResponse struct {
+	Session *model.SessionContextM
+	Created bool
+}
+
+type EnsureIncidentSessionRequest struct {
+	IncidentID string
+	Title      *string
+}
+
+type GetSessionContextRequest struct {
+	SessionID   *string
+	SessionType *string
+	BusinessKey *string
+	IncidentID  *string
+}
+
+type GetSessionContextResponse struct {
+	Session *model.SessionContextM
+}
+
+type UpdateSessionContextRequest struct {
+	SessionID          string
+	IncidentID         *string
+	Title              *string
+	Status             *string
+	LatestSummaryJSON  *string
+	PinnedEvidenceJSON *string
+	ActiveRunID        *string
+	ContextStateJSON   *string
+}
+
+type UpdateSessionContextResponse struct {
+	Session *model.SessionContextM
+}
+
+type ReviewState struct {
+	State      string `json:"state"`
+	Note       string `json:"note,omitempty"`
+	ReviewedBy string `json:"reviewed_by,omitempty"`
+	ReviewedAt string `json:"reviewed_at,omitempty"`
+	ReasonCode string `json:"reason_code,omitempty"`
+}
+
+type UpdateReviewStateRequest struct {
+	SessionID   string
+	ReviewState string
+	ReviewNote  *string
+	ReviewedBy  *string
+	ReasonCode  *string
+	ReviewedAt  *time.Time
+}
+
+type UpdateReviewStateResponse struct {
+	Session *model.SessionContextM
+	Review  *ReviewState
+}
+
+type AssignmentState struct {
+	Assignee   string `json:"assignee,omitempty"`
+	AssignedBy string `json:"assigned_by,omitempty"`
+	AssignedAt string `json:"assigned_at,omitempty"`
+	Note       string `json:"note,omitempty"`
+}
+
+type UpdateAssignmentRequest struct {
+	SessionID  string
+	Assignee   string
+	AssignedBy *string
+	AssignNote *string
+	AssignedAt *time.Time
+}
+
+type UpdateAssignmentResponse struct {
+	Session    *model.SessionContextM
+	Assignment *AssignmentState
+}
+
+type SessionHistoryEventReadModel struct {
+	EventID        string         `json:"event_id"`
+	EventType      string         `json:"event_type"`
+	SessionID      string         `json:"session_id"`
+	IncidentID     string         `json:"incident_id,omitempty"`
+	JobID          string         `json:"job_id,omitempty"`
+	Actor          string         `json:"actor"`
+	Note           string         `json:"note,omitempty"`
+	ReasonCode     string         `json:"reason_code,omitempty"`
+	PayloadSummary map[string]any `json:"payload_summary,omitempty"`
+	CreatedAt      string         `json:"created_at"`
+}
+
+type AppendSessionHistoryEventRequest struct {
+	SessionID      string
+	EventType      string
+	IncidentID     *string
+	JobID          *string
+	Actor          *string
+	Note           *string
+	ReasonCode     *string
+	PayloadSummary map[string]any
+	CreatedAt      *time.Time
+}
+
+type AppendSessionHistoryEventResponse struct {
+	Event *SessionHistoryEventReadModel
+}
+
+type ListSessionHistoryRequest struct {
+	SessionID string
+	Offset    int64
+	Limit     int64
+	Order     *string
+}
+
+type ListSessionHistoryResponse struct {
+	TotalCount int64                           `json:"total_count"`
+	Events     []*SessionHistoryEventReadModel `json:"events"`
+}
+
+type ListSessionAssignmentHistoryRequest struct {
+	SessionID string
+	Offset    int64
+	Limit     int64
+	Order     *string
+}
+
+type ListGlobalAssignmentHistoryRequest struct {
+	SessionID *string
+	Offset    int64
+	Limit     int64
+	Order     *string
+}
+
+type SessionAssignmentHistoryEventReadModel struct {
+	EventID          string `json:"event_id"`
+	EventType        string `json:"event_type"`
+	SessionID        string `json:"session_id"`
+	IncidentID       string `json:"incident_id,omitempty"`
+	JobID            string `json:"job_id,omitempty"`
+	Assignee         string `json:"assignee,omitempty"`
+	AssignedBy       string `json:"assigned_by,omitempty"`
+	PreviousAssignee string `json:"previous_assignee,omitempty"`
+	AssignedAt       string `json:"assigned_at,omitempty"`
+	Note             string `json:"note,omitempty"`
+	CreatedAt        string `json:"created_at"`
+}
+
+type ListSessionAssignmentHistoryResponse struct {
+	TotalCount int64                                     `json:"total_count"`
+	Events     []*SessionAssignmentHistoryEventReadModel `json:"events"`
+}
+
+type ListGlobalAssignmentHistoryResponse struct {
+	TotalCount int64                                     `json:"total_count"`
+	Events     []*SessionAssignmentHistoryEventReadModel `json:"events"`
+}
+
+type SyncSessionSLAStateRequest struct {
+	SessionID                     string
+	AssignedAt                    *string
+	DueAt                         *string
+	EscalationState               string
+	EscalationLevel               int64
+	ReasonCode                    *string
+	Actor                         *string
+	SkipOperatorCacheInvalidation bool
+}
+
+type SyncSessionSLAStateResponse struct {
+	Session *model.SessionContextM
+	Changed bool
+}
+
+type TouchSessionSLAOnActionRequest struct {
+	SessionID  string
+	ActionType string
+	Actor      *string
+}
+
+type SyncSessionSLABatchRequest struct {
+	Offset     int64
+	Limit      int64
+	Shard      *int64
+	ShardCount *int64
+	Async      *bool
+	Now        *time.Time
+}
+
+type SyncSessionSLABatchResponse struct {
+	Accepted       bool  `json:"accepted"`
+	Async          bool  `json:"async"`
+	Offset         int64 `json:"offset"`
+	Limit          int64 `json:"limit"`
+	Shard          int64 `json:"shard"`
+	ShardCount     int64 `json:"shard_count"`
+	ScannedCount   int64 `json:"scanned_count"`
+	UpdatedCount   int64 `json:"updated_count"`
+	OverdueCount   int64 `json:"overdue_count"`
+	EscalatedCount int64 `json:"escalated_count"`
+	NextOffset     int64 `json:"next_offset"`
+}
+
+var _ SessionBiz = (*sessionBiz)(nil)
+
+// New creates session context biz.
+func New(store store.IStore) *sessionBiz {
+	return &sessionBiz{
+		store:       store,
+		slaBatchRun: map[string]struct{}{},
+	}
+}
+
+func (b *sessionBiz) ResolveOrCreate(ctx context.Context, rq *ResolveOrCreateRequest) (*ResolveOrCreateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionType, err := normalizeSessionType(rq.SessionType)
+	if err != nil {
+		return nil, err
+	}
+	businessKey := strings.TrimSpace(rq.BusinessKey)
+	if businessKey == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	incidentID := trimOptional(rq.IncidentID)
+	title := trimOptional(rq.Title)
+	contextStateJSON := trimOptional(rq.ContextStateJSON)
+
+	status := SessionStatusActive
+	if rq.Status != nil {
+		status, err = normalizeSessionStatus(*rq.Status)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	existing, err := b.store.SessionContext().GetByTypeAndBusinessKey(ctx, sessionType, businessKey)
+	if err == nil {
+		updated := false
+		if existing.IncidentID == nil && incidentID != "" {
+			existing.IncidentID = ptrString(incidentID)
+			updated = true
+		}
+		if existing.Title == nil && title != "" {
+			existing.Title = ptrString(title)
+			updated = true
+		}
+		if existing.ContextStateJSON == nil && contextStateJSON != "" {
+			existing.ContextStateJSON = ptrString(contextStateJSON)
+			updated = true
+		}
+		if strings.TrimSpace(existing.Status) == "" {
+			existing.Status = SessionStatusActive
+			updated = true
+		}
+		if updated {
+			if updateErr := b.store.SessionContext().Update(ctx, existing); updateErr != nil {
+				return nil, errno.ErrSessionContextUpdateFailed
+			}
+		}
+		return &ResolveOrCreateResponse{Session: existing, Created: false}, nil
+	}
+	if !errorsx.Is(err, gorm.ErrRecordNotFound) {
+		return nil, errno.ErrSessionContextGetFailed
+	}
+
+	obj := &model.SessionContextM{
+		SessionType: sessionType,
+		BusinessKey: businessKey,
+		Status:      status,
+	}
+	if incidentID != "" {
+		obj.IncidentID = ptrString(incidentID)
+	}
+	if title != "" {
+		obj.Title = ptrString(title)
+	}
+	if contextStateJSON != "" {
+		obj.ContextStateJSON = ptrString(contextStateJSON)
+	}
+
+	if err := b.store.SessionContext().Create(ctx, obj); err != nil {
+		if isDuplicateKeyError(err) {
+			existing, getErr := b.store.SessionContext().GetByTypeAndBusinessKey(ctx, sessionType, businessKey)
+			if getErr == nil {
+				return &ResolveOrCreateResponse{Session: existing, Created: false}, nil
+			}
+			if errorsx.Is(getErr, gorm.ErrRecordNotFound) {
+				return nil, errno.ErrSessionContextConflict
+			}
+			return nil, errno.ErrSessionContextGetFailed
+		}
+		return nil, errno.ErrSessionContextCreateFailed
+	}
+	return &ResolveOrCreateResponse{Session: obj, Created: true}, nil
+}
+
+func (b *sessionBiz) EnsureIncidentSession(
+	ctx context.Context,
+	rq *EnsureIncidentSessionRequest,
+) (*ResolveOrCreateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	incidentID := strings.TrimSpace(rq.IncidentID)
+	if incidentID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	return b.ResolveOrCreate(ctx, &ResolveOrCreateRequest{
+		SessionType: SessionTypeIncident,
+		BusinessKey: incidentID,
+		IncidentID:  &incidentID,
+		Title:       rq.Title,
+		Status:      ptrString(SessionStatusActive),
+	})
+}
+
+func (b *sessionBiz) Get(ctx context.Context, rq *GetSessionContextRequest) (*GetSessionContextResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	var (
+		out *model.SessionContextM
+		err error
+	)
+
+	if rq.SessionID != nil && strings.TrimSpace(*rq.SessionID) != "" {
+		out, err = b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", strings.TrimSpace(*rq.SessionID)))
+	} else if rq.IncidentID != nil && strings.TrimSpace(*rq.IncidentID) != "" {
+		out, err = b.store.SessionContext().GetByIncidentID(ctx, strings.TrimSpace(*rq.IncidentID))
+	} else if rq.SessionType != nil && rq.BusinessKey != nil {
+		sessionType, normalizeErr := normalizeSessionType(*rq.SessionType)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		businessKey := strings.TrimSpace(*rq.BusinessKey)
+		if businessKey == "" {
+			return nil, errorsx.ErrInvalidArgument
+		}
+		out, err = b.store.SessionContext().GetByTypeAndBusinessKey(ctx, sessionType, businessKey)
+	} else {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionContextNotFound
+		}
+		return nil, errno.ErrSessionContextGetFailed
+	}
+	if err := b.ensureOperatorSessionAccess(ctx, out); err != nil {
+		return nil, err
+	}
+	return &GetSessionContextResponse{Session: out}, nil
+}
+
+func (b *sessionBiz) Update(ctx context.Context, rq *UpdateSessionContextRequest) (*UpdateSessionContextResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	out, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	if rq.IncidentID != nil {
+		out.IncidentID = normalizeOptionalPtr(rq.IncidentID)
+	}
+	if rq.Title != nil {
+		out.Title = normalizeOptionalPtr(rq.Title)
+	}
+	if rq.Status != nil {
+		status, normalizeErr := normalizeSessionStatus(*rq.Status)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		out.Status = status
+	}
+	if rq.LatestSummaryJSON != nil {
+		out.LatestSummaryJSON = normalizeOptionalPtr(rq.LatestSummaryJSON)
+	}
+	if rq.PinnedEvidenceJSON != nil {
+		out.PinnedEvidenceJSON = normalizeOptionalPtr(rq.PinnedEvidenceJSON)
+	}
+	if rq.ActiveRunID != nil {
+		out.ActiveRunID = normalizeOptionalPtr(rq.ActiveRunID)
+	}
+	if rq.ContextStateJSON != nil {
+		out.ContextStateJSON = normalizeOptionalPtr(rq.ContextStateJSON)
+	}
+
+	if err := b.store.SessionContext().Update(ctx, out); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errno.ErrSessionContextConflict
+		}
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	cachex.InvalidateSessionReadModels(ctx, out.SessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
+
+	return &UpdateSessionContextResponse{Session: out}, nil
+}
+
+func (b *sessionBiz) UpdateReviewState(
+	ctx context.Context,
+	rq *UpdateReviewStateRequest,
+) (*UpdateReviewStateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	reviewState, err := normalizeSessionReviewState(rq.ReviewState)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	review := &ReviewState{
+		State:      reviewState,
+		Note:       trimOptional(rq.ReviewNote),
+		ReviewedBy: trimOptional(rq.ReviewedBy),
+		ReasonCode: trimOptional(rq.ReasonCode),
+	}
+	reviewedAt := time.Now().UTC()
+	if rq.ReviewedAt != nil && !rq.ReviewedAt.IsZero() {
+		reviewedAt = rq.ReviewedAt.UTC()
+	}
+	review.ReviewedAt = reviewedAt.Format(time.RFC3339Nano)
+
+	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
+	stateObj[sessionContextStateReviewKey] = map[string]any{
+		"state":       review.State,
+		"note":        review.Note,
+		"reviewed_by": review.ReviewedBy,
+		"reviewed_at": review.ReviewedAt,
+		"reason_code": review.ReasonCode,
+	}
+	encoded, err := json.Marshal(stateObj)
+	if err != nil {
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	encodedRaw := string(encoded)
+	out.ContextStateJSON = &encodedRaw
+
+	if err := b.store.SessionContext().Update(ctx, out); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errno.ErrSessionContextConflict
+		}
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	if eventType := reviewStateToHistoryEventType(review.State); eventType != "" {
+		b.appendHistoryEventBestEffort(ctx, &AppendSessionHistoryEventRequest{
+			SessionID:  sessionID,
+			EventType:  eventType,
+			IncidentID: out.IncidentID,
+			Actor:      ptrString(review.ReviewedBy),
+			Note:       ptrString(review.Note),
+			ReasonCode: ptrString(review.ReasonCode),
+			PayloadSummary: map[string]any{
+				"review_state": review.State,
+				"reviewed_at":  review.ReviewedAt,
+			},
+		})
+	}
+	if review.State == SessionReviewStateConfirmed {
+		_, _ = b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
+			SessionID:       sessionID,
+			EscalationState: SessionEscalationStateNone,
+			EscalationLevel: 0,
+			ReasonCode:      ptrString("review_confirmed"),
+			Actor:           ptrString(firstNonEmpty(review.ReviewedBy, defaultSLAHistoryActor)),
+		})
+	}
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
+	return &UpdateReviewStateResponse{Session: out, Review: review}, nil
+}
+
+func (b *sessionBiz) UpdateAssignment(
+	ctx context.Context,
+	rq *UpdateAssignmentRequest,
+) (*UpdateAssignmentResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	assignee := strings.TrimSpace(rq.Assignee)
+	if assignee == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	out, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	previousAssignment := extractAssignmentState(out.ContextStateJSON)
+
+	assignment := &AssignmentState{
+		Assignee:   assignee,
+		AssignedBy: trimOptional(rq.AssignedBy),
+		Note:       trimOptional(rq.AssignNote),
+	}
+	assignedAt := time.Now().UTC()
+	if rq.AssignedAt != nil && !rq.AssignedAt.IsZero() {
+		assignedAt = rq.AssignedAt.UTC()
+	}
+	assignment.AssignedAt = assignedAt.Format(time.RFC3339Nano)
+	dueWindow, _ := b.resolveSLAWindows(ctx, out.SessionType)
+	dueAt := assignedAt.Add(dueWindow)
+
+	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
+	stateObj[sessionContextStateAssignKey] = map[string]any{
+		"assignee":    assignment.Assignee,
+		"assigned_by": assignment.AssignedBy,
+		"assigned_at": assignment.AssignedAt,
+		"note":        assignment.Note,
+	}
+	stateObj[sessionContextStateSLAKey] = map[string]any{
+		"assigned_at":      assignment.AssignedAt,
+		"due_at":           dueAt.Format(time.RFC3339Nano),
+		"escalation_state": SessionEscalationStateNone,
+		"escalation_level": 0,
+	}
+	encoded, err := json.Marshal(stateObj)
+	if err != nil {
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	encodedRaw := string(encoded)
+	out.ContextStateJSON = &encodedRaw
+
+	if err := b.store.SessionContext().Update(ctx, out); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errno.ErrSessionContextConflict
+		}
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	eventType := SessionHistoryEventAssigned
+	if previousAssignee := strings.TrimSpace(previousAssignment.Assignee); previousAssignee != "" && previousAssignee != assignee {
+		eventType = SessionHistoryEventReassigned
+	}
+	b.appendHistoryEventBestEffort(ctx, &AppendSessionHistoryEventRequest{
+		SessionID:  sessionID,
+		EventType:  eventType,
+		IncidentID: out.IncidentID,
+		Actor:      ptrString(assignment.AssignedBy),
+		Note:       ptrString(assignment.Note),
+		PayloadSummary: map[string]any{
+			"assignee":          assignment.Assignee,
+			"assigned_by":       assignment.AssignedBy,
+			"assigned_at":       assignment.AssignedAt,
+			"note":              assignment.Note,
+			"previous_assignee": strings.TrimSpace(previousAssignment.Assignee),
+		},
+	})
+	b.syncSessionAssignmentRecordBestEffort(ctx, out, assignment, assignedAt)
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
+	return &UpdateAssignmentResponse{Session: out, Assignment: assignment}, nil
+}
+
+func (b *sessionBiz) AppendHistoryEvent(
+	ctx context.Context,
+	rq *AppendSessionHistoryEventRequest,
+) (*AppendSessionHistoryEventResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	eventType, err := normalizeSessionHistoryEventType(rq.EventType)
+	if err != nil {
+		return nil, err
+	}
+	sessionObj, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !b.isHistoryTableReady(ctx) {
+		return &AppendSessionHistoryEventResponse{}, nil
+	}
+
+	actor := trimOptional(rq.Actor)
+	if actor == "" {
+		actor = defaultSessionHistoryActor
+	}
+	incidentID := trimOptional(rq.IncidentID)
+	if incidentID == "" {
+		incidentID = trimOptional(sessionObj.IncidentID)
+	}
+	jobID := trimOptional(rq.JobID)
+	note := trimOptional(rq.Note)
+	reasonCode := trimOptional(rq.ReasonCode)
+	createdAt := time.Now().UTC()
+	if rq.CreatedAt != nil && !rq.CreatedAt.IsZero() {
+		createdAt = rq.CreatedAt.UTC()
+	}
+
+	obj := &model.SessionHistoryEventM{
+		SessionID: sessionID,
+		EventType: eventType,
+		Actor:     actor,
+		CreatedAt: createdAt,
+	}
+	if incidentID != "" {
+		obj.IncidentID = ptrString(incidentID)
+	}
+	if jobID != "" {
+		obj.JobID = ptrString(jobID)
+	}
+	if note != "" {
+		obj.Note = ptrString(note)
+	}
+	if reasonCode != "" {
+		obj.ReasonCode = ptrString(reasonCode)
+	}
+	if payloadSummaryJSON, ok := marshalSessionHistoryPayloadSummary(rq.PayloadSummary); ok {
+		obj.PayloadSummaryJSON = payloadSummaryJSON
+	}
+
+	if err := b.store.SessionHistoryEvent().Create(ctx, obj); err != nil {
+		return nil, errno.ErrSessionHistoryCreateFailed
+	}
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	cachex.InvalidateOperatorReadModels(ctx)
+	return &AppendSessionHistoryEventResponse{
+		Event: sessionHistoryEventToReadModel(obj),
+	}, nil
+}
+
+func (b *sessionBiz) ListHistory(
+	ctx context.Context,
+	rq *ListSessionHistoryRequest,
+) (*ListSessionHistoryResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	if _, err := b.getSessionByID(ctx, sessionID); err != nil {
+		return nil, err
+	}
+
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultSessionHistoryListLimit
+	}
+	if limit > maxSessionHistoryListLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	ascending, err := normalizeSessionHistoryOrder(rq.Order)
+	if err != nil {
+		return nil, err
+	}
+	cacheKey := cachex.BuildHistoryKey(sessionID, offset, limit, ascending)
+	var cached ListSessionHistoryResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) {
+		return &cached, nil
+	}
+	if !b.isHistoryTableReady(ctx) {
+		return &ListSessionHistoryResponse{TotalCount: 0, Events: []*SessionHistoryEventReadModel{}}, nil
+	}
+
+	total, list, err := b.store.SessionHistoryEvent().ListBySession(
+		ctx,
+		sessionID,
+		int(offset),
+		int(limit),
+		ascending,
+	)
+	if err != nil {
+		return nil, errno.ErrSessionHistoryListFailed
+	}
+	events := make([]*SessionHistoryEventReadModel, 0, len(list))
+	for _, item := range list {
+		events = append(events, sessionHistoryEventToReadModel(item))
+	}
+	resp := &ListSessionHistoryResponse{
+		TotalCount: total,
+		Events:     events,
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLHistory)
+	return resp, nil
+}
+
+func (b *sessionBiz) ListAssignmentHistory(
+	ctx context.Context,
+	rq *ListSessionAssignmentHistoryRequest,
+) (*ListSessionAssignmentHistoryResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	if _, err := b.getSessionByID(ctx, sessionID); err != nil {
+		return nil, err
+	}
+
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultSessionHistoryListLimit
+	}
+	if limit > maxSessionHistoryListLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	ascending, err := normalizeSessionHistoryOrder(rq.Order)
+	if err != nil {
+		return nil, err
+	}
+	cacheKey := cachex.BuildHistoryKey(sessionID, offset, limit, ascending) + ":assignment"
+	var cached ListSessionAssignmentHistoryResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) {
+		return &cached, nil
+	}
+	if !b.isHistoryTableReady(ctx) {
+		return &ListSessionAssignmentHistoryResponse{
+			TotalCount: 0,
+			Events:     []*SessionAssignmentHistoryEventReadModel{},
+		}, nil
+	}
+
+	total, list, err := b.store.SessionHistoryEvent().ListBySessionAndEventTypes(
+		ctx,
+		sessionID,
+		[]string{SessionHistoryEventAssigned, SessionHistoryEventReassigned},
+		int(offset),
+		int(limit),
+		ascending,
+	)
+	if err != nil {
+		return nil, errno.ErrSessionHistoryListFailed
+	}
+	events := make([]*SessionAssignmentHistoryEventReadModel, 0, len(list))
+	for _, item := range list {
+		events = append(events, sessionAssignmentHistoryEventToReadModel(item))
+	}
+	resp := &ListSessionAssignmentHistoryResponse{
+		TotalCount: total,
+		Events:     events,
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLHistory)
+	return resp, nil
+}
+
+func (b *sessionBiz) ListGlobalAssignmentHistory(
+	ctx context.Context,
+	rq *ListGlobalAssignmentHistoryRequest,
+) (*ListGlobalAssignmentHistoryResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = defaultSessionHistoryListLimit
+	}
+	if limit > maxSessionHistoryListLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	ascending, err := normalizeSessionHistoryOrder(rq.Order)
+	if err != nil {
+		return nil, err
+	}
+	targetSessionID := trimOptional(rq.SessionID)
+	cacheKey := cachex.BuildGlobalAssignmentHistoryKey(
+		targetSessionID,
+		strconv.FormatInt(offset, 10),
+		strconv.FormatInt(limit, 10),
+		strconv.FormatBool(ascending),
+		strings.TrimSpace(contextx.UserID(ctx)),
+		strings.TrimSpace(contextx.Username(ctx)),
+		strings.Join(contextx.OperatorTeams(ctx), ","),
+		strings.Join(contextx.OperatorScopes(ctx), ","),
+	)
+	var cached ListGlobalAssignmentHistoryResponse
+	if cachex.GetJSON(ctx, cacheKey, &cached) {
+		return &cached, nil
+	}
+	if !b.isHistoryTableReady(ctx) {
+		return &ListGlobalAssignmentHistoryResponse{
+			TotalCount: 0,
+			Events:     []*SessionAssignmentHistoryEventReadModel{},
+		}, nil
+	}
+	sessionIDs, err := b.listAccessibleSessionIDs(ctx, targetSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessionIDs) == 0 {
+		return &ListGlobalAssignmentHistoryResponse{
+			TotalCount: 0,
+			Events:     []*SessionAssignmentHistoryEventReadModel{},
+		}, nil
+	}
+
+	total, list, err := b.store.SessionHistoryEvent().ListBySessionIDsAndEventTypes(
+		ctx,
+		sessionIDs,
+		[]string{SessionHistoryEventAssigned, SessionHistoryEventReassigned},
+		int(offset),
+		int(limit),
+		ascending,
+	)
+	if err != nil {
+		return nil, errno.ErrSessionHistoryListFailed
+	}
+	events := make([]*SessionAssignmentHistoryEventReadModel, 0, len(list))
+	for _, item := range list {
+		events = append(events, sessionAssignmentHistoryEventToReadModel(item))
+	}
+	resp := &ListGlobalAssignmentHistoryResponse{
+		TotalCount: total,
+		Events:     events,
+	}
+	_ = cachex.SetJSON(ctx, cacheKey, resp, cachex.TTLHistory)
+	return resp, nil
+}
+
+func (b *sessionBiz) SyncSLAState(
+	ctx context.Context,
+	rq *SyncSessionSLAStateRequest,
+) (*SyncSessionSLAStateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	targetState := normalizeSLAEscalationState(rq.EscalationState)
+	if targetState == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+
+	out, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	stateObj := parseContextStateJSONObject(out.ContextStateJSON)
+	currentSLA := extractSLAState(stateObj)
+	targetAssignedAt := firstNonEmpty(trimOptional(rq.AssignedAt), currentSLA.AssignedAt)
+	targetDueAt := firstNonEmpty(trimOptional(rq.DueAt), currentSLA.DueAt)
+	targetReasonCode := firstNonEmpty(trimOptional(rq.ReasonCode), currentSLA.ReasonCode)
+	targetLevel := rq.EscalationLevel
+	if targetLevel < 0 {
+		targetLevel = 0
+	}
+
+	if currentSLA.AssignedAt == targetAssignedAt &&
+		currentSLA.DueAt == targetDueAt &&
+		currentSLA.EscalationState == targetState &&
+		currentSLA.EscalationLevel == targetLevel &&
+		currentSLA.ReasonCode == targetReasonCode {
+		return &SyncSessionSLAStateResponse{Session: out, Changed: false}, nil
+	}
+
+	slaObj := map[string]any{
+		"assigned_at":      targetAssignedAt,
+		"due_at":           targetDueAt,
+		"escalation_state": targetState,
+		"escalation_level": targetLevel,
+		"reason_code":      targetReasonCode,
+	}
+	stateObj[sessionContextStateSLAKey] = slaObj
+	encoded, err := json.Marshal(stateObj)
+	if err != nil {
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+	encodedRaw := string(encoded)
+	out.ContextStateJSON = &encodedRaw
+
+	if err := b.store.SessionContext().Update(ctx, out); err != nil {
+		if isDuplicateKeyError(err) {
+			return nil, errno.ErrSessionContextConflict
+		}
+		return nil, errno.ErrSessionContextUpdateFailed
+	}
+
+	if eventType := slaStateTransitionEventType(currentSLA.EscalationState, targetState); eventType != "" {
+		actor := trimOptional(rq.Actor)
+		if actor == "" {
+			actor = defaultSLAHistoryActor
+		}
+		b.appendHistoryEventBestEffort(ctx, &AppendSessionHistoryEventRequest{
+			SessionID:  sessionID,
+			EventType:  eventType,
+			IncidentID: out.IncidentID,
+			Actor:      ptrString(actor),
+			ReasonCode: ptrString(targetReasonCode),
+			PayloadSummary: map[string]any{
+				"from_state":       currentSLA.EscalationState,
+				"to_state":         targetState,
+				"escalation_level": targetLevel,
+				"due_at":           targetDueAt,
+			},
+		})
+	}
+	cachex.InvalidateSessionReadModels(ctx, sessionID)
+	if !rq.SkipOperatorCacheInvalidation {
+		cachex.InvalidateOperatorReadModels(ctx)
+	}
+	return &SyncSessionSLAStateResponse{Session: out, Changed: true}, nil
+}
+
+func (b *sessionBiz) TouchSLAOnAction(
+	ctx context.Context,
+	rq *TouchSessionSLAOnActionRequest,
+) (*SyncSessionSLAStateResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionID := strings.TrimSpace(rq.SessionID)
+	if sessionID == "" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	actionType := strings.ToLower(strings.TrimSpace(rq.ActionType))
+	if actionType != "replay" && actionType != "follow_up" {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	sessionObj, err := b.getSessionByID(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	assignment := extractAssignmentState(sessionObj.ContextStateJSON)
+	if strings.TrimSpace(assignment.Assignee) == "" {
+		return &SyncSessionSLAStateResponse{Session: sessionObj, Changed: false}, nil
+	}
+	now := time.Now().UTC()
+	assignedAt := now.Format(time.RFC3339Nano)
+	dueWindow, _ := b.resolveSLAWindows(ctx, sessionObj.SessionType)
+	dueAt := now.Add(dueWindow).Format(time.RFC3339Nano)
+	actor := firstNonEmpty(trimOptional(rq.Actor), defaultSLAHistoryActor)
+	reasonCode := "operator_" + actionType + "_requested"
+	return b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
+		SessionID:       sessionID,
+		AssignedAt:      &assignedAt,
+		DueAt:           &dueAt,
+		EscalationState: SessionEscalationStateNone,
+		EscalationLevel: 0,
+		ReasonCode:      &reasonCode,
+		Actor:           &actor,
+	})
+}
+
+func (b *sessionBiz) SyncSLABatch(
+	ctx context.Context,
+	rq *SyncSessionSLABatchRequest,
+) (*SyncSessionSLABatchResponse, error) {
+	if rq == nil {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	offset := rq.Offset
+	if offset < 0 {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	limit := rq.Limit
+	if limit <= 0 {
+		limit = maxSessionHistoryListLimit
+	}
+	if limit > maxSessionSLABatchLimit {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	shard := int64(0)
+	if rq.Shard != nil {
+		shard = *rq.Shard
+	}
+	shardCount := int64(1)
+	if rq.ShardCount != nil && *rq.ShardCount > 0 {
+		shardCount = *rq.ShardCount
+	}
+	if shard < 0 || shardCount <= 0 || shard >= shardCount {
+		return nil, errorsx.ErrInvalidArgument
+	}
+	now := time.Now().UTC()
+	if rq.Now != nil && !rq.Now.IsZero() {
+		now = rq.Now.UTC()
+	}
+	asyncMode := false
+	if rq.Async != nil {
+		asyncMode = *rq.Async
+	}
+	if asyncMode {
+		key := sessionSLABatchKey(shard, shardCount)
+		if !b.beginSLABatch(key) {
+			return &SyncSessionSLABatchResponse{
+				Accepted:   true,
+				Async:      true,
+				Offset:     offset,
+				Limit:      limit,
+				Shard:      shard,
+				ShardCount: shardCount,
+				NextOffset: offset + limit,
+			}, nil
+		}
+		asyncCtx := cloneOperatorSessionContext(ctx)
+		go func() {
+			defer b.endSLABatch(key)
+			_, _ = b.syncSLABatchInternal(asyncCtx, offset, limit, shard, shardCount, now)
+		}()
+		return &SyncSessionSLABatchResponse{
+			Accepted:   true,
+			Async:      true,
+			Offset:     offset,
+			Limit:      limit,
+			Shard:      shard,
+			ShardCount: shardCount,
+			NextOffset: offset + limit,
+		}, nil
+	}
+	resp, err := b.syncSLABatchInternal(ctx, offset, limit, shard, shardCount, now)
+	if err != nil {
+		return nil, err
+	}
+	resp.Accepted = true
+	resp.Async = false
+	return resp, nil
+}
+
+func (b *sessionBiz) syncSLABatchInternal(
+	ctx context.Context,
+	offset int64,
+	limit int64,
+	shard int64,
+	shardCount int64,
+	now time.Time,
+) (*SyncSessionSLABatchResponse, error) {
+	_, sessions, err := b.store.SessionContext().List(ctx, where.T(ctx).P(int(offset), int(limit)))
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+	resp := &SyncSessionSLABatchResponse{
+		Offset:     offset,
+		Limit:      limit,
+		Shard:      shard,
+		ShardCount: shardCount,
+		NextOffset: offset + limit,
+	}
+	for _, sessionObj := range sessions {
+		if sessionObj == nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(sessionObj.SessionID)
+		if sessionID == "" || !sessionSLAShardMatches(sessionID, shard, shardCount) {
+			continue
+		}
+		if accessErr := b.ensureOperatorSessionAccess(ctx, sessionObj); accessErr != nil {
+			continue
+		}
+		resp.ScannedCount++
+		dueWindow, escalationWindow := b.resolveSLAWindows(ctx, sessionObj.SessionType)
+		target := evaluateSessionSLAAutomationState(now, sessionObj, dueWindow, escalationWindow)
+		if target == nil {
+			continue
+		}
+		if target.EscalationState == SessionEscalationStatePending || target.EscalationState == SessionEscalationStateEscalated {
+			resp.OverdueCount++
+		}
+		if target.EscalationState == SessionEscalationStateEscalated {
+			resp.EscalatedCount++
+		}
+		syncResp, syncErr := b.SyncSLAState(ctx, &SyncSessionSLAStateRequest{
+			SessionID:                     sessionID,
+			AssignedAt:                    ptrString(target.AssignedAt),
+			DueAt:                         ptrString(target.DueAt),
+			EscalationState:               target.EscalationState,
+			EscalationLevel:               target.EscalationLevel,
+			ReasonCode:                    ptrString(target.ReasonCode),
+			Actor:                         ptrString(defaultSLAHistoryActor),
+			SkipOperatorCacheInvalidation: true,
+		})
+		if syncErr != nil {
+			slog.WarnContext(ctx, "sync session sla batch skipped",
+				"session_id", sessionID,
+				"error", syncErr,
+			)
+			continue
+		}
+		if syncResp != nil && syncResp.Changed {
+			resp.UpdatedCount++
+		}
+	}
+	if resp.UpdatedCount > 0 {
+		cachex.InvalidateOperatorReadModels(ctx)
+	}
+	return resp, nil
+}
+
+func normalizeSessionType(input string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" {
+		return "", errorsx.ErrInvalidArgument
+	}
+	if _, ok := allowedSessionTypes[normalized]; !ok {
+		return "", errorsx.ErrInvalidArgument
+	}
+	return normalized, nil
+}
+
+func normalizeSessionStatus(input string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" {
+		return "", errorsx.ErrInvalidArgument
+	}
+	if _, ok := allowedSessionStatuses[normalized]; !ok {
+		return "", errorsx.ErrInvalidArgument
+	}
+	return normalized, nil
+}
+
+func normalizeSessionReviewState(input string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if normalized == "" {
+		return "", errorsx.ErrInvalidArgument
+	}
+	if _, ok := allowedSessionReviewStates[normalized]; !ok {
+		return "", errorsx.ErrInvalidArgument
+	}
+	return normalized, nil
+}
+
+func normalizeOptionalPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func trimOptional(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "duplicate") || strings.Contains(lower, "unique constraint")
+}
+
+func ptrString(v string) *string {
+	return &v
+}
+
+func parseContextStateJSONObject(raw *string) map[string]any {
+	if raw == nil {
+		return map[string]any{}
+	}
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func (b *sessionBiz) appendHistoryEventBestEffort(ctx context.Context, rq *AppendSessionHistoryEventRequest) {
+	if b == nil || rq == nil {
+		return
+	}
+	if _, err := b.AppendHistoryEvent(ctx, rq); err != nil {
+		slog.WarnContext(ctx, "append session history event skipped",
+			"session_id", strings.TrimSpace(rq.SessionID),
+			"event_type", strings.TrimSpace(rq.EventType),
+			"error", err,
+		)
+	}
+}
+
+func (b *sessionBiz) getSessionByID(ctx context.Context, sessionID string) (*model.SessionContextM, error) {
+	out, err := b.store.SessionContext().Get(ctx, where.T(ctx).F("session_id", strings.TrimSpace(sessionID)))
+	if err != nil {
+		if errorsx.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errno.ErrSessionContextNotFound
+		}
+		return nil, errno.ErrSessionContextGetFailed
+	}
+	if err := b.ensureOperatorSessionAccess(ctx, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (b *sessionBiz) ensureOperatorSessionAccess(ctx context.Context, sessionObj *model.SessionContextM) error {
+	if sessionObj == nil {
+		return errno.ErrSessionContextNotFound
+	}
+	assignment := extractAssignmentState(sessionObj.ContextStateJSON)
+	incident := b.loadIncidentForSession(ctx, sessionObj)
+	if !CanOperatorAccessSession(ctx, sessionObj, incident, assignment.Assignee) {
+		return errno.ErrPermissionDenied
+	}
+	return nil
+}
+
+func (b *sessionBiz) loadIncidentForSession(ctx context.Context, sessionObj *model.SessionContextM) *model.IncidentM {
+	if b == nil || b.store == nil || sessionObj == nil {
+		return nil
+	}
+	incidentID := trimOptional(sessionObj.IncidentID)
+	if incidentID == "" {
+		return nil
+	}
+	incident, err := b.store.Incident().Get(ctx, where.T(ctx).F("incident_id", incidentID))
+	if err != nil {
+		return nil
+	}
+	return incident
+}
+
+func (b *sessionBiz) listAccessibleSessionIDs(ctx context.Context, targetSessionID string) ([]string, error) {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	if targetSessionID != "" {
+		sessionObj, err := b.getSessionByID(ctx, targetSessionID)
+		if err != nil {
+			return nil, err
+		}
+		return []string{strings.TrimSpace(sessionObj.SessionID)}, nil
+	}
+
+	_, sessions, err := b.store.SessionContext().List(
+		ctx,
+		where.T(ctx).P(0, int(maxAssignmentHistorySessionIDs)),
+	)
+	if err != nil {
+		return nil, errno.ErrSessionContextListFailed
+	}
+	ids := make([]string, 0, len(sessions))
+	for _, sessionObj := range sessions {
+		if sessionObj == nil {
+			continue
+		}
+		if accessErr := b.ensureOperatorSessionAccess(ctx, sessionObj); accessErr != nil {
+			continue
+		}
+		sessionID := strings.TrimSpace(sessionObj.SessionID)
+		if sessionID == "" {
+			continue
+		}
+		ids = append(ids, sessionID)
+	}
+	return ids, nil
+}
+
+func (b *sessionBiz) isHistoryTableReady(ctx context.Context) bool {
+	db := b.store.DB(ctx)
+	if db == nil || db.Migrator() == nil {
+		return false
+	}
+	return db.Migrator().HasTable(model.TableNameSessionHistoryEventM)
+}
+
+func normalizeSessionHistoryEventType(raw string) (string, error) {
+	eventType := strings.ToLower(strings.TrimSpace(raw))
+	if _, ok := allowedSessionHistoryEventTypes[eventType]; !ok {
+		return "", errorsx.ErrInvalidArgument
+	}
+	return eventType, nil
+}
+
+func normalizeSessionHistoryOrder(order *string) (bool, error) {
+	if order == nil || strings.TrimSpace(*order) == "" {
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*order)) {
+	case "asc":
+		return true, nil
+	case "desc":
+		return false, nil
+	default:
+		return false, errorsx.ErrInvalidArgument
+	}
+}
+
+func marshalSessionHistoryPayloadSummary(payload map[string]any) (*string, bool) {
+	if len(payload) == 0 {
+		return nil, false
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	encoded := string(raw)
+	return &encoded, true
+}
+
+func sessionHistoryEventToReadModel(in *model.SessionHistoryEventM) *SessionHistoryEventReadModel {
+	if in == nil {
+		return &SessionHistoryEventReadModel{}
+	}
+	return &SessionHistoryEventReadModel{
+		EventID:        strings.TrimSpace(in.EventID),
+		EventType:      strings.TrimSpace(in.EventType),
+		SessionID:      strings.TrimSpace(in.SessionID),
+		IncidentID:     trimOptional(in.IncidentID),
+		JobID:          trimOptional(in.JobID),
+		Actor:          strings.TrimSpace(in.Actor),
+		Note:           trimOptional(in.Note),
+		ReasonCode:     trimOptional(in.ReasonCode),
+		PayloadSummary: parseOptionalJSONObject(in.PayloadSummaryJSON),
+		CreatedAt:      toRFC3339String(in.CreatedAt),
+	}
+}
+
+func sessionAssignmentHistoryEventToReadModel(in *model.SessionHistoryEventM) *SessionAssignmentHistoryEventReadModel {
+	if in == nil {
+		return &SessionAssignmentHistoryEventReadModel{}
+	}
+	payload := parseOptionalJSONObject(in.PayloadSummaryJSON)
+	assignedAt := strings.TrimSpace(anyToString(payload["assigned_at"]))
+	if assignedAt == "" {
+		assignedAt = toRFC3339String(in.CreatedAt)
+	}
+	assignedBy := strings.TrimSpace(anyToString(payload["assigned_by"]))
+	if assignedBy == "" {
+		assignedBy = strings.TrimSpace(in.Actor)
+	}
+	assignee := strings.TrimSpace(anyToString(payload["assignee"]))
+	if assignee == "" {
+		assignee = strings.TrimSpace(anyToString(payload["current_assignee"]))
+	}
+	previousAssignee := strings.TrimSpace(anyToString(payload["previous_assignee"]))
+	return &SessionAssignmentHistoryEventReadModel{
+		EventID:          strings.TrimSpace(in.EventID),
+		EventType:        strings.TrimSpace(in.EventType),
+		SessionID:        strings.TrimSpace(in.SessionID),
+		IncidentID:       trimOptional(in.IncidentID),
+		JobID:            trimOptional(in.JobID),
+		Assignee:         assignee,
+		AssignedBy:       assignedBy,
+		PreviousAssignee: previousAssignee,
+		AssignedAt:       assignedAt,
+		Note:             firstNonEmpty(trimOptional(in.Note), strings.TrimSpace(anyToString(payload["note"]))),
+		CreatedAt:        toRFC3339String(in.CreatedAt),
+	}
+}
+
+func parseOptionalJSONObject(raw *string) map[string]any {
+	if raw == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*raw)
+	if trimmed == "" {
+		return nil
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil || out == nil {
+		return nil
+	}
+	return out
+}
+
+func reviewStateToHistoryEventType(reviewState string) string {
+	switch strings.ToLower(strings.TrimSpace(reviewState)) {
+	case SessionReviewStateInReview:
+		return SessionHistoryEventReviewStarted
+	case SessionReviewStateConfirmed:
+		return SessionHistoryEventReviewConfirmed
+	case SessionReviewStateRejected:
+		return SessionHistoryEventReviewRejected
+	default:
+		return ""
+	}
+}
+
+func extractAssignmentState(raw *string) *AssignmentState {
+	out := &AssignmentState{}
+	obj := parseContextStateJSONObject(raw)
+	assignRaw, ok := obj[sessionContextStateAssignKey]
+	if !ok {
+		return out
+	}
+	assignObj, ok := assignRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	out.Assignee = strings.TrimSpace(anyToString(assignObj["assignee"]))
+	out.AssignedBy = strings.TrimSpace(anyToString(assignObj["assigned_by"]))
+	out.AssignedAt = strings.TrimSpace(anyToString(assignObj["assigned_at"]))
+	out.Note = strings.TrimSpace(anyToString(assignObj["note"]))
+	return out
+}
+
+type sessionReviewState struct {
+	State string
+}
+
+func extractReviewState(raw *string) *sessionReviewState {
+	out := &sessionReviewState{State: SessionReviewStatePending}
+	stateObj := parseContextStateJSONObject(raw)
+	reviewRaw, ok := stateObj[sessionContextStateReviewKey]
+	if !ok {
+		return out
+	}
+	reviewObj, ok := reviewRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	state := strings.ToLower(strings.TrimSpace(anyToString(reviewObj["state"])))
+	if _, exists := allowedSessionReviewStates[state]; !exists {
+		return out
+	}
+	out.State = state
+	return out
+}
+
+type sessionSLAState struct {
+	AssignedAt      string
+	DueAt           string
+	EscalationState string
+	EscalationLevel int64
+	ReasonCode      string
+}
+
+func extractSLAState(stateObj map[string]any) *sessionSLAState {
+	out := &sessionSLAState{
+		EscalationState: SessionEscalationStateNone,
+	}
+	if stateObj == nil {
+		return out
+	}
+	slaRaw, ok := stateObj[sessionContextStateSLAKey]
+	if !ok {
+		return out
+	}
+	slaObj, ok := slaRaw.(map[string]any)
+	if !ok {
+		return out
+	}
+	out.AssignedAt = strings.TrimSpace(anyToString(slaObj["assigned_at"]))
+	out.DueAt = strings.TrimSpace(anyToString(slaObj["due_at"]))
+	out.EscalationState = normalizeSLAEscalationState(anyToString(slaObj["escalation_state"]))
+	if out.EscalationState == "" {
+		out.EscalationState = SessionEscalationStateNone
+	}
+	out.ReasonCode = strings.TrimSpace(anyToString(slaObj["reason_code"]))
+	switch value := slaObj["escalation_level"].(type) {
+	case int64:
+		out.EscalationLevel = value
+	case int:
+		out.EscalationLevel = int64(value)
+	case float64:
+		out.EscalationLevel = int64(value)
+	}
+	return out
+}
+
+func evaluateSessionSLAAutomationState(
+	now time.Time,
+	sessionObj *model.SessionContextM,
+	dueWindow time.Duration,
+	escalationWindow time.Duration,
+) *sessionSLAState {
+	if sessionObj == nil {
+		return nil
+	}
+	if dueWindow <= 0 {
+		dueWindow = defaultSessionSLAWindow
+	}
+	if escalationWindow <= dueWindow {
+		escalationWindow = dueWindow * 2
+	}
+	stateObj := parseContextStateJSONObject(sessionObj.ContextStateJSON)
+	current := extractSLAState(stateObj)
+	assignment := extractAssignmentState(sessionObj.ContextStateJSON)
+	review := extractReviewState(sessionObj.ContextStateJSON)
+
+	if strings.TrimSpace(assignment.Assignee) == "" {
+		current.EscalationState = SessionEscalationStateNone
+		current.EscalationLevel = 0
+		current.ReasonCode = "no_assignee"
+		return current
+	}
+	if review != nil && strings.TrimSpace(review.State) == SessionReviewStateConfirmed {
+		current.EscalationState = SessionEscalationStateNone
+		current.EscalationLevel = 0
+		current.ReasonCode = "review_confirmed"
+		return current
+	}
+
+	assignedAtRaw := firstNonEmpty(strings.TrimSpace(current.AssignedAt), strings.TrimSpace(assignment.AssignedAt))
+	assignedAt, ok := parseRFC3339Time(assignedAtRaw)
+	if !ok {
+		assignedAt = now.UTC()
+	}
+	current.AssignedAt = assignedAt.UTC().Format(time.RFC3339Nano)
+
+	dueAtRaw := strings.TrimSpace(current.DueAt)
+	dueAt, ok := parseRFC3339Time(dueAtRaw)
+	if !ok {
+		dueAt = assignedAt.Add(dueWindow)
+	}
+	current.DueAt = dueAt.UTC().Format(time.RFC3339Nano)
+
+	switch {
+	case now.After(dueAt.Add(escalationWindow - dueWindow)):
+		current.EscalationState = SessionEscalationStateEscalated
+		current.EscalationLevel = 2
+		current.ReasonCode = "sla_timeout_escalated"
+	case now.After(dueAt):
+		current.EscalationState = SessionEscalationStatePending
+		current.EscalationLevel = 1
+		current.ReasonCode = "sla_due_passed"
+	default:
+		current.EscalationState = SessionEscalationStateNone
+		current.EscalationLevel = 0
+		if current.ReasonCode == "" {
+			current.ReasonCode = "within_sla"
+		}
+	}
+	return current
+}
+
+func (b *sessionBiz) resolveSLAWindows(ctx context.Context, sessionType string) (time.Duration, time.Duration) {
+	dueWindow := defaultSessionSLAWindow
+	escalationWindow := defaultSessionSLAWindow * 2
+	if b == nil || b.store == nil || b.store.InternalStrategyConfig() == nil {
+		return dueWindow, escalationWindow
+	}
+	sessionType = strings.ToLower(strings.TrimSpace(sessionType))
+	if sessionType == "" {
+		sessionType = SessionTypeIncident
+	}
+	obj, err := b.store.InternalStrategyConfig().GetSLAEscalationConfig(ctx, sessionType)
+	if err != nil || obj == nil {
+		return dueWindow, escalationWindow
+	}
+	if obj.DueSeconds > 0 {
+		dueWindow = time.Duration(obj.DueSeconds) * time.Second
+	}
+	if obj.EscalationThresholdsJSON != nil && strings.TrimSpace(*obj.EscalationThresholdsJSON) != "" {
+		var thresholds []int64
+		if unmarshalErr := json.Unmarshal([]byte(*obj.EscalationThresholdsJSON), &thresholds); unmarshalErr == nil {
+			for _, value := range thresholds {
+				if value <= 0 {
+					continue
+				}
+				if time.Duration(value)*time.Second > dueWindow {
+					escalationWindow = time.Duration(value) * time.Second
+					break
+				}
+			}
+		}
+	}
+	if escalationWindow <= dueWindow {
+		escalationWindow = dueWindow * 2
+	}
+	return dueWindow, escalationWindow
+}
+
+func (b *sessionBiz) syncSessionAssignmentRecordBestEffort(
+	ctx context.Context,
+	sessionObj *model.SessionContextM,
+	assignment *AssignmentState,
+	assignedAt time.Time,
+) {
+	if b == nil || b.store == nil || b.store.InternalStrategyConfig() == nil || sessionObj == nil || assignment == nil {
+		return
+	}
+	assignmentNote := strings.TrimSpace(assignment.Note)
+	notePtr := ptrString(assignmentNote)
+	if err := b.store.InternalStrategyConfig().UpsertSessionAssignment(ctx, &model.SessionAssignmentM{
+		SessionID:  strings.TrimSpace(sessionObj.SessionID),
+		Assignee:   strings.TrimSpace(assignment.Assignee),
+		AssignedBy: strings.TrimSpace(assignment.AssignedBy),
+		AssignedAt: &assignedAt,
+		Note:       notePtr,
+	}); err != nil {
+		slog.DebugContext(ctx, "session assignment read model sync skipped", "session_id", sessionObj.SessionID, "error", err)
+	}
+}
+
+func parseRFC3339Time(raw string) (time.Time, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, trimmed)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed.UTC(), true
+}
+
+func (b *sessionBiz) beginSLABatch(key string) bool {
+	if b == nil {
+		return false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	b.slaBatchMu.Lock()
+	defer b.slaBatchMu.Unlock()
+	if _, ok := b.slaBatchRun[key]; ok {
+		return false
+	}
+	b.slaBatchRun[key] = struct{}{}
+	return true
+}
+
+func (b *sessionBiz) endSLABatch(key string) {
+	if b == nil {
+		return
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	b.slaBatchMu.Lock()
+	delete(b.slaBatchRun, key)
+	b.slaBatchMu.Unlock()
+}
+
+func sessionSLABatchKey(shard int64, shardCount int64) string {
+	return strconv.FormatInt(shard, 10) + "/" + strconv.FormatInt(shardCount, 10)
+}
+
+func sessionSLAShardMatches(sessionID string, shard int64, shardCount int64) bool {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return false
+	}
+	if shardCount <= 1 {
+		return true
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(sessionID))
+	return int64(hasher.Sum32())%shardCount == shard
+}
+
+func cloneOperatorSessionContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	out := context.Background()
+	if requestID := strings.TrimSpace(contextx.RequestID(ctx)); requestID != "" {
+		out = contextx.WithRequestID(out, requestID)
+	}
+	if userID := strings.TrimSpace(contextx.UserID(ctx)); userID != "" {
+		out = contextx.WithUserID(out, userID)
+	}
+	if username := strings.TrimSpace(contextx.Username(ctx)); username != "" {
+		out = contextx.WithUsername(out, username)
+	}
+	if teams := contextx.OperatorTeams(ctx); len(teams) > 0 {
+		out = contextx.WithOperatorTeams(out, teams)
+	}
+	if scopes := contextx.OperatorScopes(ctx); len(scopes) > 0 {
+		out = contextx.WithOperatorScopes(out, scopes)
+	}
+	return out
+}
+
+func normalizeSLAEscalationState(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case SessionEscalationStateNone:
+		return SessionEscalationStateNone
+	case SessionEscalationStatePending:
+		return SessionEscalationStatePending
+	case SessionEscalationStateEscalated:
+		return SessionEscalationStateEscalated
+	default:
+		return ""
+	}
+}
+
+func slaStateTransitionEventType(fromState string, toState string) string {
+	fromState = normalizeSLAEscalationState(fromState)
+	toState = normalizeSLAEscalationState(toState)
+	switch {
+	case toState == SessionEscalationStatePending && fromState != SessionEscalationStatePending:
+		return SessionHistoryEventEscalationPending
+	case toState == SessionEscalationStateEscalated && fromState != SessionEscalationStateEscalated:
+		return SessionHistoryEventEscalationEscalated
+	case toState == SessionEscalationStateNone &&
+		(fromState == SessionEscalationStatePending || fromState == SessionEscalationStateEscalated):
+		return SessionHistoryEventEscalationCleared
+	default:
+		return ""
+	}
+}
+
+func anyToString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	default:
+		return ""
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func toRFC3339String(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.UTC().Format(time.RFC3339Nano)
+}

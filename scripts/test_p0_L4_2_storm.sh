@@ -40,9 +40,12 @@ STATS_UNIQUE_TOOLCALLS="${STATS_UNIQUE_TOOLCALLS:-}"
 STATS_UNIQUE_EVIDENCES="${STATS_UNIQUE_EVIDENCES:-}"
 STATS_INGEST_REUSED="${STATS_INGEST_REUSED:-}"
 STATS_RUN_ALREADY_RUNNING="${STATS_RUN_ALREADY_RUNNING:-}"
+STATS_RUN_IDEM_CONFLICT="${STATS_RUN_IDEM_CONFLICT:-}"
 STATS_INGEST_IDEM_REUSE_COUNT="${STATS_INGEST_IDEM_REUSE_COUNT:-}"
 STATS_RUN_IDEM_REUSE_COUNT="${STATS_RUN_IDEM_REUSE_COUNT:-}"
 STORM_RUN_ID="${STORM_RUN_ID:-}"
+RUN_TIME_RANGE_START_EPOCH="${RUN_TIME_RANGE_START_EPOCH:-}"
+RUN_TIME_RANGE_END_EPOCH="${RUN_TIME_RANGE_END_EPOCH:-}"
 
 MAX_UNIQUE_INCIDENTS="${MAX_UNIQUE_INCIDENTS:-}"
 MAX_UNIQUE_JOBS="${MAX_UNIQUE_JOBS:-}"
@@ -98,6 +101,7 @@ snapshot_lines() {
 	echo "unique_evidences=${STATS_UNIQUE_EVIDENCES:-UNKNOWN}"
 	echo "ingest_reused=${STATS_INGEST_REUSED:-UNKNOWN}"
 	echo "run_already_running=${STATS_RUN_ALREADY_RUNNING:-UNKNOWN}"
+	echo "run_idem_conflict=${STATS_RUN_IDEM_CONFLICT:-UNKNOWN}"
 	echo "ingest_idem_reuse_count=${STATS_INGEST_IDEM_REUSE_COUNT:-UNKNOWN}"
 	echo "run_idem_reuse_count=${STATS_RUN_IDEM_REUSE_COUNT:-UNKNOWN}"
 	echo "storm_run_id=${STORM_RUN_ID:-UNKNOWN}"
@@ -287,7 +291,7 @@ worker_compute_idem_key() {
 
 worker_main() {
 	local idx="$1"
-	local fingerprint ingest_idem run_idem_base run_idem now_epoch start_epoch body
+	local fingerprint ingest_idem run_idem_base run_idem now_epoch body
 	local run_result="created"
 	local ingest_attempt=0
 	local incident_id="" event_id="" job_id="" merge_result=""
@@ -301,7 +305,6 @@ worker_main() {
 	run_idem_base="$(worker_compute_idem_key run "${idx}" "${fingerprint}" "${RUN_REUSE_COUNT}" "${RUN_REUSE_BUCKETS}")"
 
 	now_epoch="$(date -u +%s)"
-	start_epoch=$((now_epoch - 1800))
 
 	body="$(jq -cn \
 		--arg idem "${ingest_idem}" \
@@ -333,13 +336,13 @@ worker_main() {
 			break
 		fi
 
-		if [[ "${LAST_HTTP_CODE}" == "500" ]] && printf '%s' "${LAST_BODY}" | grep -q "InternalError.IncidentCreateFailed"; then
+		if [[ "${LAST_HTTP_CODE}" == "500" ]]; then
 			ingest_attempt=$((ingest_attempt + 1))
 			if (( ingest_attempt <= INGEST_RETRY_MAX )); then
 				sleep "$(awk -v ms="${INGEST_RETRY_BACKOFF_MS}" 'BEGIN{printf "%.3f", ms/1000}')"
 				continue
 			fi
-			worker_fail "${idx}" "IngestAlertEvent" "incident create failed after retries=${INGEST_RETRY_MAX}" "${LAST_HTTP_CODE}" "${LAST_BODY}" "${incident_id}" "${event_id}" "${job_id}"
+			worker_fail "${idx}" "IngestAlertEvent" "5xx after retries=${INGEST_RETRY_MAX} (ingest_idem=${ingest_idem}, fingerprint=${fingerprint})" "${LAST_HTTP_CODE}" "${LAST_BODY}" "${incident_id}" "${event_id}" "${job_id}"
 		fi
 		if [[ "${LAST_HTTP_CODE}" == "409" ]] && printf '%s' "${LAST_BODY}" | grep -q "Conflict.AlertEventIdempotencyConflict"; then
 			ingest_attempt=$((ingest_attempt + 1))
@@ -366,10 +369,10 @@ worker_main() {
 	body="$(jq -cn \
 		--arg incident_id "${incident_id}" \
 		--arg idem "${run_idem}" \
-		--arg event_id "${event_id}" \
 		--arg fp "${fingerprint}" \
-		--argjson start "${start_epoch}" \
-		--argjson end "${now_epoch}" \
+		--arg storm_id "${STORM_RUN_ID}" \
+		--argjson start "${RUN_TIME_RANGE_START_EPOCH}" \
+		--argjson end "${RUN_TIME_RANGE_END_EPOCH}" \
 		'{
 			incidentID:$incident_id,
 			idempotencyKey:$idem,
@@ -377,7 +380,7 @@ worker_main() {
 			trigger:"manual",
 			timeRangeStart:{seconds:$start,nanos:0},
 			timeRangeEnd:{seconds:$end,nanos:0},
-			inputHintsJSON:( {scenario:"L4-2", event_id:$event_id, fingerprint:$fp} | tostring ),
+			inputHintsJSON:( {scenario:"L4-2", storm_run_id:$storm_id, fingerprint:$fp} | tostring ),
 			createdBy:"system"
 		}')"
 
@@ -385,8 +388,15 @@ worker_main() {
 		worker_fail "${idx}" "RunAIJob" "curl failed" "${LAST_HTTP_CODE}" "${LAST_BODY}" "${incident_id}" "${event_id}" "${job_id}"
 	fi
 	if [[ ! "${LAST_HTTP_CODE}" =~ ^2[0-9][0-9]$ ]]; then
-		if [[ "${LAST_HTTP_CODE}" == "409" ]] && printf '%s' "${LAST_BODY}" | grep -q "Conflict.AIJobAlreadyRunning"; then
-			run_result="already_running_conflict"
+		if [[ "${LAST_HTTP_CODE}" == "409" ]] && (
+			printf '%s' "${LAST_BODY}" | grep -q "Conflict.AIJobAlreadyRunning" ||
+				printf '%s' "${LAST_BODY}" | grep -q "Conflict.AIJobIdempotencyConflict"
+		); then
+			if printf '%s' "${LAST_BODY}" | grep -q "Conflict.AIJobAlreadyRunning"; then
+				run_result="already_running_conflict"
+			else
+				run_result="idempotency_conflict"
+			fi
 			if ! http_json "GET" "${BASE_URL}/v1/incidents/${incident_id}/ai?offset=0&limit=50"; then
 				worker_fail "${idx}" "RunAIJobConflictFallback" "list incident jobs failed" "${LAST_HTTP_CODE}" "${LAST_BODY}" "${incident_id}" "${event_id}" "${job_id}"
 			fi
@@ -459,7 +469,7 @@ check_idem_stability() {
 check_run_idem_stability() {
 	local mismatch
 	mismatch="$(awk -F'\t' '
-		NF>=9 && $9 != "already_running_conflict" {
+		NF>=9 && $9 != "already_running_conflict" && $9 != "idempotency_conflict" {
 			key=$7
 			val=$8
 			if (key=="" || val=="") next
@@ -673,6 +683,8 @@ run_parent() {
 	RUN_REUSE_BUCKETS="${INGEST_REUSE_BUCKETS}"
 	FINGERPRINT_BASE="p0-l4-2-fp-${RANDOM}-$(date +%s)"
 	STORM_RUN_ID="run-$(date +%s)-$$-${RANDOM}"
+	RUN_TIME_RANGE_END_EPOCH="$(date -u +%s)"
+	RUN_TIME_RANGE_START_EPOCH=$((RUN_TIME_RANGE_END_EPOCH - 1800))
 
 	TMP_DIR="$(mktemp -d)"
 	ALL_RESULTS="${TMP_DIR}/all_results.tsv"
@@ -684,6 +696,7 @@ run_parent() {
 	export BASE_URL CURL SCOPES N CONCURRENCY IDEM_REUSE_RATIO FINGERPRINT_MODE WAIT_JOB JOB_TIMEOUT_S JOB_POLL_INTERVAL_S DEBUG SLEEP_MS
 	export FINGERPRINT_BUCKETS CURRENT_QUERY_LIMIT MAX_TOOLCALLS_PER_JOB MIN_TOOLCALLS_PER_JOB MAX_EVIDENCES_PER_JOB
 	export TMP_DIR FINGERPRINT_BASE INGEST_REUSE_COUNT RUN_REUSE_COUNT INGEST_REUSE_BUCKETS RUN_REUSE_BUCKETS STORM_RUN_ID
+	export RUN_TIME_RANGE_START_EPOCH RUN_TIME_RANGE_END_EPOCH
 
 	call_or_fail "PrecheckListIncidents" "GET" "${BASE_URL}/v1/incidents?offset=0&limit=1"
 
@@ -708,6 +721,7 @@ run_parent() {
 	STATS_UNIQUE_JOBS="$(count_unique_column 8)"
 	STATS_INGEST_REUSED="$(awk -F'\t' 'NF>=6 && $6=="idempotent_reused" {c++} END{print c+0}' "${ALL_RESULTS}")"
 	STATS_RUN_ALREADY_RUNNING="$(awk -F'\t' 'NF>=9 && $9=="already_running_conflict" {c++} END{print c+0}' "${ALL_RESULTS}")"
+	STATS_RUN_IDEM_CONFLICT="$(awk -F'\t' 'NF>=9 && $9=="idempotency_conflict" {c++} END{print c+0}' "${ALL_RESULTS}")"
 	STATS_INGEST_IDEM_REUSE_COUNT="${INGEST_REUSE_COUNT}"
 	STATS_RUN_IDEM_REUSE_COUNT="${RUN_REUSE_COUNT}"
 
@@ -738,6 +752,7 @@ run_parent() {
 	echo "unique_evidences=${STATS_UNIQUE_EVIDENCES}"
 	echo "ingest_reused=${STATS_INGEST_REUSED}"
 	echo "run_already_running=${STATS_RUN_ALREADY_RUNNING}"
+	echo "run_idem_conflict=${STATS_RUN_IDEM_CONFLICT}"
 	echo "storm_run_id=${STORM_RUN_ID}"
 	echo "sample_incident_id=${SAMPLE_INCIDENT_ID}"
 	echo "sample_event_id=${SAMPLE_EVENT_ID}"

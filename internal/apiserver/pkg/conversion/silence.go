@@ -5,9 +5,9 @@ import (
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"zk8s.com/rca-api/internal/apiserver/model"
-	"zk8s.com/rca-api/internal/apiserver/pkg/silenceutil"
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	"github.com/aiopsre/rca-api/internal/apiserver/model"
+	"github.com/aiopsre/rca-api/internal/apiserver/pkg/silenceutil"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
 )
 
 // SilenceMToSilenceV1 converts model silence to API silence.

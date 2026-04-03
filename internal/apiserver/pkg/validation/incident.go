@@ -2,10 +2,26 @@ package validation
 
 import (
 	"context"
+	"strings"
 
+	"github.com/onexstack/onexstack/pkg/errorsx"
 	genericvalidation "github.com/onexstack/onexstack/pkg/validation"
 
-	v1 "zk8s.com/rca-api/pkg/api/apiserver/v1"
+	v1 "github.com/aiopsre/rca-api/pkg/api/apiserver/v1"
+)
+
+const (
+	defaultOperatorListPage  = int64(1)
+	defaultOperatorListLimit = int64(20)
+	maxOperatorListLimit     = int64(200)
+
+	maxOperatorActorLen      = 128
+	maxOperatorActionTypeLen = 64
+	maxOperatorSummaryLen    = 256
+	maxOperatorSourceLen     = 64
+	maxOperatorToolLen       = 128
+	maxOperatorObservedLen   = 512
+	maxOperatorPayloadInput  = 512 * 1024
 )
 
 // ValidateIncidentRules returns a set of validation rules for incident-related requests.
@@ -41,4 +57,53 @@ func (v *Validator) ValidateGetIncidentRequest(ctx context.Context, rq *v1.GetIn
 // ValidateListIncidentRequest validates the fields of a ListIncidentRequest, focusing on selected fields ("Offset" and "Limit").
 func (v *Validator) ValidateListIncidentRequest(ctx context.Context, rq *v1.ListIncidentRequest) error {
 	return genericvalidation.ValidateSelectedFields(rq, v.ValidateIncidentRules(), "Offset", "Limit")
+}
+
+func (v *Validator) ValidateCreateIncidentActionRequest(ctx context.Context, rq *v1.CreateIncidentActionRequest) error {
+	_ = ctx
+	if strings.TrimSpace(rq.GetIncidentID()) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.Actor, maxOperatorActorLen) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateRequiredTrimmedMaxLen(rq.GetActionType(), maxOperatorActionTypeLen) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateRequiredTrimmedMaxLen(rq.GetSummary(), maxOperatorSummaryLen) {
+		return errorsx.ErrInvalidArgument
+	}
+	if !validateOptionalTrimmedMaxLen(rq.DetailsJSON, maxOperatorPayloadInput) {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func (v *Validator) ValidateListIncidentActionsRequest(ctx context.Context, rq *v1.ListIncidentActionsRequest) error {
+	_ = ctx
+	if strings.TrimSpace(rq.GetIncidentID()) == "" {
+		return errorsx.ErrInvalidArgument
+	}
+	if rq.GetPage() <= 0 {
+		rq.Page = defaultOperatorListPage
+	}
+	if rq.GetLimit() <= 0 {
+		rq.Limit = defaultOperatorListLimit
+	}
+	if rq.GetLimit() > maxOperatorListLimit {
+		return errorsx.ErrInvalidArgument
+	}
+	return nil
+}
+
+func validateOptionalTrimmedMaxLen(value *string, maxLen int) bool {
+	if value == nil {
+		return true
+	}
+	return len(strings.TrimSpace(*value)) <= maxLen
+}
+
+func validateRequiredTrimmedMaxLen(value string, maxLen int) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed != "" && len(trimmed) <= maxLen
 }

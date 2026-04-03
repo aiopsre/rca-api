@@ -49,6 +49,12 @@ func (x *StartAIJobRequest) Default() {
 func (x *StartAIJobResponse) Default() {
 }
 
+func (x *ResolvedToolProvider) Default() {
+}
+
+func (x *ToolMetadataRef) Default() {
+}
+
 func (x *CancelAIJobRequest) Default() {
 }
 

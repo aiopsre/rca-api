@@ -1,0 +1,198 @@
+name: rca-ops0
+
+x-rca-env: &rca-env
+  GOLANG_PROTOBUF_REGISTRATION_CONFLICT: "${GOLANG_PROTOBUF_REGISTRATION_CONFLICT:-warn}"
+  MYSQL_DSN: "${MYSQL_DSN:-root:Az123456_@tcp(mysql:3306)/rca?charset=utf8mb4&parseTime=True&loc=Local}"
+  MYSQL_HOST: "${MYSQL_HOST:-mysql}"
+  MYSQL_PORT: "${MYSQL_PORT:-3306}"
+  MYSQL_USER: "${MYSQL_USER:-root}"
+  MYSQL_PASSWORD: "${MYSQL_PASSWORD:-Az123456_}"
+  MYSQL_DATABASE: "${MYSQL_DATABASE:-rca}"
+  REDIS_ENABLED: "${REDIS_ENABLED:-true}"
+  REDIS_ADDR: "${REDIS_ADDR:-redis:6379}"
+  REDIS_DB: "${REDIS_DB:-0}"
+  REDIS_PASSWORD: "${REDIS_PASSWORD:-Az123456_}"
+  REDIS_FAIL_OPEN: "${REDIS_FAIL_OPEN:-true}"
+  REDIS_PUBSUB_ENABLED: "${REDIS_PUBSUB_ENABLED:-true}"
+  REDIS_TOPIC_AI_JOB_SIGNAL: "${REDIS_TOPIC_AI_JOB_SIGNAL:-rca:ai_job_queue_signal}"
+  REDIS_LIMITER_ENABLED: "${REDIS_LIMITER_ENABLED:-true}"
+  REDIS_LIMITER_MODE: "${REDIS_LIMITER_MODE:-both}"
+  REDIS_LIMITER_GLOBAL_QPS: "${REDIS_LIMITER_GLOBAL_QPS:-20}"
+  REDIS_LIMITER_CHANNEL_QPS: "${REDIS_LIMITER_CHANNEL_QPS:-0}"
+  REDIS_LIMITER_BURST: "${REDIS_LIMITER_BURST:-20}"
+  REDIS_STREAMS_ENABLED: "${REDIS_STREAMS_ENABLED:-true}"
+  REDIS_NOTICE_DELIVERY_STREAM: "${REDIS_NOTICE_DELIVERY_STREAM:-rca:notice:delivery_stream}"
+  REDIS_STREAMS_CONSUMER_GROUP: "${REDIS_STREAMS_CONSUMER_GROUP:-notice_delivery_workers}"
+  REDIS_STREAMS_RECLAIM_IDLE_SECONDS: "${REDIS_STREAMS_RECLAIM_IDLE_SECONDS:-60}"
+  REDIS_ALERTING_ENABLED: "${REDIS_ALERTING_ENABLED:-true}"
+  ALERTING_INGEST_POLICY_REDIS_BACKEND_ENABLED: "${ALERTING_INGEST_POLICY_REDIS_BACKEND_ENABLED:-false}"
+  ALERTING_INGEST_POLICY_REDIS_KEY_PREFIX: "${ALERTING_INGEST_POLICY_REDIS_KEY_PREFIX:-rca:alert}"
+
+services:
+  mysql:
+    image: mysql:8.0
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_PASSWORD:-Az123456_}"
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-rca}"
+    ports:
+      - "${MYSQL_EXPOSE_PORT:-3306}:3306"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$${MYSQL_ROOT_PASSWORD}" --silent
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7.2-alpine
+    command:
+      - sh
+      - -c
+      - redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:-Az123456_}"
+    ports:
+      - "${REDIS_EXPOSE_PORT:-6379}:6379"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli -a "$${REDIS_PASSWORD}" ping | grep -q PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - redis_data:/data
+
+  rca-apiserver:
+    image: ${RCA_APISERVER_IMAGE:-rca-apiserver:latest}
+    build:
+      context: ../..
+      dockerfile: build/docker/rca-apiserver/Dockerfile
+      args:
+        ENV: dev
+        OS: linux
+        ARCH: amd64
+    environment:
+      <<: *rca-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command:
+      - --config=/etc/rca/rca-apiserver.yaml
+      - --http.addr=0.0.0.0:5555
+      - --coredb.host=${MYSQL_HOST:-mysql}:${MYSQL_PORT:-3306}
+      - --coredb.username=${MYSQL_USER:-root}
+      - --coredb.password=${MYSQL_PASSWORD:-Az123456_}
+      - --coredb.database=${MYSQL_DATABASE:-rca}
+      - --redis.enabled=${REDIS_ENABLED:-true}
+      - --redis.addr=${REDIS_ADDR:-redis:6379}
+      - --redis.db=${REDIS_DB:-0}
+      - --redis.password=${REDIS_PASSWORD:-Az123456_}
+      - --redis.fail_open=${REDIS_FAIL_OPEN:-true}
+      - --redis.pubsub.enabled=${REDIS_PUBSUB_ENABLED:-true}
+      - --redis.pubsub.topic_ai_job_signal=${REDIS_TOPIC_AI_JOB_SIGNAL:-rca:ai_job_queue_signal}
+      - --redis.limiter.enabled=${REDIS_LIMITER_ENABLED:-true}
+      - --redis.limiter.mode=${REDIS_LIMITER_MODE:-both}
+      - --redis.limiter.global_qps=${REDIS_LIMITER_GLOBAL_QPS:-20}
+      - --redis.limiter.channel_qps=${REDIS_LIMITER_CHANNEL_QPS:-0}
+      - --redis.limiter.burst=${REDIS_LIMITER_BURST:-20}
+      - --redis.streams.enabled=${REDIS_STREAMS_ENABLED:-true}
+      - --redis.streams.notice_delivery_stream=${REDIS_NOTICE_DELIVERY_STREAM:-rca:notice:delivery_stream}
+      - --redis.streams.consumer_group=${REDIS_STREAMS_CONSUMER_GROUP:-notice_delivery_workers}
+      - --redis.streams.reclaim_idle_seconds=${REDIS_STREAMS_RECLAIM_IDLE_SECONDS:-60}
+      - --redis.alerting.enabled=${REDIS_ALERTING_ENABLED:-true}
+      - --alerting.ingest_policy.redis_backend.enabled=${ALERTING_INGEST_POLICY_REDIS_BACKEND_ENABLED:-false}
+      - --alerting.ingest_policy.redis_backend.key_prefix=${ALERTING_INGEST_POLICY_REDIS_KEY_PREFIX:-rca:alert}
+    volumes:
+      - ../../configs/rca-apiserver.yaml:/etc/rca/rca-apiserver.yaml:ro
+    ports:
+      - "${APISERVER_PORT:-5555}:5555"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:5555/healthz >/dev/null 2>&1 || wget -qO- http://127.0.0.1:5555/v1/version >/dev/null 2>&1 || wget -qO- http://127.0.0.1:5555/metrics >/dev/null 2>&1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  notice-worker:
+    image: ${RCA_APISERVER_IMAGE:-rca-apiserver:latest}
+    environment:
+      <<: *rca-env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rca-apiserver:
+        condition: service_healthy
+    command:
+      - --config=/etc/rca/rca-apiserver.yaml
+      - --coredb.host=${MYSQL_HOST:-mysql}:${MYSQL_PORT:-3306}
+      - --coredb.username=${MYSQL_USER:-root}
+      - --coredb.password=${MYSQL_PASSWORD:-Az123456_}
+      - --coredb.database=${MYSQL_DATABASE:-rca}
+      - --redis.enabled=${REDIS_ENABLED:-true}
+      - --redis.addr=${REDIS_ADDR:-redis:6379}
+      - --redis.db=${REDIS_DB:-0}
+      - --redis.password=${REDIS_PASSWORD:-Az123456_}
+      - --redis.fail_open=${REDIS_FAIL_OPEN:-true}
+      - --redis.pubsub.enabled=${REDIS_PUBSUB_ENABLED:-true}
+      - --redis.pubsub.topic_ai_job_signal=${REDIS_TOPIC_AI_JOB_SIGNAL:-rca:ai_job_queue_signal}
+      - --redis.limiter.enabled=${REDIS_LIMITER_ENABLED:-true}
+      - --redis.limiter.mode=${REDIS_LIMITER_MODE:-both}
+      - --redis.limiter.global_qps=${REDIS_LIMITER_GLOBAL_QPS:-20}
+      - --redis.limiter.channel_qps=${REDIS_LIMITER_CHANNEL_QPS:-0}
+      - --redis.limiter.burst=${REDIS_LIMITER_BURST:-20}
+      - --redis.streams.enabled=${REDIS_STREAMS_ENABLED:-true}
+      - --redis.streams.notice_delivery_stream=${REDIS_NOTICE_DELIVERY_STREAM:-rca:notice:delivery_stream}
+      - --redis.streams.consumer_group=${REDIS_STREAMS_CONSUMER_GROUP:-notice_delivery_workers}
+      - --redis.streams.reclaim_idle_seconds=${REDIS_STREAMS_RECLAIM_IDLE_SECONDS:-60}
+      - notice-worker
+      - --notice-worker-id=${NOTICE_WORKER_ID:-notice-worker-1}
+      - --notice-worker-poll-interval=${NOTICE_WORKER_POLL_INTERVAL:-200ms}
+      - --notice-worker-batch-size=${NOTICE_WORKER_BATCH_SIZE:-16}
+      - --notice-worker-lock-timeout=${NOTICE_WORKER_LOCK_TIMEOUT:-60s}
+      - --notice-worker-channel-concurrency=${NOTICE_WORKER_CHANNEL_CONCURRENCY:-2}
+      - --notice-worker-global-qps=${NOTICE_WORKER_GLOBAL_QPS:-20}
+      - --notice-worker-channel-qps=${NOTICE_WORKER_CHANNEL_QPS:-0}
+    volumes:
+      - ../../configs/rca-apiserver.yaml:/etc/rca/rca-apiserver.yaml:ro
+
+  ai-orchestrator:
+    image: python:3.11-slim
+    working_dir: /workspace/tools/ai-orchestrator
+    depends_on:
+      rca-apiserver:
+        condition: service_healthy
+    environment:
+      BASE_URL: http://rca-apiserver:5555
+      SCOPES: "${ORCH_SCOPES:-*}"
+      RCA_API_SCOPES: "${ORCH_MCP_SCOPES:-*}"
+      INSTANCE_ID: "${ORCH_INSTANCE_ID:-orchestrator-1}"
+      LONG_POLL_WAIT_SECONDS: "${ORCH_LONG_POLL_WAIT_SECONDS:-20}"
+      RUN_QUERY: "${ORCH_RUN_QUERY:-0}"
+      REDIS_ENABLED: "${REDIS_ENABLED:-true}"
+      REDIS_PUBSUB_ENABLED: "${REDIS_PUBSUB_ENABLED:-true}"
+    command:
+      - sh
+      - -lc
+      - python -m pip install --no-cache-dir -e . && python -m orchestrator.main
+    volumes:
+      - ../../tools/ai-orchestrator:/workspace/tools/ai-orchestrator
+
+volumes:
+  mysql_data: {}
+  redis_data: {}

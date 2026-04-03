@@ -5,7 +5,7 @@ package apiserver.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
 
 // Incident 表示事件单（告警聚合后的事件元数据 + 诊断/处置闭环索引）
 message Incident {
@@ -193,3 +193,65 @@ message ListIncidentResponse {
   // incidents 表示事件单列表
   repeated Incident incidents = 2;
 }
+
+// OperatorActionLog 表示人工操作日志记录。
+message OperatorActionLog {
+  // actionID 表示操作日志 ID（如 operator-action-xxxxxx）。
+  string actionID = 1;
+  // incidentID 表示关联事件单 ID。
+  string incidentID = 2;
+  // actor 表示操作者（用户/系统标识）。
+  string actor = 3;
+  // actionType 表示操作类型（如 rollback/restart/scale）。
+  string actionType = 4;
+  // summary 表示操作摘要（<=256）。
+  string summary = 5;
+  // detailsJSON 表示结构化详情（脱敏后，<=8KB）。
+  optional string detailsJSON = 6;
+  // createdAt 表示创建时间。
+  google.protobuf.Timestamp createdAt = 7;
+}
+
+// CreateIncidentActionRequest 表示新增 incident 人工操作日志。
+message CreateIncidentActionRequest {
+  // incidentID 对应 URI 参数 {incidentID}。
+  // @gotags: uri:"incidentID"
+  string incidentID = 1;
+  // actor 表示操作者（可选；为空时后端按上下文补齐）。
+  optional string actor = 2;
+  // actionType 表示操作类型。
+  string actionType = 3;
+  // summary 表示操作摘要。
+  string summary = 4;
+  // detailsJSON 表示操作详情 JSON（可选）。
+  optional string detailsJSON = 5;
+}
+
+// CreateIncidentActionResponse 表示新增 incident 人工操作日志响应。
+message CreateIncidentActionResponse {
+  OperatorActionLog action = 1;
+  // warnings 表示脱敏/截断告警。
+  repeated string warnings = 2;
+}
+
+// ListIncidentActionsRequest 表示分页查询 incident 人工操作日志。
+message ListIncidentActionsRequest {
+  // incidentID 对应 URI 参数 {incidentID}。
+  // @gotags: uri:"incidentID"
+  string incidentID = 1;
+  // page 表示页码（从 1 开始）。
+  // @gotags: form:"page"
+  int64 page = 2;
+  // limit 表示每页大小（<=200）。
+  // @gotags: form:"limit"
+  int64 limit = 3;
+}
+
+// ListIncidentActionsResponse 表示分页查询 incident 人工操作日志响应。
+message ListIncidentActionsResponse {
+  int64 totalCount = 1;
+  repeated OperatorActionLog actions = 2;
+}
+
+// Reserved: VerificationRun and related messages removed (MCL 2026-03-23).
+// verification-runs feature is not part of the minimal closed loop.

@@ -1,0 +1,225 @@
+package options
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel/trace"
+)
+
+var _ IOptions = (*SlogOptions)(nil)
+
+// SlogOptions contains configuration items related to slog.
+type SlogOptions struct {
+	// Level specifies the minimum log level to output.
+	// Possible values: debug, info, warn, error
+	Level string `json:"level,omitempty" mapstructure:"level"`
+	// AddSource adds source code position (file:line) to log records
+	AddSource bool `json:"add-source,omitempty" mapstructure:"add-source"`
+	// Format specifies the structure of log messages.
+	// Possible values: json, text
+	Format string `json:"format,omitempty" mapstructure:"format"`
+	// TimeFormat specifies the time format for text output.
+	// Uses Go time format layout. Empty means RFC3339.
+	TimeFormat string `json:"time-format,omitempty" mapstructure:"time-format"`
+	// Output specifies where to write logs.
+	// Possible values: stdout, stderr, or file path
+	Output string `json:"output,omitempty" mapstructure:"output"`
+}
+
+// NewSlogOptions creates an Options object with default parameters.
+func NewSlogOptions() *SlogOptions {
+	return &SlogOptions{
+		Level:      "info",
+		AddSource:  false,
+		Format:     "text",
+		TimeFormat: time.RFC3339Nano,
+		Output:     "stdout",
+	}
+}
+
+// Validate verifies flags passed to SlogOptions.
+func (o *SlogOptions) Validate() []error {
+	var errs []error
+
+	// Validate log level
+	switch strings.ToUpper(strings.TrimSpace(o.Level)) {
+	case "DEBUG", "INFO", "WARN", "WARNING", "ERROR":
+	default:
+		errs = append(errs, fmt.Errorf("invalid log level: %s (must be debug, info, warn, or error)", o.Level))
+	}
+
+	// Validate format
+	switch o.Format {
+	case "json", "text":
+	default:
+		errs = append(errs, fmt.Errorf("invalid log format: %s (must be json or text)", o.Format))
+	}
+
+	// Validate output
+	if o.Output != "stdout" && o.Output != "stderr" && o.Output != "" {
+		// Check if it's a valid file path (basic validation)
+		if !filepath.IsAbs(o.Output) && !strings.Contains(o.Output, "/") {
+			errs = append(errs, fmt.Errorf("invalid output path: %s", o.Output))
+		}
+	}
+
+	return errs
+}
+
+// AddFlags adds command line flags for the configuration.
+func (o *SlogOptions) AddFlags(fs *pflag.FlagSet, fullPrefix string) {
+	fs.StringVar(&o.Level, fullPrefix+".level", o.Level, "Sets the log level. Permitted levels: debug, info, warn, error.")
+	fs.StringVar(&o.Format, fullPrefix+".format", o.Format, "Sets the log format. Permitted formats: json, text.")
+	fs.BoolVar(&o.AddSource, fullPrefix+".add-source", o.AddSource, "Add source file:line to log records.")
+	fs.StringVar(&o.TimeFormat, fullPrefix+".time-format", o.TimeFormat, ""+
+		"Time format for text logs using Go's time layout format. Leave empty for RFC3339. "+
+		"Examples: '2006-01-02 15:04:05'")
+	fs.StringVar(&o.Output, fullPrefix+".output", o.Output, "Log output destination (stdout, stderr, or file path).")
+}
+
+// ToSlogLevel converts string level to slog.Level.
+func (o *SlogOptions) ToSlogLevel() slog.Level {
+	switch strings.ToUpper(strings.TrimSpace(o.Level)) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "INFO":
+		return slog.LevelInfo
+	case "WARN", "WARNING":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	default:
+		// Default to INFO if unknown level
+		return slog.LevelInfo
+	}
+}
+
+// GetWriter returns the appropriate io.Writer based on output configuration.
+func (o *SlogOptions) GetWriter() (io.Writer, error) {
+	switch o.Output {
+	case "stdout", "":
+		return os.Stdout, nil
+	case "stderr":
+		return os.Stderr, nil
+	default:
+		// File output
+		file, err := os.OpenFile(o.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open log file %s: %w", o.Output, err)
+		}
+		return file, nil
+	}
+}
+
+// BuildHandler creates a slog.Handler based on the configuration.
+func (o *SlogOptions) BuildHandler() (slog.Handler, error) {
+	writer, err := o.GetWriter()
+	if err != nil {
+		return nil, err
+	}
+
+	opts := &slog.HandlerOptions{
+		Level:     o.ToSlogLevel(),
+		AddSource: o.AddSource,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.TimeKey:
+				return slog.String(slog.TimeKey, a.Value.Time().Format(o.TimeFormat))
+			case slog.MessageKey:
+				return slog.String("message", a.Value.String())
+			case slog.SourceKey:
+				if src, ok := a.Value.Any().(*slog.Source); ok {
+					return slog.Attr{
+						Key: "log",
+						Value: slog.GroupValue(
+							slog.Attr{
+								Key: "origin",
+								Value: slog.GroupValue(
+									slog.Attr{
+										Key: "file",
+										Value: slog.GroupValue(
+											slog.String("name", src.File),
+											slog.Int("line", src.Line),
+										),
+									},
+									slog.String("function", src.Function),
+								),
+							},
+						),
+					}
+				}
+			default:
+			}
+			return a
+		},
+	}
+
+	var handler slog.Handler
+	switch o.Format {
+	case "json":
+		handler = slog.NewJSONHandler(writer, opts)
+	case "text":
+		handler = slog.NewTextHandler(writer, opts)
+	default:
+		handler = slog.NewTextHandler(writer, opts)
+	}
+
+	return &TraceIDHandler{Handler: handler}, nil
+}
+
+// BuildLogger constructs and returns a configured slog.Logger instance without affecting the global logger.
+func (o *SlogOptions) BuildLogger() (*slog.Logger, error) {
+	handler, err := o.BuildHandler()
+	if err != nil {
+		return nil, err
+	}
+	return slog.New(handler), nil
+}
+
+// Apply applies the configuration to the global default slog logger.
+func (o *SlogOptions) Apply() error {
+	logger, err := o.BuildLogger()
+	if err != nil {
+		return err
+	}
+	slog.SetDefault(logger)
+	return nil
+}
+
+type TraceIDHandler struct {
+	slog.Handler
+}
+
+// Handle handles the Record. It checks for a trace_id in the context
+// and adds it as an attribute if present.
+func (h *TraceIDHandler) Handle(ctx context.Context, r slog.Record) error {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if spanContext.IsValid() {
+		r.AddAttrs(
+			slog.Group("trace", slog.String("id", spanContext.TraceID().String())),
+			slog.Group("span", slog.String("id", spanContext.SpanID().String())),
+		)
+	}
+
+	return h.Handler.Handle(ctx, r)
+}
+
+// WithAttrs returns a new TraceIDHandler whose attributes consist of
+// both the receiver's attributes and the arguments.
+func (h *TraceIDHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &TraceIDHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+// WithGroup returns a new TraceIDHandler with the given group appended to
+// the receiver's existing groups.
+func (h *TraceIDHandler) WithGroup(name string) slog.Handler {
+	return &TraceIDHandler{Handler: h.Handler.WithGroup(name)}
+}

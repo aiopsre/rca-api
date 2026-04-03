@@ -1,0 +1,157 @@
+// ToolMetadata API 定义：工具元数据的请求和响应消息
+syntax = "proto3";
+
+package apiserver.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
+
+// ToolMetadata 表示工具的元数据信息
+// Tool metadata is used by the orchestrator to classify and manage tools.
+message ToolMetadata {
+  // id 表示数据库 ID
+  int64 id = 1;
+
+  // toolName 表示工具名称（唯一标识）
+  string toolName = 2;
+  // kind 表示工具类型（metrics/logs/traces/incidents/unknown）
+  string kind = 3;
+  // domain 表示领域分类（observability/incident/general）
+  string domain = 4;
+  // readOnly 表示是否只读（无副作用）
+  bool readOnly = 5;
+  // riskLevel 表示风险等级（low/medium/high）
+  string riskLevel = 6;
+  // latencyTier 表示延迟等级（fast/medium/slow）
+  string latencyTier = 7;
+  // costHint 表示成本提示（free/low/medium/high）
+  string costHint = 8;
+  // tagsJSON 表示标签列表（JSON array）
+  optional string tagsJSON = 9;
+  // description 表示描述信息
+  optional string description = 10;
+  // mcpServerID 表示关联的 MCP 服务器 ID
+  optional string mcpServerID = 11;
+  // status 表示状态（active/inactive）
+  string status = 12;
+  // createdAt 表示创建时间
+  google.protobuf.Timestamp createdAt = 13;
+  // updatedAt 表示更新时间
+  google.protobuf.Timestamp updatedAt = 14;
+}
+
+// CreateToolMetadataRequest 表示创建工具元数据请求
+message CreateToolMetadataRequest {
+  // toolName 表示工具名称（必填，唯一）
+  string toolName = 1;
+  // kind 表示工具类型（默认 unknown）
+  optional string kind = 2;
+  // domain 表示领域分类（默认 general）
+  optional string domain = 3;
+  // readOnly 表示是否只读（默认 true）
+  optional bool readOnly = 4;
+  // riskLevel 表示风险等级（默认 low）
+  optional string riskLevel = 5;
+  // latencyTier 表示延迟等级（默认 fast）
+  optional string latencyTier = 6;
+  // costHint 表示成本提示（默认 free）
+  optional string costHint = 7;
+  // tagsJSON 表示标签列表（JSON array）
+  optional string tagsJSON = 8;
+  // description 表示描述信息
+  optional string description = 9;
+  // mcpServerID 表示关联的 MCP 服务器 ID
+  optional string mcpServerID = 10;
+}
+
+// CreateToolMetadataResponse 表示创建工具元数据响应
+message CreateToolMetadataResponse {
+  // toolMetadata 表示创建的工具元数据信息
+  ToolMetadata toolMetadata = 1;
+}
+
+// GetToolMetadataRequest 表示获取工具元数据请求
+message GetToolMetadataRequest {
+  // toolName 表示要获取的工具名称
+  // @gotags: uri:"toolName"
+  string toolName = 1;
+}
+
+// GetToolMetadataResponse 表示获取工具元数据响应
+message GetToolMetadataResponse {
+  // toolMetadata 表示返回的工具元数据信息
+  ToolMetadata toolMetadata = 1;
+}
+
+// ListToolMetadataRequest 表示获取工具元数据列表请求
+message ListToolMetadataRequest {
+  // offset 表示偏移量
+  // @gotags: form:"offset"
+  int64 offset = 1;
+
+  // limit 表示每页数量
+  // @gotags: form:"limit"
+  int64 limit = 2;
+
+  // kind 表示可选的类型过滤
+  optional string kind = 3;
+  // domain 表示可选的领域过滤
+  optional string domain = 4;
+  // status 表示可选的状态过滤
+  optional string status = 5;
+  // mcpServerID 表示可选的 MCP 服务器 ID 过滤
+  optional string mcpServerID = 6;
+}
+
+// ListToolMetadataResponse 表示获取工具元数据列表响应
+message ListToolMetadataResponse {
+  // totalCount 表示总数
+  int64 totalCount = 1;
+  // toolMetadataList 表示工具元数据列表
+  repeated ToolMetadata toolMetadataList = 2;
+}
+
+// UpdateToolMetadataRequest 表示更新工具元数据请求
+message UpdateToolMetadataRequest {
+  // toolName 表示要更新的工具名称
+  // @gotags: uri:"toolName"
+  string toolName = 1;
+
+  // kind 表示工具类型
+  optional string kind = 2;
+  // domain 表示领域分类
+  optional string domain = 3;
+  // readOnly 表示是否只读
+  optional bool readOnly = 4;
+  // riskLevel 表示风险等级
+  optional string riskLevel = 5;
+  // latencyTier 表示延迟等级
+  optional string latencyTier = 6;
+  // costHint 表示成本提示
+  optional string costHint = 7;
+  // tagsJSON 表示标签列表（JSON array）
+  optional string tagsJSON = 8;
+  // description 表示描述信息
+  optional string description = 9;
+  // mcpServerID 表示关联的 MCP 服务器 ID
+  optional string mcpServerID = 10;
+  // status 表示状态
+  optional string status = 11;
+}
+
+// UpdateToolMetadataResponse 表示更新工具元数据响应
+message UpdateToolMetadataResponse {
+  // toolMetadata 表示更新后的工具元数据信息
+  ToolMetadata toolMetadata = 1;
+}
+
+// DeleteToolMetadataRequest 表示删除工具元数据请求
+message DeleteToolMetadataRequest {
+  // toolName 表示要删除的工具名称
+  // @gotags: uri:"toolName"
+  string toolName = 1;
+}
+
+// DeleteToolMetadataResponse 表示删除工具元数据响应
+message DeleteToolMetadataResponse {}

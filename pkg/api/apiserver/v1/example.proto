@@ -5,7 +5,7 @@ package apiserver.v1;
 import "google/protobuf/timestamp.proto"; // Importing Google's timestamp type for date/time fields.
 
 // Specifies the Go package for generated code.
-option go_package = "zk8s.com/rca-api/pkg/api/apiserver/v1;v1";
+option go_package = "github.com/aiopsre/rca-api/pkg/api/apiserver/v1;v1";
 
 // UserStatus 枚举表示用户的状态
 enum UserStatus {
